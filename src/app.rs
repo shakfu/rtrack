@@ -8,7 +8,7 @@ use crate::audio::AudioEngine;
 use crate::link::LinkEngine;
 use crate::midi::{MidiEngine, MidiInputEngine, MidiInputEvent};
 use crate::sample::SampleBank;
-use crate::tracker::{Note, NoteValue, Song};
+use crate::tracker::{Note, NoteValue, Song, SongFile, InstrumentDef, InstrumentEntry, SampleRef, SampleRefEntry};
 use crate::ui::pattern_editor::SubColumn;
 
 // Effect commands (single hex digit, stored in Cell.effect)
@@ -245,6 +245,9 @@ pub struct App {
     // Sample editor state
     pub sample_editor_slot: usize,
     pub sample_editor_field: SampleField,
+
+    // Track page: which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
+    pub track_page: usize,
 }
 
 impl App {
@@ -305,6 +308,7 @@ impl App {
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
+            track_page: 0,
         }
     }
 
@@ -335,6 +339,7 @@ impl App {
         self.audio.as_ref().map_or(false, |a| a.effects_enabled())
     }
 
+    #[allow(dead_code)]
     pub fn toggle_audio_effects(&self) -> bool {
         self.audio.as_ref().map_or(false, |a| a.toggle_effects())
     }
@@ -368,7 +373,45 @@ impl App {
         }
     }
 
+    /// Load samples from a directory (files named <slot>-<name>.wav/.aiff)
+    pub fn load_sample_directory(&mut self, dir: &std::path::Path) {
+        let mut bank = (*self.sample_bank).clone();
+        match bank.load_directory(dir) {
+            Ok(meta) => {
+                // Assign samples to instrument slots
+                for (i, sample) in bank.samples.iter().enumerate() {
+                    if sample.is_some() {
+                        if i < self.instruments.len() {
+                            self.instruments[i].sample_index = Some(i);
+                            if self.instruments[i].name.is_empty() {
+                                if let Some(ref s) = sample {
+                                    self.instruments[i].name = s.name.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                self.sample_bank = Arc::new(bank);
+                if let Some(ref audio) = self.audio {
+                    audio.set_sample_bank(Arc::clone(&self.sample_bank));
+                }
+                // Apply BPM from metadata if provided
+                if let Some(bpm) = meta.bpm {
+                    self.song.bpm = bpm;
+                    if self.link.is_enabled() {
+                        self.link.set_tempo(bpm as f64);
+                    }
+                }
+                self.status_message = Some(format!("Loaded samples from: {}", dir.display()));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Sample dir error: {}", e));
+            }
+        }
+    }
+
     /// Check if a given instrument slot has a sample assigned
+    #[allow(dead_code)]
     pub fn instrument_has_sample(&self, inst: usize) -> bool {
         self.instruments.get(inst)
             .and_then(|i| i.sample_index)
@@ -385,6 +428,7 @@ impl App {
     }
 
     /// Export the song to a WAV file
+    #[allow(dead_code)]
     pub fn export_wav(&self, path: std::path::PathBuf) {
         let instruments: Vec<(Option<usize>, u8)> = self.instruments.iter()
             .map(|i| (i.sample_index, i.midi_program.unwrap_or(0)))
@@ -634,7 +678,8 @@ impl App {
             let name = self.song.title.replace(' ', "_").to_lowercase();
             PathBuf::from(format!("{}.rtrk", name))
         });
-        match self.song.save(&path) {
+        let song_file = self.build_song_file(&path);
+        match song_file.save(&path) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.status_message = Some(format!("Saved: {}", path.display()));
@@ -645,21 +690,122 @@ impl App {
         }
     }
 
+    /// Build a SongFile with instrument definitions and sample references
+    fn build_song_file(&self, save_path: &std::path::Path) -> SongFile {
+        let save_dir = save_path.parent().unwrap_or(std::path::Path::new("."));
+
+        // Collect non-empty instruments
+        let instruments: Vec<InstrumentEntry> = self.instruments.iter().enumerate()
+            .filter(|(_, inst)| !inst.name.is_empty() || inst.sample_index.is_some() || inst.midi_program.is_some())
+            .map(|(slot, inst)| InstrumentEntry {
+                slot,
+                def: InstrumentDef {
+                    name: inst.name.clone(),
+                    midi_program: inst.midi_program,
+                    sample_index: inst.sample_index,
+                },
+            })
+            .collect();
+
+        // Collect sample references with relative paths
+        let sample_refs: Vec<SampleRefEntry> = self.sample_bank.samples.iter().enumerate()
+            .filter_map(|(slot, opt)| {
+                opt.as_ref().map(|sample| {
+                    let rel_path = sample.source_path.as_ref().map(|p| {
+                        let abs = std::path::Path::new(p);
+                        make_relative(save_dir, abs)
+                    }).unwrap_or_default();
+
+                    SampleRefEntry {
+                        slot,
+                        sample_ref: SampleRef {
+                            name: sample.name.clone(),
+                            path: rel_path,
+                            base_note: sample.base_note,
+                            trim_start: sample.trim_start,
+                            trim_end: sample.trim_end,
+                            loop_enabled: sample.loop_enabled,
+                            loop_start: sample.loop_start,
+                            loop_end: sample.loop_end,
+                        },
+                    }
+                })
+            })
+            .collect();
+
+        SongFile {
+            song: self.song.clone(),
+            instruments,
+            sample_refs,
+        }
+    }
+
     pub fn load_file(&mut self, path: PathBuf) {
-        match Song::load(&path) {
-            Ok(song) => {
+        match SongFile::load(&path) {
+            Ok(song_file) => {
+                let song = song_file.song;
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
-                self.file_path = Some(path.clone());
                 self.cursor_row = 0;
                 self.cursor_channel = 0;
                 self.cursor_sub = SubColumn::Note;
                 self.edit_order = 0;
+                self.track_page = 0;
                 self.undo_stack.clear();
                 self.redo_stack.clear();
-                self.status_message = Some(format!("Loaded: {}", path.display()));
+
+                // Restore instruments
+                for entry in &song_file.instruments {
+                    if entry.slot < self.instruments.len() {
+                        self.instruments[entry.slot].name = entry.def.name.clone();
+                        self.instruments[entry.slot].midi_program = entry.def.midi_program;
+                        self.instruments[entry.slot].sample_index = entry.def.sample_index;
+                    }
+                }
+
+                // Reload samples from file references
+                let load_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                let mut bank = (*self.sample_bank).clone();
+                let mut sample_errors = Vec::new();
+                for entry in &song_file.sample_refs {
+                    if entry.slot >= bank.samples.len() {
+                        continue;
+                    }
+                    let sample_path = resolve_relative(load_dir, &entry.sample_ref.path);
+                    match bank.load(entry.slot, &sample_path) {
+                        Ok(()) => {
+                            // Apply saved metadata on top of freshly loaded sample
+                            if let Some(ref mut sample) = bank.samples[entry.slot] {
+                                sample.base_note = entry.sample_ref.base_note;
+                                sample.trim_start = entry.sample_ref.trim_start;
+                                sample.trim_end = entry.sample_ref.trim_end;
+                                sample.loop_enabled = entry.sample_ref.loop_enabled;
+                                sample.loop_start = entry.sample_ref.loop_start;
+                                sample.loop_end = entry.sample_ref.loop_end;
+                            }
+                        }
+                        Err(e) => {
+                            sample_errors.push(format!("{}: {}", entry.sample_ref.name, e));
+                        }
+                    }
+                }
+                self.sample_bank = Arc::new(bank);
+                if let Some(ref audio) = self.audio {
+                    audio.set_sample_bank(Arc::clone(&self.sample_bank));
+                }
+
+                self.file_path = Some(path.clone());
+                if sample_errors.is_empty() {
+                    self.status_message = Some(format!("Loaded: {}", path.display()));
+                } else {
+                    self.status_message = Some(format!(
+                        "Loaded (missing samples: {}): {}",
+                        sample_errors.join(", "),
+                        path.display()
+                    ));
+                }
             }
             Err(e) => {
                 self.status_message = Some(format!("Load failed: {}", e));
@@ -1461,8 +1607,10 @@ impl App {
         let ch = (col_x / stride) as usize;
         let within = col_x % stride;
 
-        if ch < pattern.channels {
-            self.cursor_channel = ch;
+        // Map visible channel index to actual channel (offset by page)
+        let actual_ch = self.track_page * 4 + ch as usize;
+        if actual_ch < pattern.channels {
+            self.cursor_channel = actual_ch;
             // note=0..3, gap=3, inst=4..6, gap=6, vol=7..9, gap=9, fx=10..13
             if within < 3 {
                 self.cursor_sub = SubColumn::Note;
@@ -1569,18 +1717,29 @@ impl App {
                 KeyCode::Char('e') => { self.export_midi(); return true; }
                 KeyCode::Char('w') => { self.export_wav_file(); return true; }
                 KeyCode::Char('m') => { self.toggle_midi_clock(); return true; }
-                KeyCode::F(9) => { self.toggle_solo(0); return true; }
-                KeyCode::F(10) => { self.toggle_solo(1); return true; }
-                KeyCode::F(11) => { self.toggle_solo(2); return true; }
-                KeyCode::F(12) => { self.toggle_solo(3); return true; }
+                // Ctrl+1..8 select specific tracks
+                KeyCode::Char('1') => { self.select_track(0); return true; }
+                KeyCode::Char('2') => { self.select_track(1); return true; }
+                KeyCode::Char('3') => { self.select_track(2); return true; }
+                KeyCode::Char('4') => { self.select_track(3); return true; }
+                KeyCode::Char('5') => { self.select_track(4); return true; }
+                KeyCode::Char('6') => { self.select_track(5); return true; }
+                KeyCode::Char('7') => { self.select_track(6); return true; }
+                KeyCode::Char('8') => { self.select_track(7); return true; }
+                // Ctrl+F9-F12: solo channels on current page
+                KeyCode::F(9) => { let ch = self.track_page * 4; self.toggle_solo(ch); return true; }
+                KeyCode::F(10) => { let ch = self.track_page * 4 + 1; self.toggle_solo(ch); return true; }
+                KeyCode::F(11) => { let ch = self.track_page * 4 + 2; self.toggle_solo(ch); return true; }
+                KeyCode::F(12) => { let ch = self.track_page * 4 + 3; self.toggle_solo(ch); return true; }
                 _ => {}
             }
         }
+        // F9-F12: mute channels on current page
         match key.code {
-            KeyCode::F(9) => { self.toggle_channel_mute(0); return true; }
-            KeyCode::F(10) => { self.toggle_channel_mute(1); return true; }
-            KeyCode::F(11) => { self.toggle_channel_mute(2); return true; }
-            KeyCode::F(12) => { self.toggle_channel_mute(3); return true; }
+            KeyCode::F(9) => { let ch = self.track_page * 4; self.toggle_channel_mute(ch); return true; }
+            KeyCode::F(10) => { let ch = self.track_page * 4 + 1; self.toggle_channel_mute(ch); return true; }
+            KeyCode::F(11) => { let ch = self.track_page * 4 + 2; self.toggle_channel_mute(ch); return true; }
+            KeyCode::F(12) => { let ch = self.track_page * 4 + 3; self.toggle_channel_mute(ch); return true; }
             _ => {}
         }
         false
@@ -1611,9 +1770,22 @@ impl App {
             KeyCode::F(7) => self.open_instrument_list(),
             KeyCode::F(8) => self.cycle_theme(),
 
-            // Track navigation
-            KeyCode::Tab => self.next_channel(),
-            KeyCode::BackTab => self.prev_channel(),
+            // Track page navigation
+            KeyCode::Tab => self.toggle_track_page(),
+            KeyCode::BackTab => {
+                // Reverse page toggle
+                let max_pages = (self.song.channels + 3) / 4;
+                if max_pages > 1 {
+                    self.track_page = if self.track_page == 0 { max_pages - 1 } else { self.track_page - 1 };
+                    let page_start = self.track_page * 4;
+                    let page_end = (page_start + 4).min(self.song.channels);
+                    if self.cursor_channel < page_start || self.cursor_channel >= page_end {
+                        self.cursor_channel = page_start;
+                        self.cursor_sub = SubColumn::Note;
+                    }
+                    self.status_message = Some(format!("Track page {} (ch {}-{})", self.track_page + 1, page_start + 1, page_end));
+                }
+            }
 
             // Navigation
             KeyCode::Up => self.move_cursor_up(1),
@@ -1626,7 +1798,7 @@ impl App {
             KeyCode::End => self.cursor_row = self.current_pattern_rows() - 1,
 
             // Octave
-            KeyCode::Char('+') | KeyCode::Char('=') => {
+            KeyCode::Char('+') => {
                 if self.current_octave < 9 {
                     self.current_octave += 1;
                 }
@@ -1665,9 +1837,21 @@ impl App {
             KeyCode::F(7) => self.open_instrument_list(),
             KeyCode::F(8) => self.cycle_theme(),
 
-            // Track navigation
-            KeyCode::Tab => self.next_channel(),
-            KeyCode::BackTab => self.prev_channel(),
+            // Track page navigation
+            KeyCode::Tab => self.toggle_track_page(),
+            KeyCode::BackTab => {
+                let max_pages = (self.song.channels + 3) / 4;
+                if max_pages > 1 {
+                    self.track_page = if self.track_page == 0 { max_pages - 1 } else { self.track_page - 1 };
+                    let page_start = self.track_page * 4;
+                    let page_end = (page_start + 4).min(self.song.channels);
+                    if self.cursor_channel < page_start || self.cursor_channel >= page_end {
+                        self.cursor_channel = page_start;
+                        self.cursor_sub = SubColumn::Note;
+                    }
+                    self.status_message = Some(format!("Track page {} (ch {}-{})", self.track_page + 1, page_start + 1, page_end));
+                }
+            }
 
             // Navigation
             KeyCode::Up => self.move_cursor_up(1),
@@ -1680,7 +1864,7 @@ impl App {
             KeyCode::End => self.cursor_row = self.current_pattern_rows() - 1,
 
             // Octave
-            KeyCode::Char('+') | KeyCode::Char('=') => {
+            KeyCode::Char('+') => {
                 if self.current_octave < 9 {
                     self.current_octave += 1;
                 }
@@ -1696,8 +1880,8 @@ impl App {
                 self.delete_at_cursor();
             }
 
-            // Note off
-            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Note off (= key in Insert mode on Note sub-column)
+            KeyCode::Char('=') if self.cursor_sub == SubColumn::Note => {
                 self.enter_note_off();
             }
 
@@ -1917,18 +2101,38 @@ impl App {
         self.status_message = Some(format!("Deleted row at {:02X}", self.cursor_row));
     }
 
-    fn next_channel(&mut self) {
-        if self.cursor_channel < self.song.channels - 1 {
-            self.cursor_channel += 1;
+    /// Toggle track page (0 = tracks 1-4, 1 = tracks 5-8, etc.)
+    fn toggle_track_page(&mut self) {
+        let max_pages = (self.song.channels + 3) / 4;
+        if max_pages <= 1 {
+            return;
+        }
+        self.track_page = (self.track_page + 1) % max_pages;
+        // Move cursor to same relative position on the new page
+        let page_start = self.track_page * 4;
+        let page_end = (page_start + 4).min(self.song.channels);
+        if self.cursor_channel < page_start || self.cursor_channel >= page_end {
+            self.cursor_channel = page_start;
             self.cursor_sub = SubColumn::Note;
+        }
+        let page_display = self.track_page + 1;
+        self.status_message = Some(format!("Track page {} (ch {}-{})", page_display, page_start + 1, page_end));
+    }
+
+    /// Select a specific track by number (0-indexed)
+    fn select_track(&mut self, track: usize) {
+        if track < self.song.channels {
+            self.cursor_channel = track;
+            self.cursor_sub = SubColumn::Note;
+            self.track_page = track / 4;
         }
     }
 
-    fn prev_channel(&mut self) {
-        if self.cursor_channel > 0 {
-            self.cursor_channel -= 1;
-            self.cursor_sub = SubColumn::Note;
-        }
+    /// Get the range of visible channels for the current track page
+    pub fn visible_channels(&self) -> std::ops::Range<usize> {
+        let start = self.track_page * 4;
+        let end = (start + 4).min(self.song.channels);
+        start..end
     }
 
     fn move_cursor_left(&mut self) {
@@ -1936,6 +2140,7 @@ impl App {
             if self.cursor_channel > 0 {
                 self.cursor_channel -= 1;
                 self.cursor_sub = SubColumn::Effect;
+                self.track_page = self.cursor_channel / 4;
             }
         } else {
             self.cursor_sub = self.cursor_sub.prev();
@@ -1947,10 +2152,35 @@ impl App {
             if self.cursor_channel < self.song.channels - 1 {
                 self.cursor_channel += 1;
                 self.cursor_sub = SubColumn::Note;
+                self.track_page = self.cursor_channel / 4;
             }
         } else {
             self.cursor_sub = self.cursor_sub.next();
         }
+    }
+}
+
+/// Make a path relative to a base directory. Falls back to absolute if no common prefix.
+fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String {
+    // Try to canonicalize both for reliable comparison
+    let base_abs = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let target_abs = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+
+    if let Ok(rel) = target_abs.strip_prefix(&base_abs) {
+        return rel.to_string_lossy().to_string();
+    }
+
+    // Fall back to the original path
+    target.to_string_lossy().to_string()
+}
+
+/// Resolve a (possibly relative) path against a base directory.
+fn resolve_relative(base: &std::path::Path, rel: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
     }
 }
 
@@ -2000,6 +2230,7 @@ mod tests {
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
+            track_page: 0,
         }
     }
 
@@ -2125,35 +2356,62 @@ mod tests {
     }
 
     #[test]
-    fn test_tab_moves_to_next_channel() {
+    fn test_tab_toggles_track_page() {
         let mut app = make_app();
-        assert_eq!(app.cursor_channel, 0);
-
+        // With 4 channels, only 1 page, Tab does nothing
+        assert_eq!(app.track_page, 0);
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         app.handle_key(tab);
-        assert_eq!(app.cursor_channel, 1);
-        assert_eq!(app.cursor_sub, SubColumn::Note);
+        assert_eq!(app.track_page, 0);
 
-        // Shift-Tab goes back
+        // Set up 8 channels for multi-page testing
+        app.song.channels = 8;
+        for pat in &mut app.song.patterns {
+            for row in &mut pat.data {
+                row.resize(8, crate::tracker::Cell::default());
+            }
+            pat.channels = 8;
+        }
+        app.muted_channels.resize(8, false);
+
+        // Tab toggles to page 1
+        app.handle_key(tab);
+        assert_eq!(app.track_page, 1);
+        assert_eq!(app.cursor_channel, 4); // moved to first channel on page 2
+
+        // Tab wraps back to page 0
+        app.handle_key(tab);
+        assert_eq!(app.track_page, 0);
+
+        // Shift-Tab goes to page 1 (reverse)
         let stab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
         app.handle_key(stab);
-        assert_eq!(app.cursor_channel, 0);
-        assert_eq!(app.cursor_sub, SubColumn::Note);
+        assert_eq!(app.track_page, 1);
     }
 
     #[test]
-    fn test_tab_channel_bounds() {
+    fn test_ctrl_number_selects_track() {
         let mut app = make_app();
-        // Can't go below 0
-        let stab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-        app.handle_key(stab);
-        assert_eq!(app.cursor_channel, 0);
+        app.song.channels = 8;
+        for pat in &mut app.song.patterns {
+            for row in &mut pat.data {
+                row.resize(8, crate::tracker::Cell::default());
+            }
+            pat.channels = 8;
+        }
+        app.muted_channels.resize(8, false);
 
-        // Can't go past last channel
-        app.cursor_channel = 3;
-        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        app.handle_key(tab);
-        assert_eq!(app.cursor_channel, 3);
+        // Ctrl+5 selects track 4 (0-indexed) and switches page
+        let ctrl5 = KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL);
+        app.handle_key(ctrl5);
+        assert_eq!(app.cursor_channel, 4);
+        assert_eq!(app.track_page, 1);
+
+        // Ctrl+1 selects track 0 and switches back to page 0
+        let ctrl1 = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::CONTROL);
+        app.handle_key(ctrl1);
+        assert_eq!(app.cursor_channel, 0);
+        assert_eq!(app.track_page, 0);
     }
 
     #[test]

@@ -153,7 +153,7 @@ pub fn render_to_wav(
             // Handle jumps/breaks
             if let Some(target) = jump_order {
                 order_pos = target.min(song.order.len() - 1);
-                row = break_row.unwrap_or(0);
+                let _target_row = break_row.unwrap_or(0);
                 // Don't increment order_pos at the end of this loop
                 // Instead jump directly
                 break;
@@ -314,6 +314,7 @@ mod tests {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
+            source_path: None,
         });
 
         let instruments: Vec<(Option<usize>, u8)> = {

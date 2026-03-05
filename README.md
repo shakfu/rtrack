@@ -7,9 +7,10 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 ## Quick Start
 
 ```sh
-cargo run                    # launch with built-in synth
-cargo run -- song.rtrk       # open a saved song
-cargo run -- recording.mid   # import a MIDI file
+cargo run                                # launch with built-in synth
+cargo run -- song.rtrk                   # open a saved song (restores instruments + samples)
+cargo run -- recording.mid               # import a MIDI file
+cargo run -- --sample-dir samples/       # load a directory of samples
 ```
 
 Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back. Press **F1** for the full help screen.
@@ -22,13 +23,14 @@ rtrack supports three ways to produce sound, and they can be combined:
 |------|----------------|--------------|
 | **Built-in synth** | Default (always on) | 8 waveform patches via [fundsp](https://crates.io/crates/fundsp). Select with `Exx` effect (0-7). |
 | **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
-| **Samples** | `--sample 0:kick.wav` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
+| **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
 All modes output through [cpal](https://crates.io/crates/cpal) with a stereo reverb effects chain. MIDI output runs in parallel regardless of audio mode.
 
 ```sh
 cargo run -- --sf2 gm.sf2                                # SoundFont mode
-cargo run -- --sample 0:kick.wav --sample 1:snare.aiff   # sample mode
+cargo run -- --sample 0:kick.wav --sample 1:snare.aiff   # individual samples
+cargo run -- --sample-dir drums/                         # sample directory
 cargo run -- --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
 ```
 
@@ -38,7 +40,7 @@ A tracker arranges music in **patterns** -- grids where each row is a point in t
 
 Each cell has four fields:
 
-```
+```text
 C-4 01 80 000
  |   |  |  |
  |   |  |  +-- Effect command + parameter
@@ -53,7 +55,7 @@ Empty fields display as dashes: `--- -- -- ---`
 
 Switch to **Insert** mode (Esc) and use the piano keyboard layout:
 
-```
+```text
 Lower octave:  z s x d c v g b h n j m
                C C#D D#E F F#G G#A A#B
 
@@ -61,12 +63,14 @@ Upper octave:  q 2 w 3 e r 5 t 6 y 7 u
                C C#D D#E F F#G G#A A#B
 ```
 
-Use `+`/`-` to shift octave. Tab between channels, arrow keys to navigate.
+Use `+`/`-` to shift octave. Ctrl+1..8 to select tracks, arrow keys to navigate.
 
 ## Features
 
 ### Pattern Editing
-- Configurable channels (default 4) and rows per pattern (default 64)
+
+- Up to 8 channels, displayed in pages of 4 (Tab/Shift-Tab to switch pages)
+- Configurable channel count and rows per pattern (default 4 channels, 64 rows)
 - Note, instrument, volume, and effect columns per cell
 - Normal mode (navigation) and Insert mode (data entry)
 - Edit step (`(`/`)`) -- auto-advance cursor by N rows after each entry
@@ -75,11 +79,37 @@ Use `+`/`-` to shift octave. Tab between channels, arrow keys to navigate.
 - Mouse: click to place cursor, scroll to navigate
 
 ### Song Structure
+
 - Multiple patterns with per-pattern row counts
 - Order list sidebar (always visible) with insert/remove
 - Position jump (`Bxx`) and pattern break (`Dxx`) effects
 
+### Sample Directory
+
+Load an entire directory of samples with `--sample-dir`. Files must be named `<slot>-<name>.wav` (or `.aiff`):
+
+```text
+drums/
+  0-kick.wav
+  1-snare.wav
+  2-hihat.wav
+  samples.json   (optional metadata)
+```
+
+The optional `samples.json` can set BPM, base notes, and loop points:
+
+```json
+{
+  "bpm": 140,
+  "samples": {
+    "0": { "base_note": 36 },
+    "1": { "base_note": 38, "loop_enabled": true, "loop_start": 1000, "loop_end": 5000 }
+  }
+}
+```
+
 ### Instruments & Samples
+
 - 256 instrument slots (F7 to browse)
 - Per-instrument sample assignment -- load WAV/AIFF files into slots
 - Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
@@ -105,6 +135,7 @@ Use `+`/`-` to shift octave. Tab between channels, arrow keys to navigate.
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 
 ### MIDI
+
 - Virtual output port `RTRACK_MIDI` (macOS/Linux) -- visible to any DAW
 - Virtual input port `RTRACK_MIDI_IN` -- play notes from external controllers
 - MIDI port selection (F2) for switching to hardware ports
@@ -112,14 +143,42 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - Per-channel MIDI channel mapping
 
 ### Sync
+
 - [Ableton Link](https://www.ableton.com/en/link/) (F3): bidirectional BPM and transport sync with Link-enabled apps
 
 ### Import / Export
-- Save/load songs as `.rtrk` (JSON)
+
+- Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references (see [File Format](#file-format))
 - Import from standard MIDI files (`.mid`)
 - Export to MIDI (Ctrl+E)
 - Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
 - Color themes: dark (default), light, monokai (F8 to cycle)
+
+## File Format
+
+`.rtrk` files are JSON. The format stores the full song (patterns, order list, BPM, speed) along with optional instrument definitions and sample references:
+
+```json
+{
+  "title": "My Song",
+  "bpm": 140, "speed": 6,
+  "channels": 4, "rows_per_pattern": 64,
+  "patterns": [ ... ],
+  "order": [0, 1, 2],
+  "instruments": [
+    { "slot": 0, "name": "Kick", "sample_index": 0 },
+    { "slot": 5, "name": "Lead", "midi_program": 80 }
+  ],
+  "sample_refs": [
+    { "slot": 0, "name": "kick", "path": "samples/0-kick.wav",
+      "base_note": 36, "loop_enabled": false }
+  ]
+}
+```
+
+- **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment)
+- **Sample refs**: file paths stored relative to the `.rtrk` file, plus all metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
+- **Backwards compatible**: old `.rtrk` files without `instruments` or `sample_refs` fields load fine.
 
 ## Keybindings
 
@@ -129,8 +188,9 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 |-----|--------|
 | Space | Play / stop |
 | Esc | Toggle Normal / Insert mode |
-| Tab / Shift-Tab | Next / previous channel |
-| Arrows | Move cursor |
+| Tab / Shift-Tab | Next / previous track page (groups of 4) |
+| Ctrl+1..8 | Select track 1-8 directly |
+| Arrows | Move cursor (auto-switches page at boundaries) |
 | PgUp / PgDn | Jump 16 rows |
 | Home / End | First / last row |
 | `+` / `-` | Octave up / down |
@@ -142,8 +202,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | F6 | Song settings |
 | F7 | Instrument list |
 | F8 | Cycle color theme |
-| F9-F12 | Mute channels 1-4 |
-| Ctrl+F9-F12 | Solo channels 1-4 |
+| F9-F12 | Mute channels on current page |
+| Ctrl+F9-F12 | Solo channels on current page |
 | Ctrl+S | Save |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+C / X / V | Copy / cut / paste row |
@@ -170,7 +230,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | Piano keys | Enter note |
 | `0`-`9`, `a`-`f` | Hex digit (instrument / volume / effect columns) |
 | Delete / Backspace | Clear cell |
-| Ctrl+1 | Note off (`===`) |
+| `=` | Note off (`===`) |
 
 ## Requirements
 
@@ -184,12 +244,12 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (158 tests)
+make test     # run tests (165 tests)
 ```
 
 ## Architecture
 
-```
+```text
 src/
   main.rs               Entry point, event loop, clap CLI
   app.rs                App state, input, playback engine, undo/redo, file I/O
@@ -204,14 +264,14 @@ src/
     export.rs           Offline song render to WAV
   tracker/
     pattern.rs          Pattern grid, Cell, Note (serde)
-    song.rs             Song, order list, BPM, speed
+    song.rs             Song, SongFile, order list, instrument/sample refs
   link/
     mod.rs              Ableton Link (rusty_link)
   midi/
     mod.rs              MIDI output + input (midir)
   ui/
     mod.rs              Header, status bar, popups
-    pattern_editor.rs   Pattern grid renderer
+    pattern_editor.rs   Pattern grid renderer (page-aware)
     sample_editor.rs    Sample editor (waveform, trim, loop)
     theme.rs            Color themes (dark, light, monokai)
 ```

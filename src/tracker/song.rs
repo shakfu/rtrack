@@ -5,6 +5,84 @@ use serde::{Deserialize, Serialize};
 
 use super::Pattern;
 
+/// Serializable instrument definition (stored in .rtrk files)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstrumentDef {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub midi_program: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_index: Option<usize>,
+}
+
+/// Serializable sample reference (metadata only, no audio data)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleRef {
+    pub name: String,
+    /// Path to the source audio file (relative to the .rtrk file)
+    pub path: String,
+    pub base_note: u8,
+    #[serde(default)]
+    pub trim_start: usize,
+    #[serde(default)]
+    pub trim_end: usize,
+    #[serde(default)]
+    pub loop_enabled: bool,
+    #[serde(default)]
+    pub loop_start: usize,
+    #[serde(default)]
+    pub loop_end: usize,
+}
+
+/// Extended song file format that includes instrument and sample info.
+/// Backwards-compatible: old .rtrk files without these fields still load fine
+/// (serde default kicks in for the optional fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SongFile {
+    #[serde(flatten)]
+    pub song: Song,
+    /// Instrument definitions (only non-empty ones are stored)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instruments: Vec<InstrumentEntry>,
+    /// Sample file references with metadata
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sample_refs: Vec<SampleRefEntry>,
+}
+
+/// Instrument entry keyed by slot index (for sparse storage)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstrumentEntry {
+    pub slot: usize,
+    #[serde(flatten)]
+    pub def: InstrumentDef,
+}
+
+/// Sample reference entry keyed by slot index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleRefEntry {
+    pub slot: usize,
+    #[serde(flatten)]
+    pub sample_ref: SampleRef,
+}
+
+impl SongFile {
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .context("Failed to serialize song file")?;
+        std::fs::write(path, json)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let data = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let song_file: SongFile = serde_json::from_str(&data)
+            .context("Failed to parse song file")?;
+        Ok(song_file)
+    }
+}
+
 /// A song is a collection of patterns with an order list
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Song {
@@ -42,14 +120,17 @@ impl Song {
         idx
     }
 
+    #[allow(dead_code)]
     pub fn get_pattern(&self, index: usize) -> Option<&Pattern> {
         self.patterns.get(index)
     }
 
+    #[allow(dead_code)]
     pub fn get_pattern_mut(&mut self, index: usize) -> Option<&mut Pattern> {
         self.patterns.get_mut(index)
     }
 
+    #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)
             .context("Failed to serialize song")?;
@@ -58,6 +139,7 @@ impl Song {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -67,6 +149,7 @@ impl Song {
     }
 
     /// Seconds per row based on BPM and speed
+    #[allow(dead_code)]
     pub fn seconds_per_row(&self) -> f64 {
         self.seconds_per_tick() * self.speed as f64
     }
@@ -141,6 +224,91 @@ mod tests {
         assert_eq!(cell.volume, Some(0x60));
         assert_eq!(cell.effect, Some(3));
         assert_eq!(cell.effect_value, Some(0xFF));
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_songfile_roundtrip_with_instruments() {
+        let mut song = Song::new(4, 16);
+        song.title = "WithInstruments".to_string();
+
+        let song_file = SongFile {
+            song,
+            instruments: vec![
+                InstrumentEntry {
+                    slot: 0,
+                    def: InstrumentDef {
+                        name: "Kick".to_string(),
+                        midi_program: None,
+                        sample_index: Some(0),
+                    },
+                },
+                InstrumentEntry {
+                    slot: 5,
+                    def: InstrumentDef {
+                        name: "Lead".to_string(),
+                        midi_program: Some(80),
+                        sample_index: None,
+                    },
+                },
+            ],
+            sample_refs: vec![
+                SampleRefEntry {
+                    slot: 0,
+                    sample_ref: SampleRef {
+                        name: "kick".to_string(),
+                        path: "samples/0-kick.wav".to_string(),
+                        base_note: 36,
+                        trim_start: 0,
+                        trim_end: 0,
+                        loop_enabled: false,
+                        loop_start: 0,
+                        loop_end: 0,
+                    },
+                },
+            ],
+        };
+
+        let tmp = std::env::temp_dir().join("rtrack_songfile_roundtrip.rtrk");
+        song_file.save(&tmp).unwrap();
+
+        let loaded = SongFile::load(&tmp).unwrap();
+        assert_eq!(loaded.song.title, "WithInstruments");
+        assert_eq!(loaded.instruments.len(), 2);
+        assert_eq!(loaded.instruments[0].slot, 0);
+        assert_eq!(loaded.instruments[0].def.name, "Kick");
+        assert_eq!(loaded.instruments[0].def.sample_index, Some(0));
+        assert_eq!(loaded.instruments[1].slot, 5);
+        assert_eq!(loaded.instruments[1].def.midi_program, Some(80));
+        assert_eq!(loaded.sample_refs.len(), 1);
+        assert_eq!(loaded.sample_refs[0].slot, 0);
+        assert_eq!(loaded.sample_refs[0].sample_ref.base_note, 36);
+        assert_eq!(loaded.sample_refs[0].sample_ref.path, "samples/0-kick.wav");
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_songfile_backwards_compat() {
+        // An old-style .rtrk without instruments/sample_refs should still load
+        let json = r#"{
+            "title": "OldFormat",
+            "bpm": 120,
+            "speed": 6,
+            "patterns": [{"rows": 16, "channels": 4, "data": []}],
+            "order": [0],
+            "channels": 4,
+            "rows_per_pattern": 16
+        }"#;
+
+        let tmp = std::env::temp_dir().join("rtrack_compat_test.rtrk");
+        std::fs::write(&tmp, json).unwrap();
+
+        let loaded = SongFile::load(&tmp).unwrap();
+        assert_eq!(loaded.song.title, "OldFormat");
+        assert!(loaded.instruments.is_empty());
+        assert!(loaded.sample_refs.is_empty());
 
         let _ = std::fs::remove_file(tmp);
     }

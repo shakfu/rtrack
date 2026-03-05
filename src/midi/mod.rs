@@ -135,6 +135,7 @@ impl MidiEngine {
     }
 
     /// Send a MIDI note-off message
+    #[allow(dead_code)]
     pub fn note_off(&mut self, channel: u8, note: u8) -> Result<()> {
         let ch = channel & 0x0F;
         self.active_notes[ch as usize] = None;
@@ -220,6 +221,7 @@ impl MidiEngine {
 
 /// Represents a MIDI note-on message received from an external controller
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct MidiInputEvent {
     pub channel: u8,
     pub note: u8,
@@ -244,6 +246,7 @@ impl MidiInputEngine {
     }
 
     /// List available MIDI input ports
+    #[allow(dead_code)]
     pub fn list_ports() -> Result<Vec<String>> {
         let input = MidiInput::new("rtrack-input-list")
             .context("Failed to create MIDI input for listing")?;
@@ -290,6 +293,7 @@ impl MidiInputEngine {
     }
 
     /// Connect to a MIDI input port by index
+    #[allow(dead_code)]
     pub fn connect(&mut self, port_index: usize) -> Result<()> {
         self.disconnect();
         let (tx, rx) = mpsc::channel();
@@ -331,6 +335,7 @@ impl MidiInputEngine {
         self.port_name = None;
     }
 
+    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         self._connection.is_some()
     }

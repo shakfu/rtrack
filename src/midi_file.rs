@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::tracker::{Cell, Note, NoteValue, Pattern, Song};
+use crate::tracker::{Note, NoteValue, Pattern, Song};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -531,6 +531,7 @@ fn read_byte(data: &[u8], pos: &mut usize) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracker::Cell;
     use std::io::Write as _;
 
     #[test]

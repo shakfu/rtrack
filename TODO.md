@@ -47,7 +47,16 @@ Minimum feature set to compose something beyond a single loop.
 - [x] Sample editor (trim start/end, loop start/end/toggle, base note)
 - [x] Per-instrument sample assignment (instrument.sample_index -> SampleBank slot)
 - [x] WAV audio export (Ctrl+W, offline render to 16-bit stereo WAV)
+- [x] Sample directory loading (`--sample-dir`) with `<slot>-<name>.wav` convention
+- [x] Optional `samples.json` metadata (BPM, base note, loop points)
 - [ ] FLAC audio export
+
+## Tier 6 -- Track Navigation
+
+- [x] Up to 8 tracks with track page navigation (Tab toggles pages of 4)
+- [x] Direct track selection via Ctrl+1..8
+- [x] Page-relative mute/solo (F9-F12 / Ctrl+F9-F12)
+- [x] Cursor auto-switches page when navigating across page boundaries
 
 ## Done
 

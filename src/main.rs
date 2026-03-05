@@ -35,6 +35,10 @@ struct Cli {
     /// Load a sample file into a slot: --sample 0:kick.wav --sample 1:snare.wav
     #[arg(long = "sample", value_name = "SLOT:FILE")]
     samples: Vec<String>,
+
+    /// Load samples from a directory (files named <slot>-<name>.wav/.aiff)
+    #[arg(long = "sample-dir", value_name = "DIR")]
+    sample_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, cli.file, cli.sf2, cli.samples);
+    let result = run_app(&mut terminal, cli.file, cli.sf2, cli.samples, cli.sample_dir);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -70,6 +74,7 @@ fn run_app(
     file: Option<PathBuf>,
     sf2_path: Option<PathBuf>,
     samples: Vec<String>,
+    sample_dir: Option<PathBuf>,
 ) -> Result<()> {
     let mut app = App::new();
 
@@ -98,6 +103,11 @@ fn run_app(
         } else {
             app.status_message = Some(format!("Invalid sample spec (use SLOT:FILE): {}", spec));
         }
+    }
+
+    // Load samples from directory
+    if let Some(dir) = sample_dir {
+        app.load_sample_directory(&dir);
     }
 
     if let Some(path) = file {

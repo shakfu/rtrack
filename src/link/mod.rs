@@ -43,6 +43,7 @@ impl LinkEngine {
     }
 
     /// Capture the current session state and return tempo, beat, phase, and playing status.
+    #[allow(dead_code)]
     pub fn capture(&mut self) -> LinkState {
         self.link
             .capture_app_session_state(&mut self.session_state);
@@ -105,6 +106,7 @@ impl LinkEngine {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct LinkState {
     pub tempo: f64,

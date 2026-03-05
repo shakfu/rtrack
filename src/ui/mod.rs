@@ -83,6 +83,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             format!(" Stp:{}", app.edit_step),
             Style::default().fg(Color::Magenta),
         ),
+        Span::styled(
+            format!(" Ch:{}/{} Pg:{}",
+                app.cursor_channel + 1,
+                app.song.channels,
+                app.track_page + 1),
+            Style::default().fg(Color::Magenta),
+        ),
         Span::raw(if app.is_playing() { " PLAY" } else { " STOP" }),
         link_span,
     ])];
@@ -133,7 +140,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", msg), Style::default().fg(Color::White))
     } else {
         Span::styled(
-            " [F1]Help [Space]Play/Stop [Esc]Mode [Tab/S-Tab]Track [F2]MIDI [F3]Link [+/-]Oct [q]Quit ",
+            " [F1]Help [Space]Play/Stop [Esc]Mode [Tab]Page [Ctrl+1-8]Track [F2]MIDI [+/-]Oct [q]Quit ",
             Style::default().fg(Color::DarkGray),
         )
     };
@@ -168,7 +175,11 @@ fn draw_help(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("  Tab/S-Tab    ", Style::default().fg(Color::Yellow)),
-            Span::raw("Next / previous track"),
+            Span::raw("Next / prev track page"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+1..8    ", Style::default().fg(Color::Yellow)),
+            Span::raw("Select track 1-8 directly"),
         ]),
         Line::from(vec![
             Span::styled("  Arrows       ", Style::default().fg(Color::Yellow)),
@@ -208,7 +219,7 @@ fn draw_help(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("  F9-F12       ", Style::default().fg(Color::Yellow)),
-            Span::raw("Mute/unmute ch 1-4"),
+            Span::raw("Mute/unmute ch (current page)"),
         ]),
         Line::from(vec![
             Span::styled("  ( / )        ", Style::default().fg(Color::Yellow)),
@@ -277,7 +288,7 @@ fn draw_help(f: &mut Frame) {
             Span::raw("Clear sub-column at cursor"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+1       ", Style::default().fg(Color::Yellow)),
+            Span::styled("  =            ", Style::default().fg(Color::Yellow)),
             Span::raw("Enter note-off (===)"),
         ]),
         Line::from(vec![

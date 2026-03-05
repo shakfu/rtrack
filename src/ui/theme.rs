@@ -1,5 +1,6 @@
 use ratatui::style::Color;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Theme {
     // Header
@@ -64,6 +65,7 @@ pub struct Theme {
     pub settings_active: Color,
 }
 
+#[allow(dead_code)]
 impl Theme {
     pub fn dark() -> Self {
         Self {
@@ -236,6 +238,7 @@ impl Theme {
 
 pub const THEME_NAMES: &[&str] = &["dark", "light", "monokai"];
 
+#[allow(dead_code)]
 pub fn theme_by_name(name: &str) -> Theme {
     match name {
         "light" => Theme::light(),

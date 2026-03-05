@@ -115,6 +115,7 @@ pub struct Cell {
 }
 
 impl Cell {
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.note.is_none()
             && self.instrument.is_none()
@@ -207,6 +208,7 @@ impl Pattern {
     }
 
     /// Resize the pattern to a new number of rows, truncating or padding with empty rows.
+    #[allow(dead_code)]
     pub fn resize_rows(&mut self, new_rows: usize) {
         if new_rows > self.rows {
             for _ in self.rows..new_rows {

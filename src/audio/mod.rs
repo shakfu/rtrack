@@ -178,6 +178,7 @@ impl AudioEngine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn note_off(&self, channel: u8, note: u8) {
         if self.has_sf2 {
             if let Ok(mut state) = self.state.lock() {
@@ -259,6 +260,7 @@ impl AudioEngine {
     }
 
     /// Toggle effects chain on/off
+    #[allow(dead_code)]
     pub fn toggle_effects(&self) -> bool {
         if let Ok(mut state) = self.state.lock() {
             state.effects.enabled = !state.effects.enabled;
@@ -323,6 +325,7 @@ impl AudioEngine {
     }
 
     /// Stop a sample voice
+    #[allow(dead_code)]
     pub fn sample_note_off(&self, channel: u8, note: u8) {
         if let Ok(mut state) = self.state.lock() {
             state.sample_engine.note_off(channel, note);

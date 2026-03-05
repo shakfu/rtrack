@@ -169,6 +169,7 @@ mod tests {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
+            source_path: None,
         }
     }
 
@@ -240,6 +241,7 @@ mod tests {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
+            source_path: None,
         });
 
         let sample = bank.get(0).unwrap();
@@ -269,6 +271,7 @@ mod tests {
             loop_enabled: true,
             loop_start: 2,
             loop_end: 8,
+            source_path: None,
         });
 
         let sample = bank.get(0).unwrap();

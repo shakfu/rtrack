@@ -5,6 +5,7 @@ pub struct EffectsChain {
     unit: Box<dyn AudioUnit>,
     pub enabled: bool,
     /// Reverb mix (0.0 = dry, 1.0 = fully wet)
+    #[allow(dead_code)]
     pub reverb_mix: f32,
 }
 

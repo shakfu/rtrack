@@ -4,7 +4,29 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (File Format)
+
+- Extended `.rtrk` file format to persist instrument definitions and sample references
+  - Instrument slots: name, MIDI program, and sample assignment saved per non-empty slot
+  - Sample refs: source file path (relative to `.rtrk`), base note, trim, and loop points
+  - On load, samples are reloaded from disk and metadata re-applied; missing files warn but do not block
+  - Fully backwards-compatible: old `.rtrk` files without these fields load fine
+- 2 new tests: SongFile roundtrip with instruments/samples, backwards compatibility with old format
+
+### Added (Track Pages & Sample Directory)
+
+- Track page navigation: Tab/Shift-Tab cycles between pages of 4 tracks (e.g., tracks 1-4 and 5-8)
+- Direct track selection: Ctrl+1 through Ctrl+8 jump to specific tracks and auto-switch page
+- Up to 8 channels supported with page-relative F9-F12 mute/solo bindings
+- Arrow key navigation auto-switches page at channel boundaries
+- Header shows current channel number and track page
+- Sample directory loading: `--sample-dir <path>` loads all `<slot>-<name>.wav` files from a directory
+- Optional `samples.json` metadata file for BPM, base notes, and loop points per sample
+- Note-off keybinding changed from Ctrl+1 to `=` (on Note sub-column in Insert mode)
+- 5 new tests: track page toggling, Ctrl+track selection, sample directory loading, metadata parsing
+
 ### Added (Samples)
+
 - Sample loading from WAV and AIFF files via [hound](https://crates.io/crates/hound) + [dasp](https://crates.io/crates/dasp)
   - WAV: 8/16/24/32-bit integer and float formats
   - AIFF: uncompressed 8/16/24/32-bit with 80-bit extended sample rate parsing
@@ -29,6 +51,7 @@ All notable changes to rtrack will be documented in this file.
 - 22 new tests covering sample loading, playback, voice management, WAV export, waveform rendering, and AIFF parsing
 
 ### Added (Effects)
+
 - Sub-tick playback engine: each row is divided into `speed` ticks (default 6), enabling per-tick effect processing
 - Per-channel effect state tracking (pitch offset, volume, vibrato phase, portamento target)
 - Arpeggio effect (0xy): cycles pitch between note, note+x, note+y semitones each tick
@@ -44,6 +67,7 @@ All notable changes to rtrack will be documented in this file.
 - 13 new tests covering arpeggio, portamento up/down, tone portamento, vibrato, volume slide (up/down/clamp), set speed, set tempo, sub-tick timing, note delay (on/off)
 
 ### Added (Audio Engine)
+
 - Built-in synthesizer via [fundsp](https://crates.io/crates/fundsp) -- rtrack now makes sound out of the box with no external synth or SF2 file required
   - 8 built-in patches: Saw, Square, Sine, Triangle, Pulse, FM Bell, Organ, Noise
   - Per-channel program change (effect `Exx`) selects patch (0-7, wraps)
@@ -61,6 +85,7 @@ All notable changes to rtrack will be documented in this file.
 - 11 new audio tests covering synth patches, voice lifecycle, polyphony, effects chain, and error handling
 
 ### Added (Tier 4 - Polish)
+
 - Song settings dialog (F6): edit title, BPM, speed, channel count, and default rows with Tab navigation
 - Instrument list view (F7): 256 instrument slots with editable names, scrollable list
 - Order list sidebar: always-visible sidebar showing order positions with current position highlighted
@@ -72,6 +97,7 @@ All notable changes to rtrack will be documented in this file.
 - 27 new tests covering song settings, instrument list, theme cycling, MIDI clock, mouse, MIDI export/import
 
 ### Added (Tier 3 - Quality of Life)
+
 - Edit step configuration: `(` / `)` keys to decrease/increase (0-16), displayed in header
 - Row insert/delete within pattern: `Insert` to insert empty row, `Backspace` to delete row (Normal mode)
 - MIDI input for note entry: creates virtual port `RTRACK_MIDI_IN`, auto-enters notes in Insert mode with velocity
@@ -81,6 +107,7 @@ All notable changes to rtrack will be documented in this file.
 - 18 new tests covering edit step, row insert/delete, per-pattern length, MIDI CC/program change effects, MIDI input
 
 ### Added
+
 - Save/load songs as `.rtrk` JSON files (Ctrl+S to save, CLI arg to load)
 - Undo/redo with snapshot-based history, capped at 100 levels (Ctrl+Z / Ctrl+Y)
 - Copy/cut/paste entire rows across all channels (Ctrl+C / Ctrl+X / Ctrl+V)
@@ -95,6 +122,7 @@ All notable changes to rtrack will be documented in this file.
 - 17 new tests covering save/load roundtrip, undo/redo, copy/cut/paste, order navigation, pattern create/clone, order insert/remove, channel mute, MIDI channel mapping, keybinding dispatch
 
 ### Changed
+
 - Order position is now tracked per-session (`edit_order` field) instead of hardcoded to 0
 - Note preview and playback now use per-channel MIDI mapping instead of positional channel index
 - Help popup updated with new keybindings
@@ -103,12 +131,13 @@ All notable changes to rtrack will be documented in this file.
 ## [0.1.0] - 2026-03-05
 
 ### Added
+
 - Pattern editor with 4 channels x 64 rows
 - Cursor navigation (arrows, PgUp/PgDn, Home/End)
 - Normal and Insert input modes (Esc to toggle)
 - Piano keyboard note entry (two-row layout spanning two octaves)
 - Hex digit entry for instrument, volume, and effect columns
-- Note-off entry (Ctrl+1) and cell clearing (Delete/Backspace)
+- Note-off entry and cell clearing (Delete/Backspace)
 - Virtual MIDI port (`RTRACK_MIDI`) created on startup (macOS/Linux), visible to DAWs
 - Fallback to first available MIDI port on platforms without virtual port support
 - MIDI port selection popup (F2) to switch between virtual and hardware ports

@@ -42,10 +42,13 @@ const NOTE_WIDTH: u16 = 3;    // "C-4"
 const INST_WIDTH: u16 = 2;    // "01"
 const VOL_WIDTH: u16 = 2;     // "80"
 const FX_WIDTH: u16 = 3;      // "000"
+#[allow(dead_code)]
 const GAPS: u16 = 4;          // spaces between sub-columns
+#[allow(dead_code)]
 const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
 const SEPARATOR_WIDTH: u16 = 3; // " | "
 
+#[allow(dead_code)]
 pub fn channel_total_width(num_channels: usize) -> u16 {
     ROW_NUM_WIDTH + SEPARATOR_WIDTH
         + (CHANNEL_WIDTH * num_channels as u16)
@@ -105,8 +108,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
         let mut x = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
 
-        for ch in 0..pattern.channels {
-            if ch > 0 {
+        let visible = app.visible_channels();
+        let first_visible = visible.start;
+        for ch in visible.clone() {
+            if ch > first_visible {
                 write_str(buf, x, y, " | ", Style::default().fg(Color::DarkGray));
                 x += SEPARATOR_WIDTH;
             }

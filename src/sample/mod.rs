@@ -22,6 +22,8 @@ pub struct Sample {
     pub loop_enabled: bool,
     pub loop_start: usize,
     pub loop_end: usize,
+    /// Original file path this sample was loaded from (for saving/reloading)
+    pub source_path: Option<String>,
 }
 
 impl Sample {
@@ -103,6 +105,91 @@ impl SampleBank {
     pub fn get(&self, slot: usize) -> Option<&Sample> {
         self.samples.get(slot).and_then(|s| s.as_ref())
     }
+
+    /// Load samples from a directory. Files should be named `<slot>-<name>.wav` or `.aiff`.
+    /// Optionally reads `samples.json` for metadata (base_note, bpm, mappings).
+    pub fn load_directory(&mut self, dir: &Path) -> Result<SampleDirMeta> {
+        let mut meta = SampleDirMeta::default();
+
+        // Read optional metadata file
+        let meta_path = dir.join("samples.json");
+        if meta_path.exists() {
+            let data = std::fs::read_to_string(&meta_path)
+                .with_context(|| format!("Failed to read {}", meta_path.display()))?;
+            meta = serde_json::from_str(&data)
+                .with_context(|| format!("Failed to parse {}", meta_path.display()))?;
+        }
+
+        // Scan directory for sample files
+        let entries = std::fs::read_dir(dir)
+            .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            let ext = path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            if ext != "wav" && ext != "aif" && ext != "aiff" {
+                continue;
+            }
+
+            let stem = path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+
+            // Parse <slot>-<name> format
+            if let Some((slot_str, _name)) = stem.split_once('-') {
+                if let Ok(slot) = slot_str.parse::<usize>() {
+                    if slot < self.samples.len() {
+                        self.load(slot, &path)?;
+
+                        // Apply per-sample metadata if available
+                        if let Some(sample_meta) = meta.samples.get(slot_str) {
+                            if let Some(sample) = self.samples[slot].as_mut() {
+                                if let Some(base) = sample_meta.base_note {
+                                    sample.base_note = base;
+                                }
+                                if let Some(ls) = sample_meta.loop_start {
+                                    sample.loop_start = ls;
+                                }
+                                if let Some(le) = sample_meta.loop_end {
+                                    sample.loop_end = le;
+                                }
+                                if sample_meta.loop_enabled.unwrap_or(false) {
+                                    sample.loop_enabled = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(meta)
+    }
+}
+
+/// Metadata from a samples.json file in a sample directory
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct SampleDirMeta {
+    /// BPM hint for the sample set
+    #[serde(default)]
+    pub bpm: Option<u16>,
+    /// Per-sample metadata keyed by slot number (as string)
+    #[serde(default)]
+    pub samples: std::collections::HashMap<String, SampleMeta>,
+}
+
+/// Per-sample metadata within samples.json
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct SampleMeta {
+    pub base_note: Option<u8>,
+    pub loop_enabled: Option<bool>,
+    pub loop_start: Option<usize>,
+    pub loop_end: Option<usize>,
 }
 
 /// Load a WAV file into a Sample using hound + dasp for type conversion
@@ -149,6 +236,7 @@ fn load_wav(path: &Path) -> Result<Sample> {
 
     let data = to_stereo_frames(&mono_samples, channels);
 
+    let source = path.to_string_lossy().to_string();
     Ok(Sample {
         name,
         data,
@@ -159,6 +247,7 @@ fn load_wav(path: &Path) -> Result<Sample> {
         loop_enabled: false,
         loop_start: 0,
         loop_end: 0,
+        source_path: Some(source),
     })
 }
 
@@ -279,6 +368,7 @@ fn load_aiff(path: &Path) -> Result<Sample> {
     }
 
     let data = to_stereo_frames(&raw_samples, channels as usize);
+    let source = path.to_string_lossy().to_string();
 
     Ok(Sample {
         name,
@@ -290,6 +380,7 @@ fn load_aiff(path: &Path) -> Result<Sample> {
         loop_enabled: false,
         loop_start: 0,
         loop_end: 0,
+        source_path: Some(source),
     })
 }
 
@@ -381,6 +472,7 @@ mod tests {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
+            source_path: None,
         };
         assert_eq!(sample.end(), 100);
         assert_eq!(sample.len(), 100);
@@ -398,6 +490,7 @@ mod tests {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
+            source_path: None,
         };
         assert_eq!(sample.end(), 50);
     }
@@ -414,6 +507,7 @@ mod tests {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
+            source_path: None,
         };
         assert_eq!(sample.frame_at(0), [1.0, -1.0]);
         assert_eq!(sample.frame_at(1), [0.0, 0.0]); // out of bounds = silence
@@ -429,5 +523,83 @@ mod tests {
     fn test_load_unsupported_format() {
         let mut bank = SampleBank::new();
         assert!(bank.load(0, Path::new("file.mp3")).is_err());
+    }
+
+    #[test]
+    fn test_sample_dir_meta_deserialize() {
+        let json = r#"{
+            "bpm": 140,
+            "samples": {
+                "0": { "base_note": 48, "loop_enabled": true, "loop_start": 100, "loop_end": 500 },
+                "1": { "base_note": 60 }
+            }
+        }"#;
+        let meta: SampleDirMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.bpm, Some(140));
+        assert_eq!(meta.samples.len(), 2);
+        assert_eq!(meta.samples["0"].base_note, Some(48));
+        assert_eq!(meta.samples["0"].loop_enabled, Some(true));
+        assert_eq!(meta.samples["0"].loop_start, Some(100));
+        assert_eq!(meta.samples["1"].base_note, Some(60));
+        assert_eq!(meta.samples["1"].loop_end, None);
+    }
+
+    #[test]
+    fn test_sample_dir_meta_default() {
+        let meta = SampleDirMeta::default();
+        assert_eq!(meta.bpm, None);
+        assert!(meta.samples.is_empty());
+    }
+
+    #[test]
+    fn test_load_directory_nonexistent() {
+        let mut bank = SampleBank::new();
+        assert!(bank.load_directory(Path::new("/nonexistent/dir")).is_err());
+    }
+
+    #[test]
+    fn test_load_directory_empty() {
+        let dir = std::env::temp_dir().join("rtrack_test_empty_dir");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut bank = SampleBank::new();
+        let result = bank.load_directory(&dir);
+        assert!(result.is_ok());
+        // No samples should be loaded
+        assert!(bank.get(0).is_none());
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_load_directory_with_wav() {
+        let dir = std::env::temp_dir().join("rtrack_test_sample_dir");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Create a minimal WAV file
+        let path = dir.join("0-kick.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..100 {
+            writer.write_sample((i * 100) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        // Create metadata
+        let meta_json = r#"{ "bpm": 120, "samples": { "0": { "base_note": 36 } } }"#;
+        std::fs::write(dir.join("samples.json"), meta_json).unwrap();
+
+        let mut bank = SampleBank::new();
+        let meta = bank.load_directory(&dir).unwrap();
+        assert_eq!(meta.bpm, Some(120));
+        assert!(bank.get(0).is_some());
+        assert_eq!(bank.get(0).unwrap().base_note, 36);
+        assert_eq!(bank.get(0).unwrap().name, "0-kick");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
