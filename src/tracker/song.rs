@@ -68,10 +68,13 @@ impl Song {
 
     /// Seconds per row based on BPM and speed
     pub fn seconds_per_row(&self) -> f64 {
-        // Classic tracker timing: BPM defines ticks per minute / 24
-        // Each row takes `speed` ticks
+        self.seconds_per_tick() * self.speed as f64
+    }
+
+    /// Seconds per single tick (sub-row). Classic tracker: tick rate = BPM * 24 / 60.
+    pub fn seconds_per_tick(&self) -> f64 {
         let ticks_per_second = (self.bpm as f64 * 24.0) / 60.0;
-        self.speed as f64 / ticks_per_second
+        1.0 / ticks_per_second
     }
 }
 

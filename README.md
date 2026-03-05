@@ -128,10 +128,17 @@ Empty sub-columns display as dashes: `--- -- -- ---`
 
 | Cmd | Name            | Description                                      |
 |-----|-----------------|--------------------------------------------------|
+| 0xy | Arpeggio        | Cycle note, note+x, note+y semitones each tick  |
+| 1xx | Portamento up   | Slide pitch up by xx per tick                    |
+| 2xx | Portamento down | Slide pitch down by xx per tick                  |
+| 3xx | Tone portamento | Slide toward target note at speed xx             |
+| 4xy | Vibrato         | Pitch vibrato (speed x, depth y)                 |
+| 5xy | Volume slide    | Slide volume up by x, down by y per tick         |
 | Bxx | Position jump   | Jump to order position xx                        |
 | Cxx | MIDI CC         | Send CC (controller from instrument col, value xx)|
 | Dxx | Pattern break   | Break to row xx of next pattern                  |
 | Exx | Program change  | Send MIDI program change to program xx           |
+| Fxx | Set speed/tempo | xx < 20: set speed (ticks/row), xx >= 20: set BPM|
 
 ## Architecture
 

@@ -120,6 +120,15 @@ impl AudioEngine {
             synth.process_midi_message(channel as i32, 0xC0, program as i32, 0);
         }
     }
+
+    pub fn pitch_bend(&self, channel: u8, value: u16) {
+        if let Ok(mut synth) = self.synth.lock() {
+            let lsb = (value & 0x7F) as i32;
+            let msb = ((value >> 7) & 0x7F) as i32;
+            // MIDI pitch bend command = 0xE0
+            synth.process_midi_message(channel as i32, 0xE0, lsb, msb);
+        }
+    }
 }
 
 #[cfg(test)]

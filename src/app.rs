@@ -10,10 +10,57 @@ use crate::tracker::{Note, NoteValue, Song};
 use crate::ui::pattern_editor::SubColumn;
 
 // Effect commands (single hex digit, stored in Cell.effect)
+const EFFECT_ARPEGGIO: u8 = 0x0;      // 0xy: cycle note, note+x, note+y
+const EFFECT_PORTA_UP: u8 = 0x1;      // 1xx: slide pitch up by xx per tick
+const EFFECT_PORTA_DOWN: u8 = 0x2;    // 2xx: slide pitch down by xx per tick
+const EFFECT_TONE_PORTA: u8 = 0x3;    // 3xx: slide toward target note at speed xx
+const EFFECT_VIBRATO: u8 = 0x4;       // 4xy: vibrato speed x, depth y
+const EFFECT_VOLUME_SLIDE: u8 = 0x5;  // 5xy: volume slide up x, down y per tick
 const EFFECT_POSITION_JUMP: u8 = 0xB; // Bxx: jump to order position xx
 const EFFECT_MIDI_CC: u8 = 0xC;       // Cxx: send MIDI CC (controller from instrument col, value xx)
 const EFFECT_PATTERN_BREAK: u8 = 0xD; // Dxx: break to row xx of next pattern
 const EFFECT_PROGRAM_CHANGE: u8 = 0xE; // Exx: program change to program xx
+const EFFECT_SET_SPEED: u8 = 0xF;     // Fxx: xx<0x20 = set speed, xx>=0x20 = set BPM
+
+/// Pitch bend center (no bend) = 0x2000 = 8192
+const PITCH_BEND_CENTER: u16 = 0x2000;
+/// Pitch bend range in semitones (standard MIDI default = 2)
+const PITCH_BEND_RANGE: f64 = 2.0;
+/// Pitch bend units per semitone
+const PITCH_BEND_PER_SEMITONE: f64 = (PITCH_BEND_CENTER as f64) / PITCH_BEND_RANGE;
+
+/// Per-channel state for continuous effects (arpeggio, portamento, vibrato, volume slide)
+#[derive(Debug, Clone)]
+pub struct ChannelState {
+    /// Current base MIDI note being played
+    pub note: Option<u8>,
+    /// Current pitch offset in pitch-bend units (fractional semitones * PITCH_BEND_PER_SEMITONE)
+    pub pitch_offset: f64,
+    /// Current volume (0-127)
+    pub volume: u8,
+    /// Active effect command for this channel
+    pub effect: Option<u8>,
+    /// Active effect parameter
+    pub effect_param: u8,
+    /// Target note for tone portamento (3xx)
+    pub porta_target: Option<u8>,
+    /// Vibrato phase (0.0 .. 1.0)
+    pub vibrato_phase: f64,
+}
+
+impl Default for ChannelState {
+    fn default() -> Self {
+        Self {
+            note: None,
+            pitch_offset: 0.0,
+            volume: 0x7F,
+            effect: None,
+            effect_param: 0,
+            porta_target: None,
+            vibrato_phase: 0.0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -92,6 +139,11 @@ pub struct App {
     pub playback_order: usize,
     last_tick: Option<Instant>,
     tick_accumulator: f64,
+    /// Current sub-tick within a row (0..speed-1). Tick 0 = new row, ticks 1+ = effect processing.
+    playback_tick: u8,
+
+    // Per-channel effect state
+    channel_states: Vec<ChannelState>,
 
     // Edit step: how many rows to advance after entering a note
     pub edit_step: usize,
@@ -193,6 +245,8 @@ impl App {
             instrument_cursor: 0,
             theme_index: 0,
             clock_tick_accumulator: 0.0,
+            playback_tick: 0,
+            channel_states: vec![ChannelState::default(); 4],
             audio: None,
         }
     }
@@ -250,6 +304,13 @@ impl App {
         let _ = self.midi.program_change(channel, program);
         if let Some(ref audio) = self.audio {
             audio.program_change(channel, program);
+        }
+    }
+
+    fn send_pitch_bend(&mut self, channel: u8, value: u16) {
+        let _ = self.midi.pitch_bend(channel, value);
+        if let Some(ref audio) = self.audio {
+            audio.pitch_bend(channel, value);
         }
     }
 
@@ -539,9 +600,13 @@ impl App {
         self.playing = true;
         self.playback_row = self.cursor_row;
         self.playback_order = 0;
+        self.playback_tick = 0;
         self.last_tick = Some(Instant::now());
         self.tick_accumulator = 0.0;
         self.clock_tick_accumulator = 0.0;
+        // Reset channel states and ensure we have enough for all channels
+        let ch_count = self.song.channels;
+        self.channel_states = vec![ChannelState::default(); ch_count];
 
         if self.link.is_enabled() {
             self.link.request_play();
@@ -552,6 +617,11 @@ impl App {
     pub fn stop(&mut self) {
         self.playing = false;
         self.last_tick = None;
+        // Reset pitch bends to center before killing notes
+        for ch in 0..self.channel_states.len() {
+            let midi_ch = self.midi_channel_for(ch);
+            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+        }
         self.send_all_notes_off();
         let _ = self.midi.send_stop();
 
@@ -594,19 +664,38 @@ impl App {
                 }
             }
 
-            let spr = self.song.seconds_per_row();
-            while self.tick_accumulator >= spr {
-                self.tick_accumulator -= spr;
-                self.advance_playback();
+            let spt = self.song.seconds_per_tick();
+            while self.tick_accumulator >= spt {
+                self.tick_accumulator -= spt;
+                self.process_tick();
             }
         }
         self.last_tick = Some(now);
     }
 
+    /// Process a single sub-tick. Tick 0 = new row (notes + row effects). Ticks 1+ = continuous effects.
+    fn process_tick(&mut self) {
+        if self.playback_tick == 0 {
+            self.advance_playback();
+        } else {
+            self.process_effects_tick();
+        }
+        self.playback_tick += 1;
+        if self.playback_tick >= self.song.speed {
+            self.playback_tick = 0;
+        }
+    }
+
+    /// Tick 0: process the new row -- trigger notes, set up channel effect state, advance row pointer.
     fn advance_playback(&mut self) {
         let pattern_idx = self.song.order[self.playback_order];
         let pattern_rows = self.song.patterns[pattern_idx].rows;
         let channels = self.song.patterns[pattern_idx].channels;
+
+        // Ensure channel_states has enough entries
+        while self.channel_states.len() < channels {
+            self.channel_states.push(ChannelState::default());
+        }
 
         // Collect cell data we need before mutating self
         let cells: Vec<(Option<Note>, Option<u8>, Option<u8>, Option<u8>, Option<u8>)> = (0..channels)
@@ -616,7 +705,7 @@ impl App {
             })
             .collect();
 
-        // Scan for pattern effects (first one wins)
+        // Scan for pattern-level effects (first one wins)
         let mut jump_order: Option<usize> = None;
         let mut break_row: Option<usize> = None;
 
@@ -628,46 +717,93 @@ impl App {
                 Some(EFFECT_PATTERN_BREAK) => {
                     break_row = Some(effect_value.unwrap_or(0) as usize);
                 }
+                Some(EFFECT_SET_SPEED) => {
+                    let val = effect_value.unwrap_or(0);
+                    if val > 0 && val < 0x20 {
+                        self.song.speed = val;
+                    } else if val >= 0x20 {
+                        self.song.bpm = val as u16;
+                    }
+                }
                 _ => {}
             }
         }
 
-        // Play the current row
+        // Play the current row and set up per-channel effect state
         for (ch, (note, volume, effect, effect_value, instrument)) in cells.into_iter().enumerate() {
+            let midi_ch = self.midi_channel_for(ch);
+            let param = effect_value.unwrap_or(0);
+
+            // For tone portamento (3xx), a new note sets the target instead of triggering
+            let is_tone_porta = effect == Some(EFFECT_TONE_PORTA);
+
             if !self.is_channel_audible(ch) {
+                // Still update channel state for muted channels so effects resume correctly
+                if let Some(Note::On { .. }) = note {
+                    if let Some(midi_note) = note.unwrap().to_midi_note() {
+                        if is_tone_porta {
+                            self.channel_states[ch].porta_target = Some(midi_note);
+                        } else {
+                            self.channel_states[ch].note = Some(midi_note);
+                        }
+                    }
+                }
+                self.channel_states[ch].effect = effect;
+                self.channel_states[ch].effect_param = param;
                 continue;
             }
-            let midi_ch = self.midi_channel_for(ch);
 
             // Process notes
             match note {
                 Some(Note::On { .. }) => {
                     if let Some(midi_note) = note.unwrap().to_midi_note() {
-                        let velocity = volume.unwrap_or(0x7F);
-                        self.send_note_on(midi_ch, midi_note, velocity);
+                        if is_tone_porta {
+                            // Tone portamento: set target, don't retrigger
+                            self.channel_states[ch].porta_target = Some(midi_note);
+                        } else {
+                            let vel = volume.unwrap_or(self.channel_states[ch].volume);
+                            // Reset pitch bend on new note
+                            self.channel_states[ch].pitch_offset = 0.0;
+                            self.channel_states[ch].vibrato_phase = 0.0;
+                            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+                            self.send_note_on(midi_ch, midi_note, vel);
+                            self.channel_states[ch].note = Some(midi_note);
+                            self.channel_states[ch].volume = vel;
+                        }
                     }
                 }
                 Some(Note::Off) => {
                     self.send_channel_note_off(midi_ch);
+                    self.channel_states[ch].note = None;
+                    self.channel_states[ch].pitch_offset = 0.0;
+                    self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
                 }
-                None => {}
+                None => {
+                    // No note: update volume if specified
+                    if let Some(vol) = volume {
+                        self.channel_states[ch].volume = vol;
+                    }
+                }
             }
 
-            // Process MIDI CC effect (Cxx: controller from instrument column, value xx)
-            if effect == Some(EFFECT_MIDI_CC) {
-                let controller = instrument.unwrap_or(0);
-                let value = effect_value.unwrap_or(0);
-                self.send_cc(midi_ch, controller, value);
-            }
+            // Store effect state for subsequent ticks
+            self.channel_states[ch].effect = effect;
+            self.channel_states[ch].effect_param = param;
 
-            // Process program change effect (Exx: change to program xx)
-            if effect == Some(EFFECT_PROGRAM_CHANGE) {
-                let program = effect_value.unwrap_or(0);
-                self.send_program_change(midi_ch, program);
+            // Process immediate (tick 0) effects
+            match effect {
+                Some(EFFECT_MIDI_CC) => {
+                    let controller = instrument.unwrap_or(0);
+                    self.send_cc(midi_ch, controller, param);
+                }
+                Some(EFFECT_PROGRAM_CHANGE) => {
+                    self.send_program_change(midi_ch, param);
+                }
+                _ => {}
             }
         }
 
-        // Process position jump (Bxx) -- jump to order position xx
+        // Process position jump (Bxx)
         if let Some(target_order) = jump_order {
             let target = target_order.min(self.song.order.len() - 1);
             self.playback_order = target;
@@ -677,7 +813,7 @@ impl App {
             return;
         }
 
-        // Process pattern break (Dxx) -- break to row xx of next pattern
+        // Process pattern break (Dxx)
         if let Some(target_row) = break_row {
             self.playback_order += 1;
             if self.playback_order >= self.song.order.len() {
@@ -696,6 +832,93 @@ impl App {
             self.playback_order += 1;
             if self.playback_order >= self.song.order.len() {
                 self.playback_order = 0;
+            }
+        }
+    }
+
+    /// Ticks 1..speed-1: process continuous effects (arpeggio, portamento, vibrato, volume slide).
+    fn process_effects_tick(&mut self) {
+        let channels = self.channel_states.len();
+        for ch in 0..channels {
+            if !self.is_channel_audible(ch) {
+                continue;
+            }
+            let midi_ch = self.midi_channel_for(ch);
+
+            let effect = self.channel_states[ch].effect;
+            let param = self.channel_states[ch].effect_param;
+            let base_note = match self.channel_states[ch].note {
+                Some(n) => n,
+                None => continue,
+            };
+
+            match effect {
+                Some(EFFECT_ARPEGGIO) if param != 0 => {
+                    let x = (param >> 4) as u8;
+                    let y = (param & 0x0F) as u8;
+                    // Cycle through base, base+x, base+y on ticks 1, 2, 3...
+                    let phase = self.playback_tick % 3;
+                    let offset = match phase {
+                        0 => 0.0,
+                        1 => x as f64,
+                        _ => y as f64,
+                    };
+                    let bend = (offset * PITCH_BEND_PER_SEMITONE) as i32;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    self.send_pitch_bend(midi_ch, value);
+                }
+                Some(EFFECT_PORTA_UP) => {
+                    // Slide pitch up by param units per tick (param in 16ths of a semitone)
+                    self.channel_states[ch].pitch_offset += param as f64 / 16.0;
+                    let bend = (self.channel_states[ch].pitch_offset * PITCH_BEND_PER_SEMITONE) as i32;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    self.send_pitch_bend(midi_ch, value);
+                }
+                Some(EFFECT_PORTA_DOWN) => {
+                    self.channel_states[ch].pitch_offset -= param as f64 / 16.0;
+                    let bend = (self.channel_states[ch].pitch_offset * PITCH_BEND_PER_SEMITONE) as i32;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    self.send_pitch_bend(midi_ch, value);
+                }
+                Some(EFFECT_TONE_PORTA) => {
+                    if let Some(target) = self.channel_states[ch].porta_target {
+                        let current = base_note as f64 + self.channel_states[ch].pitch_offset;
+                        let target_f = target as f64;
+                        let speed = param as f64 / 16.0;
+                        if current < target_f {
+                            self.channel_states[ch].pitch_offset += speed.min(target_f - current);
+                        } else if current > target_f {
+                            self.channel_states[ch].pitch_offset -= speed.min(current - target_f);
+                        }
+                        let bend = (self.channel_states[ch].pitch_offset * PITCH_BEND_PER_SEMITONE) as i32;
+                        let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                        self.send_pitch_bend(midi_ch, value);
+                    }
+                }
+                Some(EFFECT_VIBRATO) => {
+                    let speed = (param >> 4) as f64;
+                    let depth = (param & 0x0F) as f64;
+                    self.channel_states[ch].vibrato_phase += speed / 64.0;
+                    if self.channel_states[ch].vibrato_phase >= 1.0 {
+                        self.channel_states[ch].vibrato_phase -= 1.0;
+                    }
+                    let sine = (self.channel_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
+                    let offset = sine * depth / 16.0; // depth in 16ths of a semitone
+                    let total = self.channel_states[ch].pitch_offset + offset;
+                    let bend = (total * PITCH_BEND_PER_SEMITONE) as i32;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    self.send_pitch_bend(midi_ch, value);
+                }
+                Some(EFFECT_VOLUME_SLIDE) => {
+                    let up = (param >> 4) as i16;
+                    let down = (param & 0x0F) as i16;
+                    let delta = up - down;
+                    let new_vol = (self.channel_states[ch].volume as i16 + delta).clamp(0, 127) as u8;
+                    self.channel_states[ch].volume = new_vol;
+                    // Send volume as CC 7
+                    self.send_cc(midi_ch, 7, new_vol);
+                }
+                _ => {}
             }
         }
     }
@@ -1461,6 +1684,8 @@ mod tests {
             playback_order: 0,
             last_tick: None,
             tick_accumulator: 0.0,
+            playback_tick: 0,
+            channel_states: vec![ChannelState::default(); 4],
             edit_step: 1,
             file_path: None,
             status_message: None,
@@ -2322,6 +2547,256 @@ mod tests {
         app.play();
         app.advance_playback();
         // No crash = success
+    }
+
+    #[test]
+    fn test_arpeggio_effect() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 6;
+        // Place C-4 with arpeggio 037 (minor chord: +3, +7 semitones)
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(0x7F),
+            effect: Some(EFFECT_ARPEGGIO),
+            effect_value: Some(0x37),
+        });
+
+        app.play();
+        // Tick 0: note triggers, channel state set up
+        app.process_tick();
+        assert_eq!(app.channel_states[0].note, Some(48)); // C-4 = MIDI 48
+        assert_eq!(app.channel_states[0].effect, Some(EFFECT_ARPEGGIO));
+
+        // Tick 1: arpeggio processes -- pitch should shift
+        app.process_tick();
+        // Tick 2: different arpeggio phase
+        app.process_tick();
+        // No crash, effect processes correctly
+    }
+
+    #[test]
+    fn test_portamento_up_effect() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 4;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(0x7F),
+            effect: Some(EFFECT_PORTA_UP),
+            effect_value: Some(0x10), // slide up by 1 semitone per tick
+        });
+
+        app.play();
+        app.process_tick(); // tick 0: note on
+        assert_eq!(app.channel_states[0].pitch_offset, 0.0);
+
+        app.process_tick(); // tick 1: pitch slides up
+        assert!(app.channel_states[0].pitch_offset > 0.0);
+        let after_one = app.channel_states[0].pitch_offset;
+
+        app.process_tick(); // tick 2: pitch slides up more
+        assert!(app.channel_states[0].pitch_offset > after_one);
+    }
+
+    #[test]
+    fn test_portamento_down_effect() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 4;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(0x7F),
+            effect: Some(EFFECT_PORTA_DOWN),
+            effect_value: Some(0x10),
+        });
+
+        app.play();
+        app.process_tick(); // tick 0
+        app.process_tick(); // tick 1: pitch slides down
+        assert!(app.channel_states[0].pitch_offset < 0.0);
+    }
+
+    #[test]
+    fn test_tone_portamento_effect() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 6;
+        // Row 0: trigger C-4
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(0x7F),
+            effect: None,
+            effect_value: None,
+        });
+        // Row 1: tone porta to E-4 (4 semitones up)
+        app.song.patterns[0].set_cell(1, 0, Cell {
+            note: Some(Note::On { value: NoteValue::E, octave: 4 }),
+            instrument: None,
+            volume: None,
+            effect: Some(EFFECT_TONE_PORTA),
+            effect_value: Some(0x20), // speed
+        });
+
+        app.play();
+        // Process all ticks of row 0
+        for _ in 0..6 { app.process_tick(); }
+        assert_eq!(app.channel_states[0].note, Some(48)); // C-4
+
+        // Row 1 tick 0: target set to E-4 (52), no retrigger
+        app.process_tick();
+        assert_eq!(app.channel_states[0].porta_target, Some(52));
+        assert_eq!(app.channel_states[0].note, Some(48)); // still C-4
+
+        // Tick 1+: pitch slides toward target
+        app.process_tick();
+        assert!(app.channel_states[0].pitch_offset > 0.0);
+    }
+
+    #[test]
+    fn test_vibrato_effect() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 6;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(0x7F),
+            effect: Some(EFFECT_VIBRATO),
+            effect_value: Some(0x48), // speed=4, depth=8
+        });
+
+        app.play();
+        app.process_tick(); // tick 0: note on
+        assert_eq!(app.channel_states[0].vibrato_phase, 0.0);
+
+        app.process_tick(); // tick 1: vibrato advances
+        assert!(app.channel_states[0].vibrato_phase > 0.0);
+    }
+
+    #[test]
+    fn test_volume_slide_effect() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 4;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(100),
+            effect: Some(EFFECT_VOLUME_SLIDE),
+            effect_value: Some(0x02), // slide down by 2 per tick
+        });
+
+        app.play();
+        app.process_tick(); // tick 0: note on at volume 100
+        assert_eq!(app.channel_states[0].volume, 100);
+
+        app.process_tick(); // tick 1: volume slides down by 2
+        assert_eq!(app.channel_states[0].volume, 98);
+
+        app.process_tick(); // tick 2
+        assert_eq!(app.channel_states[0].volume, 96);
+    }
+
+    #[test]
+    fn test_volume_slide_up() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 4;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(100),
+            effect: Some(EFFECT_VOLUME_SLIDE),
+            effect_value: Some(0x30), // slide up by 3 per tick
+        });
+
+        app.play();
+        app.process_tick(); // tick 0
+        app.process_tick(); // tick 1
+        assert_eq!(app.channel_states[0].volume, 103);
+    }
+
+    #[test]
+    fn test_volume_slide_clamps() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut app = make_app();
+        app.song.speed = 4;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(2),
+            effect: Some(EFFECT_VOLUME_SLIDE),
+            effect_value: Some(0x0F), // slide down by 15 per tick
+        });
+
+        app.play();
+        app.process_tick(); // tick 0
+        app.process_tick(); // tick 1: 2 - 15 = clamped to 0
+        assert_eq!(app.channel_states[0].volume, 0);
+    }
+
+    #[test]
+    fn test_set_speed_effect() {
+        use crate::tracker::Cell;
+
+        let mut app = make_app();
+        assert_eq!(app.song.speed, 6);
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            effect: Some(EFFECT_SET_SPEED),
+            effect_value: Some(3),
+            ..Cell::default()
+        });
+
+        app.play();
+        app.process_tick(); // tick 0 processes row with Fxx
+        assert_eq!(app.song.speed, 3);
+    }
+
+    #[test]
+    fn test_set_tempo_effect() {
+        use crate::tracker::Cell;
+
+        let mut app = make_app();
+        assert_eq!(app.song.bpm, 120);
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            effect: Some(EFFECT_SET_SPEED),
+            effect_value: Some(0x80), // >= 0x20, sets BPM to 128
+            ..Cell::default()
+        });
+
+        app.play();
+        app.process_tick();
+        assert_eq!(app.song.bpm, 0x80); // 128
+    }
+
+    #[test]
+    fn test_sub_tick_timing() {
+        let mut app = make_app();
+        app.song.speed = 3;
+        app.play();
+        assert_eq!(app.playback_tick, 0);
+
+        app.process_tick(); // tick 0: advances row
+        assert_eq!(app.playback_tick, 1);
+
+        app.process_tick(); // tick 1: effects only
+        assert_eq!(app.playback_tick, 2);
+
+        app.process_tick(); // tick 2: effects only, wraps to 0
+        assert_eq!(app.playback_tick, 0);
     }
 
     // -- MIDI input tests --

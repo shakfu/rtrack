@@ -55,11 +55,12 @@ Minimum feature set to compose something beyond a single loop.
 - [x] Visual feedback on playback (scrolling highlight)
 - [x] Ableton Link integration (F3)
 
-## Effects (implement alongside Tier 2-3)
+## Effects
 
-- [ ] Arpeggio
-- [ ] Portamento (up/down/tone)
-- [ ] Vibrato
-- [ ] Volume slide
-- [ ] Tempo change effect
+- [x] Arpeggio (0xy)
+- [x] Portamento up/down (1xx/2xx)
+- [x] Tone portamento (3xx)
+- [x] Vibrato (4xy)
+- [x] Volume slide (5xy)
+- [x] Set speed/tempo (Fxx)
 - [ ] Delay

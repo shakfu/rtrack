@@ -4,6 +4,20 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Effects)
+- Sub-tick playback engine: each row is divided into `speed` ticks (default 6), enabling per-tick effect processing
+- Per-channel effect state tracking (pitch offset, volume, vibrato phase, portamento target)
+- Arpeggio effect (0xy): cycles pitch between note, note+x, note+y semitones each tick
+- Portamento up (1xx): slides pitch up by xx per tick via MIDI pitch bend
+- Portamento down (2xx): slides pitch down by xx per tick via MIDI pitch bend
+- Tone portamento (3xx): glides from current note toward a target note at speed xx
+- Vibrato (4xy): sine-wave pitch modulation with speed x and depth y
+- Volume slide (5xy): increases volume by x or decreases by y per tick (sent as MIDI CC 7)
+- Set speed/tempo (Fxx): xx < 0x20 sets ticks-per-row, xx >= 0x20 sets BPM
+- MIDI pitch bend support in MidiEngine and AudioEngine
+- Pitch bend reset on new notes and on playback stop
+- 11 new tests covering arpeggio, portamento up/down, tone portamento, vibrato, volume slide (up/down/clamp), set speed, set tempo, sub-tick timing
+
 ### Added (Audio Engine)
 - Built-in SoundFont audio engine via `--sf2 path/to/file.sf2` CLI flag
   - Uses [rustysynth](https://github.com/sinshu/rustysynth) (pure Rust SF2 synthesizer) + [cpal](https://crates.io/crates/cpal) (cross-platform audio output)

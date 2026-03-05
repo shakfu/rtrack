@@ -12,6 +12,7 @@ const MIDI_NOTE_ON: u8 = 0x90;
 const MIDI_NOTE_OFF: u8 = 0x80;
 const MIDI_CC: u8 = 0xB0;
 const MIDI_PROGRAM_CHANGE: u8 = 0xC0;
+const MIDI_PITCH_BEND: u8 = 0xE0;
 const MIDI_CLOCK: u8 = 0xF8;
 const MIDI_START: u8 = 0xFA;
 const MIDI_STOP: u8 = 0xFC;
@@ -160,6 +161,14 @@ impl MidiEngine {
     pub fn program_change(&mut self, channel: u8, program: u8) -> Result<()> {
         let ch = channel & 0x0F;
         self.send(&[MIDI_PROGRAM_CHANGE | ch, program & 0x7F])
+    }
+
+    /// Send a MIDI Pitch Bend message. Value is 14-bit: 0x2000 = center (no bend).
+    pub fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<()> {
+        let ch = channel & 0x0F;
+        let lsb = (value & 0x7F) as u8;
+        let msb = ((value >> 7) & 0x7F) as u8;
+        self.send(&[MIDI_PITCH_BEND | ch, lsb, msb])
     }
 
     /// Send MIDI clock tick (0xF8) - should be sent 24 times per beat
