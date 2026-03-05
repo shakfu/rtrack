@@ -122,10 +122,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 Color::Reset
             };
 
-            let note_fg = if cell.note.is_some() { Color::White } else { Color::Rgb(60, 60, 60) };
-            let inst_fg = if cell.instrument.is_some() { Color::Yellow } else { Color::Rgb(60, 60, 60) };
-            let vol_fg = if cell.volume.is_some() { Color::Green } else { Color::Rgb(60, 60, 60) };
-            let fx_fg = if cell.effect.is_some() || cell.effect_value.is_some() {
+            let is_muted = !app.is_channel_audible(ch);
+            let dim = Color::Rgb(40, 40, 40);
+
+            let note_fg = if is_muted { dim } else if cell.note.is_some() { Color::White } else { Color::Rgb(60, 60, 60) };
+            let inst_fg = if is_muted { dim } else if cell.instrument.is_some() { Color::Yellow } else { Color::Rgb(60, 60, 60) };
+            let vol_fg = if is_muted { dim } else if cell.volume.is_some() { Color::Green } else { Color::Rgb(60, 60, 60) };
+            let fx_fg = if is_muted { dim } else if cell.effect.is_some() || cell.effect_value.is_some() {
                 Color::Cyan
             } else {
                 Color::Rgb(60, 60, 60)

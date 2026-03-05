@@ -10,5 +10,9 @@ crossterm = "0.28"
 midir = "0.10"
 rusty_link = "0.4"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rustysynth = "1"
+cpal = "0.15"
 
 [dev-dependencies]

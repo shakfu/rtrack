@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// A musical note pitch (C, C#, D, ... B)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoteValue {
     C,
     Cs,
@@ -70,7 +72,7 @@ impl NoteValue {
 }
 
 /// Represents a note event in a tracker cell
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Note {
     /// A note with pitch and octave (e.g., C-4)
     On { value: NoteValue, octave: u8 },
@@ -103,7 +105,7 @@ impl Note {
 }
 
 /// A single cell in the tracker grid
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Cell {
     pub note: Option<Note>,
     pub instrument: Option<u8>,
@@ -156,7 +158,7 @@ impl Cell {
 }
 
 /// A pattern is a grid of rows x channels
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pattern {
     pub rows: usize,
     pub channels: usize,
@@ -182,6 +184,38 @@ impl Pattern {
 
     pub fn set_cell(&mut self, row: usize, channel: usize, cell: Cell) {
         self.data[row][channel] = cell;
+    }
+
+    /// Insert an empty row at the given index, pushing rows below down.
+    /// The last row is discarded to keep the pattern length constant.
+    pub fn insert_row(&mut self, at: usize) {
+        if at >= self.rows {
+            return;
+        }
+        self.data.insert(at, vec![Cell::default(); self.channels]);
+        self.data.truncate(self.rows);
+    }
+
+    /// Delete the row at the given index, shifting rows below up.
+    /// An empty row is appended at the end to keep the pattern length constant.
+    pub fn delete_row(&mut self, at: usize) {
+        if at >= self.rows {
+            return;
+        }
+        self.data.remove(at);
+        self.data.push(vec![Cell::default(); self.channels]);
+    }
+
+    /// Resize the pattern to a new number of rows, truncating or padding with empty rows.
+    pub fn resize_rows(&mut self, new_rows: usize) {
+        if new_rows > self.rows {
+            for _ in self.rows..new_rows {
+                self.data.push(vec![Cell::default(); self.channels]);
+            }
+        } else {
+            self.data.truncate(new_rows);
+        }
+        self.rows = new_rows;
     }
 }
 
@@ -243,6 +277,52 @@ mod tests {
         assert_eq!(pat.data.len(), 64);
         assert_eq!(pat.data[0].len(), 4);
         assert!(pat.get(0, 0).is_empty());
+    }
+
+    #[test]
+    fn test_pattern_insert_row() {
+        let mut pat = Pattern::new(4, 2);
+        pat.set_cell(0, 0, Cell { note: Some(Note::On { value: NoteValue::C, octave: 4 }), ..Cell::default() });
+        pat.set_cell(1, 0, Cell { note: Some(Note::On { value: NoteValue::D, octave: 4 }), ..Cell::default() });
+
+        pat.insert_row(1);
+        assert_eq!(pat.rows, 4); // length unchanged
+        assert_eq!(pat.data.len(), 4);
+        assert_eq!(pat.get(0, 0).note, Some(Note::On { value: NoteValue::C, octave: 4 }));
+        assert!(pat.get(1, 0).note.is_none()); // new empty row
+        assert_eq!(pat.get(2, 0).note, Some(Note::On { value: NoteValue::D, octave: 4 }));
+    }
+
+    #[test]
+    fn test_pattern_delete_row() {
+        let mut pat = Pattern::new(4, 2);
+        pat.set_cell(0, 0, Cell { note: Some(Note::On { value: NoteValue::C, octave: 4 }), ..Cell::default() });
+        pat.set_cell(1, 0, Cell { note: Some(Note::On { value: NoteValue::D, octave: 4 }), ..Cell::default() });
+        pat.set_cell(2, 0, Cell { note: Some(Note::On { value: NoteValue::E, octave: 4 }), ..Cell::default() });
+
+        pat.delete_row(1);
+        assert_eq!(pat.rows, 4); // length unchanged
+        assert_eq!(pat.data.len(), 4);
+        assert_eq!(pat.get(0, 0).note, Some(Note::On { value: NoteValue::C, octave: 4 }));
+        assert_eq!(pat.get(1, 0).note, Some(Note::On { value: NoteValue::E, octave: 4 }));
+        assert!(pat.get(3, 0).note.is_none()); // appended empty row
+    }
+
+    #[test]
+    fn test_pattern_resize_rows() {
+        let mut pat = Pattern::new(8, 2);
+        pat.set_cell(5, 0, Cell { note: Some(Note::On { value: NoteValue::A, octave: 3 }), ..Cell::default() });
+
+        // Shrink
+        pat.resize_rows(4);
+        assert_eq!(pat.rows, 4);
+        assert_eq!(pat.data.len(), 4);
+
+        // Grow
+        pat.resize_rows(10);
+        assert_eq!(pat.rows, 10);
+        assert_eq!(pat.data.len(), 10);
+        assert!(pat.get(9, 0).note.is_none());
     }
 
     #[test]

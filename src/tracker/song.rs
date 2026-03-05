@@ -1,7 +1,12 @@
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
 use super::Pattern;
 
 /// A song is a collection of patterns with an order list
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Song {
     pub title: String,
     pub bpm: u16,
@@ -45,6 +50,22 @@ impl Song {
         self.patterns.get_mut(index)
     }
 
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .context("Failed to serialize song")?;
+        std::fs::write(path, json)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let data = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let song: Song = serde_json::from_str(&data)
+            .context("Failed to parse song file")?;
+        Ok(song)
+    }
+
     /// Seconds per row based on BPM and speed
     pub fn seconds_per_row(&self) -> f64 {
         // Classic tracker timing: BPM defines ticks per minute / 24
@@ -83,5 +104,41 @@ mod tests {
         let spr = song.seconds_per_row();
         // At 120 BPM, speed 6: ticks/sec = 120*24/60 = 48, spr = 6/48 = 0.125
         assert!((spr - 0.125).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        use crate::tracker::{Cell, Note, NoteValue};
+
+        let mut song = Song::new(4, 32);
+        song.title = "RoundtripTest".to_string();
+        song.bpm = 155;
+        song.speed = 3;
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::Fs, octave: 5 }),
+            instrument: Some(0x0A),
+            volume: Some(0x60),
+            effect: Some(3),
+            effect_value: Some(0xFF),
+        });
+
+        let tmp = std::env::temp_dir().join("rtrack_song_roundtrip.rtrk");
+        song.save(&tmp).unwrap();
+
+        let loaded = Song::load(&tmp).unwrap();
+        assert_eq!(loaded.title, "RoundtripTest");
+        assert_eq!(loaded.bpm, 155);
+        assert_eq!(loaded.speed, 3);
+        assert_eq!(loaded.channels, 4);
+        assert_eq!(loaded.rows_per_pattern, 32);
+
+        let cell = loaded.patterns[0].get(0, 0);
+        assert_eq!(cell.note, Some(Note::On { value: NoteValue::Fs, octave: 5 }));
+        assert_eq!(cell.instrument, Some(0x0A));
+        assert_eq!(cell.volume, Some(0x60));
+        assert_eq!(cell.effect, Some(3));
+        assert_eq!(cell.effect_value, Some(0xFF));
+
+        let _ = std::fs::remove_file(tmp);
     }
 }

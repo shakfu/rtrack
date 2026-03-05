@@ -1,53 +1,65 @@
 # TODO
 
-## Core Tracker
+## Tier 1 -- Foundational
 
-- [ ] Order list navigation and editing (add/remove/reorder patterns)
-- [ ] Multiple pattern support (create, clone, delete patterns)
-- [ ] Copy/paste rows, selections, and channels
-- [ ] Undo/redo
-- [ ] Pattern length per-pattern (currently fixed at 64)
-- [ ] Edit step configuration (currently hardcoded to 1)
-- [ ] Row insert/delete within pattern
+Without these, the tracker is a toy. Save/load makes work persistent,
+undo/redo makes editing safe, copy/paste makes editing practical.
 
-## MIDI
+- [x] Save/load native format (JSON .rtrk files)
+- [x] Undo/redo
+- [x] Copy/paste rows, selections, and channels
 
-- [ ] MIDI port selection UI (currently auto-connects first port)
-- [ ] Per-channel MIDI channel mapping (channel 0-15)
-- [ ] Program change / instrument mapping
-- [ ] MIDI CC support via effect column
-- [ ] MIDI clock output (sync to external gear)
-- [ ] MIDI input for note entry (play notes in from a controller)
+## Tier 2 -- Real Sequencing
 
-## Effects
+Minimum feature set to compose something beyond a single loop.
 
-- [ ] Implement standard tracker effects (arpeggio, portamento, vibrato, etc.)
-- [ ] Volume slide
-- [ ] Pattern break / jump
-- [ ] Tempo change effect
-- [ ] Delay
+- [x] Multiple pattern support (create, clone)
+- [x] Order list navigation and editing (add/remove entries, Ctrl+Left/Right nav)
+- [x] Per-channel MIDI channel mapping (channel 0-15)
+- [x] Pattern break / jump effects (Bxx position jump, Dxx pattern break)
+- [x] Channel mute (F9-F12), visual dim on muted channels
+- [x] Channel solo (Ctrl+F9-F12)
 
-## UI
+## Tier 3 -- Quality of Life
 
-- [ ] Help screen (F1)
-- [ ] Song settings dialog (title, global tempo, channels)
-- [ ] Instrument list view
-- [ ] Order list sidebar
-- [ ] Channel mute/solo
-- [ ] Visual feedback on playback (scrolling highlight)
-- [ ] Color theme / configuration
-- [ ] Mouse support
+- [x] Edit step configuration (( / ) keys, 0-16 range)
+- [x] Row insert/delete within pattern (Insert/Backspace in Normal mode)
+- [x] MIDI input for note entry (virtual port RTRACK_MIDI_IN, auto-enters in Insert mode)
+- [x] Pattern length per-pattern (each pattern tracks its own row count)
+- [x] MIDI CC support via effect column (Cxx: controller from instrument col, value xx)
+- [x] Program change / instrument mapping (Exx: program change to program xx)
 
-## File I/O
+## Tier 4 -- Polish
 
-- [ ] Save/load native format (JSON or binary)
-- [ ] Export to standard MIDI file (.mid)
-- [ ] Import from .mid
+- [x] Song settings dialog (F6: title, BPM, speed, channels, rows)
+- [x] Instrument list view (F7: 256 instruments, editable names)
+- [x] Order list sidebar (always visible, shows current position)
+- [x] Color theme / configuration (F8: dark, light, monokai)
+- [x] Mouse support (click to position cursor, scroll wheel)
+- [x] Export to standard MIDI file (.mid) (Ctrl+E)
+- [x] Import from .mid (pass .mid file as CLI argument)
+- [x] MIDI clock output (Ctrl+M: 24 ppqn, start/stop messages)
 
-## Samples (future)
+## Tier 5 -- Samples (deferred until MIDI is solid)
 
 - [ ] Sample loading (WAV, AIFF)
 - [ ] Sample playback engine (replacing/alongside MIDI)
 - [ ] Sample editor (trim, loop points)
 - [ ] Per-instrument sample assignment
 - [ ] WAV/FLAC audio export (render to file)
+
+## Done
+
+- [x] MIDI port selection UI (F2)
+- [x] Help screen (F1)
+- [x] Visual feedback on playback (scrolling highlight)
+- [x] Ableton Link integration (F3)
+
+## Effects (implement alongside Tier 2-3)
+
+- [ ] Arpeggio
+- [ ] Portamento (up/down/tone)
+- [ ] Vibrato
+- [ ] Volume slide
+- [ ] Tempo change effect
+- [ ] Delay
