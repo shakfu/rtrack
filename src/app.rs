@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::link::LinkEngine;
 use crate::midi::MidiEngine;
 use crate::tracker::{Note, NoteValue, Song};
 use crate::ui::pattern_editor::SubColumn;
@@ -17,6 +18,7 @@ pub enum Mode {
 pub struct App {
     pub song: Song,
     pub midi: MidiEngine,
+    pub link: LinkEngine,
     pub mode: Mode,
     pub should_quit: bool,
 
@@ -53,9 +55,13 @@ impl App {
             let _ = midi.connect_first_available();
         }
 
+        let song = Song::new(4, 64);
+        let link = LinkEngine::new(song.bpm as f64);
+
         Self {
-            song: Song::new(4, 64),
+            song,
             midi,
+            link,
             mode: Mode::Normal,
             should_quit: false,
             cursor_row: 0,
@@ -151,6 +157,14 @@ impl App {
 
     // -- Playback --
 
+    pub fn toggle_link(&mut self) {
+        if self.link.is_enabled() {
+            self.link.disable();
+        } else {
+            self.link.enable();
+        }
+    }
+
     pub fn toggle_playback(&mut self) {
         if self.playing {
             self.stop();
@@ -165,12 +179,34 @@ impl App {
         self.playback_order = 0;
         self.last_tick = Some(Instant::now());
         self.tick_accumulator = 0.0;
+
+        if self.link.is_enabled() {
+            self.link.request_play();
+        }
     }
 
     pub fn stop(&mut self) {
         self.playing = false;
         self.last_tick = None;
         let _ = self.midi.all_notes_off();
+
+        if self.link.is_enabled() {
+            self.link.request_stop();
+        }
+    }
+
+    /// Sync tempo from Link peers if changed externally
+    pub fn sync_link(&mut self) {
+        if !self.link.is_enabled() {
+            return;
+        }
+
+        if let Some(new_tempo) = self.link.poll_tempo_change() {
+            let new_bpm = new_tempo.round() as u16;
+            if new_bpm != self.song.bpm && new_bpm >= 32 && new_bpm <= 300 {
+                self.song.bpm = new_bpm;
+            }
+        }
     }
 
     pub fn tick_playback(&mut self) {
@@ -249,6 +285,7 @@ impl App {
             KeyCode::Char(' ') => self.toggle_playback(),
             KeyCode::F(1) => self.open_help(),
             KeyCode::F(2) => self.open_port_selector(),
+            KeyCode::F(3) => self.toggle_link(),
 
             // Track navigation
             KeyCode::Tab => self.next_channel(),
@@ -277,12 +314,8 @@ impl App {
             }
 
             // BPM
-            KeyCode::Char(']') => {
-                self.song.bpm = (self.song.bpm + 1).min(300);
-            }
-            KeyCode::Char('[') => {
-                self.song.bpm = self.song.bpm.saturating_sub(1).max(32);
-            }
+            KeyCode::Char(']') => self.change_bpm(1),
+            KeyCode::Char('[') => self.change_bpm(-1),
 
             _ => {}
         }
@@ -294,6 +327,7 @@ impl App {
             KeyCode::Char(' ') => self.toggle_playback(),
             KeyCode::F(1) => self.open_help(),
             KeyCode::F(2) => self.open_port_selector(),
+            KeyCode::F(3) => self.toggle_link(),
 
             // Track navigation
             KeyCode::Tab => self.next_channel(),
@@ -506,6 +540,14 @@ impl App {
         self.cursor_row = (self.cursor_row + amount).min(max);
     }
 
+    fn change_bpm(&mut self, delta: i16) {
+        let new_bpm = (self.song.bpm as i16 + delta).clamp(32, 300) as u16;
+        self.song.bpm = new_bpm;
+        if self.link.is_enabled() {
+            self.link.set_tempo(new_bpm as f64);
+        }
+    }
+
     fn next_channel(&mut self) {
         if self.cursor_channel < self.song.channels - 1 {
             self.cursor_channel += 1;
@@ -551,6 +593,7 @@ mod tests {
         App {
             song: Song::new(4, 64),
             midi: MidiEngine::new(),
+            link: LinkEngine::new(120.0),
             mode: Mode::Normal,
             should_quit: false,
             cursor_row: 0,

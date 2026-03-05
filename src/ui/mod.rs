@@ -36,30 +36,35 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let pattern_idx = app.current_order_position();
     let pattern_num = song.order.get(pattern_idx).copied().unwrap_or(0);
 
+    let link_span = if app.link.is_enabled() {
+        Span::styled(
+            format!(" L:{}", app.link.num_peers()),
+            Style::default().fg(Color::Rgb(255, 100, 0)),
+        )
+    } else {
+        Span::styled(" L:--", Style::default().fg(Color::DarkGray))
+    };
+
     let header_text = vec![Line::from(vec![
-        Span::styled(" rtrack ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw(" | "),
+        Span::styled(" rtrack", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
         Span::styled(&song.title, Style::default().fg(Color::White)),
-        Span::raw(" | BPM: "),
-        Span::styled(format!("{}", song.bpm), Style::default().fg(Color::Yellow)),
-        Span::raw(" SPD: "),
-        Span::styled(format!("{}", song.speed), Style::default().fg(Color::Yellow)),
-        Span::raw(" | Pat: "),
         Span::styled(
-            format!("{:02X}/{:02X}", pattern_num, song.current_pattern_count() - 1),
+            format!(" {}bpm s{}", song.bpm, song.speed),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!(" P:{:02X}/{:02X} O:{:02X}/{:02X}",
+                pattern_num, song.current_pattern_count() - 1,
+                pattern_idx, song.order.len().saturating_sub(1)),
             Style::default().fg(Color::Green),
         ),
-        Span::raw(" Ord: "),
         Span::styled(
-            format!("{:02X}/{:02X}", pattern_idx, song.order.len().saturating_sub(1)),
-            Style::default().fg(Color::Green),
-        ),
-        Span::raw(" Oct: "),
-        Span::styled(
-            format!("{}", app.current_octave),
+            format!(" Oct:{}", app.current_octave),
             Style::default().fg(Color::Magenta),
         ),
-        Span::raw(if app.is_playing() { " [PLAYING]" } else { " [STOPPED]" }),
+        Span::raw(if app.is_playing() { " PLAY" } else { " STOP" }),
+        link_span,
     ])];
 
     let header = Paragraph::new(header_text).block(
@@ -88,7 +93,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let help = Span::styled(
-        " [F1]Help [Space]Play/Stop [Esc]Mode [Tab/S-Tab]Track [F2]MIDI [+/-]Oct [q]Quit ",
+        " [F1]Help [Space]Play/Stop [Esc]Mode [Tab/S-Tab]Track [F2]MIDI [F3]Link [+/-]Oct [q]Quit ",
         Style::default().fg(Color::DarkGray),
     );
 
@@ -107,6 +112,10 @@ fn draw_help(f: &mut Frame) {
         Line::from(vec![
             Span::styled("  F2           ", Style::default().fg(Color::Yellow)),
             Span::raw("MIDI port selector"),
+        ]),
+        Line::from(vec![
+            Span::styled("  F3           ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle Ableton Link"),
         ]),
         Line::from(vec![
             Span::styled("  Space        ", Style::default().fg(Color::Yellow)),

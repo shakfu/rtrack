@@ -1,4 +1,5 @@
 mod app;
+mod link;
 mod midi;
 mod tracker;
 mod ui;
@@ -60,6 +61,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                 app.handle_key(key);
             }
         }
+
+        app.sync_link();
 
         if app.is_playing() {
             app.tick_playback();

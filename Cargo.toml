@@ -8,6 +8,7 @@ description = "A TUI music tracker built with ratatui"
 ratatui = "0.29"
 crossterm = "0.28"
 midir = "0.10"
+rusty_link = "0.4"
 anyhow = "1"
 
 [dev-dependencies]
