@@ -1,4 +1,5 @@
 pub mod pattern_editor;
+pub mod sample_editor;
 pub mod theme;
 
 use ratatui::{
@@ -41,6 +42,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help(f),
         Mode::SongSettings => draw_song_settings(f, app),
         Mode::InstrumentList => draw_instrument_list(f, app),
+        Mode::SampleEditor => sample_editor::draw_sample_editor(f, app),
         _ => {}
     }
 }
@@ -110,10 +112,19 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Help => Span::styled(" HELP ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Mode::SongSettings => Span::styled(" SETTINGS ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Mode::InstrumentList => Span::styled(" INSTRUMENTS ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Mode::SampleEditor => Span::styled(" SAMPLE EDIT ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
     };
 
-    let audio_span = if app.has_audio() {
+    let audio_span = if app.has_sf2() {
         Span::styled(" SF2 ", Style::default().fg(Color::Magenta))
+    } else if app.has_audio() {
+        Span::styled(" SYNTH ", Style::default().fg(Color::Magenta))
+    } else {
+        Span::from("")
+    };
+
+    let fx_span = if app.audio_effects_enabled() {
+        Span::styled(" FX ", Style::default().fg(Color::Cyan))
     } else {
         Span::from("")
     };
@@ -127,7 +138,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         )
     };
 
-    let status = Paragraph::new(Line::from(vec![mode_span, midi_status, audio_span, msg_span]));
+    let status = Paragraph::new(Line::from(vec![mode_span, midi_status, audio_span, fx_span, msg_span]));
     f.render_widget(status, area);
 }
 

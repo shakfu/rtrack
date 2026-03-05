@@ -3,6 +3,7 @@ mod audio;
 mod link;
 mod midi;
 mod midi_file;
+mod sample;
 mod tracker;
 mod ui;
 
@@ -30,6 +31,10 @@ struct Cli {
     /// SoundFont file for built-in audio engine
     #[arg(long)]
     sf2: Option<PathBuf>,
+
+    /// Load a sample file into a slot: --sample 0:kick.wav --sample 1:snare.wav
+    #[arg(long = "sample", value_name = "SLOT:FILE")]
+    samples: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -42,7 +47,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, cli.file, cli.sf2);
+    let result = run_app(&mut terminal, cli.file, cli.sf2, cli.samples);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -64,18 +69,34 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     file: Option<PathBuf>,
     sf2_path: Option<PathBuf>,
+    samples: Vec<String>,
 ) -> Result<()> {
     let mut app = App::new();
 
-    if let Some(sf2) = sf2_path {
-        match audio::AudioEngine::new(&sf2) {
-            Ok(engine) => {
-                app.audio = Some(engine);
+    match audio::AudioEngine::new(sf2_path.as_deref()) {
+        Ok(engine) => {
+            if let Some(ref sf2) = sf2_path {
                 app.status_message = Some(format!("SF2 loaded: {}", sf2.display()));
+            } else {
+                app.status_message = Some("Built-in synth active".to_string());
             }
-            Err(e) => {
-                app.status_message = Some(format!("SF2 error: {}", e));
+            app.audio = Some(engine);
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Audio error: {}", e));
+        }
+    }
+
+    // Load samples from CLI
+    for spec in &samples {
+        if let Some((slot_str, file_str)) = spec.split_once(':') {
+            if let Ok(slot) = slot_str.parse::<usize>() {
+                app.load_sample(slot, PathBuf::from(file_str));
+            } else {
+                app.status_message = Some(format!("Invalid sample slot: {}", slot_str));
             }
+        } else {
+            app.status_message = Some(format!("Invalid sample spec (use SLOT:FILE): {}", spec));
         }
     }
 

@@ -40,13 +40,14 @@ Minimum feature set to compose something beyond a single loop.
 - [x] Import from .mid (pass .mid file as CLI argument)
 - [x] MIDI clock output (Ctrl+M: 24 ppqn, start/stop messages)
 
-## Tier 5 -- Samples (deferred until MIDI is solid)
+## Tier 5 -- Samples
 
-- [ ] Sample loading (WAV, AIFF)
-- [ ] Sample playback engine (replacing/alongside MIDI)
-- [ ] Sample editor (trim, loop points)
-- [ ] Per-instrument sample assignment
-- [ ] WAV/FLAC audio export (render to file)
+- [x] Sample loading (WAV, AIFF) via hound + dasp
+- [x] Sample playback engine (alongside MIDI/synth, pitch-shifted via linear interpolation)
+- [x] Sample editor (trim start/end, loop start/end/toggle, base note)
+- [x] Per-instrument sample assignment (instrument.sample_index -> SampleBank slot)
+- [x] WAV audio export (Ctrl+W, offline render to 16-bit stereo WAV)
+- [ ] FLAC audio export
 
 ## Done
 
@@ -63,4 +64,4 @@ Minimum feature set to compose something beyond a single loop.
 - [x] Vibrato (4xy)
 - [x] Volume slide (5xy)
 - [x] Set speed/tempo (Fxx)
-- [ ] Delay
+- [x] Note delay (6xx)

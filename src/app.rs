@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -6,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use crate::audio::AudioEngine;
 use crate::link::LinkEngine;
 use crate::midi::{MidiEngine, MidiInputEngine, MidiInputEvent};
+use crate::sample::SampleBank;
 use crate::tracker::{Note, NoteValue, Song};
 use crate::ui::pattern_editor::SubColumn;
 
@@ -16,6 +18,7 @@ const EFFECT_PORTA_DOWN: u8 = 0x2;    // 2xx: slide pitch down by xx per tick
 const EFFECT_TONE_PORTA: u8 = 0x3;    // 3xx: slide toward target note at speed xx
 const EFFECT_VIBRATO: u8 = 0x4;       // 4xy: vibrato speed x, depth y
 const EFFECT_VOLUME_SLIDE: u8 = 0x5;  // 5xy: volume slide up x, down y per tick
+const EFFECT_NOTE_DELAY: u8 = 0x6;    // 6xx: delay note trigger by xx ticks
 const EFFECT_POSITION_JUMP: u8 = 0xB; // Bxx: jump to order position xx
 const EFFECT_MIDI_CC: u8 = 0xC;       // Cxx: send MIDI CC (controller from instrument col, value xx)
 const EFFECT_PATTERN_BREAK: u8 = 0xD; // Dxx: break to row xx of next pattern
@@ -46,6 +49,10 @@ pub struct ChannelState {
     pub porta_target: Option<u8>,
     /// Vibrato phase (0.0 .. 1.0)
     pub vibrato_phase: f64,
+    /// Note delay: pending note trigger (note, velocity, is_note_off)
+    pub delayed_note: Option<(u8, u8, bool)>,
+    /// Note delay: tick on which to trigger
+    pub delay_tick: u8,
 }
 
 impl Default for ChannelState {
@@ -58,6 +65,8 @@ impl Default for ChannelState {
             effect_param: 0,
             porta_target: None,
             vibrato_phase: 0.0,
+            delayed_note: None,
+            delay_tick: 0,
         }
     }
 }
@@ -70,6 +79,7 @@ pub enum Mode {
     Help,
     SongSettings,
     InstrumentList,
+    SampleEditor,
 }
 
 /// Which field is being edited in the song settings dialog
@@ -103,11 +113,47 @@ impl SettingsField {
     }
 }
 
+/// Which field is active in the sample editor
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleField {
+    BaseNote,
+    TrimStart,
+    TrimEnd,
+    LoopEnabled,
+    LoopStart,
+    LoopEnd,
+}
+
+impl SampleField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::BaseNote => Self::TrimStart,
+            Self::TrimStart => Self::TrimEnd,
+            Self::TrimEnd => Self::LoopEnabled,
+            Self::LoopEnabled => Self::LoopStart,
+            Self::LoopStart => Self::LoopEnd,
+            Self::LoopEnd => Self::BaseNote,
+        }
+    }
+    pub fn prev(self) -> Self {
+        match self {
+            Self::BaseNote => Self::LoopEnd,
+            Self::TrimStart => Self::BaseNote,
+            Self::TrimEnd => Self::TrimStart,
+            Self::LoopEnabled => Self::TrimEnd,
+            Self::LoopStart => Self::LoopEnabled,
+            Self::LoopEnd => Self::LoopStart,
+        }
+    }
+}
+
 /// Instrument definition for the instrument list
 #[derive(Debug, Clone)]
 pub struct Instrument {
     pub name: String,
     pub midi_program: Option<u8>,
+    /// Index into SampleBank (None = use synth)
+    pub sample_index: Option<usize>,
 }
 
 impl Default for Instrument {
@@ -115,6 +161,7 @@ impl Default for Instrument {
         Self {
             name: String::new(),
             midi_program: None,
+            sample_index: None,
         }
     }
 }
@@ -189,8 +236,15 @@ pub struct App {
     // MIDI clock
     clock_tick_accumulator: f64,
 
-    // Audio engine (SF2 playback via RustySynth + cpal)
+    // Audio engine (SF2 via RustySynth and/or fundsp synth + effects, via cpal)
     pub audio: Option<AudioEngine>,
+
+    // Sample bank
+    pub sample_bank: Arc<SampleBank>,
+
+    // Sample editor state
+    pub sample_editor_slot: usize,
+    pub sample_editor_field: SampleField,
 }
 
 impl App {
@@ -248,6 +302,9 @@ impl App {
             playback_tick: 0,
             channel_states: vec![ChannelState::default(); 4],
             audio: None,
+            sample_bank: Arc::new(SampleBank::new()),
+            sample_editor_slot: 0,
+            sample_editor_field: SampleField::BaseNote,
         }
     }
 
@@ -270,6 +327,81 @@ impl App {
         self.audio.is_some()
     }
 
+    pub fn has_sf2(&self) -> bool {
+        self.audio.as_ref().map_or(false, |a| a.has_sf2())
+    }
+
+    pub fn audio_effects_enabled(&self) -> bool {
+        self.audio.as_ref().map_or(false, |a| a.effects_enabled())
+    }
+
+    pub fn toggle_audio_effects(&self) -> bool {
+        self.audio.as_ref().map_or(false, |a| a.toggle_effects())
+    }
+
+    /// Load a sample file into a bank slot and assign it to the instrument
+    pub fn load_sample(&mut self, slot: usize, path: std::path::PathBuf) {
+        // We need to mutate the bank, so make a mutable copy
+        let mut bank = (*self.sample_bank).clone();
+        match bank.load(slot, &path) {
+            Ok(()) => {
+                let name = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("sample")
+                    .to_string();
+                if slot < self.instruments.len() {
+                    self.instruments[slot].sample_index = Some(slot);
+                    if self.instruments[slot].name.is_empty() {
+                        self.instruments[slot].name = name.clone();
+                    }
+                }
+                self.sample_bank = Arc::new(bank);
+                // Push updated bank to audio engine
+                if let Some(ref audio) = self.audio {
+                    audio.set_sample_bank(Arc::clone(&self.sample_bank));
+                }
+                self.status_message = Some(format!("Loaded sample: {}", name));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Sample load error: {}", e));
+            }
+        }
+    }
+
+    /// Check if a given instrument slot has a sample assigned
+    pub fn instrument_has_sample(&self, inst: usize) -> bool {
+        self.instruments.get(inst)
+            .and_then(|i| i.sample_index)
+            .and_then(|idx| self.sample_bank.get(idx))
+            .is_some()
+    }
+
+    /// Open the sample editor for the current instrument
+    pub fn open_sample_editor(&mut self) {
+        self.sample_editor_slot = self.instrument_cursor;
+        self.sample_editor_field = SampleField::BaseNote;
+        self.prev_mode = self.mode;
+        self.mode = Mode::SampleEditor;
+    }
+
+    /// Export the song to a WAV file
+    pub fn export_wav(&self, path: std::path::PathBuf) {
+        let instruments: Vec<(Option<usize>, u8)> = self.instruments.iter()
+            .map(|i| (i.sample_index, i.midi_program.unwrap_or(0)))
+            .collect();
+        let sample_rate = self.audio.as_ref()
+            .map(|a| a.sample_rate() as u32)
+            .unwrap_or(44100);
+        match crate::sample::export::render_to_wav(
+            &path, &self.song, &self.sample_bank, &instruments, sample_rate,
+        ) {
+            Ok(()) => {
+                // status_message is not &mut self here; caller should set it
+            }
+            Err(_e) => {}
+        }
+    }
+
     // -- Sound output helpers (dispatch to MIDI + optional audio engine) --
 
     fn send_note_on(&mut self, channel: u8, note: u8, velocity: u8) {
@@ -279,10 +411,29 @@ impl App {
         }
     }
 
+    /// Note-on with instrument awareness: routes to sample engine if instrument has a sample
+    fn send_note_on_with_instrument(&mut self, channel: u8, note: u8, velocity: u8, instrument: Option<u8>) {
+        let inst_idx = instrument.unwrap_or(0) as usize;
+        let sample_idx = self.instruments.get(inst_idx).and_then(|i| i.sample_index);
+        if let Some(sid) = sample_idx {
+            if self.sample_bank.get(sid).is_some() {
+                // Route to sample engine
+                let _ = self.midi.note_on(channel, note, velocity);
+                if let Some(ref audio) = self.audio {
+                    audio.sample_note_on(sid, note, velocity, channel);
+                }
+                return;
+            }
+        }
+        // Fall through to synth
+        self.send_note_on(channel, note, velocity);
+    }
+
     fn send_channel_note_off(&mut self, channel: u8) {
         let _ = self.midi.channel_note_off(channel);
         if let Some(ref audio) = self.audio {
             audio.note_off_all_channel(channel);
+            audio.sample_note_off_channel(channel);
         }
     }
 
@@ -290,6 +441,7 @@ impl App {
         let _ = self.midi.all_notes_off();
         if let Some(ref audio) = self.audio {
             audio.note_off_all();
+            audio.sample_note_off_all();
         }
     }
 
@@ -753,6 +905,12 @@ impl App {
                 continue;
             }
 
+            // Clear any previous delayed note
+            self.channel_states[ch].delayed_note = None;
+
+            // Note delay (6xx): defer note trigger to tick xx
+            let is_note_delay = effect == Some(EFFECT_NOTE_DELAY) && param > 0;
+
             // Process notes
             match note {
                 Some(Note::On { .. }) => {
@@ -760,23 +918,34 @@ impl App {
                         if is_tone_porta {
                             // Tone portamento: set target, don't retrigger
                             self.channel_states[ch].porta_target = Some(midi_note);
+                        } else if is_note_delay {
+                            // Defer note trigger to the specified tick
+                            let vel = volume.unwrap_or(self.channel_states[ch].volume);
+                            self.channel_states[ch].delayed_note = Some((midi_note, vel, false));
+                            self.channel_states[ch].delay_tick = param;
                         } else {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
                             // Reset pitch bend on new note
                             self.channel_states[ch].pitch_offset = 0.0;
                             self.channel_states[ch].vibrato_phase = 0.0;
                             self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
-                            self.send_note_on(midi_ch, midi_note, vel);
+                            self.send_note_on_with_instrument(midi_ch, midi_note, vel, instrument);
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].volume = vel;
                         }
                     }
                 }
                 Some(Note::Off) => {
-                    self.send_channel_note_off(midi_ch);
-                    self.channel_states[ch].note = None;
-                    self.channel_states[ch].pitch_offset = 0.0;
-                    self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+                    if is_note_delay {
+                        // Defer note-off to the specified tick
+                        self.channel_states[ch].delayed_note = Some((0, 0, true));
+                        self.channel_states[ch].delay_tick = param;
+                    } else {
+                        self.send_channel_note_off(midi_ch);
+                        self.channel_states[ch].note = None;
+                        self.channel_states[ch].pitch_offset = 0.0;
+                        self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+                    }
                 }
                 None => {
                     // No note: update volume if specified
@@ -844,6 +1013,29 @@ impl App {
                 continue;
             }
             let midi_ch = self.midi_channel_for(ch);
+
+            // Process note delay before other effects (note may not exist yet)
+            if self.channel_states[ch].effect == Some(EFFECT_NOTE_DELAY) {
+                if let Some((midi_note, vel, is_off)) = self.channel_states[ch].delayed_note {
+                    if self.playback_tick == self.channel_states[ch].delay_tick {
+                        if is_off {
+                            self.send_channel_note_off(midi_ch);
+                            self.channel_states[ch].note = None;
+                            self.channel_states[ch].pitch_offset = 0.0;
+                            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+                        } else {
+                            self.channel_states[ch].pitch_offset = 0.0;
+                            self.channel_states[ch].vibrato_phase = 0.0;
+                            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+                            self.send_note_on(midi_ch, midi_note, vel);
+                            self.channel_states[ch].note = Some(midi_note);
+                            self.channel_states[ch].volume = vel;
+                        }
+                        self.channel_states[ch].delayed_note = None;
+                    }
+                }
+                continue;
+            }
 
             let effect = self.channel_states[ch].effect;
             let param = self.channel_states[ch].effect_param;
@@ -1112,9 +1304,8 @@ impl App {
                 self.instrument_cursor = (self.instrument_cursor + 16).min(255);
             }
             KeyCode::Enter => {
-                // Start editing the instrument name
-                let inst = &self.instruments[self.instrument_cursor];
-                self.settings_edit_buf = inst.name.clone();
+                // Open sample editor for current instrument
+                self.open_sample_editor();
             }
             KeyCode::Char(c) => {
                 self.instruments[self.instrument_cursor].name.push(c);
@@ -1123,6 +1314,79 @@ impl App {
                 self.instruments[self.instrument_cursor].name.pop();
             }
             _ => {}
+        }
+    }
+
+    fn handle_sample_editor_key(&mut self, key: KeyEvent) {
+        let slot = self.sample_editor_slot;
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = self.prev_mode;
+            }
+            KeyCode::Tab => {
+                self.sample_editor_field = self.sample_editor_field.next();
+            }
+            KeyCode::BackTab => {
+                self.sample_editor_field = self.sample_editor_field.prev();
+            }
+            KeyCode::Up => {
+                self.adjust_sample_field(slot, 1);
+            }
+            KeyCode::Down => {
+                self.adjust_sample_field(slot, -1);
+            }
+            KeyCode::Right => {
+                self.adjust_sample_field(slot, 10);
+            }
+            KeyCode::Left => {
+                self.adjust_sample_field(slot, -10);
+            }
+            _ => {}
+        }
+    }
+
+    fn adjust_sample_field(&mut self, slot: usize, delta: i64) {
+        let mut bank = (*self.sample_bank).clone();
+        if let Some(ref mut sample) = bank.samples.get_mut(slot).and_then(|s| s.as_mut()) {
+            match self.sample_editor_field {
+                SampleField::BaseNote => {
+                    sample.base_note = (sample.base_note as i64 + delta).clamp(0, 127) as u8;
+                }
+                SampleField::TrimStart => {
+                    sample.trim_start = (sample.trim_start as i64 + delta * 100)
+                        .clamp(0, sample.data.len() as i64 - 1) as usize;
+                }
+                SampleField::TrimEnd => {
+                    let max = sample.data.len();
+                    sample.trim_end = if sample.trim_end == 0 {
+                        (max as i64 + delta * 100).clamp(0, max as i64) as usize
+                    } else {
+                        (sample.trim_end as i64 + delta * 100).clamp(0, max as i64) as usize
+                    };
+                }
+                SampleField::LoopEnabled => {
+                    sample.loop_enabled = !sample.loop_enabled;
+                }
+                SampleField::LoopStart => {
+                    let max = sample.effective_loop_end();
+                    sample.loop_start = (sample.loop_start as i64 + delta * 100)
+                        .clamp(0, max as i64) as usize;
+                }
+                SampleField::LoopEnd => {
+                    let max = sample.end();
+                    sample.loop_end = if sample.loop_end == 0 {
+                        (max as i64 + delta * 100).clamp(0, max as i64) as usize
+                    } else {
+                        (sample.loop_end as i64 + delta * 100).clamp(0, max as i64) as usize
+                    };
+                }
+            }
+            self.sample_bank = Arc::new(bank);
+            if let Some(ref audio) = self.audio {
+                audio.set_sample_bank(Arc::clone(&self.sample_bank));
+            }
+        } else {
+            self.status_message = Some("No sample loaded in this slot".to_string());
         }
     }
 
@@ -1214,6 +1478,31 @@ impl App {
 
     // -- MIDI file export/import --
 
+    pub fn export_wav_file(&mut self) {
+        let path = self.file_path.as_ref()
+            .map(|p| p.with_extension("wav"))
+            .unwrap_or_else(|| {
+                let name = self.song.title.replace(' ', "_").to_lowercase();
+                PathBuf::from(format!("{}.wav", name))
+            });
+        let instruments: Vec<(Option<usize>, u8)> = self.instruments.iter()
+            .map(|i| (i.sample_index, i.midi_program.unwrap_or(0)))
+            .collect();
+        let sample_rate = self.audio.as_ref()
+            .map(|a| a.sample_rate() as u32)
+            .unwrap_or(44100);
+        match crate::sample::export::render_to_wav(
+            &path, &self.song, &self.sample_bank, &instruments, sample_rate,
+        ) {
+            Ok(()) => {
+                self.status_message = Some(format!("Exported WAV: {}", path.display()));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("WAV export failed: {}", e));
+            }
+        }
+    }
+
     pub fn export_midi(&mut self) {
         let path = self.file_path.as_ref()
             .map(|p| p.with_extension("mid"))
@@ -1262,6 +1551,7 @@ impl App {
             Mode::Help => self.handle_help_key(key),
             Mode::SongSettings => self.handle_song_settings_key(key),
             Mode::InstrumentList => self.handle_instrument_list_key(key),
+            Mode::SampleEditor => self.handle_sample_editor_key(key),
         }
     }
 
@@ -1277,6 +1567,7 @@ impl App {
                 KeyCode::Right => { self.next_order_position(); return true; }
                 KeyCode::Left => { self.prev_order_position(); return true; }
                 KeyCode::Char('e') => { self.export_midi(); return true; }
+                KeyCode::Char('w') => { self.export_wav_file(); return true; }
                 KeyCode::Char('m') => { self.toggle_midi_clock(); return true; }
                 KeyCode::F(9) => { self.toggle_solo(0); return true; }
                 KeyCode::F(10) => { self.toggle_solo(1); return true; }
@@ -1706,6 +1997,9 @@ mod tests {
             theme_index: 0,
             clock_tick_accumulator: 0.0,
             audio: None,
+            sample_bank: Arc::new(SampleBank::new()),
+            sample_editor_slot: 0,
+            sample_editor_field: SampleField::BaseNote,
         }
     }
 
@@ -2797,6 +3091,75 @@ mod tests {
 
         app.process_tick(); // tick 2: effects only, wraps to 0
         assert_eq!(app.playback_tick, 0);
+    }
+
+    #[test]
+    fn test_note_delay_effect() {
+        use crate::tracker::Cell;
+
+        let mut app = make_app();
+        app.song.speed = 6;
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(100),
+            effect: Some(EFFECT_NOTE_DELAY),
+            effect_value: Some(3),
+            ..Cell::default()
+        });
+
+        app.play();
+        app.process_tick(); // tick 0: note deferred, not triggered yet
+        assert!(app.channel_states[0].note.is_none());
+        assert!(app.channel_states[0].delayed_note.is_some());
+
+        app.process_tick(); // tick 1: not yet
+        assert!(app.channel_states[0].note.is_none());
+
+        app.process_tick(); // tick 2: not yet
+        assert!(app.channel_states[0].note.is_none());
+
+        app.process_tick(); // tick 3: trigger!
+        assert_eq!(app.channel_states[0].note, Some(60));
+        assert!(app.channel_states[0].delayed_note.is_none());
+    }
+
+    #[test]
+    fn test_note_delay_off() {
+        use crate::tracker::Cell;
+
+        let mut app = make_app();
+        app.song.speed = 6;
+
+        // Row 0: normal note on
+        app.song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(100),
+            ..Cell::default()
+        });
+        // Row 1: delayed note-off
+        app.song.patterns[0].set_cell(1, 0, Cell {
+            note: Some(Note::Off),
+            effect: Some(EFFECT_NOTE_DELAY),
+            effect_value: Some(2),
+            ..Cell::default()
+        });
+
+        app.play();
+        // Process all ticks for row 0 to trigger note
+        for _ in 0..6 {
+            app.process_tick();
+        }
+        assert_eq!(app.channel_states[0].note, Some(60));
+
+        // Row 1: tick 0 -- note-off is deferred
+        app.process_tick();
+        assert_eq!(app.channel_states[0].note, Some(60)); // still on
+
+        app.process_tick(); // tick 1: not yet
+        assert_eq!(app.channel_states[0].note, Some(60));
+
+        app.process_tick(); // tick 2: note-off fires
+        assert!(app.channel_states[0].note.is_none());
     }
 
     // -- MIDI input tests --

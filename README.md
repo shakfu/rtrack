@@ -1,165 +1,219 @@
 # rtrack
 
-A TUI music tracker built in Rust with [ratatui](https://ratatui.rs). Outputs MIDI to external synths/DAWs, or plays directly through a SoundFont (.sf2) via built-in audio engine.
+A terminal-based music tracker written in Rust. Compose music using classic tracker-style pattern editing, hear it immediately through the built-in synthesizer, and export to MIDI or WAV.
+
+rtrack makes sound out of the box -- no external synth, DAW, or SoundFont required. Connect to external gear via MIDI, sync with Ableton Link, or load your own samples.
+
+## Quick Start
+
+```sh
+cargo run                    # launch with built-in synth
+cargo run -- song.rtrk       # open a saved song
+cargo run -- recording.mid   # import a MIDI file
+```
+
+Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back. Press **F1** for the full help screen.
+
+## Audio Modes
+
+rtrack supports three ways to produce sound, and they can be combined:
+
+| Mode | How to activate | What it does |
+|------|----------------|--------------|
+| **Built-in synth** | Default (always on) | 8 waveform patches via [fundsp](https://crates.io/crates/fundsp). Select with `Exx` effect (0-7). |
+| **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
+| **Samples** | `--sample 0:kick.wav` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
+
+All modes output through [cpal](https://crates.io/crates/cpal) with a stereo reverb effects chain. MIDI output runs in parallel regardless of audio mode.
+
+```sh
+cargo run -- --sf2 gm.sf2                                # SoundFont mode
+cargo run -- --sample 0:kick.wav --sample 1:snare.aiff   # sample mode
+cargo run -- --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
+```
+
+## How Tracking Works
+
+A tracker arranges music in **patterns** -- grids where each row is a point in time and each column is a channel. Patterns are sequenced in an **order list** to form a full song.
+
+Each cell has four fields:
+
+```
+C-4 01 80 000
+ |   |  |  |
+ |   |  |  +-- Effect command + parameter
+ |   |  +----- Volume (00-FF, maps to velocity)
+ |   +-------- Instrument number (00-FF)
+ +------------ Note (C-4, F#5, etc.) or === (note off)
+```
+
+Empty fields display as dashes: `--- -- -- ---`
+
+### Note Entry
+
+Switch to **Insert** mode (Esc) and use the piano keyboard layout:
+
+```
+Lower octave:  z s x d c v g b h n j m
+               C C#D D#E F F#G G#A A#B
+
+Upper octave:  q 2 w 3 e r 5 t 6 y 7 u
+               C C#D D#E F F#G G#A A#B
+```
+
+Use `+`/`-` to shift octave. Tab between channels, arrow keys to navigate.
 
 ## Features
 
-- Pattern editor with configurable channels (default 4) and rows (default 64)
-- Per-cell editing: note, instrument, volume, and effect columns
-- Two input modes: Normal (navigation) and Insert (data entry)
-- Piano keyboard note entry (two-row layout: `z/s/x/d/c/v/g/b/h/n/j/m` + `q/2/w/3/e/r/5/t/6/y/7/u`)
-- Creates a virtual MIDI port (`RTRACK_MIDI`) visible to DAWs and other MIDI software (macOS/Linux)
-- Falls back to connecting to first available MIDI port on platforms without virtual port support
-- MIDI port selection UI (F2) -- switch between virtual and hardware ports at runtime
-- [Ableton Link](https://www.ableton.com/en/link/) tempo synchronization (F3) -- sync BPM and transport with Ableton Live and other Link-enabled apps
-- Real-time pattern playback with classic tracker timing (BPM + speed)
-- Beat and bar row highlighting (every 4th and 16th row)
-- Save/load songs as `.rtrk` JSON files (Ctrl+S to save, pass file path as argument to load)
-- Undo/redo (Ctrl+Z / Ctrl+Y) with 100-level history
-- Copy/cut/paste entire rows (Ctrl+C / Ctrl+X / Ctrl+V)
-- Multiple pattern support: create new (Ctrl+N), clone current (Ctrl+D)
-- Order list navigation (Ctrl+Left/Right) and editing (F4 insert, F5 remove)
-- Per-channel MIDI channel mapping (tracker channel -> MIDI channel 0-15)
-- Channel mute/unmute (F9-F12) with visual dimming on muted channels
-- Edit step configuration (`(` / `)` to adjust, 0-16 range)
-- Row insert/delete within patterns (Insert/Backspace in Normal mode)
-- MIDI input for note entry from external controllers (virtual port `RTRACK_MIDI_IN`)
-- Per-pattern length (each pattern can have its own number of rows)
-- MIDI CC support via `Cxx` effect (controller from instrument column, value xx)
-- Program change via `Exx` effect (sends MIDI program change)
-- Song settings dialog (F6) for editing title, BPM, speed, channels, rows
-- Instrument list view (F7) with 256 editable instrument slots
-- Order list sidebar (always visible) showing order positions
-- Color theme cycling (F8) with dark, light, and monokai themes
-- Mouse support: click to position cursor, scroll wheel to navigate
-- Export to standard MIDI file (Ctrl+E)
-- Import from .mid files (pass as CLI argument)
+### Pattern Editing
+- Configurable channels (default 4) and rows per pattern (default 64)
+- Note, instrument, volume, and effect columns per cell
+- Normal mode (navigation) and Insert mode (data entry)
+- Edit step (`(`/`)`) -- auto-advance cursor by N rows after each entry
+- Row insert/delete, copy/cut/paste entire rows
+- Undo/redo with 100-level history
+- Mouse: click to place cursor, scroll to navigate
+
+### Song Structure
+- Multiple patterns with per-pattern row counts
+- Order list sidebar (always visible) with insert/remove
+- Position jump (`Bxx`) and pattern break (`Dxx`) effects
+
+### Instruments & Samples
+- 256 instrument slots (F7 to browse)
+- Per-instrument sample assignment -- load WAV/AIFF files into slots
+- Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
+- Pitch-shifted playback with up to 32 simultaneous voices
+
+### Effects
+
+| Cmd | Name | Description |
+|-----|------|-------------|
+| `0xy` | Arpeggio | Cycle note, note+x, note+y semitones each tick |
+| `1xx` | Portamento up | Slide pitch up by xx per tick |
+| `2xx` | Portamento down | Slide pitch down by xx per tick |
+| `3xx` | Tone portamento | Glide toward target note at speed xx |
+| `4xy` | Vibrato | Pitch vibrato (speed x, depth y) |
+| `5xy` | Volume slide | Slide volume up by x, down by y per tick |
+| `6xx` | Note delay | Delay note trigger by xx ticks |
+| `Bxx` | Position jump | Jump to order position xx |
+| `Cxx` | MIDI CC | Send CC (controller from instrument col, value xx) |
+| `Dxx` | Pattern break | Break to row xx of next pattern |
+| `Exx` | Program change | Select synth patch or send MIDI program change |
+| `Fxx` | Set speed/tempo | xx < 20: ticks per row; xx >= 20: set BPM |
+
+Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
+
+### MIDI
+- Virtual output port `RTRACK_MIDI` (macOS/Linux) -- visible to any DAW
+- Virtual input port `RTRACK_MIDI_IN` -- play notes from external controllers
+- MIDI port selection (F2) for switching to hardware ports
 - MIDI clock output (Ctrl+M) at 24 ppqn with start/stop messages
-- Built-in SoundFont audio engine (`--sf2 file.sf2`) for direct audio output without external DAW
+- Per-channel MIDI channel mapping
 
-## Requirements
+### Sync
+- [Ableton Link](https://www.ableton.com/en/link/) (F3): bidirectional BPM and transport sync with Link-enabled apps
 
-- Rust 1.70+
-- CMake 3.14+ (required to build Ableton Link C++ dependency)
-- On macOS/Linux: rtrack creates its own virtual MIDI port (`RTRACK_MIDI`) -- no external setup needed. Just point your DAW or synth to the `RTRACK_MIDI` source.
-- On Windows: requires a third-party virtual MIDI driver (e.g., loopMIDI)
-
-## Build and Run
-
-```sh
-make build   # compile
-make run     # compile and run
-make test    # run tests
-
-cargo run -- song.rtrk   # open an existing song
-cargo run -- --sf2 gm.sf2           # play through SoundFont (built-in audio)
-cargo run -- song.rtrk --sf2 gm.sf2 # open song with SoundFont audio
-```
+### Import / Export
+- Save/load songs as `.rtrk` (JSON)
+- Import from standard MIDI files (`.mid`)
+- Export to MIDI (Ctrl+E)
+- Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
+- Color themes: dark (default), light, monokai (F8 to cycle)
 
 ## Keybindings
 
-### Both Modes
+### Global (all modes)
 
-| Key           | Action                    |
-|---------------|---------------------------|
-| Space         | Toggle play/stop          |
-| Esc           | Toggle Normal/Insert mode |
-| Tab / Shift-Tab | Next / previous track   |
-| Arrows        | Move cursor               |
-| PgUp/PgDn     | Move cursor 16 rows       |
-| Home/End      | Jump to first/last row    |
-| `+` / `-`     | Octave up/down            |
-| `[` / `]`     | BPM down/up               |
-| F1            | Help                      |
-| F2            | MIDI port selector        |
-| F3            | Toggle Ableton Link       |
-| Ctrl+S        | Save                      |
-| Ctrl+Z        | Undo                      |
-| Ctrl+Y        | Redo                      |
-| Ctrl+C        | Copy row                  |
-| Ctrl+V        | Paste row                 |
-| Ctrl+X        | Cut row                   |
-| Ctrl+Right/Left | Next/prev order position |
-| F9-F12        | Toggle mute ch 1-4        |
-| `(` / `)`     | Edit step down/up         |
-| F6            | Song settings dialog      |
-| F7            | Instrument list           |
-| F8            | Cycle color theme         |
-| Ctrl+E        | Export to MIDI file       |
-| Ctrl+M        | Toggle MIDI clock output  |
+| Key | Action |
+|-----|--------|
+| Space | Play / stop |
+| Esc | Toggle Normal / Insert mode |
+| Tab / Shift-Tab | Next / previous channel |
+| Arrows | Move cursor |
+| PgUp / PgDn | Jump 16 rows |
+| Home / End | First / last row |
+| `+` / `-` | Octave up / down |
+| `[` / `]` | BPM down / up |
+| `(` / `)` | Edit step down / up |
+| F1 | Help |
+| F2 | MIDI port selector |
+| F3 | Toggle Ableton Link |
+| F6 | Song settings |
+| F7 | Instrument list |
+| F8 | Cycle color theme |
+| F9-F12 | Mute channels 1-4 |
+| Ctrl+F9-F12 | Solo channels 1-4 |
+| Ctrl+S | Save |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| Ctrl+C / X / V | Copy / cut / paste row |
+| Ctrl+Left / Right | Previous / next order position |
+| Ctrl+E | Export MIDI |
+| Ctrl+W | Export WAV |
+| Ctrl+M | Toggle MIDI clock |
 
 ### Normal Mode
 
 | Key | Action |
 |-----|--------|
-| q   | Quit   |
-| Ctrl+N | New pattern (append to order) |
+| q | Quit |
+| Ctrl+N | New pattern |
 | Ctrl+D | Clone current pattern |
-| F4  | Insert order entry |
-| F5  | Remove order entry |
+| F4 / F5 | Insert / remove order entry |
 | Insert | Insert row at cursor |
 | Backspace | Delete row at cursor |
 
 ### Insert Mode
 
-| Key              | Action                          |
-|------------------|---------------------------------|
-| Piano keys       | Enter note at cursor            |
-| `0`-`9`,`a`-`f` | Hex entry (instrument/volume/effect columns) |
-| Delete/Backspace | Clear current sub-column        |
-| Ctrl+1           | Enter note-off                  |
+| Key | Action |
+|-----|--------|
+| Piano keys | Enter note |
+| `0`-`9`, `a`-`f` | Hex digit (instrument / volume / effect columns) |
+| Delete / Backspace | Clear cell |
+| Ctrl+1 | Note off (`===`) |
 
-## Cell Format
+## Requirements
 
-Each cell in the pattern grid has four columns:
+- Rust 1.70+
+- CMake 3.14+ (builds Ableton Link C++ dependency)
+- macOS/Linux: virtual MIDI ports created automatically
+- Windows: requires a third-party virtual MIDI driver (e.g., [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
 
+## Build
+
+```sh
+make build    # compile
+make run      # compile and run
+make test     # run tests (158 tests)
 ```
-C-4 01 80 1F0
- |   |  |  |
- |   |  |  +-- Effect: command (1 hex digit) + value (2 hex digits)
- |   |  +----- Volume: 00-FF (maps to MIDI velocity)
- |   +-------- Instrument: 00-FF
- +------------ Note: pitch + octave (e.g., C-4, F#5) or === (note off)
-```
-
-Empty sub-columns display as dashes: `--- -- -- ---`
-
-### Effect Commands
-
-| Cmd | Name            | Description                                      |
-|-----|-----------------|--------------------------------------------------|
-| 0xy | Arpeggio        | Cycle note, note+x, note+y semitones each tick  |
-| 1xx | Portamento up   | Slide pitch up by xx per tick                    |
-| 2xx | Portamento down | Slide pitch down by xx per tick                  |
-| 3xx | Tone portamento | Slide toward target note at speed xx             |
-| 4xy | Vibrato         | Pitch vibrato (speed x, depth y)                 |
-| 5xy | Volume slide    | Slide volume up by x, down by y per tick         |
-| Bxx | Position jump   | Jump to order position xx                        |
-| Cxx | MIDI CC         | Send CC (controller from instrument col, value xx)|
-| Dxx | Pattern break   | Break to row xx of next pattern                  |
-| Exx | Program change  | Send MIDI program change to program xx           |
-| Fxx | Set speed/tempo | xx < 20: set speed (ticks/row), xx >= 20: set BPM|
 
 ## Architecture
 
 ```
 src/
-  main.rs                 Event loop (input + mouse polling + playback tick), file arg
-  app.rs                  App state, keybindings, playback, undo/redo, clipboard, file I/O
-  midi_file.rs            Standard MIDI file (.mid) export and import
+  main.rs               Entry point, event loop, clap CLI
+  app.rs                App state, input, playback engine, undo/redo, file I/O
+  midi_file.rs          MIDI file (.mid) export and import
   audio/
-    mod.rs                SoundFont audio engine (rustysynth + cpal)
+    mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)
+    synth.rs            Built-in synthesizer (8 patches, fundsp Sequencer)
+    effects.rs          Stereo reverb (fundsp)
+  sample/
+    mod.rs              Sample loading (WAV via hound, AIFF parser, dasp conversion)
+    playback.rs         Sample voice manager, pitch-shifted rendering
+    export.rs           Offline song render to WAV
   tracker/
-    pattern.rs            Pattern grid, Cell, Note, NoteValue (serde)
-    song.rs               Song (patterns, order list, BPM, speed, save/load)
+    pattern.rs          Pattern grid, Cell, Note (serde)
+    song.rs             Song, order list, BPM, speed
   link/
-    mod.rs                Ableton Link integration (rusty_link wrapper)
+    mod.rs              Ableton Link (rusty_link)
   midi/
-    mod.rs                MidiEngine (midir wrapper, active note tracking)
+    mod.rs              MIDI output + input (midir)
   ui/
-    mod.rs                Header bar, status bar, help/port-select popups
-    pattern_editor.rs     Pattern grid renderer (mute dimming, cursor highlight)
-    theme.rs              Color theme definitions (dark, light, monokai)
+    mod.rs              Header, status bar, popups
+    pattern_editor.rs   Pattern grid renderer
+    sample_editor.rs    Sample editor (waveform, trim, loop)
+    theme.rs            Color themes (dark, light, monokai)
 ```
 
 ## License

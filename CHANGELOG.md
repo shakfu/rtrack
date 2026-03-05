@@ -4,6 +4,30 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Samples)
+- Sample loading from WAV and AIFF files via [hound](https://crates.io/crates/hound) + [dasp](https://crates.io/crates/dasp)
+  - WAV: 8/16/24/32-bit integer and float formats
+  - AIFF: uncompressed 8/16/24/32-bit with 80-bit extended sample rate parsing
+  - Automatic mono-to-stereo conversion
+- Sample playback engine with linear-interpolated pitch shifting
+  - Playback rate derived from MIDI note vs sample base note: `2^((note - base_note) / 12)`
+  - Sample rate conversion integrated into playback rate
+  - Loop support (start/end points) for sustained playback
+  - Up to 32 simultaneous voices with automatic voice stealing
+- Per-instrument sample assignment: each instrument slot can reference a sample bank slot
+  - When a note triggers with a sample-assigned instrument, audio routes to sample engine
+  - Without a sample, falls back to fundsp synth or SF2
+- Sample editor (Enter from instrument list):
+  - Editable fields: base note, trim start/end, loop enable/start/end
+  - Text-based waveform preview
+  - Tab navigation between fields, Up/Down/Left/Right to adjust values
+- WAV audio export (Ctrl+W): offline renders entire song to 16-bit stereo WAV
+  - Renders fundsp synth + sample playback + effects chain
+  - 2-second reverb tail appended automatically
+- CLI sample loading: `--sample 0:kick.wav --sample 1:snare.wav`
+- SampleEditor mode with waveform display and parameter editing
+- 22 new tests covering sample loading, playback, voice management, WAV export, waveform rendering, and AIFF parsing
+
 ### Added (Effects)
 - Sub-tick playback engine: each row is divided into `speed` ticks (default 6), enabling per-tick effect processing
 - Per-channel effect state tracking (pitch offset, volume, vibrato phase, portamento target)
@@ -14,17 +38,27 @@ All notable changes to rtrack will be documented in this file.
 - Vibrato (4xy): sine-wave pitch modulation with speed x and depth y
 - Volume slide (5xy): increases volume by x or decreases by y per tick (sent as MIDI CC 7)
 - Set speed/tempo (Fxx): xx < 0x20 sets ticks-per-row, xx >= 0x20 sets BPM
+- Note delay (6xx): delays note trigger by xx ticks within the row (works for both note-on and note-off)
 - MIDI pitch bend support in MidiEngine and AudioEngine
 - Pitch bend reset on new notes and on playback stop
-- 11 new tests covering arpeggio, portamento up/down, tone portamento, vibrato, volume slide (up/down/clamp), set speed, set tempo, sub-tick timing
+- 13 new tests covering arpeggio, portamento up/down, tone portamento, vibrato, volume slide (up/down/clamp), set speed, set tempo, sub-tick timing, note delay (on/off)
 
 ### Added (Audio Engine)
-- Built-in SoundFont audio engine via `--sf2 path/to/file.sf2` CLI flag
+- Built-in synthesizer via [fundsp](https://crates.io/crates/fundsp) -- rtrack now makes sound out of the box with no external synth or SF2 file required
+  - 8 built-in patches: Saw, Square, Sine, Triangle, Pulse, FM Bell, Organ, Noise
+  - Per-channel program change (effect `Exx`) selects patch (0-7, wraps)
+  - Polyphonic voice management via fundsp Sequencer with fade-in/out to avoid clicks
+  - Status bar shows "SYNTH" when built-in synth is active
+- Optional SoundFont audio engine via `--sf2 path/to/file.sf2` CLI flag
   - Uses [rustysynth](https://github.com/sinshu/rustysynth) (pure Rust SF2 synthesizer) + [cpal](https://crates.io/crates/cpal) (cross-platform audio output)
-  - MIDI output remains primary; audio engine runs alongside when an SF2 is specified
-  - All note playback, CC, and program change messages are sent to both MIDI and audio simultaneously
-  - Status bar shows "SF2" indicator when audio engine is active
-- 1 new test covering audio engine error handling
+  - When SF2 is loaded, it handles note playback instead of the built-in synth
+  - Status bar shows "SF2" indicator when SoundFont is active
+- Stereo reverb effects chain via fundsp, applied to mixed audio output
+  - Status bar shows "FX" when effects are enabled
+- MIDI output remains primary path; audio engine runs alongside
+- All note playback, CC, and program change messages dispatched to both MIDI and audio simultaneously
+- CLI parsing via [clap](https://crates.io/crates/clap) with `--sf2` flag and positional file argument
+- 11 new audio tests covering synth patches, voice lifecycle, polyphony, effects chain, and error handling
 
 ### Added (Tier 4 - Polish)
 - Song settings dialog (F6): edit title, BPM, speed, channel count, and default rows with Tab navigation
