@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -20,7 +21,20 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use app::App;
 
+#[derive(Parser)]
+#[command(name = "rtrack", about = "A TUI music tracker")]
+struct Cli {
+    /// Song file to open (.rtrk or .mid)
+    file: Option<PathBuf>,
+
+    /// SoundFont file for built-in audio engine
+    #[arg(long)]
+    sf2: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -28,24 +42,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let args: Vec<String> = std::env::args().collect();
-    let mut file_arg: Option<PathBuf> = None;
-    let mut sf2_path: Option<PathBuf> = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--sf2" {
-            i += 1;
-            if i < args.len() {
-                sf2_path = Some(PathBuf::from(&args[i]));
-            }
-        } else {
-            file_arg = Some(PathBuf::from(&args[i]));
-        }
-        i += 1;
-    }
-
-    let result = run_app(&mut terminal, file_arg, sf2_path);
+    let result = run_app(&mut terminal, cli.file, cli.sf2);
 
     // Restore terminal
     disable_raw_mode()?;
