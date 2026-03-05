@@ -1,0 +1,13 @@
+[package]
+name = "rtrack"
+version = "0.1.0"
+edition = "2021"
+description = "A TUI music tracker built with ratatui"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+midir = "0.10"
+anyhow = "1"
+
+[dev-dependencies]
