@@ -102,7 +102,7 @@
 - [x] ADSR envelope on sample voices -- 2ms attack, full sustain, 50ms exponential release
 - [ ] More effects -- chorus, filter, distortion/saturation
 - [ ] Per-channel effects routing -- route individual channels through different effect chains
-- [ ] Replace `Arc<Mutex<AudioState>>` with lock-free approach (triple-buffering or crossbeam channel) for real-time audio callback
+- [x] Replace `Arc<Mutex<AudioState>>` with lock-free command queue (rtrb SPSC ring buffer) for real-time audio callback
 
 ## MIDI Improvements
 

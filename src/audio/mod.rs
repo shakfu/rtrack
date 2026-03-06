@@ -4,6 +4,21 @@ pub mod synth;
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::Stream;
+use rtrb::{Producer, RingBuffer};
+use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
+
+use crate::audio::envelope::Envelope;
+use crate::sample::playback::{SamplePlaybackEngine, SampleVoice};
+use crate::sample::SampleBank;
+
+use effects::EffectsChain;
+use synth::{BuiltinSynth, SynthParams};
 
 /// Soft clamp audio sample to [-1, 1] using tanh-style saturation.
 /// Passes near-unity signals through cleanly, gently compresses values above ~0.8.
@@ -15,33 +30,31 @@ fn soft_clip(x: f32) -> f32 {
         x.signum() * (0.8 + 0.2 * ((x.abs() - 0.8) / 0.2).tanh())
     }
 }
-use std::sync::{Arc, Mutex};
-
-use anyhow::{Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Stream;
-use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
-
-use crate::sample::playback::SamplePlaybackEngine;
-use crate::sample::SampleBank;
-
-use effects::EffectsChain;
-use synth::BuiltinSynth;
 
 /// Maximum number of frames per audio callback buffer.
 /// CoreAudio on macOS typically uses 512-1024 frames; we allocate enough for 4096.
 const MAX_CALLBACK_FRAMES: usize = 4096;
 
-/// Shared state for the audio callback thread.
-struct AudioState {
-    sf2_synth: Option<Synthesizer>,
-    builtin_synth: BuiltinSynth,
-    effects: EffectsChain,
-    sample_engine: SamplePlaybackEngine,
-    sample_bank: Arc<SampleBank>,
-    // Pre-allocated scratch buffers to avoid heap allocation in the audio callback
-    scratch_left: Vec<f32>,
-    scratch_right: Vec<f32>,
+/// Ring buffer capacity for audio commands. Must be large enough to hold all
+/// commands between audio callbacks (~5-10ms at typical buffer sizes).
+const COMMAND_QUEUE_CAPACITY: usize = 256;
+
+/// Commands sent from the UI thread to the audio thread via lock-free ring buffer.
+enum AudioCommand {
+    NoteOn { channel: u8, note: u8, velocity: u8 },
+    NoteOnWithParams { channel: u8, note: u8, velocity: u8, params: Box<SynthParams> },
+    NoteOff { channel: u8, note: u8 },
+    NoteOffAllChannel { channel: u8 },
+    NoteOffAll,
+    SendCC { channel: u8, controller: u8, value: u8 },
+    ProgramChange { channel: u8, program: u8 },
+    PitchBend { channel: u8, value: u16 },
+    ToggleEffects,
+    SetSampleBank { bank: Arc<SampleBank> },
+    SampleNoteOn { sample_index: usize, note: u8, velocity: u8, channel: u8 },
+    SampleNoteOff { channel: u8, note: u8 },
+    SampleNoteOffChannel { channel: u8 },
+    SampleNoteOffAll,
 }
 
 /// Unified audio engine. Supports:
@@ -49,9 +62,14 @@ struct AudioState {
 /// - Built-in subtractive synth with ADSR + SVF filter (always available)
 /// - Sample playback engine (when instruments have samples assigned)
 /// - Effects chain (delay) applied to mixed output
+///
+/// Uses a lock-free command queue: the UI thread sends commands via a ring buffer,
+/// and the audio callback thread owns all synthesis state, draining commands at
+/// the start of each callback. No mutex is held during audio rendering.
 pub struct AudioEngine {
-    state: Arc<Mutex<AudioState>>,
+    producer: Producer<AudioCommand>,
     has_sf2: bool,
+    effects_enabled: Arc<AtomicBool>,
     sample_rate: f64,
     _stream: Stream,
 }
@@ -106,59 +124,79 @@ impl AudioEngine {
         let sample_engine = SamplePlaybackEngine::new(32);
         let sample_bank = Arc::new(SampleBank::new());
 
-        let state = Arc::new(Mutex::new(AudioState {
-            sf2_synth,
-            builtin_synth,
-            effects,
-            sample_engine,
-            sample_bank: Arc::clone(&sample_bank),
-            scratch_left: vec![0.0; MAX_CALLBACK_FRAMES],
-            scratch_right: vec![0.0; MAX_CALLBACK_FRAMES],
-        }));
+        // Lock-free command queue
+        let (producer, consumer) = RingBuffer::new(COMMAND_QUEUE_CAPACITY);
 
-        let state_for_callback = Arc::clone(&state);
+        // Shared effects-enabled flag (read by UI for status bar, toggled via command)
+        let effects_enabled = Arc::new(AtomicBool::new(true));
+        let effects_flag = Arc::clone(&effects_enabled);
+
         let stream_config: cpal::StreamConfig = config.into();
+        let callback_has_sf2 = has_sf2;
+        let callback_sr = sr_f64;
 
-        let stream = device
-            .build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let frames = data.len() / channels;
+        let stream = {
+            // All audio state moves into the closure
+            let mut sf2_synth = sf2_synth;
+            let mut builtin_synth = builtin_synth;
+            let mut effects = effects;
+            let mut sample_engine = sample_engine;
+            let mut sample_bank = sample_bank;
+            let mut consumer = consumer;
+            let mut scratch_left = vec![0.0f32; MAX_CALLBACK_FRAMES];
+            let mut scratch_right = vec![0.0f32; MAX_CALLBACK_FRAMES];
 
-                    if let Ok(mut state) = state_for_callback.try_lock() {
-                        let st = &mut *state;
+            device
+                .build_output_stream(
+                    &stream_config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let frames = data.len() / channels;
 
-                        // Grow scratch buffers if needed (rare, only on first
-                        // callback if device uses larger buffers than expected)
-                        if st.scratch_left.len() < frames {
-                            st.scratch_left.resize(frames, 0.0);
-                            st.scratch_right.resize(frames, 0.0);
+                        // Drain command queue (lock-free, no allocation)
+                        while let Ok(cmd) = consumer.pop() {
+                            process_command(
+                                cmd,
+                                &mut sf2_synth,
+                                &mut builtin_synth,
+                                &mut effects,
+                                &mut sample_engine,
+                                &mut sample_bank,
+                                callback_has_sf2,
+                                callback_sr,
+                                &effects_flag,
+                            );
                         }
 
-                        let left = &mut st.scratch_left[..frames];
-                        let right = &mut st.scratch_right[..frames];
+                        // Grow scratch buffers if needed (rare)
+                        if scratch_left.len() < frames {
+                            scratch_left.resize(frames, 0.0);
+                            scratch_right.resize(frames, 0.0);
+                        }
 
-                        // Zero the scratch buffers (no allocation)
+                        let left = &mut scratch_left[..frames];
+                        let right = &mut scratch_right[..frames];
+
+                        // Zero the scratch buffers
                         for s in left.iter_mut() { *s = 0.0; }
                         for s in right.iter_mut() { *s = 0.0; }
 
                         // Render SF2 synth
-                        if let Some(ref mut sf2) = st.sf2_synth {
+                        if let Some(ref mut sf2) = sf2_synth {
                             sf2.render(left, right);
                         }
 
                         // Render built-in synth
                         for i in 0..frames {
-                            let (l, r) = st.builtin_synth.render_sample();
+                            let (l, r) = builtin_synth.render_sample();
                             left[i] += l;
                             right[i] += r;
                         }
 
                         // Render sample playback
-                        st.sample_engine.render(&st.sample_bank, left, right);
+                        sample_engine.render(&sample_bank, left, right);
 
                         // Apply effects chain
-                        st.effects.process(left, right);
+                        effects.process(left, right);
 
                         // Interleave into output buffer with soft clamp
                         for i in 0..frames {
@@ -171,157 +209,206 @@ impl AudioEngine {
                                 data[base + ch] = 0.0;
                             }
                         }
-                    } else {
-                        // Couldn't acquire lock -- output silence
-                        for s in data.iter_mut() {
-                            *s = 0.0;
-                        }
-                    }
-                },
-                |err| eprintln!("Audio stream error: {}", err),
-                None,
-            )
-            .context("Failed to build audio output stream")?;
+                    },
+                    |err| eprintln!("Audio stream error: {}", err),
+                    None,
+                )
+                .context("Failed to build audio output stream")?
+        };
 
         stream.play().context("Failed to start audio stream")?;
 
         Ok(Self {
-            state,
+            producer,
             has_sf2,
+            effects_enabled,
             sample_rate: sr_f64,
             _stream: stream,
         })
+    }
+
+    /// Send a command to the audio thread. If the queue is full, the command is dropped.
+    #[inline]
+    fn send(&mut self, cmd: AudioCommand) {
+        let _ = self.producer.push(cmd);
     }
 
     pub fn has_sf2(&self) -> bool {
         self.has_sf2
     }
 
-    pub fn note_on(&self, channel: u8, note: u8, velocity: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
-                sf2.note_off_all_channel(channel as i32, false);
-                sf2.note_on(channel as i32, note as i32, velocity as i32);
-            }
-            if !self.has_sf2 {
-                state.builtin_synth.note_on(channel, note, velocity);
-            }
-        }
+    pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
+        self.send(AudioCommand::NoteOn { channel, note, velocity });
     }
 
-    pub fn note_on_with_params(&self, channel: u8, note: u8, velocity: u8, params: &crate::audio::synth::SynthParams) {
-        if let Ok(mut state) = self.state.lock() {
-            state.builtin_synth.note_on_with_params(channel, note, velocity, params);
-        }
+    pub fn note_on_with_params(&mut self, channel: u8, note: u8, velocity: u8, params: &SynthParams) {
+        self.send(AudioCommand::NoteOnWithParams {
+            channel, note, velocity,
+            params: Box::new(params.clone()),
+        });
     }
 
     #[allow(dead_code)]
-    pub fn note_off(&self, channel: u8, note: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
+    pub fn note_off(&mut self, channel: u8, note: u8) {
+        self.send(AudioCommand::NoteOff { channel, note });
+    }
+
+    pub fn note_off_all_channel(&mut self, channel: u8) {
+        self.send(AudioCommand::NoteOffAllChannel { channel });
+    }
+
+    pub fn note_off_all(&mut self) {
+        self.send(AudioCommand::NoteOffAll);
+    }
+
+    pub fn send_cc(&mut self, channel: u8, controller: u8, value: u8) {
+        self.send(AudioCommand::SendCC { channel, controller, value });
+    }
+
+    pub fn program_change(&mut self, channel: u8, program: u8) {
+        self.send(AudioCommand::ProgramChange { channel, program });
+    }
+
+    pub fn pitch_bend(&mut self, channel: u8, value: u16) {
+        self.send(AudioCommand::PitchBend { channel, value });
+    }
+
+    /// Toggle effects chain on/off
+    #[allow(dead_code)]
+    pub fn toggle_effects(&mut self) -> bool {
+        self.send(AudioCommand::ToggleEffects);
+        // Toggle the local flag too so the UI sees the new state immediately
+        let prev = self.effects_enabled.load(Ordering::Relaxed);
+        let new = !prev;
+        self.effects_enabled.store(new, Ordering::Relaxed);
+        new
+    }
+
+    pub fn effects_enabled(&self) -> bool {
+        self.effects_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Update the sample bank (called when samples are loaded/modified)
+    pub fn set_sample_bank(&mut self, bank: Arc<SampleBank>) {
+        self.send(AudioCommand::SetSampleBank { bank });
+    }
+
+    /// Trigger a sample voice
+    pub fn sample_note_on(&mut self, sample_index: usize, note: u8, velocity: u8, channel: u8) {
+        self.send(AudioCommand::SampleNoteOn { sample_index, note, velocity, channel });
+    }
+
+    /// Stop a sample voice
+    #[allow(dead_code)]
+    pub fn sample_note_off(&mut self, channel: u8, note: u8) {
+        self.send(AudioCommand::SampleNoteOff { channel, note });
+    }
+
+    /// Stop all sample voices for a channel
+    pub fn sample_note_off_channel(&mut self, channel: u8) {
+        self.send(AudioCommand::SampleNoteOffChannel { channel });
+    }
+
+    /// Stop all sample voices
+    pub fn sample_note_off_all(&mut self) {
+        self.send(AudioCommand::SampleNoteOffAll);
+    }
+
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+}
+
+/// Process a single command on the audio thread. Called from inside the audio callback.
+fn process_command(
+    cmd: AudioCommand,
+    sf2_synth: &mut Option<Synthesizer>,
+    builtin_synth: &mut BuiltinSynth,
+    effects: &mut EffectsChain,
+    sample_engine: &mut SamplePlaybackEngine,
+    sample_bank: &mut Arc<SampleBank>,
+    has_sf2: bool,
+    sample_rate: f64,
+    effects_flag: &AtomicBool,
+) {
+    match cmd {
+        AudioCommand::NoteOn { channel, note, velocity } => {
+            if let Some(ref mut sf2) = sf2_synth {
+                sf2.note_off_all_channel(channel as i32, false);
+                sf2.note_on(channel as i32, note as i32, velocity as i32);
+            }
+            if !has_sf2 {
+                builtin_synth.note_on(channel, note, velocity);
+            }
+        }
+        AudioCommand::NoteOnWithParams { channel, note, velocity, params } => {
+            builtin_synth.note_on_with_params(channel, note, velocity, &params);
+        }
+        AudioCommand::NoteOff { channel, note } => {
+            if let Some(ref mut sf2) = sf2_synth {
                 sf2.note_off(channel as i32, note as i32);
             }
-            if !self.has_sf2 {
-                state.builtin_synth.note_off(channel, note);
+            if !has_sf2 {
+                builtin_synth.note_off(channel, note);
             }
         }
-    }
-
-    pub fn note_off_all_channel(&self, channel: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
+        AudioCommand::NoteOffAllChannel { channel } => {
+            if let Some(ref mut sf2) = sf2_synth {
                 sf2.note_off_all_channel(channel as i32, false);
             }
-            if !self.has_sf2 {
-                state.builtin_synth.note_off_all_channel(channel);
+            if !has_sf2 {
+                builtin_synth.note_off_all_channel(channel);
             }
         }
-    }
-
-    pub fn note_off_all(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
+        AudioCommand::NoteOffAll => {
+            if let Some(ref mut sf2) = sf2_synth {
                 sf2.note_off_all(false);
             }
-            state.builtin_synth.note_off_all();
+            builtin_synth.note_off_all();
         }
-    }
-
-    pub fn send_cc(&self, channel: u8, controller: u8, value: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
+        AudioCommand::SendCC { channel, controller, value } => {
+            if let Some(ref mut sf2) = sf2_synth {
                 sf2.process_midi_message(channel as i32, 0xB0, controller as i32, value as i32);
             }
         }
-    }
-
-    pub fn program_change(&self, channel: u8, program: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
+        AudioCommand::ProgramChange { channel, program } => {
+            if let Some(ref mut sf2) = sf2_synth {
                 sf2.process_midi_message(channel as i32, 0xC0, program as i32, 0);
             }
-            state.builtin_synth.program_change(channel, program);
+            builtin_synth.program_change(channel, program);
         }
-    }
-
-    pub fn pitch_bend(&self, channel: u8, value: u16) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(ref mut sf2) = state.sf2_synth {
+        AudioCommand::PitchBend { channel, value } => {
+            if let Some(ref mut sf2) = sf2_synth {
                 let lsb = (value & 0x7F) as i32;
                 let msb = ((value >> 7) & 0x7F) as i32;
                 sf2.process_midi_message(channel as i32, 0xE0, lsb, msb);
             }
         }
-    }
-
-    /// Toggle effects chain on/off
-    #[allow(dead_code)]
-    pub fn toggle_effects(&self) -> bool {
-        if let Ok(mut state) = self.state.lock() {
-            state.effects.enabled = !state.effects.enabled;
-            state.effects.enabled
-        } else {
-            false
+        AudioCommand::ToggleEffects => {
+            effects.enabled = !effects.enabled;
+            effects_flag.store(effects.enabled, Ordering::Relaxed);
         }
-    }
-
-    pub fn effects_enabled(&self) -> bool {
-        if let Ok(state) = self.state.lock() {
-            state.effects.enabled
-        } else {
-            false
+        AudioCommand::SetSampleBank { bank } => {
+            *sample_bank = bank;
         }
-    }
-
-    /// Update the sample bank (called when samples are loaded/modified)
-    pub fn set_sample_bank(&self, bank: Arc<SampleBank>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.sample_bank = bank;
-        }
-    }
-
-    /// Trigger a sample voice
-    pub fn sample_note_on(&self, sample_index: usize, note: u8, velocity: u8, channel: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(sample) = state.sample_bank.get(sample_index) {
-                // We need the sample data but can't hold both borrows, so clone the needed info
+        AudioCommand::SampleNoteOn { sample_index, note, velocity, channel } => {
+            if let Some(sample) = sample_bank.get(sample_index) {
                 let base_note = sample.base_note;
-                let sample_rate = sample.sample_rate;
+                let sr = sample.sample_rate;
                 let trim_start = sample.trim_start;
                 let pitch_ratio = 2.0_f64.powf((note as f64 - base_note as f64) / 12.0);
-                let rate_ratio = sample_rate / self.sample_rate;
+                let rate_ratio = sr / sample_rate;
                 let rate = pitch_ratio * rate_ratio;
                 let vel = velocity as f32 / 127.0;
 
-                // Kill existing voice for same channel+note
-                state.sample_engine.note_off(channel, note);
+                sample_engine.note_off(channel, note);
 
                 // Evict quietest voice if at capacity
-                if state.sample_engine.voices.len() >= state.sample_engine.max_voices {
-                    if let Some(idx) = state.sample_engine.voices.iter().position(|v| !v.active) {
-                        state.sample_engine.voices.remove(idx);
+                if sample_engine.voices.len() >= sample_engine.max_voices {
+                    if let Some(idx) = sample_engine.voices.iter().position(|v| !v.active) {
+                        sample_engine.voices.remove(idx);
                     } else {
-                        let quietest = state.sample_engine.voices.iter()
+                        let quietest = sample_engine.voices.iter()
                             .enumerate()
                             .min_by(|(_, a), (_, b)| {
                                 let a_level = a.envelope.level * a.velocity;
@@ -330,14 +417,12 @@ impl AudioEngine {
                             })
                             .map(|(i, _)| i);
                         if let Some(idx) = quietest {
-                            state.sample_engine.voices.remove(idx);
+                            sample_engine.voices.remove(idx);
                         }
                     }
                 }
 
-                use crate::audio::envelope::Envelope;
-                use crate::sample::playback::SampleVoice;
-                state.sample_engine.voices.push(SampleVoice {
+                sample_engine.voices.push(SampleVoice {
                     sample_index,
                     position: trim_start as f64,
                     rate,
@@ -345,36 +430,19 @@ impl AudioEngine {
                     channel,
                     note,
                     active: true,
-                    envelope: Envelope::sample_default(self.sample_rate as f32),
+                    envelope: Envelope::sample_default(sample_rate as f32),
                 });
             }
         }
-    }
-
-    /// Stop a sample voice
-    #[allow(dead_code)]
-    pub fn sample_note_off(&self, channel: u8, note: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            state.sample_engine.note_off(channel, note);
+        AudioCommand::SampleNoteOff { channel, note } => {
+            sample_engine.note_off(channel, note);
         }
-    }
-
-    /// Stop all sample voices for a channel
-    pub fn sample_note_off_channel(&self, channel: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            state.sample_engine.note_off_channel(channel);
+        AudioCommand::SampleNoteOffChannel { channel } => {
+            sample_engine.note_off_channel(channel);
         }
-    }
-
-    /// Stop all sample voices
-    pub fn sample_note_off_all(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.sample_engine.note_off_all();
+        AudioCommand::SampleNoteOffAll => {
+            sample_engine.note_off_all();
         }
-    }
-
-    pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
     }
 }
 

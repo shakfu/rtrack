@@ -243,7 +243,7 @@ impl App {
                 }
             }
             self.sample_bank = Arc::new(bank);
-            if let Some(ref audio) = self.audio {
+            if let Some(ref mut audio) = self.audio {
                 audio.set_sample_bank(Arc::clone(&self.sample_bank));
             }
         } else {

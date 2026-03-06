@@ -442,8 +442,8 @@ impl App {
     }
 
     #[allow(dead_code)]
-    pub fn toggle_audio_effects(&self) -> bool {
-        self.audio.as_ref().map_or(false, |a| a.toggle_effects())
+    pub fn toggle_audio_effects(&mut self) -> bool {
+        self.audio.as_mut().map_or(false, |a| a.toggle_effects())
     }
 
     // -- Sample loading --
@@ -466,7 +466,7 @@ impl App {
                 }
                 self.sample_bank = Arc::new(bank);
                 // Push updated bank to audio engine
-                if let Some(ref audio) = self.audio {
+                if let Some(ref mut audio) = self.audio {
                     audio.set_sample_bank(Arc::clone(&self.sample_bank));
                 }
                 self.status_message = Some(format!("Loaded sample: {}", name));
@@ -496,7 +496,7 @@ impl App {
                     }
                 }
                 self.sample_bank = Arc::new(bank);
-                if let Some(ref audio) = self.audio {
+                if let Some(ref mut audio) = self.audio {
                     audio.set_sample_bank(Arc::clone(&self.sample_bank));
                 }
                 // Apply BPM from metadata if provided
@@ -572,7 +572,7 @@ impl App {
 
     pub(crate) fn send_note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         let _ = self.midi.note_on(channel, note, velocity);
-        if let Some(ref audio) = self.audio {
+        if let Some(ref mut audio) = self.audio {
             audio.note_on(channel, note, velocity);
         }
     }
@@ -586,7 +586,7 @@ impl App {
         if let Some(sid) = inst.and_then(|i| i.sample_index) {
             if self.sample_bank.get(sid).is_some() {
                 let _ = self.midi.note_on(channel, note, velocity);
-                if let Some(ref audio) = self.audio {
+                if let Some(ref mut audio) = self.audio {
                     audio.sample_note_on(sid, note, velocity, channel);
                 }
                 return;
@@ -596,7 +596,7 @@ impl App {
         // Route 2: custom synth params
         if let Some(ref params) = inst.and_then(|i| i.synth_params.as_ref()) {
             let _ = self.midi.note_on(channel, note, velocity);
-            if let Some(ref audio) = self.audio {
+            if let Some(ref mut audio) = self.audio {
                 audio.note_on_with_params(channel, note, velocity, params);
             }
             return;
@@ -608,7 +608,7 @@ impl App {
 
     pub(crate) fn send_channel_note_off(&mut self, channel: u8) {
         let _ = self.midi.channel_note_off(channel);
-        if let Some(ref audio) = self.audio {
+        if let Some(ref mut audio) = self.audio {
             audio.note_off_all_channel(channel);
             audio.sample_note_off_channel(channel);
         }
@@ -645,7 +645,7 @@ impl App {
 
     pub(crate) fn send_all_notes_off(&mut self) {
         let _ = self.midi.all_notes_off();
-        if let Some(ref audio) = self.audio {
+        if let Some(ref mut audio) = self.audio {
             audio.note_off_all();
             audio.sample_note_off_all();
         }
@@ -653,21 +653,21 @@ impl App {
 
     pub(crate) fn send_cc(&mut self, channel: u8, controller: u8, value: u8) {
         let _ = self.midi.send_cc(channel, controller, value);
-        if let Some(ref audio) = self.audio {
+        if let Some(ref mut audio) = self.audio {
             audio.send_cc(channel, controller, value);
         }
     }
 
     pub(crate) fn send_program_change(&mut self, channel: u8, program: u8) {
         let _ = self.midi.program_change(channel, program);
-        if let Some(ref audio) = self.audio {
+        if let Some(ref mut audio) = self.audio {
             audio.program_change(channel, program);
         }
     }
 
     pub(crate) fn send_pitch_bend(&mut self, channel: u8, value: u16) {
         let _ = self.midi.pitch_bend(channel, value);
-        if let Some(ref audio) = self.audio {
+        if let Some(ref mut audio) = self.audio {
             audio.pitch_bend(channel, value);
         }
     }
@@ -961,7 +961,7 @@ impl App {
                     }
                 }
                 self.sample_bank = Arc::new(bank);
-                if let Some(ref audio) = self.audio {
+                if let Some(ref mut audio) = self.audio {
                     audio.set_sample_bank(Arc::clone(&self.sample_bank));
                 }
 

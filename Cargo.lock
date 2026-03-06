@@ -1508,11 +1508,18 @@ dependencies = [
  "hound",
  "midir",
  "ratatui",
+ "rtrb",
  "rusty_link",
  "rustysynth",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7204ed6420f698836b76d4d5c2ec5dec7585fd5c3a788fd1cde855d1de598239"
 
 [[package]]
 name = "rtsan-standalone"

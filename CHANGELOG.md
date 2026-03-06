@@ -6,6 +6,7 @@ All notable changes to rtrack will be documented in this file.
 
 ### Added (Architecture & Audio Improvements)
 
+- Lock-free audio engine: replaced `Arc<Mutex<AudioState>>` with a lock-free SPSC command queue (`rtrb`). UI thread sends commands (note on/off, CC, pitch bend, etc.) via ring buffer; audio callback owns all synth/sample state and drains commands each callback. No mutex held during rendering.
 - Shared ADSR envelope: extracted unified `Envelope` type (`src/audio/envelope.rs`) used by both the built-in synth and sample playback engine, eliminating 90+ lines of duplicated envelope code
 - Per-channel volume: `channel_volumes` field on App, applied as velocity scaling before note-on during playback; resizes with channel count changes
 - Cubic hermite sample interpolation: 4-point Catmull-Rom interpolation replaces linear, reducing aliasing at high pitch ratios
