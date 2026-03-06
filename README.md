@@ -32,7 +32,7 @@ rtrack supports three ways to produce sound, and they can be combined:
 
 | Mode | How to activate | What it does |
 |------|----------------|--------------|
-| **Built-in synth** | Default (always on) | 8 waveform patches via [fundsp](https://crates.io/crates/fundsp). Select with `Exx` effect (0-7). |
+| **Built-in synth** | Default (always on) | 9 waveform patches with ADSR envelopes and SVF/Moog filters. Select with `Exx` effect (0-8). |
 | **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
 | **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
@@ -255,7 +255,8 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `arpeggio-demo.rtrk` | Effects -- `0xy` arpeggio, `4xy` vibrato, `Exx` program change |
 | `portamento-slide.rtrk` | Effects -- `1xx` porta up, `3xx` tone portamento, `5xy` volume slide |
 | `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `Bxx` position jump |
-| `all-patches.rtrk` | All 8 built-in synth patches cycled with `Exx` program change |
+| `all-patches.rtrk` | All 9 built-in synth patches cycled with `Exx` program change |
+| `fundsp-pad.rtrk` | FundspPad patch (program 8) -- pad chord progression using fundsp synthesis |
 | `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
 
 Load any example:
@@ -276,7 +277,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (175 tests)
+make test     # run tests (177 tests)
 ```
 
 ## Architecture
@@ -284,11 +285,14 @@ make test     # run tests (175 tests)
 ```text
 src/
   main.rs               Entry point, event loop, clap CLI
-  app.rs                App state, input, playback engine, undo/redo, file I/O
+  app/
+    mod.rs              App state, undo/redo, file I/O, song management
+    input.rs            Keyboard/mouse input handling, mode dispatch
+    playback.rs         Playback engine, tick processing, effects
   midi_file.rs          MIDI file (.mid) export and import
   audio/
     mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)
-    synth.rs            Built-in synthesizer (8 patches, fundsp Sequencer)
+    synth.rs            Built-in subtractive synth (9 patches, PolyBLEP + SVF/Moog + ADSR)
     effects.rs          Stereo delay effect (fundsp)
   sample/
     mod.rs              Sample loading (WAV via hound, AIFF parser, dasp conversion)

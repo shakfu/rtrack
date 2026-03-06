@@ -1,6 +1,9 @@
 /// Built-in subtractive synthesizer with ADSR envelopes and state-variable filter.
-/// Provides 8 waveform patches, each with per-patch envelope and filter parameters.
+/// Provides 9 waveform patches (8 manual + 1 fundsp-based), each with per-patch
+/// envelope and filter parameters.
 /// Voice management is manual (one voice per tracker channel, polyphony via channels).
+
+use fundsp::prelude32::*;
 
 const MAX_VOICES: usize = 32;
 const VOICE_GAIN: f32 = 0.25;
@@ -16,11 +19,13 @@ pub enum Patch {
     FmBell,
     Organ,
     Noise,
+    /// fundsp-based synthesis: saw + moog filter, proving fundsp DSP pipeline
+    FundspPad,
 }
 
 impl Patch {
     pub fn from_program(program: u8) -> Self {
-        match program % 8 {
+        match program % 9 {
             0 => Patch::Saw,
             1 => Patch::Square,
             2 => Patch::Sine,
@@ -29,8 +34,14 @@ impl Patch {
             5 => Patch::FmBell,
             6 => Patch::Organ,
             7 => Patch::Noise,
+            8 => Patch::FundspPad,
             _ => Patch::Saw,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn count() -> u8 {
+        9
     }
 
     #[allow(dead_code)]
@@ -44,6 +55,7 @@ impl Patch {
             Patch::FmBell => "FM Bell",
             Patch::Organ => "Organ",
             Patch::Noise => "Noise",
+            Patch::FundspPad => "Fundsp Pad",
         }
     }
 }
@@ -129,6 +141,13 @@ fn patch_params(patch: Patch) -> PatchParams {
             filter_env_amount: 3.0,
             detune_cents: 0.0,
         },
+        Patch::FundspPad => PatchParams {
+            env: EnvParams { attack: 0.05, decay: 0.3, sustain: 0.6, release: 0.4 },
+            filter_cutoff_mul: 6.0,
+            filter_resonance: 0.3,
+            filter_env_amount: 2.0,
+            detune_cents: 0.0, // fundsp handles its own oscillator
+        },
     }
 }
 
@@ -204,7 +223,6 @@ impl NoiseGen {
 }
 
 /// A single synth voice
-#[derive(Clone)]
 struct Voice {
     active: bool,
     channel: u8,
@@ -229,6 +247,9 @@ struct Voice {
     // Noise generator (for Noise patch)
     noise: NoiseGen,
 
+    // fundsp AudioUnit (for FundspPad patch)
+    fundsp_unit: Option<Box<dyn AudioUnit>>,
+
     sample_rate: f32,
 }
 
@@ -236,6 +257,24 @@ impl Voice {
     fn new(channel: u8, note: u8, velocity: f32, patch: Patch, sample_rate: f32) -> Self {
         let frequency = midi_to_freq(note as f32);
         let params = patch_params(patch);
+
+        // Build fundsp AudioUnit for FundspPad patch
+        let fundsp_unit = if patch == Patch::FundspPad {
+            let freq = frequency;
+            let cutoff = freq * params.filter_cutoff_mul;
+            let res = params.filter_resonance;
+            // Two detuned saws summed, into moog low-pass filter
+            let mut unit: Box<dyn AudioUnit> = Box::new(
+                ((constant(freq) >> saw()) + (constant(freq * 2.01) >> saw()) * 0.5
+                    | constant(cutoff) | constant(res))
+                    >> moog()
+            );
+            unit.set_sample_rate(sample_rate as f64);
+            Some(unit)
+        } else {
+            None
+        };
+
         Self {
             active: true,
             channel,
@@ -251,6 +290,7 @@ impl Voice {
             env_level: 0.0,
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
+            fundsp_unit,
             sample_rate,
         }
     }
@@ -395,9 +435,20 @@ impl Voice {
             Patch::Noise => {
                 self.noise.next()
             }
+            Patch::FundspPad => {
+                // fundsp handles oscillator + filter; we apply our ADSR envelope
+                if let Some(ref mut unit) = self.fundsp_unit {
+                    let mut output = [0f32; 1];
+                    unit.tick(&[], &mut output);
+                    let gain = self.velocity * self.env_level * VOICE_GAIN;
+                    let sample = output[0] * gain;
+                    return (sample, sample);
+                }
+                return (0.0, 0.0);
+            }
         };
 
-        // -- Filter --
+        // -- Filter (manual patches only) --
         // Base cutoff = note frequency * multiplier
         // Envelope modulates cutoff by filter_env_amount octaves
         let env_mod = self.env_level * self.params.filter_env_amount;
@@ -581,7 +632,8 @@ mod tests {
     fn test_patch_from_program() {
         assert!(matches!(Patch::from_program(0), Patch::Saw));
         assert!(matches!(Patch::from_program(2), Patch::Sine));
-        assert!(matches!(Patch::from_program(8), Patch::Saw)); // wraps
+        assert!(matches!(Patch::from_program(8), Patch::FundspPad));
+        assert!(matches!(Patch::from_program(9), Patch::Saw)); // wraps
     }
 
     #[test]
@@ -654,7 +706,7 @@ mod tests {
     #[test]
     fn test_all_patches_produce_audio() {
         let sr = 44100.0;
-        for prog in 0..8u8 {
+        for prog in 0..Patch::count() {
             let mut synth = BuiltinSynth::new(sr);
             synth.program_change(0, prog);
             synth.note_on(0, 60, 127);

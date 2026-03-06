@@ -4,6 +4,37 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Built-in Synth Rewrite)
+
+- Replaced fundsp Sequencer-based synth with custom subtractive synthesizer
+  - PolyBLEP anti-aliased oscillators (saw, square, pulse) for clean waveforms
+  - State-variable filter (SVF) with 2x oversampling per voice
+  - Per-voice ADSR envelope with exponential release
+  - Filter envelope modulation: cutoff tracks envelope depth in octaves
+  - Detuned second oscillator for chorus/thickening (per-patch configurable)
+  - Manual voice pool (up to 32 voices) with automatic voice stealing
+- 9 built-in patches (up from 8), selected via `Exx` program change (0-8):
+  - 0: Saw -- PolyBLEP, detuned pair, filtered
+  - 1: Square -- PolyBLEP, detuned pair, filtered
+  - 2: Sine -- clean, wide-open filter
+  - 3: Triangle -- detuned pair, lightly filtered
+  - 4: Pulse -- 25% duty cycle, heavy filter envelope
+  - 5: FM Bell -- 2-operator FM (ratio 3.5), envelope-modulated depth
+  - 6: Organ -- additive (3 harmonics)
+  - 7: Noise -- LCG noise through resonant filter with envelope
+  - 8: Fundsp Pad -- fundsp-based synthesis (detuned saws through Moog filter)
+- FundspPad patch proves fundsp synthesis works correctly in the audio callback without the Sequencer pattern that caused the original issues
+- New example: `examples/fundsp-pad.rtrk` -- pad chord progression (C-Am-F-G) using the FundspPad patch
+- Updated `examples/all-patches.rtrk` to include all 9 patches
+
+### Changed (App Module Split)
+
+- Split monolithic `src/app.rs` (3793 lines) into focused submodules:
+  - `src/app/mod.rs` -- App struct, state management, undo/redo, file I/O, tests
+  - `src/app/input.rs` -- keyboard/mouse input handling, mode dispatch
+  - `src/app/playback.rs` -- playback engine, tick processing, effect state
+- No public API changes; all existing tests continue to pass
+
 ### Fixed
 - Fixed audio distortion caused by heavy FDN reverb (`reverb_stereo`) in the real-time audio callback. Replaced with a lightweight stereo delay effect (80ms L / 120ms R, 15% wet mix).
 - Fixed notes sustaining indefinitely when entered in the tracker. Added preview note tracking with 250ms auto-expiry so notes are properly released after entry.
@@ -14,7 +45,7 @@ All notable changes to rtrack will be documented in this file.
 ### Changed
 - Added `[profile.dev] opt-level = 1` so the rtrack crate's own audio callback code is optimized in debug builds, preventing buffer underruns.
 - Effects chain now uses stereo delay instead of FDN reverb for reliable real-time performance.
-- Test count increased from 165 to 175.
+- Test count increased from 165 to 177.
 
 ### Added (Headless Playback)
 
@@ -91,10 +122,10 @@ All notable changes to rtrack will be documented in this file.
 
 ### Added (Audio Engine)
 
-- Built-in synthesizer via [fundsp](https://crates.io/crates/fundsp) -- rtrack now makes sound out of the box with no external synth or SF2 file required
-  - 8 built-in patches: Saw, Square, Sine, Triangle, Pulse, FM Bell, Organ, Noise
-  - Per-channel program change (effect `Exx`) selects patch (0-7, wraps)
-  - Polyphonic voice management via fundsp Sequencer with fade-in/out to avoid clicks
+- Built-in synthesizer -- rtrack now makes sound out of the box with no external synth or SF2 file required
+  - 9 built-in patches: Saw, Square, Sine, Triangle, Pulse, FM Bell, Organ, Noise, Fundsp Pad
+  - Per-channel program change (effect `Exx`) selects patch (0-8, wraps)
+  - Polyphonic voice management with per-voice ADSR envelopes and filtered output
   - Status bar shows "SYNTH" when built-in synth is active
 - Optional SoundFont audio engine via `--sf2 path/to/file.sf2` CLI flag
   - Uses [rustysynth](https://github.com/sinshu/rustysynth) (pure Rust SF2 synthesizer) + [cpal](https://crates.io/crates/cpal) (cross-platform audio output)
