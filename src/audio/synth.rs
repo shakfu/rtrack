@@ -6,6 +6,8 @@
 use fundsp::prelude32::*;
 use serde::{Deserialize, Serialize};
 
+use crate::audio::envelope::{EnvStage, Envelope};
+
 const MAX_VOICES: usize = 32;
 const VOICE_GAIN: f32 = 0.25;
 
@@ -190,16 +192,6 @@ fn midi_to_freq(note: f32) -> f32 {
     440.0 * 2.0_f32.powf((note - 69.0) / 12.0)
 }
 
-/// ADSR envelope stage
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnvStage {
-    Attack,
-    Decay,
-    Sustain,
-    Release,
-    Off,
-}
-
 /// State-variable filter state
 #[derive(Clone)]
 struct SvfState {
@@ -274,9 +266,8 @@ struct Voice {
     // Pitch offset in semitones (from effects like portamento, vibrato, arpeggio)
     pitch_offset: f32,
 
-    // ADSR envelope
-    env_stage: EnvStage,
-    env_level: f32,
+    // ADSR envelope (shared Envelope type)
+    envelope: Envelope,
 
     // Filter
     filter: SvfState,
@@ -332,8 +323,7 @@ impl Voice {
             phase2: 0.0,
             fm_mod_phase: 0.0,
             pitch_offset: 0.0,
-            env_stage: EnvStage::Attack,
-            env_level: 0.0,
+            envelope: Envelope::new(params.env.attack, params.env.decay, params.env.sustain, params.env.release, sample_rate),
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
             fundsp_unit,
@@ -343,15 +333,13 @@ impl Voice {
 
     /// Trigger the release phase
     fn release(&mut self) {
-        if self.env_stage != EnvStage::Off {
-            self.env_stage = EnvStage::Release;
-        }
+        self.envelope.release();
     }
 
     /// Generate one stereo sample pair
     #[inline]
     fn tick(&mut self) -> (f32, f32) {
-        if !self.active || self.env_stage == EnvStage::Off {
+        if !self.active || self.envelope.stage == EnvStage::Off {
             return (0.0, 0.0);
         }
 
@@ -362,55 +350,11 @@ impl Voice {
             self.frequency
         };
 
-        // -- ADSR envelope --
-        let env = &self.params.env;
-        match self.env_stage {
-            EnvStage::Attack => {
-                if env.attack > 0.0 {
-                    self.env_level += 1.0 / (env.attack * sr);
-                    if self.env_level >= 1.0 {
-                        self.env_level = 1.0;
-                        self.env_stage = EnvStage::Decay;
-                    }
-                } else {
-                    self.env_level = 1.0;
-                    self.env_stage = EnvStage::Decay;
-                }
-            }
-            EnvStage::Decay => {
-                if env.decay > 0.0 {
-                    self.env_level -= (1.0 - env.sustain) / (env.decay * sr);
-                    if self.env_level <= env.sustain {
-                        self.env_level = env.sustain;
-                        self.env_stage = EnvStage::Sustain;
-                    }
-                } else {
-                    self.env_level = env.sustain;
-                    self.env_stage = EnvStage::Sustain;
-                }
-            }
-            EnvStage::Sustain => {
-                // Hold at sustain level
-            }
-            EnvStage::Release => {
-                if env.release > 0.0 {
-                    self.env_level -= self.env_level / (env.release * sr);
-                    if self.env_level < 0.001 {
-                        self.env_level = 0.0;
-                        self.env_stage = EnvStage::Off;
-                        self.active = false;
-                        return (0.0, 0.0);
-                    }
-                } else {
-                    self.env_level = 0.0;
-                    self.env_stage = EnvStage::Off;
-                    self.active = false;
-                    return (0.0, 0.0);
-                }
-            }
-            EnvStage::Off => {
-                return (0.0, 0.0);
-            }
+        // -- ADSR envelope (shared Envelope type) --
+        let env_level = self.envelope.tick();
+        if !self.envelope.is_active() {
+            self.active = false;
+            return (0.0, 0.0);
         }
 
         // -- Oscillator --
@@ -467,7 +411,7 @@ impl Voice {
             Patch::FmBell => {
                 // FM: carrier = sine at freq, modulator = sine at freq*3.5
                 let fm_ratio = 3.5;
-                let mod_index = 2.0 * self.env_level; // FM depth follows envelope
+                let mod_index = 2.0 * env_level; // FM depth follows envelope
                 let fm_inc = freq as f64 * fm_ratio / sr as f64;
                 self.fm_mod_phase += fm_inc;
                 if self.fm_mod_phase >= 1.0 { self.fm_mod_phase -= 1.0; }
@@ -490,7 +434,7 @@ impl Voice {
                 if let Some(ref mut unit) = self.fundsp_unit {
                     let mut output = [0f32; 1];
                     unit.tick(&[], &mut output);
-                    let gain = self.velocity * self.env_level * VOICE_GAIN;
+                    let gain = self.velocity * env_level * VOICE_GAIN;
                     let sample = output[0] * gain;
                     return (sample, sample);
                 }
@@ -501,7 +445,7 @@ impl Voice {
         // -- Filter (manual patches only) --
         // Base cutoff = note frequency * multiplier
         // Envelope modulates cutoff by filter_env_amount octaves
-        let env_mod = self.env_level * self.params.filter_env_amount;
+        let env_mod = env_level * self.params.filter_env_amount;
         let cutoff = freq * self.params.filter_cutoff_mul * 2.0_f32.powf(env_mod);
         // Velocity also opens the filter
         let vel_mod = 0.5 + 0.5 * self.velocity;
@@ -510,7 +454,7 @@ impl Voice {
         let filtered = self.filter.tick_lowpass(osc, final_cutoff, self.params.filter_resonance, sr);
 
         // -- Output --
-        let gain = self.velocity * self.env_level * VOICE_GAIN;
+        let gain = self.velocity * env_level * VOICE_GAIN;
         let sample = filtered * gain;
         (sample, sample) // mono -> stereo
     }
@@ -625,12 +569,23 @@ impl BuiltinSynth {
     }
 
     fn push_voice(&mut self, voice: Voice) {
-        // Evict oldest inactive voice if at capacity
         if self.voices.len() >= MAX_VOICES {
+            // First try to remove an inactive voice
             if let Some(idx) = self.voices.iter().position(|v| !v.active) {
                 self.voices.remove(idx);
             } else {
-                self.voices.remove(0); // steal oldest
+                // Steal the quietest voice (lowest envelope level * velocity)
+                let quietest = self.voices.iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        let a_level = a.envelope.level * a.velocity;
+                        let b_level = b.envelope.level * b.velocity;
+                        a_level.partial_cmp(&b_level).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i);
+                if let Some(idx) = quietest {
+                    self.voices.remove(idx);
+                }
             }
         }
         self.voices.push(voice);
@@ -701,7 +656,7 @@ impl BuiltinSynth {
         }
 
         // Garbage collect dead voices periodically
-        self.voices.retain(|v| v.active || v.env_stage != EnvStage::Off);
+        self.voices.retain(|v| v.active || v.envelope.stage != EnvStage::Off);
 
         (left, right)
     }
@@ -742,7 +697,7 @@ mod tests {
         assert!(synth.voices[0].active);
 
         synth.note_off(0, 60);
-        assert_eq!(synth.voices[0].env_stage, EnvStage::Release);
+        assert_eq!(synth.voices[0].envelope.stage, EnvStage::Release);
 
         // Render until voice dies
         for _ in 0..44100 {
@@ -775,7 +730,7 @@ mod tests {
 
         synth.note_on(0, 64, 100);
         // Old voice enters release, new voice is active
-        let active: Vec<_> = synth.voices.iter().filter(|v| v.active && v.env_stage != EnvStage::Release).collect();
+        let active: Vec<_> = synth.voices.iter().filter(|v| v.active && v.envelope.stage != EnvStage::Release).collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].note, 64);
     }
@@ -788,7 +743,7 @@ mod tests {
         synth.note_off_all_channel(0);
 
         let active_non_releasing: Vec<_> = synth.voices.iter()
-            .filter(|v| v.active && v.env_stage != EnvStage::Release)
+            .filter(|v| v.active && v.envelope.stage != EnvStage::Release)
             .collect();
         assert_eq!(active_non_releasing.len(), 1);
         assert_eq!(active_non_releasing[0].channel, 1);
@@ -872,23 +827,23 @@ mod tests {
         for _ in 0..200 {
             synth.render_sample();
         }
-        let attack_level = synth.voices[0].env_level;
+        let attack_level = synth.voices[0].envelope.level;
         assert!(attack_level > 0.0, "Envelope should be rising during attack");
 
         // Wait for attack to finish and enter sustain
         for _ in 0..4410 {
             synth.render_sample();
         }
-        let sustain_level = synth.voices[0].env_level;
+        let sustain_level = synth.voices[0].envelope.level;
         // Sine patch has sustain=1.0, so should be at ~1.0
         assert!(sustain_level > 0.9, "Sine sustain should be near 1.0, got {:.4}", sustain_level);
 
         // Release
         synth.note_off(0, 69);
-        let mut prev_env = synth.voices[0].env_level;
+        let mut prev_env = synth.voices[0].envelope.level;
         for _ in 0..1000 {
             synth.render_sample();
-            let cur = synth.voices.get(0).map(|v| v.env_level).unwrap_or(0.0);
+            let cur = synth.voices.get(0).map(|v| v.envelope.level).unwrap_or(0.0);
             assert!(cur <= prev_env + 0.001, "Envelope should decrease during release");
             prev_env = cur;
         }

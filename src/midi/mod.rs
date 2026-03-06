@@ -25,6 +25,10 @@ pub struct MidiEngine {
     pub port_name: Option<String>,
     /// Whether to send MIDI clock messages
     pub clock_enabled: bool,
+    /// Count of consecutive send failures (reset on success)
+    pub send_error_count: u32,
+    /// Last error message
+    pub last_error: Option<String>,
 }
 
 impl MidiEngine {
@@ -34,6 +38,8 @@ impl MidiEngine {
             active_notes: [None; 16],
             port_name: None,
             clock_enabled: false,
+            send_error_count: 0,
+            last_error: None,
         }
     }
 
@@ -212,10 +218,20 @@ impl MidiEngine {
 
     fn send(&mut self, message: &[u8]) -> Result<()> {
         if let Some(conn) = &mut self.connection {
-            conn.send(message)
-                .map_err(|e| anyhow::anyhow!("MIDI send error: {}", e))?;
+            match conn.send(message) {
+                Ok(()) => {
+                    self.send_error_count = 0;
+                    Ok(())
+                }
+                Err(e) => {
+                    self.send_error_count += 1;
+                    self.last_error = Some(format!("MIDI: {}", e));
+                    Err(anyhow::anyhow!("MIDI send error: {}", e))
+                }
+            }
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 }
 

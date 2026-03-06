@@ -1,95 +1,8 @@
 use super::{Sample, SampleBank};
+use crate::audio::envelope::Envelope;
 
-/// ADSR envelope stage for sample voices
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SampleEnvStage {
-    Attack,
-    Decay,
-    Sustain,
-    Release,
-    Off,
-}
-
-/// Simple ADSR envelope for sample voices
-#[derive(Clone)]
-pub struct SampleEnvelope {
-    pub stage: SampleEnvStage,
-    pub level: f32,
-    pub attack: f32,  // seconds
-    pub decay: f32,   // seconds
-    pub sustain: f32,  // 0..1
-    pub release: f32, // seconds
-    sample_rate: f32,
-}
-
-impl SampleEnvelope {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            stage: SampleEnvStage::Attack,
-            level: 0.0,
-            attack: 0.002,   // 2ms attack (avoid click)
-            decay: 0.0,
-            sustain: 1.0,
-            release: 0.05,   // 50ms release (avoid click on note-off)
-            sample_rate,
-        }
-    }
-
-    fn release(&mut self) {
-        if self.stage != SampleEnvStage::Off {
-            self.stage = SampleEnvStage::Release;
-        }
-    }
-
-    fn is_active(&self) -> bool {
-        self.stage != SampleEnvStage::Off
-    }
-
-    #[inline]
-    fn tick(&mut self) -> f32 {
-        match self.stage {
-            SampleEnvStage::Attack => {
-                if self.attack > 0.0 {
-                    self.level += 1.0 / (self.attack * self.sample_rate);
-                    if self.level >= 1.0 {
-                        self.level = 1.0;
-                        self.stage = SampleEnvStage::Decay;
-                    }
-                } else {
-                    self.level = 1.0;
-                    self.stage = SampleEnvStage::Decay;
-                }
-            }
-            SampleEnvStage::Decay => {
-                if self.decay > 0.0 {
-                    self.level -= (1.0 - self.sustain) / (self.decay * self.sample_rate);
-                    if self.level <= self.sustain {
-                        self.level = self.sustain;
-                        self.stage = SampleEnvStage::Sustain;
-                    }
-                } else {
-                    self.level = self.sustain;
-                    self.stage = SampleEnvStage::Sustain;
-                }
-            }
-            SampleEnvStage::Sustain => {}
-            SampleEnvStage::Release => {
-                if self.release > 0.0 {
-                    self.level -= self.level / (self.release * self.sample_rate);
-                    if self.level < 0.001 {
-                        self.level = 0.0;
-                        self.stage = SampleEnvStage::Off;
-                    }
-                } else {
-                    self.level = 0.0;
-                    self.stage = SampleEnvStage::Off;
-                }
-            }
-            SampleEnvStage::Off => {}
-        }
-        self.level
-    }
-}
+/// Type alias for backward compatibility (previously a separate struct)
+pub type SampleEnvelope = Envelope;
 
 /// A single playing voice (one sample instance)
 pub struct SampleVoice {
@@ -104,6 +17,17 @@ pub struct SampleVoice {
     pub note: u8,
     pub active: bool,
     pub envelope: SampleEnvelope,
+}
+
+/// Cubic Hermite interpolation between 4 points.
+/// `t` is the fractional position between p1 and p2 (0..1).
+#[inline]
+fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0 + 0.5 * p2;
+    let d = p1;
+    ((a * t + b) * t + c) * t + d
 }
 
 /// Manages sample voice allocation and rendering.
@@ -142,13 +66,23 @@ impl SamplePlaybackEngine {
         let rate = pitch_ratio * rate_ratio;
         let vel = velocity as f32 / 127.0;
 
-        // Evict oldest voice if at capacity
+        // Evict quietest voice if at capacity
         if self.voices.len() >= self.max_voices {
-            // Remove first inactive, or first voice
             if let Some(idx) = self.voices.iter().position(|v| !v.active) {
                 self.voices.remove(idx);
             } else {
-                self.voices.remove(0);
+                // Steal the quietest voice
+                let quietest = self.voices.iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        let a_level = a.envelope.level * a.velocity;
+                        let b_level = b.envelope.level * b.velocity;
+                        a_level.partial_cmp(&b_level).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i);
+                if let Some(idx) = quietest {
+                    self.voices.remove(idx);
+                }
             }
         }
 
@@ -160,7 +94,7 @@ impl SamplePlaybackEngine {
             channel,
             note,
             active: true,
-            envelope: SampleEnvelope::new(output_rate as f32),
+            envelope: Envelope::sample_default(output_rate as f32),
         });
     }
 
@@ -241,15 +175,18 @@ impl SamplePlaybackEngine {
                     break;
                 }
 
-                // Linear interpolation between two adjacent frames
+                // Cubic hermite interpolation (4-point)
                 let pos = voice.position;
                 let idx = pos as usize;
                 let frac = (pos - idx as f64) as f32;
 
+                let fm1 = sample.frame_at(idx.saturating_sub(1));
                 let f0 = sample.frame_at(idx);
                 let f1 = sample.frame_at(idx + 1);
-                let l = f0[0] * (1.0 - frac) + f1[0] * frac;
-                let r = f0[1] * (1.0 - frac) + f1[1] * frac;
+                let f2 = sample.frame_at(idx + 2);
+
+                let l = cubic_hermite(fm1[0], f0[0], f1[0], f2[0], frac);
+                let r = cubic_hermite(fm1[1], f0[1], f1[1], f2[1], frac);
 
                 left[i] += l * voice.velocity * env_level;
                 right[i] += r * voice.velocity * env_level;
@@ -273,6 +210,7 @@ impl SamplePlaybackEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::envelope::EnvStage;
     use crate::sample::Sample;
 
     fn make_test_sample() -> Sample {
@@ -334,7 +272,7 @@ mod tests {
         engine.note_on(0, 60, 100, 0, sample, 44100.0);
         engine.note_off(0, 60);
         // Voice enters release stage (not instantly deactivated)
-        assert_eq!(engine.voices[0].envelope.stage, SampleEnvStage::Release);
+        assert_eq!(engine.voices[0].envelope.stage, EnvStage::Release);
         // After rendering enough samples, the envelope fades out and voice deactivates
         let mut left = vec![0.0f32; 44100]; // 1 second -- way past the 50ms release
         let mut right = vec![0.0f32; 44100];
@@ -454,10 +392,10 @@ mod tests {
         engine.note_off_channel(0);
         // Channel 0 voice should be in release, channel 1 still sustaining
         let ch0 = engine.voices.iter().find(|v| v.channel == 0).unwrap();
-        assert_eq!(ch0.envelope.stage, SampleEnvStage::Release);
+        assert_eq!(ch0.envelope.stage, EnvStage::Release);
         let ch1 = engine.voices.iter().find(|v| v.channel == 1).unwrap();
         assert!(ch1.active);
-        assert_ne!(ch1.envelope.stage, SampleEnvStage::Release);
+        assert_ne!(ch1.envelope.stage, EnvStage::Release);
     }
 
     #[test]

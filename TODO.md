@@ -97,8 +97,8 @@
 
 ## Audio Engine Improvements
 
-- [ ] Better sample interpolation -- cubic or sinc instead of linear, to reduce aliasing at high pitch ratios
-- [ ] Smarter voice stealing -- consider voice loudness/importance, not just FIFO age
+- [x] Better sample interpolation -- cubic hermite (4-point Catmull-Rom) instead of linear
+- [x] Smarter voice stealing -- steals quietest voice (lowest envelope_level * velocity) instead of FIFO
 - [x] ADSR envelope on sample voices -- 2ms attack, full sustain, 50ms exponential release
 - [ ] More effects -- chorus, filter, distortion/saturation
 - [ ] Per-channel effects routing -- route individual channels through different effect chains
@@ -107,14 +107,14 @@
 ## MIDI Improvements
 
 - [ ] MIDI channel pressure (aftertouch) support
-- [ ] CC/pitch bend import from .mid files
+- [x] CC/pitch bend import from .mid files (CC mapped to Cxx, program change to Exx)
 - [ ] MIDI input CC/pitch bend/program change handling (currently only Note On/Off)
 - [ ] MIDI learn -- map a CC to a parameter
 - [ ] External MIDI clock input/sync (currently output-only)
 
 ## Longer-term Features
 
-- [ ] Per-channel volume faders / mixer view
+- [x] Per-channel volume (data model + playback velocity scaling; mixer UI pending)
 - [ ] Row highlight configurability (beat/bar intervals beyond 4/16, for time signature support)
 - [ ] Recent files list for quick re-open
 - [ ] Auto-save to temp file periodically

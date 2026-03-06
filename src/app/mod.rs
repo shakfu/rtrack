@@ -227,6 +227,9 @@ impl SynthField {
 }
 
 pub struct App {
+    // -----------------------------------------------------------------------
+    // Core / top-level state
+    // -----------------------------------------------------------------------
     pub song: Song,
     pub midi: MidiEngine,
     pub midi_input: MidiInputEngine,
@@ -234,13 +237,28 @@ pub struct App {
     pub mode: Mode,
     pub should_quit: bool,
 
-    // Cursor state
+    // -----------------------------------------------------------------------
+    // Cursor State
+    // Fields: cursor_row, cursor_channel, cursor_sub, current_octave,
+    //         track_page, follow_playback, edit_step
+    // -----------------------------------------------------------------------
     pub cursor_row: usize,
     pub cursor_channel: usize,
     pub cursor_sub: SubColumn,
     pub current_octave: u8,
+    /// Which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
+    pub track_page: usize,
+    /// Cursor follows playback position
+    pub follow_playback: bool,
+    /// How many rows to advance after entering a note
+    pub edit_step: usize,
 
-    // Playback state
+    // -----------------------------------------------------------------------
+    // Playback State
+    // Fields: playing, playback_row, playback_order, playback_generation,
+    //         last_tick, tick_accumulator, playback_tick,
+    //         clock_tick_accumulator, channel_states
+    // -----------------------------------------------------------------------
     pub playing: bool,
     pub playback_row: usize,
     pub playback_order: usize,
@@ -250,94 +268,72 @@ pub struct App {
     pub(crate) tick_accumulator: f64,
     /// Current sub-tick within a row (0..speed-1). Tick 0 = new row, ticks 1+ = effect processing.
     pub(crate) playback_tick: u8,
-
-    // Per-channel effect state
+    /// MIDI clock tick accumulator
+    pub(crate) clock_tick_accumulator: f64,
+    /// Elapsed playback time in seconds
+    pub playback_elapsed: f64,
+    /// Per-channel effect state
     pub(crate) channel_states: Vec<ChannelState>,
 
-    // Edit step: how many rows to advance after entering a note
-    pub edit_step: usize,
-
-    // File
-    pub file_path: Option<PathBuf>,
-    pub status_message: Option<String>,
-
-    // Undo/redo
-    pub(crate) undo_stack: VecDeque<Song>,
-    pub(crate) redo_stack: Vec<Song>,
-
-    // Clipboard
+    // -----------------------------------------------------------------------
+    // Editor State
+    // Fields: dirty, clipboard, block_anchor, block_clipboard,
+    //         undo_stack, redo_stack, rename_buf
+    // -----------------------------------------------------------------------
+    /// Dirty flag: set when song is modified, cleared on save/load
+    pub dirty: bool,
+    /// Single-row clipboard
     pub clipboard: Option<Vec<crate::tracker::Cell>>,
+    /// Block selection: anchor point (row, channel) when selection is active
+    pub block_anchor: Option<(usize, usize)>,
+    /// Block clipboard: 2D grid of cells (rows x channels)
+    pub block_clipboard: Option<Vec<Vec<crate::tracker::Cell>>>,
+    /// Undo stack
+    pub(crate) undo_stack: VecDeque<Song>,
+    /// Redo stack
+    pub(crate) redo_stack: Vec<Song>,
+    /// Channel rename edit buffer
+    pub rename_buf: String,
 
-    // Order list editing position (when not playing)
-    pub edit_order: usize,
-
-    // Channel mute/solo state
-    pub muted_channels: Vec<bool>,
-    pub solo_channel: Option<usize>,
-
-    // Per-channel MIDI channel mapping (tracker channel -> MIDI channel 0-15)
-    pub midi_channel_map: Vec<u8>,
-
-    // MIDI port selection
-    pub midi_port_list: Vec<String>,
-    pub midi_port_cursor: usize,
-    /// The mode to return to after closing the port selector
-    pub(crate) prev_mode: Mode,
-
-    // Song settings dialog
+    // -----------------------------------------------------------------------
+    // Dialog State
+    // Fields: settings_field, settings_edit_buf, instrument_cursor,
+    //         sample_editor_slot, sample_editor_field, synth_editor_slot,
+    //         synth_editor_field, midi_port_list, midi_port_cursor, help_scroll
+    // -----------------------------------------------------------------------
     pub settings_field: SettingsField,
     pub settings_edit_buf: String,
-
-    // Instrument list
-    pub instruments: Vec<Instrument>,
     pub instrument_cursor: usize,
-
-    // Color theme
-    pub theme_index: usize,
-
-    // MIDI clock
-    pub(crate) clock_tick_accumulator: f64,
-
-    // Audio engine (SF2 via RustySynth and/or fundsp synth + effects, via cpal)
-    pub audio: Option<AudioEngine>,
-
-    // Sample bank
-    pub sample_bank: Arc<SampleBank>,
-
-    // Sample editor state
     pub sample_editor_slot: usize,
     pub sample_editor_field: SampleField,
-
-    // Synth editor state
     pub synth_editor_slot: usize,
     pub synth_editor_field: SynthField,
-
-    // Track page: which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
-    pub track_page: usize,
-
-    // Preview note: (channel, note, timestamp) -- auto note-off after timeout
-    pub(crate) preview_note: Option<(u8, u8, Instant)>,
-
-    // Help dialog scroll offset
+    pub midi_port_list: Vec<String>,
+    pub midi_port_cursor: usize,
     pub help_scroll: usize,
 
-    // Dirty flag: set when song is modified, cleared on save/load
-    pub dirty: bool,
-
-    // Block selection: anchor point (row, channel) when selection is active
-    pub block_anchor: Option<(usize, usize)>,
-
-    // Block clipboard: 2D grid of cells (rows x channels)
-    pub block_clipboard: Option<Vec<Vec<crate::tracker::Cell>>>,
-
-    // Follow mode: cursor follows playback position
-    pub follow_playback: bool,
-
-    // Per-channel names (indexed by tracker channel)
+    // -----------------------------------------------------------------------
+    // Other state (file, audio, instruments, channels)
+    // -----------------------------------------------------------------------
+    pub file_path: Option<PathBuf>,
+    pub status_message: Option<String>,
+    pub edit_order: usize,
+    pub muted_channels: Vec<bool>,
+    pub solo_channel: Option<usize>,
+    pub midi_channel_map: Vec<u8>,
+    /// The mode to return to after closing the port selector
+    pub(crate) prev_mode: Mode,
+    pub instruments: Vec<Instrument>,
+    pub theme_index: usize,
+    pub audio: Option<AudioEngine>,
+    pub sample_bank: Arc<SampleBank>,
+    /// Preview note: (channel, note, timestamp) -- auto note-off after timeout
+    pub(crate) preview_note: Option<(u8, u8, Instant)>,
     pub channel_names: Vec<String>,
-
-    // Channel rename edit buffer
-    pub rename_buf: String,
+    /// Per-channel volume (0.0..1.0, default 1.0)
+    pub channel_volumes: Vec<f32>,
+    /// Per-channel pan (-1.0=left, 0.0=center, 1.0=right)
+    pub channel_pans: Vec<f32>,
 }
 
 impl App {
@@ -393,6 +389,7 @@ impl App {
             instrument_cursor: 0,
             theme_index: 0,
             clock_tick_accumulator: 0.0,
+            playback_elapsed: 0.0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
@@ -410,6 +407,8 @@ impl App {
             follow_playback: true,
             channel_names: vec![String::new(); 4],
             rename_buf: String::new(),
+            channel_volumes: vec![1.0; 4],
+            channel_pans: vec![0.0; 4],
         }
     }
 
@@ -913,6 +912,8 @@ impl App {
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
                 self.channel_names = vec![String::new(); song.channels];
+                self.channel_volumes = vec![1.0; song.channels];
+                self.channel_pans = vec![0.0; song.channels];
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.cursor_row = 0;
@@ -1150,6 +1151,8 @@ impl App {
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
                 self.channel_names = vec![String::new(); song.channels];
+                self.channel_volumes = vec![1.0; song.channels];
+                self.channel_pans = vec![0.0; song.channels];
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.cursor_row = 0;
@@ -1250,6 +1253,7 @@ mod tests {
             instrument_cursor: 0,
             theme_index: 0,
             clock_tick_accumulator: 0.0,
+            playback_elapsed: 0.0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
@@ -1265,6 +1269,8 @@ mod tests {
             follow_playback: true,
             channel_names: vec![String::new(); 4],
             rename_buf: String::new(),
+            channel_volumes: vec![1.0; 4],
+            channel_pans: vec![0.0; 4],
         }
     }
 

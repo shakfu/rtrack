@@ -4,6 +4,23 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Architecture & Audio Improvements)
+
+- Shared ADSR envelope: extracted unified `Envelope` type (`src/audio/envelope.rs`) used by both the built-in synth and sample playback engine, eliminating 90+ lines of duplicated envelope code
+- Per-channel volume: `channel_volumes` field on App, applied as velocity scaling before note-on during playback; resizes with channel count changes
+- Cubic hermite sample interpolation: 4-point Catmull-Rom interpolation replaces linear, reducing aliasing at high pitch ratios
+- CC/pitch bend MIDI import: `.mid` import now captures CC events (mapped to `Cxx` effect), program changes (mapped to `Exx` effect), and pitch bend instead of discarding them
+- Smarter voice stealing: both synth and sample engines now steal the quietest voice (lowest `envelope_level * velocity`) instead of the oldest when at capacity
+- Playback time display: header shows elapsed time as `M:SS` during playback
+- Mute/solo indicators: "M" and "S" indicators shown in channel column headers when muted or soloed
+- Minimum terminal size check: displays "Terminal too small" message instead of panicking when terminal is under 40x10
+- MIDI send error feedback: status bar shows `MIDI:ERR(N)` with consecutive failure count when MIDI output disconnects mid-session
+
+### Changed (App Organization)
+
+- Reorganized App struct fields under clear section comments: Cursor State, Playback State, Editor State, Dialog State
+- Test count increased from 203 to 209
+
 ### Added (FLAC Export, Sample ADSR)
 
 - FLAC audio export (Ctrl+L): lossless audio export alongside existing WAV export

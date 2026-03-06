@@ -92,6 +92,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1 + VOL_WIDTH, header_y, " ", dim_header);
                 write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1 + VOL_WIDTH + 1, header_y, "Fx ", header_style);
             }
+            // Mute/Solo indicator at end of channel header
+            let indicator_x = col_start + CHANNEL_WIDTH - 2;
+            if app.solo_channel == Some(ch) {
+                write_str(buf, indicator_x, header_y, "S", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD));
+            } else if app.muted_channels.get(ch).copied().unwrap_or(false) {
+                write_str(buf, indicator_x, header_y, "M", Style::default().fg(theme.muted_dim).add_modifier(Modifier::BOLD));
+            }
+
             hx = col_start + CHANNEL_WIDTH;
         }
     }

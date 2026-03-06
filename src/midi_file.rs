@@ -9,6 +9,16 @@ use anyhow::{bail, Context, Result};
 
 use crate::tracker::{Note, NoteValue, Pattern, Song};
 
+/// Events collected during MIDI import
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum ImportEvent {
+    NoteOn { tick: u32, note: u8, velocity: u8 },
+    NoteOff { tick: u32, note: u8 },
+    CC { tick: u32, controller: u8, value: u8 },
+    ProgramChange { tick: u32, program: u8 },
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -267,8 +277,8 @@ pub fn import_midi(path: &Path) -> Result<Song> {
 
     // ---- Parse tracks ----
     let mut bpm: u16 = 120;
-    // Collected note events per MIDI channel: Vec<(absolute_tick, midi_note, velocity, is_on)>
-    let mut channel_events: Vec<Vec<(u32, u8, u8, bool)>> = vec![Vec::new(); 16];
+    // Collected events per MIDI channel
+    let mut channel_events: Vec<Vec<ImportEvent>> = vec![Vec::new(); 16];
 
     for _t in 0..num_tracks {
         if pos + 8 > data.len() {
@@ -312,16 +322,16 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                     // Note off
                     let note = read_byte(&data, &mut pos)?;
                     let _vel = read_byte(&data, &mut pos)?;
-                    channel_events[ch].push((abs_tick, note & 0x7F, 0, false));
+                    channel_events[ch].push(ImportEvent::NoteOff { tick: abs_tick, note: note & 0x7F });
                 }
                 0x90 => {
                     // Note on (velocity 0 = note off)
                     let note = read_byte(&data, &mut pos)?;
                     let vel = read_byte(&data, &mut pos)?;
                     if vel == 0 {
-                        channel_events[ch].push((abs_tick, note & 0x7F, 0, false));
+                        channel_events[ch].push(ImportEvent::NoteOff { tick: abs_tick, note: note & 0x7F });
                     } else {
-                        channel_events[ch].push((abs_tick, note & 0x7F, vel, true));
+                        channel_events[ch].push(ImportEvent::NoteOn { tick: abs_tick, note: note & 0x7F, velocity: vel });
                     }
                 }
                 0xA0 => {
@@ -329,20 +339,31 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                     pos += 2;
                 }
                 0xB0 => {
-                    // Control change -- skip 2 bytes
-                    pos += 2;
+                    // Control change
+                    let controller = read_byte(&data, &mut pos)?;
+                    let value = read_byte(&data, &mut pos)?;
+                    channel_events[ch].push(ImportEvent::CC { tick: abs_tick, controller: controller & 0x7F, value: value & 0x7F });
                 }
                 0xC0 => {
-                    // Program change -- skip 1 byte
-                    pos += 1;
+                    // Program change
+                    let program = read_byte(&data, &mut pos)?;
+                    channel_events[ch].push(ImportEvent::ProgramChange { tick: abs_tick, program: program & 0x7F });
                 }
                 0xD0 => {
                     // Channel aftertouch -- skip 1 byte
                     pos += 1;
                 }
                 0xE0 => {
-                    // Pitch bend -- skip 2 bytes
-                    pos += 2;
+                    // Pitch bend -- convert to CC-like event for import
+                    let lsb = read_byte(&data, &mut pos)?;
+                    let msb = read_byte(&data, &mut pos)?;
+                    let bend = ((msb as u16 & 0x7F) << 7) | (lsb as u16 & 0x7F);
+                    // Convert 14-bit pitch bend to 7-bit value for effect column
+                    let value = (bend >> 7) as u8;
+                    if bend != 0x2000 { // Skip center (no bend)
+                        // Use controller 128 as sentinel for pitch bend (not a valid MIDI CC)
+                        channel_events[ch].push(ImportEvent::CC { tick: abs_tick, controller: 128, value });
+                    }
                 }
                 0xF0 => {
                     if status == 0xFF {
@@ -400,7 +421,10 @@ pub fn import_midi(path: &Path) -> Result<Song> {
     // Find the maximum tick across all events to determine total rows needed
     let max_tick: u32 = channel_events
         .iter()
-        .flat_map(|evts| evts.iter().map(|(t, _, _, _)| *t))
+        .flat_map(|evts| evts.iter().map(|e| match e {
+            ImportEvent::NoteOn { tick, .. } | ImportEvent::NoteOff { tick, .. } |
+            ImportEvent::CC { tick, .. } | ImportEvent::ProgramChange { tick, .. } => *tick,
+        }))
         .max()
         .unwrap_or(0);
 
@@ -420,9 +444,13 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         .collect();
     let order: Vec<usize> = (0..num_patterns).collect();
 
-    // Place note-on events into the grid
+    // Place events into the grid
     for (tracker_ch, &midi_ch) in active_channels.iter().enumerate() {
-        for &(tick, midi_note, vel, is_on) in &channel_events[midi_ch] {
+        for event in &channel_events[midi_ch] {
+            let tick = match event {
+                ImportEvent::NoteOn { tick, .. } | ImportEvent::NoteOff { tick, .. } |
+                ImportEvent::CC { tick, .. } | ImportEvent::ProgramChange { tick, .. } => *tick,
+            };
             let global_row = if tpr > 0 {
                 (tick / tpr) as usize
             } else {
@@ -434,22 +462,41 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                 continue;
             }
             let cell = patterns[pat_idx].get_mut(row_in_pat, tracker_ch);
-            if is_on {
-                let octave = midi_note / 12;
-                let note_idx = midi_note % 12;
-                if let Some(nv) = NoteValue::from_index(note_idx) {
-                    cell.note = Some(Note::On {
-                        value: nv,
-                        octave,
-                    });
-                    if vel != 0x7F {
-                        cell.volume = Some(vel);
+
+            match event {
+                ImportEvent::NoteOn { note: midi_note, velocity: vel, .. } => {
+                    let octave = midi_note / 12;
+                    let note_idx = midi_note % 12;
+                    if let Some(nv) = NoteValue::from_index(note_idx) {
+                        cell.note = Some(Note::On {
+                            value: nv,
+                            octave,
+                        });
+                        if *vel != 0x7F {
+                            cell.volume = Some(*vel);
+                        }
                     }
                 }
-            } else {
-                // Only place note-off if the cell does not already contain a note-on
-                if cell.note.is_none() {
-                    cell.note = Some(Note::Off);
+                ImportEvent::NoteOff { .. } => {
+                    // Only place note-off if the cell does not already contain a note-on
+                    if cell.note.is_none() {
+                        cell.note = Some(Note::Off);
+                    }
+                }
+                ImportEvent::CC { controller, value, .. } => {
+                    // Map CC to Cxx effect (controller in instrument column, value in effect)
+                    // Only if the cell does not already have an effect
+                    if cell.effect.is_none() {
+                        cell.effect = Some(0x0C); // MIDI CC effect
+                        cell.effect_value = Some(*value);
+                        cell.instrument = Some(*controller);
+                    }
+                }
+                ImportEvent::ProgramChange { program, .. } => {
+                    if cell.effect.is_none() {
+                        cell.effect = Some(0x0E); // Program change effect
+                        cell.effect_value = Some(*program);
+                    }
                 }
             }
         }

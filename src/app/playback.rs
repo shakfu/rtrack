@@ -39,6 +39,7 @@ impl App {
         self.last_tick = Some(Instant::now());
         self.tick_accumulator = 0.0;
         self.clock_tick_accumulator = 0.0;
+        self.playback_elapsed = 0.0;
         // Reset channel states and ensure we have enough for all channels
         let ch_count = self.song.channels;
         self.channel_states = vec![ChannelState::default(); ch_count];
@@ -88,6 +89,7 @@ impl App {
         if let Some(last) = self.last_tick {
             let elapsed = now.duration_since(last).as_secs_f64();
             self.tick_accumulator += elapsed;
+            self.playback_elapsed += elapsed;
 
             // Send MIDI clock: 24 ppqn (pulses per quarter note)
             if self.midi.clock_enabled {
@@ -208,17 +210,21 @@ impl App {
                         } else if is_note_delay {
                             // Defer note trigger to the specified tick
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
-                            self.channel_states[ch].delayed_note = Some((midi_note, vel, false));
+                            // Apply per-channel volume
+                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, 127.0) as u8;
+                            self.channel_states[ch].delayed_note = Some((midi_note, scaled_vel, false));
                             self.channel_states[ch].delay_tick = param;
                         } else {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
+                            // Apply per-channel volume
+                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, 127.0) as u8;
                             // Reset pitch bend on new note
                             self.channel_states[ch].pitch_offset = 0.0;
                             self.channel_states[ch].vibrato_phase = 0.0;
                             self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
-                            self.send_note_on_with_instrument(midi_ch, midi_note, vel, instrument);
+                            self.send_note_on_with_instrument(midi_ch, midi_note, scaled_vel, instrument);
                             self.channel_states[ch].note = Some(midi_note);
-                            self.channel_states[ch].volume = vel;
+                            self.channel_states[ch].volume = vel;  // Store unscaled for effect processing
                         }
                     }
                 }

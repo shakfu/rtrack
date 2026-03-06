@@ -76,6 +76,8 @@ impl App {
                         }
                         self.muted_channels.resize(v, false);
                         self.channel_names.resize(v, String::new());
+                        self.channel_volumes.resize(v, 1.0);
+                        self.channel_pans.resize(v, 0.0);
                         self.midi_channel_map = (0..v).map(|i| i as u8).collect();
                         if self.cursor_channel >= v {
                             self.cursor_channel = v - 1;

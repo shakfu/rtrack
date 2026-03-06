@@ -131,7 +131,9 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 - Per-instrument sample assignment -- load WAV/AIFF files into slots
 - Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
 - Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter, and detune
-- Pitch-shifted playback with up to 32 simultaneous voices and ADSR envelopes
+- Pitch-shifted playback with cubic hermite interpolation, up to 32 simultaneous voices with ADSR envelopes
+- Smart voice stealing: quietest voice is stolen when at capacity
+- Per-channel volume control (applied as velocity scaling during playback)
 
 ### Effects
 
@@ -169,7 +171,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references (see [File Format](#file-format))
 - Atomic save -- writes to temp file then renames, preventing corruption on crash
 - Dirty flag -- `[*]` in header when unsaved changes exist, quit confirmation prompt
-- Import from standard MIDI files (`.mid`)
+- Import from standard MIDI files (`.mid`) with CC and program change preservation
 - Export to MIDI (Ctrl+E)
 - Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
 - Export to FLAC (Ctrl+L) -- lossless audio export
@@ -298,7 +300,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (203 tests)
+make test     # run tests (209 tests)
 ```
 
 ## Architecture
@@ -314,6 +316,7 @@ src/
   audio/
     mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)
     synth.rs            Built-in subtractive synth (9 patches, PolyBLEP + SVF/Moog + ADSR)
+    envelope.rs         Shared ADSR envelope (used by synth + sample voices)
     effects.rs          Stereo delay effect (fundsp)
   sample/
     mod.rs              Sample loading (WAV via hound, AIFF parser, dasp conversion)

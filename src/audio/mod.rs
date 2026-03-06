@@ -1,4 +1,5 @@
 pub mod effects;
+pub mod envelope;
 pub mod synth;
 
 use std::fs::File;
@@ -315,16 +316,27 @@ impl AudioEngine {
                 // Kill existing voice for same channel+note
                 state.sample_engine.note_off(channel, note);
 
-                // Evict oldest voice if at capacity
+                // Evict quietest voice if at capacity
                 if state.sample_engine.voices.len() >= state.sample_engine.max_voices {
                     if let Some(idx) = state.sample_engine.voices.iter().position(|v| !v.active) {
                         state.sample_engine.voices.remove(idx);
                     } else {
-                        state.sample_engine.voices.remove(0);
+                        let quietest = state.sample_engine.voices.iter()
+                            .enumerate()
+                            .min_by(|(_, a), (_, b)| {
+                                let a_level = a.envelope.level * a.velocity;
+                                let b_level = b.envelope.level * b.velocity;
+                                a_level.partial_cmp(&b_level).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(i, _)| i);
+                        if let Some(idx) = quietest {
+                            state.sample_engine.voices.remove(idx);
+                        }
                     }
                 }
 
-                use crate::sample::playback::{SampleEnvelope, SampleVoice};
+                use crate::audio::envelope::Envelope;
+                use crate::sample::playback::SampleVoice;
                 state.sample_engine.voices.push(SampleVoice {
                     sample_index,
                     position: trim_start as f64,
@@ -333,7 +345,7 @@ impl AudioEngine {
                     channel,
                     note,
                     active: true,
-                    envelope: SampleEnvelope::new(self.sample_rate as f32),
+                    envelope: Envelope::sample_default(self.sample_rate as f32),
                 });
             }
         }

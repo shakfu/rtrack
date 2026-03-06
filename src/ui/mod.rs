@@ -24,6 +24,15 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let area = f.area();
+    if area.width < 40 || area.height < 10 {
+        let msg = format!("Terminal too small ({}x{}, need 40x10)", area.width, area.height);
+        let text = Paragraph::new(msg)
+            .style(Style::default().fg(ratatui::style::Color::Red));
+        f.render_widget(text, area);
+        return;
+    }
+
     let theme = app.theme();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -107,6 +116,16 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.header_octave),
         ),
         Span::raw(if app.is_playing() { " PLAY" } else { " STOP" }),
+        if app.is_playing() {
+            let mins = (app.playback_elapsed / 60.0) as u32;
+            let secs = (app.playback_elapsed % 60.0) as u32;
+            Span::styled(
+                format!(" {}:{:02}", mins, secs),
+                Style::default().fg(theme.header_bpm),
+            )
+        } else {
+            Span::raw("")
+        },
         Span::raw(if app.follow_playback { " FLW" } else { "" }),
         link_span,
     ])];
@@ -120,7 +139,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let midi_status = if app.midi_connected() {
+    let midi_status = if app.midi.send_error_count > 0 {
+        Span::styled(
+            format!(" MIDI:ERR({}) ", app.midi.send_error_count),
+            Style::default().fg(theme.mode_insert),
+        )
+    } else if app.midi_connected() {
         Span::styled(
             format!(" MIDI:{} ", app.midi_port_display_name()),
             Style::default().fg(theme.midi_connected),
