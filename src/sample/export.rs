@@ -71,6 +71,17 @@ pub fn render_to_wav(
     instruments: &[ExportInstrument],
     sample_rate: u32,
 ) -> Result<()> {
+    let (left, right) = render_song(song, bank, instruments, sample_rate)?;
+    write_wav(path, &left, &right, sample_rate)
+}
+
+/// Render an entire song to stereo f32 buffers (offline, non-real-time).
+fn render_song(
+    song: &Song,
+    bank: &SampleBank,
+    instruments: &[ExportInstrument],
+    sample_rate: u32,
+) -> Result<(Vec<f32>, Vec<f32>)> {
     let sr = sample_rate as f64;
 
     // Create offline audio components
@@ -261,15 +272,15 @@ pub fn render_to_wav(
                                 let x = (param >> 4) as f64;
                                 let y = (param & 0x0F) as f64;
                                 let phase = tick % 3;
-                                let _offset = match phase {
+                                let offset = match phase {
                                     0 => 0.0,
                                     1 => x,
                                     _ => y,
                                 };
-                                // Arpeggio: in offline render, the pitch change is implicit
-                                // since we don't have pitch bend on the synth. The effect is
-                                // audible through MIDI but not through the built-in sine synth.
-                                // We still track it for correctness.
+                                // Apply arpeggio as pitch offset
+                                let midi_ch = (ch & 0x0F) as u8;
+                                synth.set_channel_pitch_offset(midi_ch, offset as f32);
+                                sample_engine.set_channel_pitch_offset(midi_ch, offset, bank, sr);
                             }
                             Some(EFFECT_PORTA_UP) => {
                                 ch_states[ch].pitch_offset += param as f64 / 16.0;
@@ -291,12 +302,18 @@ pub fn render_to_wav(
                             }
                             Some(EFFECT_VIBRATO) => {
                                 let speed = (param >> 4) as f64;
-                                let _depth = (param & 0x0F) as f64;
+                                let depth = (param & 0x0F) as f64;
                                 ch_states[ch].vibrato_phase += speed / 64.0;
                                 if ch_states[ch].vibrato_phase >= 1.0 {
                                     ch_states[ch].vibrato_phase -= 1.0;
                                 }
-                                // Vibrato modulates pitch -- tracked but only audible via MIDI
+                                let sine = (ch_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
+                                let vib_offset = sine * depth / 16.0;
+                                // Apply pitch_offset + vibrato (vibrato is instantaneous, not cumulative)
+                                let total = ch_states[ch].pitch_offset + vib_offset;
+                                let midi_ch = (ch & 0x0F) as u8;
+                                synth.set_channel_pitch_offset(midi_ch, total as f32);
+                                sample_engine.set_channel_pitch_offset(midi_ch, total, bank, sr);
                             }
                             Some(EFFECT_VOLUME_SLIDE) => {
                                 let up = (param >> 4) as i16;
@@ -304,11 +321,21 @@ pub fn render_to_wav(
                                 let delta = up - down;
                                 let new_vol = (ch_states[ch].volume as i16 + delta).clamp(0, 127) as u8;
                                 ch_states[ch].volume = new_vol;
-                                // Volume changes affect sample engine gain
-                                // For the synth, volume is set at note-on only
                             }
                             _ => {}
                         }
+
+                        // Apply accumulated pitch offset and volume to engines
+                        // (arpeggio and vibrato handle pitch themselves above)
+                        let eff = ch_states[ch].effect;
+                        if eff != Some(EFFECT_ARPEGGIO) && eff != Some(EFFECT_VIBRATO) {
+                            let midi_ch = (ch & 0x0F) as u8;
+                            synth.set_channel_pitch_offset(midi_ch, ch_states[ch].pitch_offset as f32);
+                            sample_engine.set_channel_pitch_offset(midi_ch, ch_states[ch].pitch_offset, bank, sr);
+                        }
+                        let midi_ch = (ch & 0x0F) as u8;
+                        synth.set_channel_volume(midi_ch, ch_states[ch].volume);
+                        sample_engine.set_channel_volume(midi_ch, ch_states[ch].volume);
                     }
                 }
 
@@ -382,7 +409,22 @@ pub fn render_to_wav(
     all_left.extend_from_slice(&tail_left);
     all_right.extend_from_slice(&tail_right);
 
-    // Write WAV
+    Ok((all_left, all_right))
+}
+
+/// Convert f32 stereo buffers to interleaved i16 samples
+fn to_interleaved_i16(left: &[f32], right: &[f32]) -> Vec<i16> {
+    let mut samples = Vec::with_capacity(left.len() * 2);
+    for i in 0..left.len() {
+        let l = left[i].clamp(-1.0, 1.0);
+        let r = right[i].clamp(-1.0, 1.0);
+        samples.push(l.to_sample::<i16>());
+        samples.push(r.to_sample::<i16>());
+    }
+    samples
+}
+
+fn write_wav(path: &Path, left: &[f32], right: &[f32], sample_rate: u32) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate,
@@ -392,9 +434,9 @@ pub fn render_to_wav(
     let mut writer =
         hound::WavWriter::create(path, spec).with_context(|| format!("Failed to create WAV: {}", path.display()))?;
 
-    for i in 0..all_left.len() {
-        let l = all_left[i].clamp(-1.0, 1.0);
-        let r = all_right[i].clamp(-1.0, 1.0);
+    for i in 0..left.len() {
+        let l = left[i].clamp(-1.0, 1.0);
+        let r = right[i].clamp(-1.0, 1.0);
         writer
             .write_sample(l.to_sample::<i16>())
             .context("Failed to write WAV sample")?;
@@ -403,6 +445,46 @@ pub fn render_to_wav(
             .context("Failed to write WAV sample")?;
     }
     writer.finalize().context("Failed to finalize WAV file")?;
+
+    Ok(())
+}
+
+/// Render an entire song to a FLAC file (offline, non-real-time).
+pub fn render_to_flac(
+    path: &Path,
+    song: &Song,
+    bank: &SampleBank,
+    instruments: &[ExportInstrument],
+    sample_rate: u32,
+) -> Result<()> {
+    let (left, right) = render_song(song, bank, instruments, sample_rate)?;
+    let samples_i16 = to_interleaved_i16(&left, &right);
+    write_flac(path, &samples_i16, sample_rate)
+}
+
+fn write_flac(path: &Path, samples_i16: &[i16], sample_rate: u32) -> Result<()> {
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+
+    let config = flacenc::config::Encoder::default().into_verified()
+        .map_err(|e| anyhow::anyhow!("FLAC config error: {:?}", e))?;
+    let source = flacenc::source::MemSource::from_samples(
+        &samples_i16.iter().map(|&s| s as i32).collect::<Vec<_>>(),
+        2,
+        16,
+        sample_rate as usize,
+    );
+    let block_size = config.block_size;
+    let flac_stream = flacenc::encode_with_fixed_block_size(&config, source, block_size)
+        .map_err(|e| anyhow::anyhow!("FLAC encoding failed: {:?}", e))?;
+
+    let mut file = std::fs::File::create(path)
+        .with_context(|| format!("Failed to create FLAC: {}", path.display()))?;
+    let mut bw = flacenc::bitsink::ByteSink::new();
+    flac_stream.write(&mut bw)
+        .map_err(|e| anyhow::anyhow!("FLAC write failed: {:?}", e))?;
+    std::io::Write::write_all(&mut file, bw.as_slice())
+        .context("Failed to write FLAC data")?;
 
     Ok(())
 }
@@ -520,6 +602,154 @@ mod tests {
         let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
         let has_audio = samples.iter().any(|&s| s.abs() > 10);
         assert!(has_audio, "Expected non-silent output for sample note");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_render_portamento_changes_pitch() {
+        // Two rows: note on C-5, then portamento up effect on row 1
+        // The portamento should shift the synth pitch, producing different audio
+        // than a static note.
+        let mut song = Song::new(1, 4);
+        song.speed = 6;
+        song.bpm = 120;
+        // Row 0: note on
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(100),
+            ..Cell::default()
+        });
+        // Row 1: portamento up (1xx with param 0x40 = fast slide)
+        song.patterns[0].set_cell(1, 0, Cell {
+            effect: Some(EFFECT_PORTA_UP),
+            effect_value: Some(0x40),
+            ..Cell::default()
+        });
+
+        let bank = SampleBank::new();
+        let instruments: Vec<ExportInstrument> = (0..256)
+            .map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None })
+            .collect();
+        let dir = std::env::temp_dir();
+        let path_with = dir.join("rtrack_test_porta.wav");
+
+        render_to_wav(&path_with, &song, &bank, &instruments, 44100).unwrap();
+
+        // Now render without the effect for comparison
+        let mut song_no_fx = Song::new(1, 4);
+        song_no_fx.speed = 6;
+        song_no_fx.bpm = 120;
+        song_no_fx.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(100),
+            ..Cell::default()
+        });
+
+        let path_without = dir.join("rtrack_test_no_porta.wav");
+        render_to_wav(&path_without, &song_no_fx, &bank, &instruments, 44100).unwrap();
+
+        // Read both and compare -- they should differ
+        let r1 = hound::WavReader::open(&path_with).unwrap();
+        let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
+        let r2 = hound::WavReader::open(&path_without).unwrap();
+        let s2: Vec<i16> = r2.into_samples::<i16>().map(|s| s.unwrap()).collect();
+
+        // Both should have audio
+        assert!(s1.iter().any(|&s| s.abs() > 10), "porta render should have audio");
+        assert!(s2.iter().any(|&s| s.abs() > 10), "no-fx render should have audio");
+
+        // Samples should differ (portamento shifted pitch)
+        let min_len = s1.len().min(s2.len());
+        let diff_count = s1[..min_len].iter().zip(&s2[..min_len]).filter(|(a, b)| a != b).count();
+        assert!(diff_count > min_len / 4, "Expected portamento to produce audibly different output, but only {}/{} samples differed", diff_count, min_len);
+
+        let _ = std::fs::remove_file(&path_with);
+        let _ = std::fs::remove_file(&path_without);
+    }
+
+    #[test]
+    fn test_render_volume_slide() {
+        // Verify volume slide actually changes the output level
+        let mut song = Song::new(1, 4);
+        song.speed = 6;
+        song.bpm = 120;
+        // Row 0: note on at full volume
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(127),
+            ..Cell::default()
+        });
+        // Row 1: volume slide down (50F = slide down by 15 per tick)
+        song.patterns[0].set_cell(1, 0, Cell {
+            effect: Some(EFFECT_VOLUME_SLIDE),
+            effect_value: Some(0x0F),
+            ..Cell::default()
+        });
+
+        let bank = SampleBank::new();
+        let instruments: Vec<ExportInstrument> = (0..256)
+            .map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None })
+            .collect();
+        let dir = std::env::temp_dir();
+
+        // Render with volume slide
+        let path_slide = dir.join("rtrack_test_volslide.wav");
+        render_to_wav(&path_slide, &song, &bank, &instruments, 44100).unwrap();
+
+        // Render without (static volume)
+        let mut song_static = Song::new(1, 4);
+        song_static.speed = 6;
+        song_static.bpm = 120;
+        song_static.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(127),
+            ..Cell::default()
+        });
+        let path_static = dir.join("rtrack_test_volstatic.wav");
+        render_to_wav(&path_static, &song_static, &bank, &instruments, 44100).unwrap();
+
+        let r1 = hound::WavReader::open(&path_slide).unwrap();
+        let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
+        let r2 = hound::WavReader::open(&path_static).unwrap();
+        let s2: Vec<i16> = r2.into_samples::<i16>().map(|s| s.unwrap()).collect();
+
+        // Both should have audio
+        assert!(s1.iter().any(|&s| s.abs() > 10));
+        assert!(s2.iter().any(|&s| s.abs() > 10));
+
+        // Volume-slid version should differ from static
+        let min_len = s1.len().min(s2.len());
+        let diff_count = s1[..min_len].iter().zip(&s2[..min_len]).filter(|(a, b)| a != b).count();
+        assert!(diff_count > 0, "Volume slide should produce different output than static volume");
+
+        let _ = std::fs::remove_file(&path_slide);
+        let _ = std::fs::remove_file(&path_static);
+    }
+
+    #[test]
+    fn test_render_to_flac() {
+        let mut song = Song::new(1, 2);
+        song.speed = 2;
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
+            volume: Some(100),
+            ..Cell::default()
+        });
+
+        let bank = SampleBank::new();
+        let instruments: Vec<ExportInstrument> = (0..256)
+            .map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None })
+            .collect();
+        let dir = std::env::temp_dir();
+        let path = dir.join("rtrack_test_export.flac");
+
+        let result = render_to_flac(&path, &song, &bank, &instruments, 44100);
+        assert!(result.is_ok(), "FLAC export failed: {:?}", result.err());
+
+        // Verify the file exists and is non-empty
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert!(metadata.len() > 0, "FLAC file should be non-empty");
 
         let _ = std::fs::remove_file(&path);
     }

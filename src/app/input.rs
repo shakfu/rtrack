@@ -22,7 +22,7 @@ impl App {
     }
 
     fn close_song_settings(&mut self) {
-        self.mode = self.prev_mode;
+        self.mode = Mode::Normal;
     }
 
     fn settings_select_field(&mut self, field: SettingsField) {
@@ -75,6 +75,7 @@ impl App {
                             pat.channels = v;
                         }
                         self.muted_channels.resize(v, false);
+                        self.channel_names.resize(v, String::new());
                         self.midi_channel_map = (0..v).map(|i| i as u8).collect();
                         if self.cursor_channel >= v {
                             self.cursor_channel = v - 1;
@@ -132,7 +133,7 @@ impl App {
     }
 
     fn close_instrument_list(&mut self) {
-        self.mode = self.prev_mode;
+        self.mode = Mode::Normal;
     }
 
     fn handle_instrument_list_key(&mut self, key: KeyEvent) {
@@ -164,9 +165,11 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.instruments[self.instrument_cursor].name.push(c);
+                self.dirty = true;
             }
             KeyCode::Backspace => {
                 self.instruments[self.instrument_cursor].name.pop();
+                self.dirty = true;
             }
             _ => {}
         }
@@ -177,6 +180,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = self.prev_mode;
+                self.dirty = true;
             }
             KeyCode::Tab => {
                 self.sample_editor_field = self.sample_editor_field.next();
@@ -252,6 +256,8 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.mode = self.prev_mode;
+                self.dirty = true;
+                self.status_message = Some(format!("Synth params saved for instrument {:02X}", slot));
             }
             KeyCode::Tab => {
                 self.synth_editor_field = self.synth_editor_field.next();
@@ -274,6 +280,7 @@ impl App {
             KeyCode::Delete => {
                 // Clear custom synth params (revert to channel default)
                 self.instruments[slot].synth_params = None;
+                self.dirty = true;
                 self.status_message = Some("Synth params cleared (using channel default)".to_string());
                 self.mode = self.prev_mode;
             }
@@ -316,6 +323,90 @@ impl App {
                     params.detune = (params.detune + delta as f32 * 0.1).clamp(0.0, 50.0);
                 }
             }
+        }
+    }
+
+    fn handle_quit_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.save();
+                self.should_quit = true;
+            }
+            _ => {
+                // Any other key cancels
+                self.mode = self.prev_mode;
+                self.status_message = Some("Quit cancelled".to_string());
+            }
+        }
+    }
+
+    // -- Channel rename --
+
+    fn open_channel_rename(&mut self) {
+        let ch = self.cursor_channel;
+        self.rename_buf = self.channel_names.get(ch).cloned().unwrap_or_default();
+        self.prev_mode = self.mode;
+        self.mode = Mode::ChannelRename;
+    }
+
+    fn handle_channel_rename_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                let ch = self.cursor_channel;
+                if ch < self.channel_names.len() {
+                    self.channel_names[ch] = self.rename_buf.clone();
+                }
+                self.mode = self.prev_mode;
+                if self.rename_buf.is_empty() {
+                    self.status_message = Some(format!("Ch {} name cleared", ch + 1));
+                } else {
+                    self.status_message = Some(format!("Ch {} = \"{}\"", ch + 1, self.rename_buf));
+                }
+            }
+            KeyCode::Char(c) => {
+                if self.rename_buf.len() < 10 {
+                    self.rename_buf.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                self.rename_buf.pop();
+            }
+            _ => {}
+        }
+    }
+
+    // -- Note transpose --
+
+    /// Transpose selected notes by the given number of semitones.
+    /// If block selection is active, transpose the block; otherwise transpose at cursor.
+    fn transpose_notes(&mut self, semitones: i8) {
+        self.push_undo();
+        let pattern_idx = self.song.order[self.current_order_position()];
+
+        if let Some((anchor_row, anchor_ch)) = self.block_anchor {
+            let (r0, r1) = if anchor_row <= self.cursor_row {
+                (anchor_row, self.cursor_row)
+            } else {
+                (self.cursor_row, anchor_row)
+            };
+            let (c0, c1) = if anchor_ch <= self.cursor_channel {
+                (anchor_ch, self.cursor_channel)
+            } else {
+                (self.cursor_channel, anchor_ch)
+            };
+            let pattern = &mut self.song.patterns[pattern_idx];
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    transpose_cell_note(pattern.get_mut(r, c), semitones);
+                }
+            }
+            self.status_message = Some(format!("Transposed block by {} semitone(s)", semitones));
+        } else {
+            let pattern = &mut self.song.patterns[pattern_idx];
+            transpose_cell_note(pattern.get_mut(self.cursor_row, self.cursor_channel), semitones);
         }
     }
 
@@ -404,6 +495,8 @@ impl App {
             Mode::InstrumentList => self.handle_instrument_list_key(key),
             Mode::SampleEditor => self.handle_sample_editor_key(key),
             Mode::SynthEditor => self.handle_synth_editor_key(key),
+            Mode::QuitConfirm => self.handle_quit_confirm_key(key),
+            Mode::ChannelRename => self.handle_channel_rename_key(key),
         }
     }
 
@@ -413,13 +506,39 @@ impl App {
                 KeyCode::Char('s') => { self.save(); return true; }
                 KeyCode::Char('z') => { self.undo(); return true; }
                 KeyCode::Char('y') => { self.redo(); return true; }
-                KeyCode::Char('c') => { self.copy_row(); return true; }
-                KeyCode::Char('v') => { self.paste_row(); return true; }
-                KeyCode::Char('x') => { self.cut_row(); return true; }
+                KeyCode::Char('b') => { self.toggle_block_select(); return true; }
+                KeyCode::Char('f') => { self.toggle_follow(); return true; }
+                KeyCode::Char('i') => { self.interpolate_block(); return true; }
+                KeyCode::Char('r') => { self.open_channel_rename(); return true; }
+                KeyCode::Char('c') => {
+                    if self.block_anchor.is_some() {
+                        self.copy_block();
+                    } else {
+                        self.copy_row();
+                    }
+                    return true;
+                }
+                KeyCode::Char('v') => {
+                    if self.block_clipboard.is_some() {
+                        self.paste_block();
+                    } else {
+                        self.paste_row();
+                    }
+                    return true;
+                }
+                KeyCode::Char('x') => {
+                    if self.block_anchor.is_some() {
+                        self.cut_block();
+                    } else {
+                        self.cut_row();
+                    }
+                    return true;
+                }
                 KeyCode::Right => { self.next_order_position(); return true; }
                 KeyCode::Left => { self.prev_order_position(); return true; }
                 KeyCode::Char('e') => { self.export_midi(); return true; }
                 KeyCode::Char('w') => { self.export_wav_file(); return true; }
+                KeyCode::Char('l') => { self.export_flac_file(); return true; }
                 KeyCode::Char('m') => { self.toggle_midi_clock(); return true; }
                 // Ctrl+1..8 select specific tracks
                 KeyCode::Char('1') => { self.select_track(0); return true; }
@@ -452,6 +571,15 @@ impl App {
     /// Handle keys shared between Normal and Insert modes: navigation, playback,
     /// track paging, function keys, octave, BPM, edit step.
     fn handle_shared_key(&mut self, key: KeyEvent) -> bool {
+        // Shift+Up/Down: note transpose
+        if key.modifiers.contains(KeyModifiers::SHIFT) {
+            match key.code {
+                KeyCode::Up => { self.transpose_notes(1); return true; }
+                KeyCode::Down => { self.transpose_notes(-1); return true; }
+                _ => {}
+            }
+        }
+
         match key.code {
             // Playback
             KeyCode::Char(' ') => { self.toggle_playback(); return true; }
@@ -518,7 +646,14 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => {
+                if self.dirty {
+                    self.prev_mode = self.mode;
+                    self.mode = Mode::QuitConfirm;
+                } else {
+                    self.should_quit = true;
+                }
+            }
             KeyCode::Esc => self.mode = Mode::Insert,
             KeyCode::F(4) => self.insert_order_entry(),
             KeyCode::F(5) => self.remove_order_entry(),
@@ -591,7 +726,7 @@ impl App {
     }
 
     fn close_help(&mut self) {
-        self.mode = self.prev_mode;
+        self.mode = Mode::Normal;
     }
 
     fn handle_help_key(&mut self, key: KeyEvent) {
@@ -830,6 +965,12 @@ impl App {
         }
     }
 
+    fn toggle_follow(&mut self) {
+        self.follow_playback = !self.follow_playback;
+        let state = if self.follow_playback { "on" } else { "off" };
+        self.status_message = Some(format!("Follow mode {}", state));
+    }
+
     pub(crate) fn move_cursor_left(&mut self) {
         if self.cursor_sub == SubColumn::Note {
             if self.cursor_channel > 0 {
@@ -851,6 +992,159 @@ impl App {
             }
         } else {
             self.cursor_sub = self.cursor_sub.next();
+        }
+    }
+
+    // -- Block selection --
+
+    /// Toggle block selection anchor at the current cursor position
+    pub fn toggle_block_select(&mut self) {
+        if self.block_anchor.is_some() {
+            self.block_anchor = None;
+            self.status_message = Some("Block selection cleared".to_string());
+        } else {
+            self.block_anchor = Some((self.cursor_row, self.cursor_channel));
+            self.status_message = Some("Block selection started".to_string());
+        }
+    }
+
+    /// Get the block selection bounds: (row_start, row_end, ch_start, ch_end) inclusive
+    pub fn block_bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        self.block_anchor.map(|(anchor_row, anchor_ch)| {
+            let (r0, r1) = if anchor_row <= self.cursor_row {
+                (anchor_row, self.cursor_row)
+            } else {
+                (self.cursor_row, anchor_row)
+            };
+            let (c0, c1) = if anchor_ch <= self.cursor_channel {
+                (anchor_ch, self.cursor_channel)
+            } else {
+                (self.cursor_channel, anchor_ch)
+            };
+            (r0, r1, c0, c1)
+        })
+    }
+
+    /// Copy the block selection to clipboard (2D grid)
+    fn copy_block(&mut self) {
+        if let Some((r0, r1, c0, c1)) = self.block_bounds() {
+            let pattern_idx = self.song.order[self.current_order_position()];
+            let pattern = &self.song.patterns[pattern_idx];
+            let mut block = Vec::new();
+            for r in r0..=r1 {
+                let mut row = Vec::new();
+                for c in c0..=c1 {
+                    row.push(*pattern.get(r, c));
+                }
+                block.push(row);
+            }
+            self.block_clipboard = Some(block);
+            let rows = r1 - r0 + 1;
+            let cols = c1 - c0 + 1;
+            self.status_message = Some(format!("Copied block {}x{}", rows, cols));
+        }
+    }
+
+    /// Cut block selection (copy + clear)
+    fn cut_block(&mut self) {
+        self.copy_block();
+        if let Some((r0, r1, c0, c1)) = self.block_bounds() {
+            self.push_undo();
+            let pattern_idx = self.song.order[self.current_order_position()];
+            let pattern = &mut self.song.patterns[pattern_idx];
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    pattern.set_cell(r, c, crate::tracker::Cell::default());
+                }
+            }
+            self.block_anchor = None;
+            self.status_message = Some("Cut block".to_string());
+        }
+    }
+
+    /// Interpolate volume and effect values across a block selection.
+    /// Uses the first and last row values as endpoints and fills intermediate rows linearly.
+    fn interpolate_block(&mut self) {
+        let bounds = match self.block_bounds() {
+            Some(b) => b,
+            None => {
+                self.status_message = Some("No block selected (Ctrl+B first)".to_string());
+                return;
+            }
+        };
+        let (r0, r1, c0, c1) = bounds;
+        if r1 <= r0 {
+            self.status_message = Some("Need at least 2 rows to interpolate".to_string());
+            return;
+        }
+
+        self.push_undo();
+        let pattern_idx = self.song.order[self.current_order_position()];
+        let pattern = &mut self.song.patterns[pattern_idx];
+        let steps = (r1 - r0) as f64;
+
+        for c in c0..=c1 {
+            let first = *pattern.get(r0, c);
+            let last = *pattern.get(r1, c);
+
+            // Interpolate volume
+            if let (Some(v0), Some(v1)) = (first.volume, last.volume) {
+                for r in r0..=r1 {
+                    let t = (r - r0) as f64 / steps;
+                    let v = v0 as f64 + (v1 as f64 - v0 as f64) * t;
+                    pattern.get_mut(r, c).volume = Some(v.round() as u8);
+                }
+            }
+
+            // Interpolate effect_value (when both endpoints have the same effect command)
+            if first.effect == last.effect && first.effect.is_some() {
+                if let (Some(ev0), Some(ev1)) = (first.effect_value, last.effect_value) {
+                    for r in r0..=r1 {
+                        let t = (r - r0) as f64 / steps;
+                        let ev = ev0 as f64 + (ev1 as f64 - ev0 as f64) * t;
+                        pattern.get_mut(r, c).effect = first.effect;
+                        pattern.get_mut(r, c).effect_value = Some(ev.round() as u8);
+                    }
+                }
+            }
+        }
+
+        self.status_message = Some("Interpolated block".to_string());
+    }
+
+    /// Paste block clipboard at cursor position
+    fn paste_block(&mut self) {
+        if let Some(ref block) = self.block_clipboard.clone() {
+            self.push_undo();
+            let pattern_idx = self.song.order[self.current_order_position()];
+            let pattern = &mut self.song.patterns[pattern_idx];
+            for (ri, row) in block.iter().enumerate() {
+                let r = self.cursor_row + ri;
+                if r >= pattern.rows {
+                    break;
+                }
+                for (ci, cell) in row.iter().enumerate() {
+                    let c = self.cursor_channel + ci;
+                    if c < pattern.channels {
+                        pattern.set_cell(r, c, *cell);
+                    }
+                }
+            }
+            self.status_message = Some("Pasted block".to_string());
+        }
+    }
+}
+
+/// Transpose a single cell's note by the given number of semitones, clamping to valid MIDI range.
+fn transpose_cell_note(cell: &mut crate::tracker::Cell, semitones: i8) {
+    if let Some(Note::On { ref value, ref octave }) = cell.note {
+        let midi = (*octave as i16) * 12 + value.to_index() as i16 + semitones as i16;
+        if midi >= 0 && midi <= 127 {
+            let new_octave = (midi / 12) as u8;
+            let new_note_idx = (midi % 12) as u8;
+            if let Some(nv) = NoteValue::from_index(new_note_idx) {
+                cell.note = Some(Note::On { value: nv, octave: new_octave });
+            }
         }
     }
 }

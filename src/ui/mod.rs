@@ -56,6 +56,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::InstrumentList => draw_instrument_list(f, app, &theme),
         Mode::SampleEditor => sample_editor::draw_sample_editor(f, app),
         Mode::SynthEditor => synth_editor::draw_synth_editor(f, app),
+        Mode::QuitConfirm => draw_quit_confirm(f, app, &theme),
+        Mode::ChannelRename => draw_channel_rename(f, app, &theme),
         _ => {}
     }
 }
@@ -78,6 +80,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Span::styled(" rtrack", Style::default().fg(theme.header_title).add_modifier(Modifier::BOLD)),
         Span::raw(" "),
         Span::styled(&song.title, Style::default().fg(theme.status_text)),
+        Span::raw(if app.dirty { " [*]" } else { "" }),
         Span::styled(
             format!(" {}bpm s{}", song.bpm, song.speed),
             Style::default().fg(theme.header_bpm),
@@ -104,6 +107,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.header_octave),
         ),
         Span::raw(if app.is_playing() { " PLAY" } else { " STOP" }),
+        Span::raw(if app.follow_playback { " FLW" } else { "" }),
         link_span,
     ])];
 
@@ -134,6 +138,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Mode::InstrumentList => Span::styled(" INSTRUMENTS ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::SampleEditor => Span::styled(" SAMPLE EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::SynthEditor => Span::styled(" SYNTH EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
+        Mode::QuitConfirm => Span::styled(" QUIT? ", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)),
+        Mode::ChannelRename => Span::styled(" RENAME ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
     };
 
     let audio_span = if app.has_sf2() {
@@ -186,7 +192,12 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  [ / ]        ", key_style), Span::styled("BPM down / up", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+S       ", key_style), Span::styled("Save", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+Z / Y   ", key_style), Span::styled("Undo / Redo", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+C/X/V   ", key_style), Span::styled("Copy / Cut / Paste row", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+C/X/V   ", key_style), Span::styled("Copy / Cut / Paste row (or block)", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+B       ", key_style), Span::styled("Toggle block selection", text_style)]),
+        Line::from(vec![Span::styled("  Shift+Up/Dn  ", key_style), Span::styled("Transpose note(s) up/down semitone", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+I       ", key_style), Span::styled("Interpolate block (volume/effect ramp)", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+F       ", key_style), Span::styled("Toggle follow mode (cursor follows playback)", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+R       ", key_style), Span::styled("Rename current channel", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+L/R     ", key_style), Span::styled("Next / prev order position", text_style)]),
         Line::from(vec![Span::styled("  F9-F12       ", key_style), Span::styled("Mute/unmute ch (current page)", text_style)]),
         Line::from(vec![Span::styled("  ( / )        ", key_style), Span::styled("Edit step down / up", text_style)]),
@@ -203,6 +214,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  F8           ", key_style), Span::styled("Cycle color theme", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+E       ", key_style), Span::styled("Export to MIDI file (.mid)", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+W       ", key_style), Span::styled("Export to WAV file", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+L       ", key_style), Span::styled("Export to FLAC file", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+M       ", key_style), Span::styled("Toggle MIDI clock output", text_style)]),
         Line::from(""),
         Line::from(Span::styled("  Insert Mode", section_style)),
@@ -329,7 +341,8 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
 
     let widget = Paragraph::new(lines).block(
         Block::default()
-            .title(" Song Settings [Tab=next, Enter/Esc=close] ")
+            .title(" Song Settings ")
+            .title_bottom(" Tab:next  Enter/Esc:close ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );
@@ -338,7 +351,8 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
 
 fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
-    let popup_area = centered_rect(40, 20, area);
+    let popup_width = 50.min(area.width.saturating_sub(4));
+    let popup_area = centered_rect(popup_width, 20, area);
 
     f.render_widget(Clear, popup_area);
 
@@ -357,10 +371,25 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
             } else {
                 inst.name.clone()
             };
-            let text = format!(" {:02X} {}", i, name);
+            // Show indicators for what's configured
+            let mut tags = String::new();
+            if let Some(ref sp) = inst.synth_params {
+                use crate::audio::synth::Patch;
+                let patch_name = Patch::from_program(sp.waveform).name();
+                tags.push_str(&format!(" [{}]", patch_name));
+            }
+            if inst.sample_index.is_some() { tags.push_str(" [SMP]"); }
+            if inst.midi_program.is_some() {
+                tags.push_str(&format!(" [PRG:{:02X}]", inst.midi_program.unwrap()));
+            }
+            let text = format!(" {:02X} {}{}", i, name, tags);
+            let has_data = inst.synth_params.is_some()
+                || inst.sample_index.is_some()
+                || inst.midi_program.is_some()
+                || !inst.name.is_empty();
             let style = if i == app.instrument_cursor {
                 Style::default().fg(theme.popup_highlight_fg).bg(theme.popup_highlight_bg).add_modifier(Modifier::BOLD)
-            } else if !inst.name.is_empty() {
+            } else if has_data {
                 Style::default().fg(theme.popup_text)
             } else {
                 Style::default().fg(theme.status_hint)
@@ -371,11 +400,68 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(" Instruments [Esc=close, type=name, Enter=sample, Tab=synth] ")
+            .title(" Instruments ")
+            .title_bottom(" Esc:close  Type:name  Enter:sample  Tab:synth ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );
     f.render_widget(list, popup_area);
+}
+
+fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
+    let area = f.area();
+    let popup_area = centered_rect(44, 5, area);
+    f.render_widget(Clear, popup_area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Unsaved changes! Quit without saving?",
+            Style::default().fg(theme.popup_text),
+        )),
+        Line::from(Span::styled(
+            "  [Y] Quit  [S] Save & Quit  [Any] Cancel",
+            Style::default().fg(theme.popup_key),
+        )),
+    ];
+
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Quit Confirmation ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.popup_border)),
+    );
+    f.render_widget(widget, popup_area);
+}
+
+fn draw_channel_rename(f: &mut Frame, app: &App, theme: &Theme) {
+    let area = f.area();
+    let popup_area = centered_rect(36, 4, area);
+    f.render_widget(Clear, popup_area);
+
+    let ch = app.cursor_channel;
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("  Ch {}: ", ch + 1),
+                Style::default().fg(theme.popup_text),
+            ),
+            Span::styled(
+                format!("{}_", app.rename_buf),
+                Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Rename Channel ")
+            .title_bottom(" Enter/Esc:confirm ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.popup_border)),
+    );
+    f.render_widget(widget, popup_area);
 }
 
 fn draw_port_selector(f: &mut Frame, app: &App, theme: &Theme) {
@@ -407,7 +493,8 @@ fn draw_port_selector(f: &mut Frame, app: &App, theme: &Theme) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(" MIDI Output Port [Enter=Select, Esc=Cancel] ")
+            .title(" MIDI Output Port ")
+            .title_bottom(" Enter:select  Esc:cancel ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );

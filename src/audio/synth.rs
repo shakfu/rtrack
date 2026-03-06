@@ -271,6 +271,9 @@ struct Voice {
     phase2: f64, // detuned second oscillator
     fm_mod_phase: f64, // for FM bell
 
+    // Pitch offset in semitones (from effects like portamento, vibrato, arpeggio)
+    pitch_offset: f32,
+
     // ADSR envelope
     env_stage: EnvStage,
     env_level: f32,
@@ -328,6 +331,7 @@ impl Voice {
             phase: 0.0,
             phase2: 0.0,
             fm_mod_phase: 0.0,
+            pitch_offset: 0.0,
             env_stage: EnvStage::Attack,
             env_level: 0.0,
             filter: SvfState::new(),
@@ -352,7 +356,11 @@ impl Voice {
         }
 
         let sr = self.sample_rate;
-        let freq = self.frequency;
+        let freq = if self.pitch_offset != 0.0 {
+            self.frequency * 2.0_f32.powf(self.pitch_offset / 12.0)
+        } else {
+            self.frequency
+        };
 
         // -- ADSR envelope --
         let env = &self.params.env;
@@ -654,6 +662,27 @@ impl BuiltinSynth {
 
     pub fn program_change(&mut self, channel: u8, program: u8) {
         self.programs[(channel & 0x0F) as usize] = program;
+    }
+
+    /// Set pitch offset (in semitones) for all active voices on a channel.
+    /// Used by offline export to apply portamento, vibrato, and arpeggio effects.
+    pub fn set_channel_pitch_offset(&mut self, channel: u8, semitones: f32) {
+        for voice in &mut self.voices {
+            if voice.active && voice.channel == channel {
+                voice.pitch_offset = semitones;
+            }
+        }
+    }
+
+    /// Set volume (velocity 0-127) for all active voices on a channel.
+    /// Used by offline export to apply volume slide effects.
+    pub fn set_channel_volume(&mut self, channel: u8, velocity: u8) {
+        let vel = velocity as f32 / 127.0;
+        for voice in &mut self.voices {
+            if voice.active && voice.channel == channel {
+                voice.velocity = vel;
+            }
+        }
     }
 
     /// Render one stereo sample pair. Called from the audio callback.

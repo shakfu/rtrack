@@ -112,6 +112,10 @@ impl App {
     pub(crate) fn process_tick(&mut self) {
         if self.playback_tick == 0 {
             self.advance_playback();
+            if self.follow_playback {
+                self.cursor_row = self.playback_row;
+                self.edit_order = self.playback_order;
+            }
         } else {
             self.process_effects_tick();
         }

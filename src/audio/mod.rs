@@ -324,7 +324,7 @@ impl AudioEngine {
                     }
                 }
 
-                use crate::sample::playback::SampleVoice;
+                use crate::sample::playback::{SampleEnvelope, SampleVoice};
                 state.sample_engine.voices.push(SampleVoice {
                     sample_index,
                     position: trim_start as f64,
@@ -333,6 +333,7 @@ impl AudioEngine {
                     channel,
                     note,
                     active: true,
+                    envelope: SampleEnvelope::new(self.sample_rate as f32),
                 });
             }
         }

@@ -62,7 +62,45 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let pattern_idx = app.song.order[app.current_order_position()];
     let pattern = &app.song.patterns[pattern_idx];
 
-    let visible_rows = area.height as usize;
+    // Draw column headers on the first row
+    let header_y = area.y;
+    let header_style = Style::default().fg(theme.row_bar).add_modifier(Modifier::BOLD);
+    let dim_header = Style::default().fg(theme.row_beat);
+    write_str(buf, area.x, header_y, "   ", dim_header);
+    write_str(buf, area.x + ROW_NUM_WIDTH, header_y, " | ", Style::default().fg(theme.separator));
+    {
+        let mut hx = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
+        let visible = app.visible_channels();
+        let first_visible = visible.start;
+        for ch in visible.clone() {
+            if ch > first_visible {
+                write_str(buf, hx, header_y, " | ", Style::default().fg(theme.separator));
+                hx += SEPARATOR_WIDTH;
+            }
+            let col_start = hx;
+            // Show channel name if set, otherwise show column labels
+            let ch_name = app.channel_names.get(ch).filter(|n| !n.is_empty());
+            if let Some(name) = ch_name {
+                let display: String = format!("{:<14}", name).chars().take(14).collect();
+                write_str(buf, hx, header_y, &display, header_style);
+            } else {
+                write_str(buf, hx, header_y, "Not", header_style);
+                write_str(buf, hx + NOTE_WIDTH, header_y, " ", dim_header);
+                write_str(buf, hx + NOTE_WIDTH + 1, header_y, "In", header_style);
+                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH, header_y, " ", dim_header);
+                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1, header_y, "Vl", header_style);
+                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1 + VOL_WIDTH, header_y, " ", dim_header);
+                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1 + VOL_WIDTH + 1, header_y, "Fx ", header_style);
+            }
+            hx = col_start + CHANNEL_WIDTH;
+        }
+    }
+
+    // Pattern data starts one row below the header
+    let data_area_y = area.y + 1;
+    let data_area_height = area.height.saturating_sub(1) as usize;
+
+    let visible_rows = data_area_height;
     let center_offset = visible_rows / 2;
 
     // Determine which rows to display, centered on cursor/playback position
@@ -84,8 +122,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             break;
         }
 
-        let y = area.y + screen_y as u16;
-        if y >= area.y + area.height {
+        let y = data_area_y + screen_y as u16;
+        if y >= data_area_y + data_area_height as u16 {
             break;
         }
 
@@ -119,9 +157,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
             let cell = pattern.get(row_idx, ch);
 
+            // Check if this cell is inside a block selection
+            let in_block = app.block_bounds().map_or(false, |(r0, r1, c0, c1)| {
+                row_idx >= r0 && row_idx <= r1 && ch >= c0 && ch <= c1
+            });
+
             // Determine styles for each sub-column
             let base_bg = if is_playback_row {
                 theme.playback_row_bg
+            } else if in_block {
+                theme.cursor_row_bg
             } else if is_cursor_row {
                 theme.cursor_row_bg
             } else {

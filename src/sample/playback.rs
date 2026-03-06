@@ -1,5 +1,96 @@
 use super::{Sample, SampleBank};
 
+/// ADSR envelope stage for sample voices
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleEnvStage {
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+    Off,
+}
+
+/// Simple ADSR envelope for sample voices
+#[derive(Clone)]
+pub struct SampleEnvelope {
+    pub stage: SampleEnvStage,
+    pub level: f32,
+    pub attack: f32,  // seconds
+    pub decay: f32,   // seconds
+    pub sustain: f32,  // 0..1
+    pub release: f32, // seconds
+    sample_rate: f32,
+}
+
+impl SampleEnvelope {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            stage: SampleEnvStage::Attack,
+            level: 0.0,
+            attack: 0.002,   // 2ms attack (avoid click)
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,   // 50ms release (avoid click on note-off)
+            sample_rate,
+        }
+    }
+
+    fn release(&mut self) {
+        if self.stage != SampleEnvStage::Off {
+            self.stage = SampleEnvStage::Release;
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.stage != SampleEnvStage::Off
+    }
+
+    #[inline]
+    fn tick(&mut self) -> f32 {
+        match self.stage {
+            SampleEnvStage::Attack => {
+                if self.attack > 0.0 {
+                    self.level += 1.0 / (self.attack * self.sample_rate);
+                    if self.level >= 1.0 {
+                        self.level = 1.0;
+                        self.stage = SampleEnvStage::Decay;
+                    }
+                } else {
+                    self.level = 1.0;
+                    self.stage = SampleEnvStage::Decay;
+                }
+            }
+            SampleEnvStage::Decay => {
+                if self.decay > 0.0 {
+                    self.level -= (1.0 - self.sustain) / (self.decay * self.sample_rate);
+                    if self.level <= self.sustain {
+                        self.level = self.sustain;
+                        self.stage = SampleEnvStage::Sustain;
+                    }
+                } else {
+                    self.level = self.sustain;
+                    self.stage = SampleEnvStage::Sustain;
+                }
+            }
+            SampleEnvStage::Sustain => {}
+            SampleEnvStage::Release => {
+                if self.release > 0.0 {
+                    self.level -= self.level / (self.release * self.sample_rate);
+                    if self.level < 0.001 {
+                        self.level = 0.0;
+                        self.stage = SampleEnvStage::Off;
+                    }
+                } else {
+                    self.level = 0.0;
+                    self.stage = SampleEnvStage::Off;
+                }
+            }
+            SampleEnvStage::Off => {}
+        }
+        self.level
+    }
+}
+
 /// A single playing voice (one sample instance)
 pub struct SampleVoice {
     pub sample_index: usize,
@@ -12,6 +103,7 @@ pub struct SampleVoice {
     pub channel: u8,
     pub note: u8,
     pub active: bool,
+    pub envelope: SampleEnvelope,
 }
 
 /// Manages sample voice allocation and rendering.
@@ -68,13 +160,14 @@ impl SamplePlaybackEngine {
             channel,
             note,
             active: true,
+            envelope: SampleEnvelope::new(output_rate as f32),
         });
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
         for voice in &mut self.voices {
             if voice.channel == channel && voice.note == note && voice.active {
-                voice.active = false;
+                voice.envelope.release();
             }
         }
     }
@@ -82,13 +175,38 @@ impl SamplePlaybackEngine {
     pub fn note_off_channel(&mut self, channel: u8) {
         for voice in &mut self.voices {
             if voice.channel == channel && voice.active {
-                voice.active = false;
+                voice.envelope.release();
             }
         }
     }
 
     pub fn note_off_all(&mut self) {
         self.voices.clear();
+    }
+
+    /// Adjust pitch offset (in semitones) for all active voices on a channel.
+    /// Recalculates the playback rate to reflect the offset.
+    pub fn set_channel_pitch_offset(&mut self, channel: u8, semitones: f64, bank: &SampleBank, output_rate: f64) {
+        for voice in &mut self.voices {
+            if voice.active && voice.channel == channel {
+                if let Some(sample) = bank.get(voice.sample_index) {
+                    let effective_note = voice.note as f64 + semitones;
+                    let pitch_ratio = 2.0_f64.powf((effective_note - sample.base_note as f64) / 12.0);
+                    let rate_ratio = sample.sample_rate / output_rate;
+                    voice.rate = pitch_ratio * rate_ratio;
+                }
+            }
+        }
+    }
+
+    /// Set volume (velocity 0-127) for all active voices on a channel.
+    pub fn set_channel_volume(&mut self, channel: u8, velocity: u8) {
+        let vel = velocity as f32 / 127.0;
+        for voice in &mut self.voices {
+            if voice.active && voice.channel == channel {
+                voice.velocity = vel;
+            }
+        }
     }
 
     /// Render all active voices into left/right buffers (additive mix).
@@ -116,6 +234,13 @@ impl SamplePlaybackEngine {
                     break;
                 }
 
+                // Tick the ADSR envelope
+                let env_level = voice.envelope.tick();
+                if !voice.envelope.is_active() {
+                    voice.active = false;
+                    break;
+                }
+
                 // Linear interpolation between two adjacent frames
                 let pos = voice.position;
                 let idx = pos as usize;
@@ -126,8 +251,8 @@ impl SamplePlaybackEngine {
                 let l = f0[0] * (1.0 - frac) + f1[0] * frac;
                 let r = f0[1] * (1.0 - frac) + f1[1] * frac;
 
-                left[i] += l * voice.velocity;
-                right[i] += r * voice.velocity;
+                left[i] += l * voice.velocity * env_level;
+                right[i] += r * voice.velocity * env_level;
 
                 // Advance position
                 voice.position += voice.rate;
@@ -208,7 +333,14 @@ mod tests {
         let mut engine = SamplePlaybackEngine::new(16);
         engine.note_on(0, 60, 100, 0, sample, 44100.0);
         engine.note_off(0, 60);
-        assert!(!engine.voices[0].active);
+        // Voice enters release stage (not instantly deactivated)
+        assert_eq!(engine.voices[0].envelope.stage, SampleEnvStage::Release);
+        // After rendering enough samples, the envelope fades out and voice deactivates
+        let mut left = vec![0.0f32; 44100]; // 1 second -- way past the 50ms release
+        let mut right = vec![0.0f32; 44100];
+        engine.render(&bank, &mut left, &mut right);
+        // Voice should be gone after release fades out
+        assert!(engine.voices.is_empty() || !engine.voices[0].active);
     }
 
     #[test]
@@ -320,8 +452,52 @@ mod tests {
         engine.note_on(0, 60, 100, 0, sample, 44100.0);
         engine.note_on(0, 64, 100, 1, sample, 44100.0);
         engine.note_off_channel(0);
-        let active: Vec<_> = engine.voices.iter().filter(|v| v.active).collect();
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].channel, 1);
+        // Channel 0 voice should be in release, channel 1 still sustaining
+        let ch0 = engine.voices.iter().find(|v| v.channel == 0).unwrap();
+        assert_eq!(ch0.envelope.stage, SampleEnvStage::Release);
+        let ch1 = engine.voices.iter().find(|v| v.channel == 1).unwrap();
+        assert!(ch1.active);
+        assert_ne!(ch1.envelope.stage, SampleEnvStage::Release);
+    }
+
+    #[test]
+    fn test_envelope_fade_on_note_off() {
+        // Use a looping sample so it doesn't end before we test
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Sample {
+            name: "loop".into(),
+            data: vec![[0.5, 0.5]; 1000],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: true,
+            loop_start: 0,
+            loop_end: 1000,
+            source_path: None,
+        });
+        let sample = bank.get(0).unwrap();
+        let mut engine = SamplePlaybackEngine::new(16);
+        engine.note_on(0, 60, 127, 0, sample, 44100.0);
+
+        // Render a few frames to get past attack
+        let mut left = vec![0.0f32; 500];
+        let mut right = vec![0.0f32; 500];
+        engine.render(&bank, &mut left, &mut right);
+        let pre_off_energy: f32 = left[200..500].iter().map(|s| s * s).sum();
+        assert!(pre_off_energy > 0.0, "Should have audio before note off");
+
+        // Trigger release
+        engine.note_off(0, 60);
+
+        // Render enough for release to fully fade (exponential, ~50ms time constant)
+        let mut left2 = vec![0.0f32; 22050]; // 500ms -- well past release
+        let mut right2 = vec![0.0f32; 22050];
+        engine.render(&bank, &mut left2, &mut right2);
+
+        // End should be silence (voice deactivated after envelope reaches < 0.001)
+        let tail_energy: f32 = left2[20000..22050].iter().map(|s| s * s).sum();
+        assert!(tail_energy < 0.001,
+            "Expected silence after full release, but tail_energy={}", tail_energy);
     }
 }

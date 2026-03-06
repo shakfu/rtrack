@@ -4,6 +4,68 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (FLAC Export, Sample ADSR)
+
+- FLAC audio export (Ctrl+L): lossless audio export alongside existing WAV export
+  - Uses `flacenc` crate (pure Rust FLAC encoder)
+  - Same offline render pipeline as WAV export
+- ADSR envelope on sample voices: eliminates clicks on note-on and note-off
+  - 2ms attack ramp (avoids click on trigger)
+  - Full sustain while note is held
+  - 50ms exponential release on note-off (smooth fade instead of instant silence)
+  - Envelope applied per-voice in the sample playback engine
+
+### Fixed (WAV Export, Path Traversal)
+
+- Fixed WAV export missing sub-tick effects: portamento, vibrato, arpeggio, and volume slide now correctly modify synth pitch and sample playback rate during offline render
+  - Added `set_channel_pitch_offset()` and `set_channel_volume()` to BuiltinSynth and SamplePlaybackEngine
+  - Synth voices now support a `pitch_offset` field applied in the oscillator
+  - Arpeggio cycles pitch, vibrato modulates pitch, portamento slides pitch -- all audible in exported audio
+- Fixed path traversal vulnerability in sample loading: `resolve_relative()` now strips `..` components from relative paths and reduces absolute paths to just the filename, preventing malicious .rtrk files from accessing files outside the song directory
+- 6 new tests: portamento in export, volume slide in export, path traversal sanitization, FLAC export, sample envelope fade, sample note-off release
+- Test count increased from 198 to 203
+
+### Added (Interpolation, Follow Mode, Channel Names)
+
+- Interpolation tool (Ctrl+I): fill volume and effect value ramps across a block selection
+  - Linearly interpolates between first and last row values for each channel in the block
+  - Volume interpolation: fills when both endpoints have a volume value
+  - Effect interpolation: fills when both endpoints have the same effect command
+  - Requires an active block selection (Ctrl+B) with at least 2 rows
+- Follow mode toggle (Ctrl+F): cursor follows playback position
+  - When enabled, cursor_row and edit_order sync to playback position each tick
+  - On by default; "FLW" indicator shown in header when active
+  - Toggle off to freely navigate while playback continues
+- Channel rename (Ctrl+R): name channels with custom labels
+  - Opens a text input popup for the current channel (max 10 characters)
+  - Channel names display in the column header row, replacing "Not In Vl Fx" labels
+  - Unnamed channels continue to show the default column labels
+  - Names resize with channel count changes and reset on file load
+- 6 new tests covering follow mode toggle, channel rename, interpolation (volume, effect, no-block error)
+- Test count increased from 192 to 198
+
+### Added (Block Selection, Transpose, UX)
+
+- Block selection (Ctrl+B): rectangular region select in the pattern grid
+  - Toggle anchor at cursor position, then move cursor to define the block
+  - Ctrl+C/X/V copies, cuts, or pastes the 2D block (rows x channels)
+  - Block is visually highlighted in the pattern editor
+  - Separate block clipboard (`Vec<Vec<Cell>>`) independent of row clipboard
+  - Paste inserts at cursor position, clipping to pattern bounds
+- Note transpose (Shift+Up/Down): transpose notes by semitone
+  - Works on the note at the cursor position
+  - When a block selection is active, transposes all notes in the block
+  - Handles octave wrapping and clamps to valid MIDI range (0-127)
+- Quit confirmation and dirty flag:
+  - `dirty` flag tracks unsaved changes (set on any edit, cleared on save/load)
+  - `[*]` indicator in header bar when song has unsaved modifications
+  - Pressing `q` with unsaved changes shows a confirmation dialog: [Y] Quit, [S] Save & Quit, [Any] Cancel
+  - Clean songs quit immediately as before
+- Pattern column headers: "Not In Vl Fx" labels displayed above the pattern grid for each visible channel
+- Atomic save: file writes go to a temp file first (`.rtrack_save_<pid>_<filename>.tmp`), then rename to the target path, preventing corruption on crash
+- 11 new tests covering dirty flag, quit confirmation, note transpose, block select/copy/cut/paste, and atomic save
+- Test count increased from 181 to 192
+
 ### Added (Built-in Synth Rewrite)
 
 - Replaced fundsp Sequencer-based synth with custom subtractive synthesizer

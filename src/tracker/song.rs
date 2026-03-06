@@ -72,8 +72,18 @@ impl SongFile {
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)
             .context("Failed to serialize song file")?;
-        std::fs::write(path, json)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        // Atomic save: write to temp file in same directory, then rename
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let temp_name = format!(
+            ".rtrack_save_{}_{}.tmp",
+            std::process::id(),
+            path.file_name().and_then(|f| f.to_str()).unwrap_or("song")
+        );
+        let temp_path = dir.join(temp_name);
+        std::fs::write(&temp_path, &json)
+            .with_context(|| format!("Failed to write temp file {}", temp_path.display()))?;
+        std::fs::rename(&temp_path, path)
+            .with_context(|| format!("Failed to rename {} -> {}", temp_path.display(), path.display()))?;
         Ok(())
     }
 
@@ -137,8 +147,17 @@ impl Song {
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)
             .context("Failed to serialize song")?;
-        std::fs::write(path, json)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let temp_name = format!(
+            ".rtrack_save_{}_{}.tmp",
+            std::process::id(),
+            path.file_name().and_then(|f| f.to_str()).unwrap_or("song")
+        );
+        let temp_path = dir.join(temp_name);
+        std::fs::write(&temp_path, &json)
+            .with_context(|| format!("Failed to write temp file {}", temp_path.display()))?;
+        std::fs::rename(&temp_path, path)
+            .with_context(|| format!("Failed to rename {} -> {}", temp_path.display(), path.display()))?;
         Ok(())
     }
 

@@ -81,11 +81,17 @@ Use `+`/`-` to shift octave. Ctrl+1..8 to select tracks, arrow keys to navigate.
 ### Pattern Editing
 
 - Up to 8 channels, displayed in pages of 4 (Tab/Shift-Tab to switch pages)
+- Column headers above the pattern grid (shows channel name or "Not In Vl Fx" labels)
+- Channel rename (Ctrl+R): name channels ("Kick", "Bass", etc.) shown in headers
 - Configurable channel count and rows per pattern (default 4 channels, 64 rows)
 - Note, instrument, volume, and effect columns per cell
 - Normal mode (navigation) and Insert mode (data entry)
 - Edit step (`(`/`)`) -- auto-advance cursor by N rows after each entry
 - Row insert/delete, copy/cut/paste entire rows
+- Block selection (Ctrl+B): select a rectangular region, then copy/cut/paste the block
+- Interpolation tool (Ctrl+I): fill volume/effect ramps across a block selection
+- Note transpose (Shift+Up/Down): shift notes up or down by semitone (works on cursor or block)
+- Follow mode (Ctrl+F): cursor follows playback position (on by default, toggle off to navigate freely)
 - Undo/redo with 100-level history
 - Mouse: click to place cursor, scroll to navigate
 
@@ -125,7 +131,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 - Per-instrument sample assignment -- load WAV/AIFF files into slots
 - Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
 - Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter, and detune
-- Pitch-shifted playback with up to 32 simultaneous voices
+- Pitch-shifted playback with up to 32 simultaneous voices and ADSR envelopes
 
 ### Effects
 
@@ -161,9 +167,12 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ### Import / Export
 
 - Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references (see [File Format](#file-format))
+- Atomic save -- writes to temp file then renames, preventing corruption on crash
+- Dirty flag -- `[*]` in header when unsaved changes exist, quit confirmation prompt
 - Import from standard MIDI files (`.mid`)
 - Export to MIDI (Ctrl+E)
 - Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
+- Export to FLAC (Ctrl+L) -- lossless audio export
 - Color themes: dark (default), light, monokai (F8 to cycle)
 
 ## File Format
@@ -221,19 +230,25 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | F8 | Cycle color theme |
 | F9-F12 | Mute channels on current page |
 | Ctrl+F9-F12 | Solo channels on current page |
+| Shift+Up / Down | Transpose note(s) up / down by semitone |
+| Ctrl+B | Toggle block selection |
+| Ctrl+I | Interpolate block (volume/effect ramp) |
+| Ctrl+F | Toggle follow mode (cursor follows playback) |
+| Ctrl+R | Rename current channel |
 | Ctrl+S | Save |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
-| Ctrl+C / X / V | Copy / cut / paste row |
+| Ctrl+C / X / V | Copy / cut / paste row (or block if selected) |
 | Ctrl+Left / Right | Previous / next order position |
 | Ctrl+E | Export MIDI |
 | Ctrl+W | Export WAV |
+| Ctrl+L | Export FLAC |
 | Ctrl+M | Toggle MIDI clock |
 
 ### Normal Mode
 
 | Key | Action |
 |-----|--------|
-| q | Quit |
+| q | Quit (confirms if unsaved changes) |
 | Ctrl+N | New pattern |
 | Ctrl+D | Clone current pattern |
 | F4 / F5 | Insert / remove order entry |
@@ -283,7 +298,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (181 tests)
+make test     # run tests (203 tests)
 ```
 
 ## Architecture

@@ -96,6 +96,8 @@ pub enum Mode {
     InstrumentList,
     SampleEditor,
     SynthEditor,
+    QuitConfirm,
+    ChannelRename,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,6 +320,24 @@ pub struct App {
 
     // Help dialog scroll offset
     pub help_scroll: usize,
+
+    // Dirty flag: set when song is modified, cleared on save/load
+    pub dirty: bool,
+
+    // Block selection: anchor point (row, channel) when selection is active
+    pub block_anchor: Option<(usize, usize)>,
+
+    // Block clipboard: 2D grid of cells (rows x channels)
+    pub block_clipboard: Option<Vec<Vec<crate::tracker::Cell>>>,
+
+    // Follow mode: cursor follows playback position
+    pub follow_playback: bool,
+
+    // Per-channel names (indexed by tracker channel)
+    pub channel_names: Vec<String>,
+
+    // Channel rename edit buffer
+    pub rename_buf: String,
 }
 
 impl App {
@@ -384,6 +404,12 @@ impl App {
             playback_tick: 0,
             channel_states: vec![ChannelState::default(); 4],
             help_scroll: 0,
+            dirty: false,
+            block_anchor: None,
+            block_clipboard: None,
+            follow_playback: true,
+            channel_names: vec![String::new(); 4],
+            rename_buf: String::new(),
         }
     }
 
@@ -820,6 +846,7 @@ impl App {
         match song_file.save(&path) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
+                self.dirty = false;
                 self.status_message = Some(format!("Saved: {}", path.display()));
             }
             Err(e) => {
@@ -885,6 +912,7 @@ impl App {
                 let song = song_file.song;
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
+                self.channel_names = vec![String::new(); song.channels];
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.cursor_row = 0;
@@ -937,6 +965,7 @@ impl App {
                 }
 
                 self.file_path = Some(path.clone());
+                self.dirty = false;
                 if sample_errors.is_empty() {
                     self.status_message = Some(format!("Loaded: {}", path.display()));
                 } else {
@@ -961,6 +990,7 @@ impl App {
         if self.undo_stack.len() > MAX_UNDO_HISTORY {
             self.undo_stack.pop_front();
         }
+        self.dirty = true;
     }
 
     pub fn undo(&mut self) {
@@ -1067,6 +1097,35 @@ impl App {
         }
     }
 
+    pub fn export_flac_file(&mut self) {
+        let path = self.file_path.as_ref()
+            .map(|p| p.with_extension("flac"))
+            .unwrap_or_else(|| {
+                let name = self.song.title.replace(' ', "_").to_lowercase();
+                PathBuf::from(format!("{}.flac", name))
+            });
+        let instruments: Vec<crate::sample::export::ExportInstrument> = self.instruments.iter()
+            .map(|i| crate::sample::export::ExportInstrument {
+                sample_index: i.sample_index,
+                midi_program: i.midi_program.unwrap_or(0),
+                synth_params: i.synth_params.clone(),
+            })
+            .collect();
+        let sample_rate = self.audio.as_ref()
+            .map(|a| a.sample_rate() as u32)
+            .unwrap_or(44100);
+        match crate::sample::export::render_to_flac(
+            &path, &self.song, &self.sample_bank, &instruments, sample_rate,
+        ) {
+            Ok(()) => {
+                self.status_message = Some(format!("Exported FLAC: {}", path.display()));
+            }
+            Err(e) => {
+                self.status_message = Some(format!("FLAC export failed: {}", e));
+            }
+        }
+    }
+
     pub fn export_midi(&mut self) {
         let path = self.file_path.as_ref()
             .map(|p| p.with_extension("mid"))
@@ -1090,6 +1149,7 @@ impl App {
                 self.push_undo();
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
+                self.channel_names = vec![String::new(); song.channels];
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.cursor_row = 0;
@@ -1127,13 +1187,22 @@ fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String {
 }
 
 /// Resolve a (possibly relative) path against a base directory.
+/// Rejects path traversal (`..` components) and absolute paths to prevent
+/// a malicious .rtrk file from referencing files outside the song directory.
 fn resolve_relative(base: &std::path::Path, rel: &str) -> std::path::PathBuf {
     let p = std::path::Path::new(rel);
+    // Reject absolute paths -- only allow relative references
     if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        base.join(p)
+        return base.join(
+            p.file_name().unwrap_or_default(),
+        );
     }
+    // Strip any `..` components to prevent directory traversal
+    let sanitized: std::path::PathBuf = p
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::ParentDir))
+        .collect();
+    base.join(sanitized)
 }
 
 #[cfg(test)]
@@ -1190,6 +1259,12 @@ mod tests {
             track_page: 0,
             preview_note: None,
             help_scroll: 0,
+            dirty: false,
+            block_anchor: None,
+            block_clipboard: None,
+            follow_playback: true,
+            channel_names: vec![String::new(); 4],
+            rename_buf: String::new(),
         }
     }
 
@@ -2636,5 +2711,280 @@ mod tests {
         let initial = app.midi.clock_enabled;
         app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL));
         assert_ne!(app.midi.clock_enabled, initial);
+    }
+
+    #[test]
+    fn test_dirty_flag_on_edit() {
+        let mut app = make_app();
+        assert!(!app.dirty);
+        app.mode = Mode::Insert;
+        // Enter a note (triggers push_undo -> dirty)
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn test_dirty_flag_cleared_on_save() {
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(app.dirty);
+        let tmp_dir = std::env::temp_dir();
+        let path = tmp_dir.join("rtrack_test_dirty.rtrk");
+        app.file_path = Some(path.clone());
+        app.save();
+        assert!(!app.dirty);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_quit_confirm_when_dirty() {
+        let mut app = make_app();
+        app.dirty = true;
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        // Should enter quit confirm mode, not quit
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::QuitConfirm);
+        // Press 'n' (any key other than y/s) cancels
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_quit_confirm_yes() {
+        let mut app = make_app();
+        app.dirty = true;
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::QuitConfirm);
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_no_confirm_when_clean() {
+        let mut app = make_app();
+        assert!(!app.dirty);
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_note_transpose_up() {
+        let mut app = make_app();
+        // Place a C-4 note
+        let pattern_idx = app.song.order[0];
+        app.song.patterns[pattern_idx].set_cell(0, 0, crate::tracker::Cell {
+            note: Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 }),
+            ..Default::default()
+        });
+        // Shift+Up transposes up 1 semitone
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert_eq!(cell.note, Some(Note::On { value: crate::tracker::NoteValue::Cs, octave: 4 }));
+    }
+
+    #[test]
+    fn test_note_transpose_down() {
+        let mut app = make_app();
+        let pattern_idx = app.song.order[0];
+        app.song.patterns[pattern_idx].set_cell(0, 0, crate::tracker::Cell {
+            note: Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 }),
+            ..Default::default()
+        });
+        // Shift+Down transposes down 1 semitone (C-4 -> B-3)
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert_eq!(cell.note, Some(Note::On { value: crate::tracker::NoteValue::B, octave: 3 }));
+    }
+
+    #[test]
+    fn test_block_select_toggle() {
+        let mut app = make_app();
+        assert!(app.block_anchor.is_none());
+        // Ctrl+B toggles block selection
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert_eq!(app.block_anchor, Some((0, 0)));
+        // Toggle off
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(app.block_anchor.is_none());
+    }
+
+    #[test]
+    fn test_block_copy_paste() {
+        let mut app = make_app();
+        let pattern_idx = app.song.order[0];
+        // Place notes in rows 0-1, channels 0-1
+        app.song.patterns[pattern_idx].set_cell(0, 0, crate::tracker::Cell {
+            note: Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 }),
+            ..Default::default()
+        });
+        app.song.patterns[pattern_idx].set_cell(1, 1, crate::tracker::Cell {
+            note: Some(Note::On { value: crate::tracker::NoteValue::E, octave: 4 }),
+            ..Default::default()
+        });
+        // Start block at (0,0)
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        // Move cursor to (1,1)
+        app.cursor_row = 1;
+        app.cursor_channel = 1;
+        // Copy block
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.block_clipboard.is_some());
+        let clip = app.block_clipboard.as_ref().unwrap();
+        assert_eq!(clip.len(), 2); // 2 rows
+        assert_eq!(clip[0].len(), 2); // 2 channels
+        // Paste at (4,0)
+        app.cursor_row = 4;
+        app.cursor_channel = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        let cell = app.song.patterns[pattern_idx].get(4, 0);
+        assert_eq!(cell.note, Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 }));
+        let cell2 = app.song.patterns[pattern_idx].get(5, 1);
+        assert_eq!(cell2.note, Some(Note::On { value: crate::tracker::NoteValue::E, octave: 4 }));
+    }
+
+    #[test]
+    fn test_block_cut_clears_selection() {
+        let mut app = make_app();
+        let pattern_idx = app.song.order[0];
+        app.song.patterns[pattern_idx].set_cell(0, 0, crate::tracker::Cell {
+            note: Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 }),
+            ..Default::default()
+        });
+        // Start block at (0,0), cursor at (0,0)
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        // Cut
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        // Original cell should be cleared
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell.note.is_none());
+        // Block anchor should be cleared
+        assert!(app.block_anchor.is_none());
+    }
+
+    #[test]
+    fn test_atomic_save() {
+        let mut app = make_app();
+        let tmp_dir = std::env::temp_dir();
+        let path = tmp_dir.join("rtrack_test_atomic.rtrk");
+        app.file_path = Some(path.clone());
+        app.save();
+        assert!(path.exists());
+        // Temp file should not exist
+        let temp_path = tmp_dir.join(format!(".rtrack_save_{}.tmp", std::process::id()));
+        assert!(!temp_path.exists());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_follow_mode_toggle() {
+        let mut app = make_app();
+        assert!(app.follow_playback); // on by default
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert!(!app.follow_playback);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert!(app.follow_playback);
+    }
+
+    #[test]
+    fn test_channel_rename() {
+        let mut app = make_app();
+        assert_eq!(app.channel_names[0], "");
+        // Ctrl+R opens rename mode
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::ChannelRename);
+        // Type a name
+        app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.rename_buf, "Kick");
+        // Enter confirms
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.channel_names[0], "Kick");
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_channel_rename_backspace() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.rename_buf, "A");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.channel_names[0], "A");
+    }
+
+    #[test]
+    fn test_interpolate_volume() {
+        let mut app = make_app();
+        let pattern_idx = app.song.order[0];
+        // Set volume at row 0 and row 4
+        app.song.patterns[pattern_idx].set_cell(0, 0, crate::tracker::Cell {
+            volume: Some(0),
+            ..Default::default()
+        });
+        app.song.patterns[pattern_idx].set_cell(4, 0, crate::tracker::Cell {
+            volume: Some(100),
+            ..Default::default()
+        });
+        // Select block from (0,0) to (4,0)
+        app.block_anchor = Some((0, 0));
+        app.cursor_row = 4;
+        app.cursor_channel = 0;
+        // Interpolate
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
+        // Check intermediate values
+        assert_eq!(app.song.patterns[pattern_idx].get(0, 0).volume, Some(0));
+        assert_eq!(app.song.patterns[pattern_idx].get(1, 0).volume, Some(25));
+        assert_eq!(app.song.patterns[pattern_idx].get(2, 0).volume, Some(50));
+        assert_eq!(app.song.patterns[pattern_idx].get(3, 0).volume, Some(75));
+        assert_eq!(app.song.patterns[pattern_idx].get(4, 0).volume, Some(100));
+    }
+
+    #[test]
+    fn test_interpolate_effect_value() {
+        let mut app = make_app();
+        let pattern_idx = app.song.order[0];
+        // Set effect at row 0 and row 2 (same effect command)
+        app.song.patterns[pattern_idx].set_cell(0, 0, crate::tracker::Cell {
+            effect: Some(5), effect_value: Some(0),
+            ..Default::default()
+        });
+        app.song.patterns[pattern_idx].set_cell(2, 0, crate::tracker::Cell {
+            effect: Some(5), effect_value: Some(80),
+            ..Default::default()
+        });
+        app.block_anchor = Some((0, 0));
+        app.cursor_row = 2;
+        app.cursor_channel = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
+        assert_eq!(app.song.patterns[pattern_idx].get(1, 0).effect, Some(5));
+        assert_eq!(app.song.patterns[pattern_idx].get(1, 0).effect_value, Some(40));
+    }
+
+    #[test]
+    fn test_interpolate_no_block() {
+        let mut app = make_app();
+        // No block selected -- should show error message, not panic
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
+        assert!(app.status_message.as_ref().unwrap().contains("No block"));
+    }
+
+    #[test]
+    fn test_resolve_relative_blocks_traversal() {
+        let base = std::path::Path::new("/home/user/songs");
+        // Normal relative path
+        let normal = resolve_relative(base, "samples/kick.wav");
+        assert_eq!(normal, std::path::PathBuf::from("/home/user/songs/samples/kick.wav"));
+        // Path traversal -- `..` components should be stripped
+        let traversal = resolve_relative(base, "../../etc/passwd");
+        assert_eq!(traversal, std::path::PathBuf::from("/home/user/songs/etc/passwd"));
+        // Absolute path -- should be reduced to just the filename under base
+        let absolute = resolve_relative(base, "/etc/passwd");
+        assert_eq!(absolute, std::path::PathBuf::from("/home/user/songs/passwd"));
     }
 }
