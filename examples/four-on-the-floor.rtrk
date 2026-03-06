@@ -1,0 +1,597 @@
+{
+  "title": "Four On The Floor",
+  "bpm": 128,
+  "speed": 6,
+  "patterns": [
+    {
+      "rows": 16,
+      "channels": 4,
+      "data": [
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 3
+              }
+            },
+            "instrument": 0,
+            "volume": 127,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 80,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 2
+              }
+            },
+            "instrument": 3,
+            "volume": 96,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 48,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 3
+              }
+            },
+            "instrument": 0,
+            "volume": 127,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "D",
+                "octave": 3
+              }
+            },
+            "instrument": 1,
+            "volume": 112,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 80,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 48,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 3
+              }
+            },
+            "instrument": 0,
+            "volume": 127,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 80,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 2
+              }
+            },
+            "instrument": 3,
+            "volume": 96,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 48,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 3
+              }
+            },
+            "instrument": 0,
+            "volume": 127,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "D",
+                "octave": 3
+              }
+            },
+            "instrument": 1,
+            "volume": 112,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 80,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": "Off",
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F#",
+                "octave": 4
+              }
+            },
+            "instrument": 2,
+            "volume": 48,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          },
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": null,
+            "effect_value": null
+          }
+        ]
+      ]
+    }
+  ],
+  "order": [
+    0
+  ],
+  "channels": 4,
+  "rows_per_pattern": 16,
+  "instruments": [
+    {
+      "slot": 0,
+      "name": "Kick"
+    },
+    {
+      "slot": 1,
+      "name": "Snare"
+    },
+    {
+      "slot": 2,
+      "name": "HiHat"
+    },
+    {
+      "slot": 3,
+      "name": "Bass",
+      "midi_program": 0
+    }
+  ]
+}

@@ -15,6 +15,17 @@ cargo run -- --sample-dir samples/       # load a directory of samples
 
 Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back. Press **F1** for the full help screen.
 
+### Headless Playback
+
+Play a song from the command line without launching the TUI:
+
+```sh
+cargo run -- --play examples/multi-pattern.rtrk          # play once and exit
+cargo run -- --play --loops 3 song.rtrk                   # play 3 times
+cargo run -- --play --loops 0 song.rtrk                   # loop forever (Ctrl+C to stop)
+cargo run -- --play --sf2 gm.sf2 --sample-dir drums/ song.rtrk  # with audio options
+```
+
 ## Audio Modes
 
 rtrack supports three ways to produce sound, and they can be combined:
@@ -25,7 +36,7 @@ rtrack supports three ways to produce sound, and they can be combined:
 | **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
 | **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
-All modes output through [cpal](https://crates.io/crates/cpal) with a stereo reverb effects chain. MIDI output runs in parallel regardless of audio mode.
+All modes output through [cpal](https://crates.io/crates/cpal) with a stereo delay effects chain. MIDI output runs in parallel regardless of audio mode.
 
 ```sh
 cargo run -- --sf2 gm.sf2                                # SoundFont mode
@@ -232,6 +243,27 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | Delete / Backspace | Clear cell |
 | `=` | Note off (`===`) |
 
+## Examples
+
+The `examples/` directory contains `.rtrk` files demonstrating various features:
+
+| File | What it shows |
+|------|---------------|
+| `c-major-scale.rtrk` | Basic note entry -- ascending C major scale on one channel |
+| `four-on-the-floor.rtrk` | Multi-channel beat -- kick, snare, hi-hat, bass with volume variation |
+| `chord-progression.rtrk` | Polyphony -- I-V-vi-IV chords voiced across 3 channels |
+| `arpeggio-demo.rtrk` | Effects -- `0xy` arpeggio, `4xy` vibrato, `Exx` program change |
+| `portamento-slide.rtrk` | Effects -- `1xx` porta up, `3xx` tone portamento, `5xy` volume slide |
+| `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `Bxx` position jump |
+| `all-patches.rtrk` | All 8 built-in synth patches cycled with `Exx` program change |
+| `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
+
+Load any example:
+
+```sh
+cargo run -- examples/chord-progression.rtrk
+```
+
 ## Requirements
 
 - Rust 1.70+
@@ -244,7 +276,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (165 tests)
+make test     # run tests (175 tests)
 ```
 
 ## Architecture
@@ -257,7 +289,7 @@ src/
   audio/
     mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)
     synth.rs            Built-in synthesizer (8 patches, fundsp Sequencer)
-    effects.rs          Stereo reverb (fundsp)
+    effects.rs          Stereo delay effect (fundsp)
   sample/
     mod.rs              Sample loading (WAV via hound, AIFF parser, dasp conversion)
     playback.rs         Sample voice manager, pitch-shifted rendering

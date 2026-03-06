@@ -184,6 +184,8 @@ pub struct App {
     pub playing: bool,
     pub playback_row: usize,
     pub playback_order: usize,
+    /// Incremented each time playback wraps past the end of the order list
+    pub playback_generation: u32,
     last_tick: Option<Instant>,
     tick_accumulator: f64,
     /// Current sub-tick within a row (0..speed-1). Tick 0 = new row, ticks 1+ = effect processing.
@@ -284,6 +286,7 @@ impl App {
             playing: false,
             playback_row: 0,
             playback_order: 0,
+            playback_generation: 0,
             last_tick: None,
             tick_accumulator: 0.0,
             edit_step: 1,
@@ -922,6 +925,7 @@ impl App {
         self.playing = true;
         self.playback_row = self.cursor_row;
         self.playback_order = 0;
+        self.playback_generation = 0;
         self.playback_tick = 0;
         self.last_tick = Some(Instant::now());
         self.tick_accumulator = 0.0;
@@ -1145,6 +1149,9 @@ impl App {
         // Process position jump (Bxx)
         if let Some(target_order) = jump_order {
             let target = target_order.min(self.song.order.len() - 1);
+            if target <= self.playback_order {
+                self.playback_generation += 1;
+            }
             self.playback_order = target;
             let target_pattern = self.song.order[self.playback_order];
             let target_rows = self.song.patterns[target_pattern].rows;
@@ -1157,6 +1164,7 @@ impl App {
             self.playback_order += 1;
             if self.playback_order >= self.song.order.len() {
                 self.playback_order = 0;
+                self.playback_generation += 1;
             }
             let target_pattern = self.song.order[self.playback_order];
             let target_rows = self.song.patterns[target_pattern].rows;
@@ -1171,6 +1179,7 @@ impl App {
             self.playback_order += 1;
             if self.playback_order >= self.song.order.len() {
                 self.playback_order = 0;
+                self.playback_generation += 1;
             }
         }
     }
@@ -2227,6 +2236,7 @@ mod tests {
             playing: false,
             playback_row: 0,
             playback_order: 0,
+            playback_generation: 0,
             last_tick: None,
             tick_accumulator: 0.0,
             playback_tick: 0,

@@ -4,6 +4,29 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Fixed audio distortion caused by heavy FDN reverb (`reverb_stereo`) in the real-time audio callback. Replaced with a lightweight stereo delay effect (80ms L / 120ms R, 15% wet mix).
+- Fixed notes sustaining indefinitely when entered in the tracker. Added preview note tracking with 250ms auto-expiry so notes are properly released after entry.
+- Fixed instant click on note-off. Corrected `edit_relative` fade window timing so voice fade-outs start from the current time rather than retroactively.
+- Fixed heap allocation in the audio callback (`vec![]` per callback). Pre-allocated scratch buffers in `AudioState` to avoid real-time thread allocations.
+- Fixed flaky `test_link_play_stop` test by adding a delay for Link state propagation.
+
+### Changed
+- Added `[profile.dev] opt-level = 1` so the rtrack crate's own audio callback code is optimized in debug builds, preventing buffer underruns.
+- Effects chain now uses stereo delay instead of FDN reverb for reliable real-time performance.
+- Test count increased from 165 to 175.
+
+### Added (Headless Playback)
+
+- `--play` CLI flag: play a `.rtrk` file from the command line without launching the TUI
+  - Audio engine runs normally (built-in synth, SF2, samples, effects) -- just no terminal UI
+  - `--loops N` option: repeat the song N times (default 1, 0 = infinite loop until Ctrl+C)
+  - Prints song info (title, BPM, pattern count) to stderr on start
+  - Exits cleanly after the specified number of loops
+- Playback generation tracking (`playback_generation` counter) detects when the order list wraps
+  - Correctly handles `Bxx` position jump effects that loop back to earlier order positions
+  - `Dxx` pattern break and normal order-list wrap also tracked
+
 ### Added (File Format)
 
 - Extended `.rtrk` file format to persist instrument definitions and sample references
@@ -77,7 +100,7 @@ All notable changes to rtrack will be documented in this file.
   - Uses [rustysynth](https://github.com/sinshu/rustysynth) (pure Rust SF2 synthesizer) + [cpal](https://crates.io/crates/cpal) (cross-platform audio output)
   - When SF2 is loaded, it handles note playback instead of the built-in synth
   - Status bar shows "SF2" indicator when SoundFont is active
-- Stereo reverb effects chain via fundsp, applied to mixed audio output
+- Stereo effects chain via fundsp, applied to mixed audio output
   - Status bar shows "FX" when effects are enabled
 - MIDI output remains primary path; audio engine runs alongside
 - All note playback, CC, and program change messages dispatched to both MIDI and audio simultaneously

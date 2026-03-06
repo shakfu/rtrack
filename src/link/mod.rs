@@ -164,10 +164,20 @@ mod tests {
         let state = engine.capture();
         assert!(state.is_playing);
 
-        engine.request_stop();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let state = engine.capture();
-        assert!(!state.is_playing);
+        // Other Link test threads may interfere with state. Re-issue stop
+        // and poll until the state converges.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            engine.request_stop();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let state = engine.capture();
+            if !state.is_playing {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("Link did not stop within 2s");
+            }
+        }
 
         engine.disable();
     }

@@ -39,10 +39,31 @@ struct Cli {
     /// Load samples from a directory (files named <slot>-<name>.wav/.aiff)
     #[arg(long = "sample-dir", value_name = "DIR")]
     sample_dir: Option<PathBuf>,
+
+    /// Play the song headless (no TUI) and exit when done
+    #[arg(long)]
+    play: bool,
+
+    /// Number of times to loop in headless mode (default: 1, 0 = infinite)
+    #[arg(long, default_value = "1")]
+    loops: u32,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.play {
+        if cli.file.is_none() {
+            eprintln!("Error: --play requires a song file");
+            std::process::exit(1);
+        }
+        let result = run_headless(cli.file, cli.sf2, cli.samples, cli.sample_dir, cli.loops);
+        if let Err(e) = result {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // Setup terminal
     enable_raw_mode()?;
@@ -69,43 +90,31 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    file: Option<PathBuf>,
+fn setup_app(
     sf2_path: Option<PathBuf>,
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
-) -> Result<()> {
+    file: Option<PathBuf>,
+) -> Result<App> {
     let mut app = App::new();
 
     match audio::AudioEngine::new(sf2_path.as_deref()) {
         Ok(engine) => {
-            if let Some(ref sf2) = sf2_path {
-                app.status_message = Some(format!("SF2 loaded: {}", sf2.display()));
-            } else {
-                app.status_message = Some("Built-in synth active".to_string());
-            }
             app.audio = Some(engine);
         }
         Err(e) => {
-            app.status_message = Some(format!("Audio error: {}", e));
+            eprintln!("Audio warning: {}", e);
         }
     }
 
-    // Load samples from CLI
     for spec in &samples {
         if let Some((slot_str, file_str)) = spec.split_once(':') {
             if let Ok(slot) = slot_str.parse::<usize>() {
                 app.load_sample(slot, PathBuf::from(file_str));
-            } else {
-                app.status_message = Some(format!("Invalid sample slot: {}", slot_str));
             }
-        } else {
-            app.status_message = Some(format!("Invalid sample spec (use SLOT:FILE): {}", spec));
         }
     }
 
-    // Load samples from directory
     if let Some(dir) = sample_dir {
         app.load_sample_directory(&dir);
     }
@@ -116,6 +125,61 @@ fn run_app(
         } else {
             app.load_file(path);
         }
+    }
+
+    Ok(app)
+}
+
+fn run_headless(
+    file: Option<PathBuf>,
+    sf2_path: Option<PathBuf>,
+    samples: Vec<String>,
+    sample_dir: Option<PathBuf>,
+    loops: u32,
+) -> Result<()> {
+    let mut app = setup_app(sf2_path, samples, sample_dir, file)?;
+
+    let title = app.song.title.clone();
+    let order_len = app.song.order.len();
+    let bpm = app.song.bpm;
+    eprintln!(
+        "Playing: \"{}\" ({} BPM, {} patterns in order)",
+        title, bpm, order_len
+    );
+    if loops == 0 {
+        eprintln!("Looping: infinite (Ctrl+C to stop)");
+    } else {
+        eprintln!("Looping: {} time(s)", loops);
+    }
+
+    app.play();
+
+    loop {
+        app.tick_playback();
+
+        if loops > 0 && app.playback_generation >= loops {
+            break;
+        }
+
+        // Sleep to match real-time playback
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    app.stop();
+    eprintln!("Done.");
+    Ok(())
+}
+
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    file: Option<PathBuf>,
+    sf2_path: Option<PathBuf>,
+    samples: Vec<String>,
+    sample_dir: Option<PathBuf>,
+) -> Result<()> {
+    let mut app = setup_app(sf2_path, samples, sample_dir, file)?;
+    if app.audio.is_some() {
+        app.status_message = Some("Built-in synth active".to_string());
     }
 
     loop {
