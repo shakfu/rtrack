@@ -6,9 +6,8 @@ use dasp::Sample as DaspSample;
 use super::playback::SamplePlaybackEngine;
 use super::SampleBank;
 use crate::audio::effects::EffectsChain;
-use crate::audio::synth::FundspSynth;
+use crate::audio::synth::BuiltinSynth;
 use crate::tracker::{Note, Song};
-use fundsp::audiounit::AudioUnit;
 
 // Effect command constants (mirroring app constants)
 const EFFECT_ARPEGGIO: u8 = 0x0;
@@ -67,8 +66,7 @@ pub fn render_to_wav(
     let sr = sample_rate as f64;
 
     // Create offline audio components
-    let mut synth = FundspSynth::new(sr);
-    let mut backend = synth.backend();
+    let mut synth = BuiltinSynth::new(sr);
     let mut sample_engine = SamplePlaybackEngine::new(32);
     let mut effects = EffectsChain::new(sr);
 
@@ -307,12 +305,11 @@ pub fn render_to_wav(
                 let mut left = vec![0.0f32; fpt];
                 let mut right = vec![0.0f32; fpt];
 
-                // Render fundsp synth
+                // Render built-in synth
                 for i in 0..fpt {
-                    let mut output = [0f32; 2];
-                    backend.tick(&[], &mut output);
-                    left[i] += output[0];
-                    right[i] += output[1];
+                    let (l, r) = synth.render_sample();
+                    left[i] += l;
+                    right[i] += r;
                 }
 
                 // Render samples
@@ -367,10 +364,9 @@ pub fn render_to_wav(
     let mut tail_left = vec![0.0f32; tail_frames];
     let mut tail_right = vec![0.0f32; tail_frames];
     for i in 0..tail_frames {
-        let mut output = [0f32; 2];
-        backend.tick(&[], &mut output);
-        tail_left[i] += output[0];
-        tail_right[i] += output[1];
+        let (l, r) = synth.render_sample();
+        tail_left[i] += l;
+        tail_right[i] += r;
     }
     effects.process(&mut tail_left, &mut tail_right);
     all_left.extend_from_slice(&tail_left);
