@@ -248,6 +248,9 @@ pub struct App {
 
     // Track page: which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
     pub track_page: usize,
+
+    // Preview note: (channel, note, timestamp) -- auto note-off after timeout
+    preview_note: Option<(u8, u8, Instant)>,
 }
 
 impl App {
@@ -309,6 +312,7 @@ impl App {
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
             track_page: 0,
+            preview_note: None,
         }
     }
 
@@ -478,6 +482,26 @@ impl App {
         if let Some(ref audio) = self.audio {
             audio.note_off_all_channel(channel);
             audio.sample_note_off_channel(channel);
+        }
+    }
+
+    /// Preview a note: kills previous preview, starts new one, tracks it for auto-off.
+    fn preview_note(&mut self, channel: u8, note: u8, velocity: u8) {
+        // Kill previous preview note if any
+        if let Some((prev_ch, _prev_note, _)) = self.preview_note.take() {
+            self.send_channel_note_off(prev_ch);
+        }
+        self.send_note_on(channel, note, velocity);
+        self.preview_note = Some((channel, note, Instant::now()));
+    }
+
+    /// Expire preview note after timeout (call from main loop).
+    pub fn expire_preview_note(&mut self) {
+        if let Some((ch, _note, started)) = self.preview_note {
+            if started.elapsed() > std::time::Duration::from_millis(250) {
+                self.send_channel_note_off(ch);
+                self.preview_note = None;
+            }
         }
     }
 
@@ -1275,7 +1299,7 @@ impl App {
         if self.mode != Mode::Insert || self.playing {
             // Still preview the note
             let midi_ch = self.midi_channel_for(self.cursor_channel);
-            self.send_note_on(midi_ch, event.note, event.velocity);
+            self.preview_note(midi_ch, event.note, event.velocity);
             return;
         }
 
@@ -1290,9 +1314,9 @@ impl App {
 
             self.push_undo();
 
-            // Preview via MIDI output
+            // Preview the note
             let midi_ch = self.midi_channel_for(self.cursor_channel);
-            self.send_note_on(midi_ch, event.note, event.velocity);
+            self.preview_note(midi_ch, event.note, event.velocity);
 
             // Write to pattern
             let pattern_idx = self.song.order[self.current_order_position()];
@@ -1978,10 +2002,10 @@ impl App {
 
         self.push_undo();
 
-        // Preview the note via MIDI
+        // Preview the note
         if let Some(midi_note) = note.to_midi_note() {
             let midi_ch = self.midi_channel_for(self.cursor_channel);
-            self.send_note_on(midi_ch, midi_note, 0x7F);
+            self.preview_note(midi_ch, midi_note, 0x7F);
         }
 
         // Write to pattern
@@ -2231,6 +2255,7 @@ mod tests {
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
             track_page: 0,
+            preview_note: None,
         }
     }
 

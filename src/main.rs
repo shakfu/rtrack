@@ -146,6 +146,8 @@ fn run_app(
             app.tick_playback();
         }
 
+        app.expire_preview_note();
+
         if app.should_quit {
             app.stop();
             break;

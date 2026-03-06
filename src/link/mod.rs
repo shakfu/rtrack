@@ -165,6 +165,7 @@ mod tests {
         assert!(state.is_playing);
 
         engine.request_stop();
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let state = engine.capture();
         assert!(!state.is_playing);
 

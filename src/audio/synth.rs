@@ -61,10 +61,15 @@ fn midi_to_freq(note: u8) -> f32 {
     440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
 }
 
+/// Master volume applied to all voices to keep output within headroom.
+/// Raw oscillators peak at +/-1.0; with effects summing dry+wet the total
+/// can exceed 1.0, so we attenuate here to prevent clipping.
+const VOICE_GAIN: f32 = 0.25;
+
 /// Create a stereo voice (fundsp AudioUnit) for a given patch and frequency
 fn make_voice(patch: Patch, freq: f32, velocity: f32) -> Box<dyn AudioUnit> {
     let f = freq;
-    let vol = velocity;
+    let vol = velocity * VOICE_GAIN;
 
     match patch {
         Patch::Saw => Box::new(
@@ -118,8 +123,8 @@ impl FundspSynth {
     }
 
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
-        // Kill existing voice for same channel+note
-        self.note_off(channel, note);
+        // Kill all existing voices on this channel (tracker: one note per channel)
+        self.note_off_all_channel(channel);
 
         let patch = Patch::from_program(self.programs[channel as usize & 0x0F]);
         let freq = midi_to_freq(note);
@@ -146,8 +151,9 @@ impl FundspSynth {
         while i < self.active_voices.len() {
             if self.active_voices[i].0 == channel && self.active_voices[i].1 == note {
                 let (_, _, id) = self.active_voices.remove(i);
-                // End the event with a fade-out
-                self.sequencer.edit_relative(id, 0.0, 0.05);
+                // End the event: end_time must be >= fade_out so the fade
+                // window starts at current_time and ends at current_time + fade.
+                self.sequencer.edit_relative(id, 0.05, 0.05);
             } else {
                 i += 1;
             }
@@ -159,7 +165,7 @@ impl FundspSynth {
         while i < self.active_voices.len() {
             if self.active_voices[i].0 == channel {
                 let (_, _, id) = self.active_voices.remove(i);
-                self.sequencer.edit_relative(id, 0.0, 0.02);
+                self.sequencer.edit_relative(id, 0.02, 0.02);
             } else {
                 i += 1;
             }
@@ -168,7 +174,7 @@ impl FundspSynth {
 
     pub fn note_off_all(&mut self) {
         for &(_, _, id) in &self.active_voices {
-            self.sequencer.edit_relative(id, 0.0, 0.02);
+            self.sequencer.edit_relative(id, 0.02, 0.02);
         }
         self.active_voices.clear();
     }
@@ -214,15 +220,28 @@ mod tests {
     }
 
     #[test]
-    fn test_synth_polyphony() {
+    fn test_synth_polyphony_across_channels() {
+        // Tracker semantics: one note per channel, polyphony via multiple channels
         let mut synth = FundspSynth::new(44100.0);
         synth.note_on(0, 60, 100);
-        synth.note_on(0, 64, 100);
-        synth.note_on(0, 67, 100);
+        synth.note_on(1, 64, 100);
+        synth.note_on(2, 67, 100);
         assert_eq!(synth.active_voices.len(), 3);
 
         synth.note_off_all();
         assert_eq!(synth.active_voices.len(), 0);
+    }
+
+    #[test]
+    fn test_synth_same_channel_replaces_note() {
+        // Playing a new note on the same channel should kill the previous one
+        let mut synth = FundspSynth::new(44100.0);
+        synth.note_on(0, 60, 100);
+        assert_eq!(synth.active_voices.len(), 1);
+
+        synth.note_on(0, 64, 100);
+        assert_eq!(synth.active_voices.len(), 1);
+        assert_eq!(synth.active_voices[0].1, 64); // new note replaced old
     }
 
     #[test]
@@ -250,5 +269,223 @@ mod tests {
             let mut voice = make_voice(patch, 440.0, 0.5);
             voice.set_sample_rate(44100.0);
         }
+    }
+
+    #[test]
+    fn test_synth_render_output_levels() {
+        // Render audio from the sequencer backend and verify output is clean
+        let sr = 44100.0;
+        let mut synth = FundspSynth::new(sr);
+        let mut backend = synth.backend();
+        backend.set_sample_rate(sr);
+
+        // Trigger a note
+        synth.note_on(0, 69, 127); // A4, max velocity
+
+        // Render 4410 samples (100ms) and check levels
+        let frames = 4410;
+        let mut peak = 0.0_f32;
+        let mut has_nonzero = false;
+        for _ in 0..frames {
+            let mut output = [0f32; 2];
+            backend.tick(&[], &mut output);
+            for &s in &output {
+                if s.abs() > peak {
+                    peak = s.abs();
+                }
+                if s.abs() > 1e-6 {
+                    has_nonzero = true;
+                }
+                // Check for NaN/Inf which would cause distortion
+                assert!(s.is_finite(), "Non-finite sample detected: {}", s);
+            }
+        }
+
+        assert!(has_nonzero, "Synth produced only silence");
+        assert!(peak < 1.0, "Peak level {} exceeds 1.0 (clipping)", peak);
+        eprintln!("Saw patch peak level at max velocity: {:.4}", peak);
+    }
+
+    #[test]
+    fn test_note_off_fade_behavior() {
+        // Test that note-off actually produces a smooth fade, not an instant cutoff.
+        let sr = 44100.0;
+        let mut synth = FundspSynth::new(sr);
+        let mut backend = synth.backend();
+        backend.set_sample_rate(sr);
+
+        // Trigger a sine note (cleanest waveform)
+        synth.program_change(0, 2); // Sine
+        synth.note_on(0, 69, 127);
+
+        // Render 100ms to let the note settle
+        for _ in 0..4410 {
+            let mut output = [0f32; 2];
+            backend.tick(&[], &mut output);
+        }
+
+        // Capture pre-note-off level
+        let mut pre_off_peak = 0.0_f32;
+        for _ in 0..100 {
+            let mut output = [0f32; 2];
+            backend.tick(&[], &mut output);
+            pre_off_peak = pre_off_peak.max(output[0].abs());
+        }
+
+        // Send note-off
+        synth.note_off(0, 69);
+
+        // Capture first 10ms after note-off (441 samples)
+        let mut post_off_samples = Vec::new();
+        for _ in 0..441 {
+            let mut output = [0f32; 2];
+            backend.tick(&[], &mut output);
+            post_off_samples.push(output[0]);
+        }
+
+        // Analyze envelope: peak over 1ms windows
+        let window = 44; // ~1ms at 44100
+        let first_window_peak = post_off_samples[..window].iter()
+            .fold(0.0_f32, |a, &s| a.max(s.abs()));
+        let last_window_peak = post_off_samples[post_off_samples.len()-window..].iter()
+            .fold(0.0_f32, |a, &s| a.max(s.abs()));
+
+        eprintln!("Pre-off peak: {:.6}", pre_off_peak);
+        eprintln!("First 1ms window peak after note-off: {:.6}", first_window_peak);
+        eprintln!("Last 1ms window peak (at 10ms): {:.6}", last_window_peak);
+
+        // If fade works, the first window should have significant signal
+        assert!(
+            first_window_peak > pre_off_peak * 0.3,
+            "Note-off caused instant cutoff! first_window={:.6}, pre_peak={:.6}",
+            first_window_peak, pre_off_peak
+        );
+        // The fade should be decreasing over time
+        assert!(
+            last_window_peak < first_window_peak,
+            "Fade not decreasing: first={:.6}, last={:.6}",
+            first_window_peak, last_window_peak
+        );
+    }
+
+    #[test]
+    fn test_voice_direct_render() {
+        // All patches produce audio at correct levels (no clipping, no silence)
+        let sr = 44100.0;
+        for prog in 0..8u8 {
+            let patch = Patch::from_program(prog);
+            let mut voice = make_voice(patch, 440.0, 1.0);
+            voice.set_sample_rate(sr);
+            voice.reset();
+
+            let frames = 4410;
+            let mut peak = 0.0_f32;
+            for _ in 0..frames {
+                let mut output = [0f32; 2];
+                voice.tick(&[], &mut output);
+                for &s in &output {
+                    assert!(s.is_finite(), "Patch {:?}: non-finite sample", patch);
+                    peak = peak.max(s.abs());
+                }
+            }
+            assert!(peak > 0.01, "Patch {:?} produced near-silence: {:.4}", patch, peak);
+            assert!(peak <= 1.0, "Patch {:?} clips: {:.4}", patch, peak);
+        }
+    }
+
+    #[test]
+    fn test_full_pipeline_48khz() {
+        // Test at 48000 Hz (actual macOS device rate)
+        use crate::audio::effects::EffectsChain;
+
+        let sr = 48000.0;
+        let mut synth = FundspSynth::new(sr);
+        let mut backend = synth.backend();
+        backend.set_sample_rate(sr);
+        let mut effects = EffectsChain::new(sr);
+
+        synth.note_on(0, 69, 127); // A4
+
+        // Render 0.5 seconds
+        let total = 24000;
+        let chunk = 512;
+        let mut all_left = Vec::with_capacity(total);
+
+        for _ in 0..(total / chunk) {
+            let mut left = vec![0f32; chunk];
+            let mut right = vec![0f32; chunk];
+            for i in 0..chunk {
+                let mut output = [0f32; 2];
+                backend.tick(&[], &mut output);
+                left[i] = output[0];
+                right[i] = output[1];
+            }
+            effects.process(&mut left, &mut right);
+            all_left.extend_from_slice(&left);
+        }
+
+        let peak = all_left.iter().fold(0f32, |a, &s| a.max(s.abs()));
+        let rms = (all_left.iter().map(|&s| (s * s) as f64).sum::<f64>() / all_left.len() as f64).sqrt();
+
+        // Count zero crossings in last quarter (settled)
+        let start = all_left.len() * 3 / 4;
+        let mut crossings = 0;
+        for i in (start + 1)..all_left.len() {
+            if all_left[i].signum() != all_left[i - 1].signum() {
+                crossings += 1;
+            }
+        }
+        let duration = (all_left.len() - start) as f64 / sr;
+        let measured_freq = crossings as f64 / (2.0 * duration);
+
+        eprintln!("48kHz pipeline: peak={:.4}, rms={:.4}, freq={:.1}Hz (expect 440)",
+            peak, rms, measured_freq);
+
+        assert!(peak < 1.0, "Clips at 48kHz: {:.4}", peak);
+        assert!(rms > 0.01, "Silent at 48kHz: {:.6}", rms);
+        assert!((measured_freq - 440.0).abs() < 20.0,
+            "Wrong frequency at 48kHz: {:.1} (expected 440)", measured_freq);
+    }
+
+    #[test]
+    fn test_full_pipeline_waveform() {
+        // End-to-end: sequencer backend -> effects -> verify clean output
+        use crate::audio::effects::EffectsChain;
+
+        let sr = 44100.0;
+        let mut synth = FundspSynth::new(sr);
+        let mut backend = synth.backend();
+        backend.set_sample_rate(sr);
+        let mut effects = EffectsChain::new(sr);
+
+        synth.note_on(0, 60, 127); // C4
+
+        let chunk = 512;
+        let total_frames = 44100;
+        let mut peak = 0.0_f32;
+        let mut rms_sum = 0.0_f64;
+        let mut count = 0usize;
+
+        for _ in 0..(total_frames / chunk) {
+            let mut left = vec![0f32; chunk];
+            let mut right = vec![0f32; chunk];
+            for i in 0..chunk {
+                let mut output = [0f32; 2];
+                backend.tick(&[], &mut output);
+                left[i] = output[0];
+                right[i] = output[1];
+            }
+            effects.process(&mut left, &mut right);
+            for &s in left.iter().chain(right.iter()) {
+                assert!(s.is_finite(), "Non-finite sample in pipeline");
+                peak = peak.max(s.abs());
+                rms_sum += (s as f64) * (s as f64);
+                count += 1;
+            }
+        }
+
+        let rms = (rms_sum / count as f64).sqrt() as f32;
+        assert!(peak < 1.0, "Pipeline clips: {:.4}", peak);
+        assert!(rms > 0.01, "Pipeline near-silent: {:.6}", rms);
     }
 }
