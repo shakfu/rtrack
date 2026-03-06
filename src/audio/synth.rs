@@ -4,9 +4,43 @@
 /// Voice management is manual (one voice per tracker channel, polyphony via channels).
 
 use fundsp::prelude32::*;
+use serde::{Deserialize, Serialize};
 
 const MAX_VOICES: usize = 32;
 const VOICE_GAIN: f32 = 0.25;
+
+/// User-configurable synth parameters (stored per-instrument in .rtrk files)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthParams {
+    pub waveform: u8,
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+    pub filter_cutoff: f32,
+    pub filter_resonance: f32,
+    pub filter_env: f32,
+    pub detune: f32,
+}
+
+impl SynthParams {
+    /// Create SynthParams from a preset patch's defaults
+    pub fn from_patch(program: u8) -> Self {
+        let patch = Patch::from_program(program);
+        let p = patch_params(patch);
+        Self {
+            waveform: program % Patch::count(),
+            attack: p.env.attack,
+            decay: p.env.decay,
+            sustain: p.env.sustain,
+            release: p.env.release,
+            filter_cutoff: p.filter_cutoff_mul,
+            filter_resonance: p.filter_resonance,
+            filter_env: p.filter_env_amount,
+            detune: p.detune_cents,
+        }
+    }
+}
 
 /// Available synth patches
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,8 +289,16 @@ struct Voice {
 
 impl Voice {
     fn new(channel: u8, note: u8, velocity: f32, patch: Patch, sample_rate: f32) -> Self {
-        let frequency = midi_to_freq(note as f32);
         let params = patch_params(patch);
+        Self::build(channel, note, velocity, patch, params, sample_rate)
+    }
+
+    fn new_with_params(channel: u8, note: u8, velocity: f32, patch: Patch, params: PatchParams, sample_rate: f32) -> Self {
+        Self::build(channel, note, velocity, patch, params, sample_rate)
+    }
+
+    fn build(channel: u8, note: u8, velocity: f32, patch: Patch, params: PatchParams, sample_rate: f32) -> Self {
+        let frequency = midi_to_freq(note as f32);
 
         // Build fundsp AudioUnit for FundspPad patch
         let fundsp_unit = if patch == Patch::FundspPad {
@@ -548,6 +590,33 @@ impl BuiltinSynth {
         let vel = velocity as f32 / 127.0;
         let voice = Voice::new(channel, note, vel, patch, self.sample_rate);
 
+        self.push_voice(voice);
+    }
+
+    /// Note-on with user-configured synth parameters (overrides channel program)
+    pub fn note_on_with_params(&mut self, channel: u8, note: u8, velocity: u8, params: &SynthParams) {
+        self.note_off_all_channel(channel);
+
+        let patch = Patch::from_program(params.waveform);
+        let vel = velocity as f32 / 127.0;
+        let custom_params = PatchParams {
+            env: EnvParams {
+                attack: params.attack,
+                decay: params.decay,
+                sustain: params.sustain,
+                release: params.release,
+            },
+            filter_cutoff_mul: params.filter_cutoff,
+            filter_resonance: params.filter_resonance,
+            filter_env_amount: params.filter_env,
+            detune_cents: params.detune,
+        };
+        let voice = Voice::new_with_params(channel, note, vel, patch, custom_params, self.sample_rate);
+
+        self.push_voice(voice);
+    }
+
+    fn push_voice(&mut self, voice: Voice) {
         // Evict oldest inactive voice if at capacity
         if self.voices.len() >= MAX_VOICES {
             if let Some(idx) = self.voices.iter().position(|v| !v.active) {
@@ -722,6 +791,44 @@ mod tests {
                 prog, Patch::from_program(prog), peak);
             assert!(peak < 1.0, "Patch {} ({:?}) clips: peak={:.4}",
                 prog, Patch::from_program(prog), peak);
+        }
+    }
+
+    #[test]
+    fn test_note_on_with_custom_params() {
+        let sr = 44100.0;
+        let mut synth = BuiltinSynth::new(sr);
+        let params = SynthParams {
+            waveform: 0, // Saw
+            attack: 0.01,
+            decay: 0.2,
+            sustain: 0.5,
+            release: 0.3,
+            filter_cutoff: 8.0,
+            filter_resonance: 0.4,
+            filter_env: 1.5,
+            detune: 12.0,
+        };
+        synth.note_on_with_params(0, 60, 127, &params);
+        assert_eq!(synth.active_voice_count(), 1);
+
+        let mut peak = 0.0_f32;
+        for _ in 0..4410 {
+            let (l, r) = synth.render_sample();
+            peak = peak.max(l.abs()).max(r.abs());
+            assert!(l.is_finite(), "Custom params: non-finite sample");
+        }
+        assert!(peak > 0.01, "Custom params produced no audio: peak={:.6}", peak);
+    }
+
+    #[test]
+    fn test_synth_params_from_patch() {
+        for prog in 0..Patch::count() {
+            let params = SynthParams::from_patch(prog);
+            assert_eq!(params.waveform, prog);
+            assert!(params.attack >= 0.0);
+            assert!(params.sustain >= 0.0 && params.sustain <= 1.0);
+            assert!(params.filter_cutoff > 0.0);
         }
     }
 

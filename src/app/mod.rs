@@ -95,6 +95,7 @@ pub enum Mode {
     SongSettings,
     InstrumentList,
     SampleEditor,
+    SynthEditor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +167,7 @@ pub struct Instrument {
     pub name: String,
     pub midi_program: Option<u8>,
     pub sample_index: Option<usize>,
+    pub synth_params: Option<crate::audio::synth::SynthParams>,
 }
 
 impl Default for Instrument {
@@ -174,6 +176,50 @@ impl Default for Instrument {
             name: String::new(),
             midi_program: None,
             sample_index: None,
+            synth_params: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SynthField {
+    Waveform,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+    FilterCutoff,
+    FilterResonance,
+    FilterEnv,
+    Detune,
+}
+
+impl SynthField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Waveform => Self::Attack,
+            Self::Attack => Self::Decay,
+            Self::Decay => Self::Sustain,
+            Self::Sustain => Self::Release,
+            Self::Release => Self::FilterCutoff,
+            Self::FilterCutoff => Self::FilterResonance,
+            Self::FilterResonance => Self::FilterEnv,
+            Self::FilterEnv => Self::Detune,
+            Self::Detune => Self::Waveform,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Waveform => Self::Detune,
+            Self::Attack => Self::Waveform,
+            Self::Decay => Self::Attack,
+            Self::Sustain => Self::Decay,
+            Self::Release => Self::Sustain,
+            Self::FilterCutoff => Self::Release,
+            Self::FilterResonance => Self::FilterCutoff,
+            Self::FilterEnv => Self::FilterResonance,
+            Self::Detune => Self::FilterEnv,
         }
     }
 }
@@ -260,6 +306,10 @@ pub struct App {
     pub sample_editor_slot: usize,
     pub sample_editor_field: SampleField,
 
+    // Synth editor state
+    pub synth_editor_slot: usize,
+    pub synth_editor_field: SynthField,
+
     // Track page: which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
     pub track_page: usize,
 
@@ -327,6 +377,8 @@ impl App {
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
+            synth_editor_slot: 0,
+            synth_editor_field: SynthField::Waveform,
             track_page: 0,
             preview_note: None,
             playback_tick: 0,
@@ -446,6 +498,20 @@ impl App {
             .is_some()
     }
 
+    /// Open the synth editor for the current instrument
+    pub fn open_synth_editor(&mut self) {
+        let slot = self.instrument_cursor;
+        self.synth_editor_slot = slot;
+        self.synth_editor_field = SynthField::Waveform;
+        // Initialize synth params from defaults if not already set
+        if self.instruments[slot].synth_params.is_none() {
+            let program = self.instruments[slot].midi_program.unwrap_or(0);
+            self.instruments[slot].synth_params = Some(crate::audio::synth::SynthParams::from_patch(program));
+        }
+        self.prev_mode = self.mode;
+        self.mode = Mode::SynthEditor;
+    }
+
     /// Open the sample editor for the current instrument
     pub fn open_sample_editor(&mut self) {
         self.sample_editor_slot = self.instrument_cursor;
@@ -457,8 +523,12 @@ impl App {
     /// Export the song to a WAV file
     #[allow(dead_code)]
     pub fn export_wav(&self, path: std::path::PathBuf) {
-        let instruments: Vec<(Option<usize>, u8)> = self.instruments.iter()
-            .map(|i| (i.sample_index, i.midi_program.unwrap_or(0)))
+        let instruments: Vec<crate::sample::export::ExportInstrument> = self.instruments.iter()
+            .map(|i| crate::sample::export::ExportInstrument {
+                sample_index: i.sample_index,
+                midi_program: i.midi_program.unwrap_or(0),
+                synth_params: i.synth_params.clone(),
+            })
             .collect();
         let sample_rate = self.audio.as_ref()
             .map(|a| a.sample_rate() as u32)
@@ -482,13 +552,14 @@ impl App {
         }
     }
 
-    /// Note-on with instrument awareness: routes to sample engine if instrument has a sample
+    /// Note-on with instrument awareness: routes to sample engine, custom synth params, or default
     pub(crate) fn send_note_on_with_instrument(&mut self, channel: u8, note: u8, velocity: u8, instrument: Option<u8>) {
         let inst_idx = instrument.unwrap_or(0) as usize;
-        let sample_idx = self.instruments.get(inst_idx).and_then(|i| i.sample_index);
-        if let Some(sid) = sample_idx {
+        let inst = self.instruments.get(inst_idx);
+
+        // Route 1: sample engine
+        if let Some(sid) = inst.and_then(|i| i.sample_index) {
             if self.sample_bank.get(sid).is_some() {
-                // Route to sample engine
                 let _ = self.midi.note_on(channel, note, velocity);
                 if let Some(ref audio) = self.audio {
                     audio.sample_note_on(sid, note, velocity, channel);
@@ -496,7 +567,17 @@ impl App {
                 return;
             }
         }
-        // Fall through to synth
+
+        // Route 2: custom synth params
+        if let Some(ref params) = inst.and_then(|i| i.synth_params.as_ref()) {
+            let _ = self.midi.note_on(channel, note, velocity);
+            if let Some(ref audio) = self.audio {
+                audio.note_on_with_params(channel, note, velocity, params);
+            }
+            return;
+        }
+
+        // Route 3: default synth (channel program)
         self.send_note_on(channel, note, velocity);
     }
 
@@ -753,13 +834,14 @@ impl App {
 
         // Collect non-empty instruments
         let instruments: Vec<InstrumentEntry> = self.instruments.iter().enumerate()
-            .filter(|(_, inst)| !inst.name.is_empty() || inst.sample_index.is_some() || inst.midi_program.is_some())
+            .filter(|(_, inst)| !inst.name.is_empty() || inst.sample_index.is_some() || inst.midi_program.is_some() || inst.synth_params.is_some())
             .map(|(slot, inst)| InstrumentEntry {
                 slot,
                 def: InstrumentDef {
                     name: inst.name.clone(),
                     midi_program: inst.midi_program,
                     sample_index: inst.sample_index,
+                    synth_params: inst.synth_params.clone(),
                 },
             })
             .collect();
@@ -819,6 +901,7 @@ impl App {
                         self.instruments[entry.slot].name = entry.def.name.clone();
                         self.instruments[entry.slot].midi_program = entry.def.midi_program;
                         self.instruments[entry.slot].sample_index = entry.def.sample_index;
+                        self.instruments[entry.slot].synth_params = entry.def.synth_params.clone();
                     }
                 }
 
@@ -962,8 +1045,12 @@ impl App {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.wav", name))
             });
-        let instruments: Vec<(Option<usize>, u8)> = self.instruments.iter()
-            .map(|i| (i.sample_index, i.midi_program.unwrap_or(0)))
+        let instruments: Vec<crate::sample::export::ExportInstrument> = self.instruments.iter()
+            .map(|i| crate::sample::export::ExportInstrument {
+                sample_index: i.sample_index,
+                midi_program: i.midi_program.unwrap_or(0),
+                synth_params: i.synth_params.clone(),
+            })
             .collect();
         let sample_rate = self.audio.as_ref()
             .map(|a| a.sample_rate() as u32)
@@ -1098,6 +1185,8 @@ mod tests {
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
+            synth_editor_slot: 0,
+            synth_editor_field: SynthField::Waveform,
             track_page: 0,
             preview_note: None,
             help_scroll: 0,
@@ -2482,6 +2571,40 @@ mod tests {
         let mut app = make_app();
         app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::InstrumentList);
+    }
+
+    #[test]
+    fn test_synth_editor_open_close() {
+        let mut app = make_app();
+        // Open instrument list
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::InstrumentList);
+        // Tab opens synth editor
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::SynthEditor);
+        // Should have initialized synth params
+        assert!(app.instruments[0].synth_params.is_some());
+        // Navigate fields
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.synth_editor_field, SynthField::Attack);
+        // Adjust value
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let attack = app.instruments[0].synth_params.as_ref().unwrap().attack;
+        assert!(attack > 0.005); // Saw default is 0.005, +0.001
+        // Esc closes
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_ne!(app.mode, Mode::SynthEditor);
+    }
+
+    #[test]
+    fn test_synth_editor_delete_clears_params() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.instruments[0].synth_params.is_some());
+        // Delete clears params
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert!(app.instruments[0].synth_params.is_none());
     }
 
     #[test]

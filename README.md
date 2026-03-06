@@ -32,7 +32,7 @@ rtrack supports three ways to produce sound, and they can be combined:
 
 | Mode | How to activate | What it does |
 |------|----------------|--------------|
-| **Built-in synth** | Default (always on) | 9 waveform patches with ADSR envelopes and SVF/Moog filters. Select with `Exx` effect (0-8). |
+| **Built-in synth** | Default (always on) | 9 waveform patches with ADSR envelopes and SVF/Moog filters. Select with `Exx` effect (0-8), or configure per-instrument (F7 > Tab). |
 | **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
 | **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
@@ -124,6 +124,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 - 256 instrument slots (F7 to browse)
 - Per-instrument sample assignment -- load WAV/AIFF files into slots
 - Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
+- Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter, and detune
 - Pitch-shifted playback with up to 32 simultaneous voices
 
 ### Effects
@@ -178,7 +179,11 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
   "order": [0, 1, 2],
   "instruments": [
     { "slot": 0, "name": "Kick", "sample_index": 0 },
-    { "slot": 5, "name": "Lead", "midi_program": 80 }
+    { "slot": 5, "name": "Lead", "midi_program": 80 },
+    { "slot": 10, "name": "Pad", "synth_params": {
+        "waveform": 0, "attack": 0.05, "decay": 0.3, "sustain": 0.6,
+        "release": 0.4, "filter_cutoff": 6.0, "filter_resonance": 0.3,
+        "filter_env": 2.0, "detune": 8.0 } }
   ],
   "sample_refs": [
     { "slot": 0, "name": "kick", "path": "samples/0-kick.wav",
@@ -187,9 +192,10 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 }
 ```
 
-- **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment)
+- **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment, synth params)
+- **Synth params**: optional per-instrument synthesis parameters (waveform, ADSR envelope, filter cutoff/resonance/envelope, detune). When present, overrides the channel's default patch.
 - **Sample refs**: file paths stored relative to the `.rtrk` file, plus all metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
-- **Backwards compatible**: old `.rtrk` files without `instruments` or `sample_refs` fields load fine.
+- **Backwards compatible**: old `.rtrk` files without `instruments`, `sample_refs`, or `synth_params` fields load fine.
 
 ## Keybindings
 
@@ -277,7 +283,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (177 tests)
+make test     # run tests (181 tests)
 ```
 
 ## Architecture

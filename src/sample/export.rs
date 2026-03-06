@@ -6,7 +6,7 @@ use dasp::Sample as DaspSample;
 use super::playback::SamplePlaybackEngine;
 use super::SampleBank;
 use crate::audio::effects::EffectsChain;
-use crate::audio::synth::BuiltinSynth;
+use crate::audio::synth::{BuiltinSynth, SynthParams};
 use crate::tracker::{Note, Song};
 
 // Effect command constants (mirroring app constants)
@@ -56,11 +56,19 @@ impl Default for ExportChannelState {
 ///
 /// Renders built-in synths (fundsp) and sample playback. SF2 is not included
 /// in offline render (use the built-in synth patches or samples).
+/// Instrument slot info for offline render
+pub struct ExportInstrument {
+    pub sample_index: Option<usize>,
+    #[allow(dead_code)]
+    pub midi_program: u8,
+    pub synth_params: Option<SynthParams>,
+}
+
 pub fn render_to_wav(
     path: &Path,
     song: &Song,
     bank: &SampleBank,
-    instruments: &[(Option<usize>, u8)], // (sample_index, midi_program) per instrument slot
+    instruments: &[ExportInstrument],
     sample_rate: u32,
 ) -> Result<()> {
     let sr = sample_rate as f64;
@@ -155,20 +163,22 @@ pub fn render_to_wav(
                                     sample_engine.note_off(midi_ch, prev);
                                 }
 
-                                // Route to sample or synth
+                                // Route to sample, custom synth, or default synth
                                 let inst_idx = cell.instrument.unwrap_or(0) as usize;
-                                let has_sample = instruments
-                                    .get(inst_idx)
-                                    .and_then(|(si, _)| *si)
+                                let inst = instruments.get(inst_idx);
+                                let has_sample = inst
+                                    .and_then(|i| i.sample_index)
                                     .and_then(|idx| bank.get(idx))
                                     .is_some();
 
                                 if has_sample {
-                                    let sample_idx = instruments[inst_idx].0.unwrap();
+                                    let sample_idx = inst.unwrap().sample_index.unwrap();
                                     let sample = bank.get(sample_idx).unwrap();
                                     sample_engine.note_on(
                                         sample_idx, midi_note, vel, midi_ch, sample, sr,
                                     );
+                                } else if let Some(ref sp) = inst.and_then(|i| i.synth_params.as_ref()) {
+                                    synth.note_on_with_params(midi_ch, midi_note, vel, sp);
                                 } else {
                                     synth.note_on(midi_ch, midi_note, vel);
                                 }
@@ -406,7 +416,7 @@ mod tests {
     fn test_render_empty_song() {
         let song = Song::new(4, 64);
         let bank = SampleBank::new();
-        let instruments: Vec<(Option<usize>, u8)> = vec![(None, 0); 256];
+        let instruments: Vec<ExportInstrument> = (0..256).map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None }).collect();
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_empty.wav");
 
@@ -439,7 +449,7 @@ mod tests {
         );
 
         let bank = SampleBank::new();
-        let instruments: Vec<(Option<usize>, u8)> = vec![(None, 0); 256];
+        let instruments: Vec<ExportInstrument> = (0..256).map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None }).collect();
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_synth.wav");
 
@@ -495,9 +505,9 @@ mod tests {
             source_path: None,
         });
 
-        let instruments: Vec<(Option<usize>, u8)> = {
-            let mut v = vec![(None, 0); 256];
-            v[0] = (Some(0), 0); // instrument 0 -> sample 0
+        let instruments: Vec<ExportInstrument> = {
+            let mut v: Vec<ExportInstrument> = (0..256).map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None }).collect();
+            v[0].sample_index = Some(0); // instrument 0 -> sample 0
             v
         };
         let dir = std::env::temp_dir();

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::Pattern;
+use crate::audio::synth::SynthParams;
 
 /// Serializable instrument definition (stored in .rtrk files)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,8 @@ pub struct InstrumentDef {
     pub midi_program: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synth_params: Option<SynthParams>,
 }
 
 /// Serializable sample reference (metadata only, no audio data)
@@ -242,6 +245,7 @@ mod tests {
                         name: "Kick".to_string(),
                         midi_program: None,
                         sample_index: Some(0),
+                        synth_params: None,
                     },
                 },
                 InstrumentEntry {
@@ -250,6 +254,7 @@ mod tests {
                         name: "Lead".to_string(),
                         midi_program: Some(80),
                         sample_index: None,
+                        synth_params: None,
                     },
                 },
             ],

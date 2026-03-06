@@ -27,6 +27,22 @@ All notable changes to rtrack will be documented in this file.
 - New example: `examples/fundsp-pad.rtrk` -- pad chord progression (C-Am-F-G) using the FundspPad patch
 - Updated `examples/all-patches.rtrk` to include all 9 patches
 
+### Added (User-Configurable Synth Patches)
+
+- Per-instrument synth parameters: each instrument can now define its own waveform, envelope, filter, and detune settings
+  - Waveform (0-8), Attack, Decay, Sustain, Release, Filter Cutoff (freq multiplier), Filter Resonance, Filter Envelope (octaves), Detune (cents)
+  - When an instrument has synth params, they override the channel's default patch (set by `Exx` effect)
+  - Instruments without synth params continue to use the channel default (backwards compatible)
+- Synth editor UI (Tab from instrument list):
+  - 9 editable fields with real-time adjustment (Up/Down +/-1, Left/Right +/-10)
+  - Tab/Shift-Tab to navigate between fields
+  - Delete key clears custom params (reverts to channel default)
+  - Initializes from preset defaults when first opened
+- `SynthParams` struct persisted in `.rtrk` files (optional, backwards-compatible via serde defaults)
+- Note routing priority: sample engine > custom synth params > channel default synth
+- WAV export respects per-instrument synth params in offline render
+- 4 new tests covering custom params audio output, preset roundtrip, synth editor open/close/adjust, and delete-clears
+
 ### Changed (App Module Split)
 
 - Split monolithic `src/app.rs` (3793 lines) into focused submodules:
@@ -45,7 +61,7 @@ All notable changes to rtrack will be documented in this file.
 ### Changed
 - Added `[profile.dev] opt-level = 1` so the rtrack crate's own audio callback code is optimized in debug builds, preventing buffer underruns.
 - Effects chain now uses stereo delay instead of FDN reverb for reliable real-time performance.
-- Test count increased from 165 to 177.
+- Test count increased from 165 to 181.
 
 ### Added (Headless Playback)
 

@@ -1,5 +1,6 @@
 pub mod pattern_editor;
 pub mod sample_editor;
+pub mod synth_editor;
 pub mod theme;
 
 use ratatui::{
@@ -54,6 +55,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::SongSettings => draw_song_settings(f, app, &theme),
         Mode::InstrumentList => draw_instrument_list(f, app, &theme),
         Mode::SampleEditor => sample_editor::draw_sample_editor(f, app),
+        Mode::SynthEditor => synth_editor::draw_synth_editor(f, app),
         _ => {}
     }
 }
@@ -131,6 +133,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Mode::SongSettings => Span::styled(" SETTINGS ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::InstrumentList => Span::styled(" INSTRUMENTS ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::SampleEditor => Span::styled(" SAMPLE EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
+        Mode::SynthEditor => Span::styled(" SYNTH EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
     };
 
     let audio_span = if app.has_sf2() {
@@ -368,7 +371,7 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(" Instruments [Esc=close, type=name] ")
+            .title(" Instruments [Esc=close, type=name, Enter=sample, Tab=synth] ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );

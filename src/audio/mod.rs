@@ -208,6 +208,12 @@ impl AudioEngine {
         }
     }
 
+    pub fn note_on_with_params(&self, channel: u8, note: u8, velocity: u8, params: &crate::audio::synth::SynthParams) {
+        if let Ok(mut state) = self.state.lock() {
+            state.builtin_synth.note_on_with_params(channel, note, velocity, params);
+        }
+    }
+
     #[allow(dead_code)]
     pub fn note_off(&self, channel: u8, note: u8) {
         if let Ok(mut state) = self.state.lock() {

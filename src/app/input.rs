@@ -158,6 +158,10 @@ impl App {
                 // Open sample editor for current instrument
                 self.open_sample_editor();
             }
+            KeyCode::Tab => {
+                // Open synth editor for current instrument
+                self.open_synth_editor();
+            }
             KeyCode::Char(c) => {
                 self.instruments[self.instrument_cursor].name.push(c);
             }
@@ -238,6 +242,80 @@ impl App {
             }
         } else {
             self.status_message = Some("No sample loaded in this slot".to_string());
+        }
+    }
+
+    // -- Synth editor --
+
+    fn handle_synth_editor_key(&mut self, key: KeyEvent) {
+        let slot = self.synth_editor_slot;
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = self.prev_mode;
+            }
+            KeyCode::Tab => {
+                self.synth_editor_field = self.synth_editor_field.next();
+            }
+            KeyCode::BackTab => {
+                self.synth_editor_field = self.synth_editor_field.prev();
+            }
+            KeyCode::Up => {
+                self.adjust_synth_field(slot, 1);
+            }
+            KeyCode::Down => {
+                self.adjust_synth_field(slot, -1);
+            }
+            KeyCode::Right => {
+                self.adjust_synth_field(slot, 10);
+            }
+            KeyCode::Left => {
+                self.adjust_synth_field(slot, -10);
+            }
+            KeyCode::Delete => {
+                // Clear custom synth params (revert to channel default)
+                self.instruments[slot].synth_params = None;
+                self.status_message = Some("Synth params cleared (using channel default)".to_string());
+                self.mode = self.prev_mode;
+            }
+            _ => {}
+        }
+    }
+
+    fn adjust_synth_field(&mut self, slot: usize, delta: i32) {
+        use crate::app::SynthField;
+        use crate::audio::synth::Patch;
+
+        if let Some(ref mut params) = self.instruments[slot].synth_params {
+            match self.synth_editor_field {
+                SynthField::Waveform => {
+                    let max = Patch::count() as i32;
+                    params.waveform = ((params.waveform as i32 + delta).rem_euclid(max)) as u8;
+                }
+                SynthField::Attack => {
+                    params.attack = (params.attack + delta as f32 * 0.001).clamp(0.0, 5.0);
+                }
+                SynthField::Decay => {
+                    params.decay = (params.decay + delta as f32 * 0.001).clamp(0.0, 5.0);
+                }
+                SynthField::Sustain => {
+                    params.sustain = (params.sustain + delta as f32 * 0.01).clamp(0.0, 1.0);
+                }
+                SynthField::Release => {
+                    params.release = (params.release + delta as f32 * 0.001).clamp(0.0, 5.0);
+                }
+                SynthField::FilterCutoff => {
+                    params.filter_cutoff = (params.filter_cutoff + delta as f32 * 0.1).clamp(0.1, 40.0);
+                }
+                SynthField::FilterResonance => {
+                    params.filter_resonance = (params.filter_resonance + delta as f32 * 0.01).clamp(0.0, 0.95);
+                }
+                SynthField::FilterEnv => {
+                    params.filter_env = (params.filter_env + delta as f32 * 0.1).clamp(0.0, 8.0);
+                }
+                SynthField::Detune => {
+                    params.detune = (params.detune + delta as f32 * 0.1).clamp(0.0, 50.0);
+                }
+            }
         }
     }
 
@@ -325,6 +403,7 @@ impl App {
             Mode::SongSettings => self.handle_song_settings_key(key),
             Mode::InstrumentList => self.handle_instrument_list_key(key),
             Mode::SampleEditor => self.handle_sample_editor_key(key),
+            Mode::SynthEditor => self.handle_synth_editor_key(key),
         }
     }
 
