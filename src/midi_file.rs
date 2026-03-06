@@ -442,7 +442,7 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                         value: nv,
                         octave,
                     });
-                    if vel < 0x7F {
+                    if vel != 0x7F {
                         cell.volume = Some(vel);
                     }
                 }

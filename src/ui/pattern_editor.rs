@@ -1,11 +1,12 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     Frame,
 };
 
 use crate::app::App;
+use super::theme::Theme;
 
 /// Which sub-column within a channel the cursor is on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +56,7 @@ pub fn channel_total_width(num_channels: usize) -> u16 {
         + (SEPARATOR_WIDTH * (num_channels.saturating_sub(1)) as u16)
 }
 
-pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let buf = f.buffer_mut();
 
     let pattern_idx = app.song.order[app.current_order_position()];
@@ -95,16 +96,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
         // Row number
         let row_num_style = if is_bar {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.row_bar).add_modifier(Modifier::BOLD)
         } else if is_beat {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.row_beat)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.row_normal)
         };
 
         let row_str = format!("{:02X}", row_idx);
         write_str(buf, area.x, y, &row_str, row_num_style);
-        write_str(buf, area.x + ROW_NUM_WIDTH, y, " | ", Style::default().fg(Color::DarkGray));
+        write_str(buf, area.x + ROW_NUM_WIDTH, y, " | ", Style::default().fg(theme.separator));
 
         let mut x = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
 
@@ -112,7 +113,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         let first_visible = visible.start;
         for ch in visible.clone() {
             if ch > first_visible {
-                write_str(buf, x, y, " | ", Style::default().fg(Color::DarkGray));
+                write_str(buf, x, y, " | ", Style::default().fg(theme.separator));
                 x += SEPARATOR_WIDTH;
             }
 
@@ -120,29 +121,28 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
             // Determine styles for each sub-column
             let base_bg = if is_playback_row {
-                Color::DarkGray
+                theme.playback_row_bg
             } else if is_cursor_row {
-                Color::Rgb(30, 30, 50)
+                theme.cursor_row_bg
             } else {
-                Color::Reset
+                ratatui::style::Color::Reset
             };
 
             let is_muted = !app.is_channel_audible(ch);
-            let dim = Color::Rgb(40, 40, 40);
 
-            let note_fg = if is_muted { dim } else if cell.note.is_some() { Color::White } else { Color::Rgb(60, 60, 60) };
-            let inst_fg = if is_muted { dim } else if cell.instrument.is_some() { Color::Yellow } else { Color::Rgb(60, 60, 60) };
-            let vol_fg = if is_muted { dim } else if cell.volume.is_some() { Color::Green } else { Color::Rgb(60, 60, 60) };
-            let fx_fg = if is_muted { dim } else if cell.effect.is_some() || cell.effect_value.is_some() {
-                Color::Cyan
+            let note_fg = if is_muted { theme.muted_dim } else if cell.note.is_some() { theme.note_set } else { theme.note_empty };
+            let inst_fg = if is_muted { theme.muted_dim } else if cell.instrument.is_some() { theme.instrument_set } else { theme.instrument_empty };
+            let vol_fg = if is_muted { theme.muted_dim } else if cell.volume.is_some() { theme.volume_set } else { theme.volume_empty };
+            let fx_fg = if is_muted { theme.muted_dim } else if cell.effect.is_some() || cell.effect_value.is_some() {
+                theme.effect_set
             } else {
-                Color::Rgb(60, 60, 60)
+                theme.effect_empty
             };
 
             // Highlight the cursor sub-column
             let cursor_on = |sub: SubColumn| -> Style {
                 if is_cursor_row && ch == app.cursor_channel && app.cursor_sub == sub && !app.is_playing() {
-                    Style::default().bg(Color::Rgb(80, 80, 160)).add_modifier(Modifier::BOLD)
+                    Style::default().bg(theme.cursor_bg).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().bg(base_bg)
                 }
