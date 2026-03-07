@@ -109,6 +109,14 @@ impl ChannelType {
             Self::Sample => Self::Midi,
         }
     }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Midi => Self::Sample,
+            Self::Synth => Self::Midi,
+            Self::Sample => Self::Synth,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +130,7 @@ pub enum Mode {
     SampleEditor,
     SynthEditor,
     QuitConfirm,
-    ChannelRename,
+    TrackConfig,
     PatternMatrix,
     Command,
 }
@@ -323,6 +331,8 @@ pub struct App {
     pub(crate) redo_stack: Vec<Song>,
     /// Channel rename edit buffer
     pub rename_buf: String,
+    /// Channel effects editor: currently focused field index
+    pub ch_fx_field: usize,
     /// Pattern matrix view: cursor row (order position)
     pub matrix_cursor: usize,
     /// Command-line buffer for :command mode
@@ -365,10 +375,14 @@ pub struct App {
     pub channel_names: Vec<String>,
     /// Per-channel type (Midi, Synth, Sample)
     pub channel_types: Vec<ChannelType>,
+    /// Default instrument per track (used for Synth tracks to auto-fill instrument on note entry)
+    pub channel_instruments: Vec<Option<u8>>,
     /// Per-channel volume (0.0..1.0, default 1.0)
     pub channel_volumes: Vec<f32>,
     /// Per-channel pan (-1.0=left, 0.0=center, 1.0=right)
     pub channel_pans: Vec<f32>,
+    /// Per-channel effects parameters
+    pub channel_effects_params: Vec<crate::audio::channel_effects::ChannelEffectsParams>,
 }
 
 impl App {
@@ -443,11 +457,14 @@ impl App {
             follow_playback: true,
             channel_names: vec![String::new(); 4],
             channel_types: vec![ChannelType::Midi; 4],
+            channel_instruments: vec![None; 4],
             rename_buf: String::new(),
+            ch_fx_field: 0,
             matrix_cursor: 0,
             command_buf: String::new(),
             channel_volumes: vec![1.0; 4],
             channel_pans: vec![0.0; 4],
+            channel_effects_params: (0..4).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect(),
         }
     }
 
@@ -598,7 +615,7 @@ impl App {
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100);
         match crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, sample_rate,
         ) {
             Ok(()) => {
                 // status_message is not &mut self here; caller should set it
@@ -932,8 +949,10 @@ impl App {
                 self.solo_channel = None;
                 self.channel_names = vec![String::new(); song.channels];
                 self.channel_types = vec![ChannelType::Midi; song.channels];
+                self.channel_instruments = vec![None; song.channels];
                 self.channel_volumes = vec![1.0; song.channels];
                 self.channel_pans = vec![0.0; song.channels];
+                self.channel_effects_params = (0..song.channels).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect();
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.song.sync_order_repeats();
@@ -1108,7 +1127,7 @@ impl App {
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100);
         match crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, sample_rate,
         ) {
             Ok(()) => {
                 self.status_message = Some(format!("Exported WAV: {}", path.display()));
@@ -1137,7 +1156,7 @@ impl App {
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100);
         match crate::sample::export::render_to_flac(
-            &path, &self.song, &self.sample_bank, &instruments, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, sample_rate,
         ) {
             Ok(()) => {
                 self.status_message = Some(format!("Exported FLAC: {}", path.display()));
@@ -1173,8 +1192,10 @@ impl App {
                 self.solo_channel = None;
                 self.channel_names = vec![String::new(); song.channels];
                 self.channel_types = vec![ChannelType::Midi; song.channels];
+                self.channel_instruments = vec![None; song.channels];
                 self.channel_volumes = vec![1.0; song.channels];
                 self.channel_pans = vec![0.0; song.channels];
+                self.channel_effects_params = (0..song.channels).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect();
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.cursor_row = 0;
@@ -1292,11 +1313,14 @@ mod tests {
             follow_playback: true,
             channel_names: vec![String::new(); 4],
             channel_types: vec![ChannelType::Midi; 4],
+            channel_instruments: vec![None; 4],
             rename_buf: String::new(),
+            ch_fx_field: 0,
             matrix_cursor: 0,
             command_buf: String::new(),
             channel_volumes: vec![1.0; 4],
             channel_pans: vec![0.0; 4],
+            channel_effects_params: (0..4).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect(),
         }
     }
 
@@ -1432,14 +1456,27 @@ mod tests {
     }
 
     #[test]
-    fn test_tab_toggles_track_page() {
+    fn test_tab_cycles_tracks() {
         let mut app = make_app();
-        // 4 channels, 1 page => Tab should not change page
-        assert_eq!(app.track_page, 0);
+        // 4 channels: Tab cycles 0 -> 1 -> 2 -> 3 -> 0
+        assert_eq!(app.cursor_channel, 0);
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.track_page, 0);
+        assert_eq!(app.cursor_channel, 1);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.cursor_channel, 2);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.cursor_channel, 3);
+        // Wraps around
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.cursor_channel, 0);
 
-        // 8 channels => should have 2 pages
+        // Shift+Tab goes backward: 0 -> 3
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.cursor_channel, 3);
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.cursor_channel, 2);
+
+        // 8 channels: Tab updates track_page when crossing page boundary
         app.song.channels = 8;
         for pat in &mut app.song.patterns {
             pat.channels = 8;
@@ -1450,31 +1487,11 @@ mod tests {
         app.muted_channels = vec![false; 8];
         app.midi_channel_map = (0..8).map(|i| i as u8).collect();
 
+        app.cursor_channel = 3;
+        app.track_page = 0;
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.track_page, 1);
-
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.track_page, 0);
-    }
-
-    #[test]
-    fn test_ctrl_number_selects_track() {
-        let mut app = make_app();
-        // 8 channels
-        app.song.channels = 8;
-        for pat in &mut app.song.patterns {
-            pat.channels = 8;
-            for row in &mut pat.data {
-                row.resize(8, crate::tracker::Cell::default());
-            }
-        }
-        app.muted_channels = vec![false; 8];
-        app.midi_channel_map = (0..8).map(|i| i as u8).collect();
-
-        // Ctrl+5 selects track 4 (0-indexed)
-        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL));
         assert_eq!(app.cursor_channel, 4);
-        assert_eq!(app.track_page, 1); // channels 4-7 are page 1
+        assert_eq!(app.track_page, 1); // auto-switched to page 1
     }
 
     #[test]
@@ -2904,20 +2921,36 @@ mod tests {
     }
 
     #[test]
+    fn test_track_config_open_via_enter() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::TrackConfig);
+        // Enter again closes
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+        // Esc also closes
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::TrackConfig);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
     fn test_channel_rename() {
         let mut app = make_app();
         assert_eq!(app.channel_names[0], "");
-        // Ctrl+R opens rename mode
-        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        assert_eq!(app.mode, Mode::ChannelRename);
+        // Enter opens track config (name field focused)
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::TrackConfig);
+        assert_eq!(app.ch_fx_field, 0); // Name field
         // Type a name
         app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
         assert_eq!(app.rename_buf, "Kick");
-        // Enter confirms
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Esc confirms and closes
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.channel_names[0], "Kick");
         assert_eq!(app.mode, Mode::Normal);
     }
@@ -2925,7 +2958,7 @@ mod tests {
     #[test]
     fn test_channel_rename_backspace() {
         let mut app = make_app();
-        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
@@ -3216,5 +3249,109 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         assert_eq!(app.song.order_repeats.len(), 1);
         assert_eq!(app.song.order_repeats[0], 3); // original still there
+    }
+
+    #[test]
+    fn test_track_config_via_command() {
+        let mut app = make_app();
+        run_command(&mut app, "fx");
+        assert_eq!(app.mode, Mode::TrackConfig);
+        assert_eq!(app.ch_fx_field, 0);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_track_config_toggle_filter() {
+        let mut app = make_app();
+        app.channel_types[0] = ChannelType::Synth;
+        run_command(&mut app, "fx");
+        // Navigate to filter enabled (field 3 for Synth: Name, Type, Inst, Filter)
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Instrument
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 3=Filter
+        assert_eq!(app.ch_fx_field, 3);
+        assert!(!app.channel_effects_params[0].filter_enabled);
+        // Toggle with Right arrow
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.channel_effects_params[0].filter_enabled);
+        // Toggle back
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(!app.channel_effects_params[0].filter_enabled);
+    }
+
+    #[test]
+    fn test_track_config_adjust_cutoff() {
+        let mut app = make_app();
+        app.channel_types[0] = ChannelType::Synth;
+        run_command(&mut app, "fx");
+        // Navigate to cutoff (field 4 for Synth: Name, Type, Inst, Filter, Cutoff)
+        for _ in 0..4 { app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); }
+        assert_eq!(app.ch_fx_field, 4);
+        let initial = app.channel_effects_params[0].filter_cutoff;
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.channel_effects_params[0].filter_cutoff > initial);
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!((app.channel_effects_params[0].filter_cutoff - initial).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_track_config_navigate_all_fields() {
+        let mut app = make_app();
+        app.channel_types[0] = ChannelType::Synth;
+        run_command(&mut app, "fx");
+        // 20 fields total (name, type, instrument, filter x3, distortion x2, chorus x4, delay x4, reverb x4)
+        for i in 0..20 {
+            assert_eq!(app.ch_fx_field, i);
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        assert_eq!(app.ch_fx_field, 0);
+    }
+
+    #[test]
+    fn test_track_config_type_cycle() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Navigate to Type (field 1)
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.ch_fx_field, 1);
+        assert_eq!(app.channel_types[0], ChannelType::Midi);
+        // Right arrow cycles type
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channel_types[0], ChannelType::Synth);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channel_types[0], ChannelType::Sample);
+    }
+
+    #[test]
+    fn test_track_config_instrument_select() {
+        let mut app = make_app();
+        app.channel_types[0] = ChannelType::Synth;
+        run_command(&mut app, "fx");
+        // Navigate to Instrument field (field 2)
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Instrument
+        assert_eq!(app.ch_fx_field, 2);
+        assert_eq!(app.channel_instruments[0], None);
+        // Right sets to 00
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channel_instruments[0], Some(0));
+        // Right again increments
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channel_instruments[0], Some(1));
+    }
+
+    #[test]
+    fn test_synth_track_auto_fills_instrument() {
+        let mut app = make_app();
+        app.channel_types[0] = ChannelType::Synth;
+        app.channel_instruments[0] = Some(5);
+        app.mode = Mode::Insert;
+        // Enter a note (z = C in current octave)
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell.note.is_some());
+        assert_eq!(cell.instrument, Some(5));
     }
 }

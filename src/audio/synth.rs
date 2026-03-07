@@ -661,6 +661,23 @@ impl BuiltinSynth {
         (left, right)
     }
 
+    /// Render one frame, outputting per-channel stereo pairs.
+    /// `channel_out[ch]` receives `[left, right]` for tracker channel `ch`.
+    /// Voices whose channel >= channel_out.len() are summed into channel 0.
+    #[inline]
+    pub fn render_sample_per_channel(&mut self, channel_out: &mut [[f32; 2]]) {
+        for voice in &mut self.voices {
+            if !voice.active {
+                continue;
+            }
+            let (l, r) = voice.tick();
+            let ch = std::cmp::min(voice.channel as usize, channel_out.len().saturating_sub(1));
+            channel_out[ch][0] += l;
+            channel_out[ch][1] += r;
+        }
+        self.voices.retain(|v| v.active || v.envelope.stage != EnvStage::Off);
+    }
+
     /// Get active voice count (for debugging/UI)
     #[allow(dead_code)]
     pub fn active_voice_count(&self) -> usize {

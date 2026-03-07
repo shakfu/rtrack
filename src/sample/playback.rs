@@ -205,6 +205,68 @@ impl SamplePlaybackEngine {
             }
         }
     }
+    /// Render sample voices into per-channel buffers.
+    /// `channel_bufs` is indexed by tracker channel, each element is (left, right) slices.
+    pub fn render_per_channel(
+        &mut self,
+        bank: &SampleBank,
+        channel_bufs: &mut [(&mut [f32], &mut [f32])],
+    ) {
+        self.voices.retain(|v| v.active);
+
+        for voice in &mut self.voices {
+            let ch = (voice.channel as usize).min(channel_bufs.len().saturating_sub(1));
+            let sample = match bank.get(voice.sample_index) {
+                Some(s) => s,
+                None => {
+                    voice.active = false;
+                    continue;
+                }
+            };
+
+            let end = sample.end() as f64;
+            let loop_start = sample.effective_loop_start() as f64;
+            let loop_end = sample.effective_loop_end() as f64;
+            let frames = channel_bufs[ch].0.len();
+
+            for i in 0..frames {
+                if !voice.active {
+                    break;
+                }
+
+                let env_level = voice.envelope.tick();
+                if !voice.envelope.is_active() {
+                    voice.active = false;
+                    break;
+                }
+
+                let pos = voice.position;
+                let idx = pos as usize;
+                let frac = (pos - idx as f64) as f32;
+
+                let fm1 = sample.frame_at(idx.saturating_sub(1));
+                let f0 = sample.frame_at(idx);
+                let f1 = sample.frame_at(idx + 1);
+                let f2 = sample.frame_at(idx + 2);
+
+                let l = cubic_hermite(fm1[0], f0[0], f1[0], f2[0], frac);
+                let r = cubic_hermite(fm1[1], f0[1], f1[1], f2[1], frac);
+
+                channel_bufs[ch].0[i] += l * voice.velocity * env_level;
+                channel_bufs[ch].1[i] += r * voice.velocity * env_level;
+
+                voice.position += voice.rate;
+
+                if sample.loop_enabled && loop_end > loop_start {
+                    if voice.position >= loop_end {
+                        voice.position = loop_start + (voice.position - loop_end);
+                    }
+                } else if voice.position >= end {
+                    voice.active = false;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

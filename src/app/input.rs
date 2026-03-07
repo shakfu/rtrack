@@ -79,6 +79,7 @@ impl App {
                         self.channel_types.resize(v, ChannelType::Midi);
                         self.channel_volumes.resize(v, 1.0);
                         self.channel_pans.resize(v, 0.0);
+                        self.channel_effects_params.resize_with(v, crate::audio::channel_effects::ChannelEffectsParams::default);
                         self.midi_channel_map = (0..v).map(|i| i as u8).collect();
                         if self.cursor_channel >= v {
                             self.cursor_channel = v - 1;
@@ -348,45 +349,198 @@ impl App {
 
     // -- Channel rename --
 
-    fn open_channel_rename(&mut self) {
+    fn open_track_config(&mut self) {
         let ch = self.cursor_channel;
         self.rename_buf = self.channel_names.get(ch).cloned().unwrap_or_default();
+        self.ch_fx_field = 0;
         self.prev_mode = self.mode;
-        self.mode = Mode::ChannelRename;
+        self.mode = Mode::TrackConfig;
     }
 
-    fn handle_channel_rename_key(&mut self, key: KeyEvent) {
+    // Track config fields:
+    // Midi:   0=Name, 1=Type (2 fields)
+    // Synth:  0=Name, 1=Type, 2=Instrument, 3..16=Effects (17 fields)
+    // Sample: 0=Name, 1=Type, 2..15=Effects (16 fields)
+    //
+    // Effects (relative to fx_off):
+    //  +0=Filter, +1=Cutoff, +2=Resonance,
+    //  +3=Distortion, +4=Drive,
+    //  +5=Chorus, +6=Rate, +7=Depth, +8=Mix,
+    //  +9=Delay, +10=Time, +11=Feedback, +12=Mix,
+    //  +13=Reverb, +14=Size, +15=Damp, +16=Mix  (but wait, that's not right)
+    // 3 + 2 + 4 + 4 + 4 = 17 effect fields total
+    const EFFECT_FIELDS: usize = 17;
+
+    fn track_config_num_fields(&self) -> usize {
+        let ch = self.cursor_channel;
+        let ch_type = self.channel_types.get(ch).copied().unwrap_or(ChannelType::Midi);
+        match ch_type {
+            ChannelType::Midi => 2,
+            ChannelType::Synth => 3 + Self::EFFECT_FIELDS, // Name, Type, Instrument + effects
+            ChannelType::Sample => 2 + Self::EFFECT_FIELDS, // Name, Type + effects
+        }
+    }
+
+    /// Returns the field index offset where effects fields start (varies by track type).
+    fn track_config_fx_offset(&self) -> usize {
+        let ch = self.cursor_channel;
+        let ch_type = self.channel_types.get(ch).copied().unwrap_or(ChannelType::Midi);
+        match ch_type {
+            ChannelType::Synth => 3, // after Name, Type, Instrument
+            _ => 2, // after Name, Type
+        }
+    }
+
+    fn handle_track_config_key(&mut self, key: KeyEvent) {
+        let ch = self.cursor_channel;
+        if ch >= self.channel_effects_params.len() {
+            self.channel_effects_params.resize_with(ch + 1, crate::audio::channel_effects::ChannelEffectsParams::default);
+        }
+        let num_fields = self.track_config_num_fields();
         match key.code {
-            KeyCode::Enter | KeyCode::Esc => {
-                let ch = self.cursor_channel;
+            KeyCode::Esc => {
+                // Save name
                 if ch < self.channel_names.len() {
                     self.channel_names[ch] = self.rename_buf.clone();
                 }
-                self.mode = self.prev_mode;
-                if self.rename_buf.is_empty() {
-                    self.status_message = Some(format!("Ch {} name cleared", ch + 1));
-                } else {
-                    self.status_message = Some(format!("Ch {} = \"{}\"", ch + 1, self.rename_buf));
+                // Send effects to audio engine
+                if let Some(ref mut audio) = self.audio {
+                    audio.set_channel_effects(ch as u8, &self.channel_effects_params[ch]);
                 }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                self.ch_fx_field = (self.ch_fx_field + 1) % num_fields;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.ch_fx_field = (self.ch_fx_field + num_fields - 1) % num_fields;
+            }
+            KeyCode::Left => {
+                self.adjust_track_config_field(ch, -1);
+            }
+            KeyCode::Right => {
+                self.adjust_track_config_field(ch, 1);
+            }
+            KeyCode::Enter => {
+                // Save name
+                if ch < self.channel_names.len() {
+                    self.channel_names[ch] = self.rename_buf.clone();
+                }
+                // Send effects to audio engine
+                if let Some(ref mut audio) = self.audio {
+                    audio.set_channel_effects(ch as u8, &self.channel_effects_params[ch]);
+                }
+                self.mode = Mode::Normal;
             }
             KeyCode::Char(c) => {
-                if self.rename_buf.len() < crate::ui::pattern_editor::MAX_CHANNEL_NAME {
-                    self.rename_buf.push(c);
+                // Only type into name field
+                if self.ch_fx_field == 0 {
+                    if self.rename_buf.len() < crate::ui::pattern_editor::MAX_CHANNEL_NAME {
+                        self.rename_buf.push(c);
+                    }
                 }
             }
             KeyCode::Backspace => {
-                self.rename_buf.pop();
-            }
-            KeyCode::Tab => {
-                // Cycle channel type
-                let ch = self.cursor_channel;
-                if ch < self.channel_types.len() {
-                    self.channel_types[ch] = self.channel_types[ch].next();
-                    let type_label = self.channel_types[ch].label();
-                    self.status_message = Some(format!("Ch {} type: {}", ch + 1, type_label));
+                if self.ch_fx_field == 0 {
+                    self.rename_buf.pop();
                 }
             }
             _ => {}
+        }
+    }
+
+    fn adjust_track_config_field(&mut self, ch: usize, dir: i32) {
+        let fx_off = self.track_config_fx_offset();
+        match self.ch_fx_field {
+            0 => {} // Name: typed, not adjusted
+            1 => {
+                // Type: cycle
+                if ch < self.channel_types.len() {
+                    self.channel_types[ch] = if dir > 0 {
+                        self.channel_types[ch].next()
+                    } else {
+                        self.channel_types[ch].prev()
+                    };
+                    // Clamp field index if switching (field count changes)
+                    let new_num = self.track_config_num_fields();
+                    if self.ch_fx_field >= new_num {
+                        self.ch_fx_field = new_num - 1;
+                    }
+                }
+            }
+            f if f == 2 && fx_off == 3 => {
+                // Instrument field (Synth tracks only)
+                if ch >= self.channel_instruments.len() {
+                    self.channel_instruments.resize(ch + 1, None);
+                }
+                match self.channel_instruments[ch] {
+                    None => self.channel_instruments[ch] = Some(0),
+                    Some(v) => {
+                        let next = (v as i32 + dir).clamp(0, 255) as u8;
+                        self.channel_instruments[ch] = Some(next);
+                    }
+                }
+            }
+            f if f == fx_off => self.channel_effects_params[ch].filter_enabled = !self.channel_effects_params[ch].filter_enabled,
+            f if f == fx_off + 1 => {
+                let step = if dir > 0 { 100.0 } else { -100.0 };
+                self.channel_effects_params[ch].filter_cutoff = (self.channel_effects_params[ch].filter_cutoff + step).clamp(20.0, 20000.0);
+            }
+            f if f == fx_off + 2 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].filter_resonance = (self.channel_effects_params[ch].filter_resonance + step).clamp(0.0, 1.0);
+            }
+            f if f == fx_off + 3 => self.channel_effects_params[ch].distortion_enabled = !self.channel_effects_params[ch].distortion_enabled,
+            f if f == fx_off + 4 => {
+                let step = if dir > 0 { 0.5 } else { -0.5 };
+                self.channel_effects_params[ch].distortion_drive = (self.channel_effects_params[ch].distortion_drive + step).clamp(1.0, 20.0);
+            }
+            f if f == fx_off + 5 => self.channel_effects_params[ch].chorus_enabled = !self.channel_effects_params[ch].chorus_enabled,
+            f if f == fx_off + 6 => {
+                let step = if dir > 0 { 0.1 } else { -0.1 };
+                self.channel_effects_params[ch].chorus_rate = (self.channel_effects_params[ch].chorus_rate + step).clamp(0.1, 10.0);
+            }
+            f if f == fx_off + 7 => {
+                let step = if dir > 0 { 0.5 } else { -0.5 };
+                self.channel_effects_params[ch].chorus_depth = (self.channel_effects_params[ch].chorus_depth + step).clamp(0.5, 20.0);
+            }
+            f if f == fx_off + 8 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].chorus_mix = (self.channel_effects_params[ch].chorus_mix + step).clamp(0.0, 1.0);
+            }
+            f if f == fx_off + 9 => self.channel_effects_params[ch].delay_enabled = !self.channel_effects_params[ch].delay_enabled,
+            f if f == fx_off + 10 => {
+                let step = if dir > 0 { 10.0 } else { -10.0 };
+                self.channel_effects_params[ch].delay_time = (self.channel_effects_params[ch].delay_time + step).clamp(1.0, 2000.0);
+            }
+            f if f == fx_off + 11 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].delay_feedback = (self.channel_effects_params[ch].delay_feedback + step).clamp(0.0, 0.95);
+            }
+            f if f == fx_off + 12 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].delay_mix = (self.channel_effects_params[ch].delay_mix + step).clamp(0.0, 1.0);
+            }
+            f if f == fx_off + 13 => self.channel_effects_params[ch].reverb_enabled = !self.channel_effects_params[ch].reverb_enabled,
+            f if f == fx_off + 14 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].reverb_size = (self.channel_effects_params[ch].reverb_size + step).clamp(0.0, 1.0);
+            }
+            f if f == fx_off + 15 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].reverb_damp = (self.channel_effects_params[ch].reverb_damp + step).clamp(0.0, 1.0);
+            }
+            f if f == fx_off + 16 => {
+                let step = if dir > 0 { 0.05 } else { -0.05 };
+                self.channel_effects_params[ch].reverb_mix = (self.channel_effects_params[ch].reverb_mix + step).clamp(0.0, 1.0);
+            }
+            _ => {}
+        }
+        // Live update effects
+        if self.ch_fx_field >= fx_off {
+            if let Some(ref mut audio) = self.audio {
+                audio.set_channel_effects(ch as u8, &self.channel_effects_params[ch]);
+            }
         }
     }
 
@@ -614,6 +768,9 @@ impl App {
                 self.mode = Mode::Normal;
                 self.export_midi();
             }
+            "fx" | "effects" => {
+                self.open_track_config();
+            }
             _ => {
                 self.mode = self.prev_mode;
                 self.status_message = Some(format!("Unknown command: {}", cmd));
@@ -739,7 +896,7 @@ impl App {
             Mode::SampleEditor => self.handle_sample_editor_key(key),
             Mode::SynthEditor => self.handle_synth_editor_key(key),
             Mode::QuitConfirm => self.handle_quit_confirm_key(key),
-            Mode::ChannelRename => self.handle_channel_rename_key(key),
+            Mode::TrackConfig => self.handle_track_config_key(key),
             Mode::PatternMatrix => self.handle_pattern_matrix_key(key),
             Mode::Command => self.handle_command_key(key),
         }
@@ -754,7 +911,6 @@ impl App {
                 KeyCode::Char('b') => { self.toggle_block_select(); return true; }
                 KeyCode::Char('f') => { self.toggle_follow(); return true; }
                 KeyCode::Char('i') => { self.interpolate_block(); return true; }
-                KeyCode::Char('r') => { self.open_channel_rename(); return true; }
                 KeyCode::Char('c') => {
                     if self.block_anchor.is_some() {
                         self.copy_block();
@@ -785,15 +941,6 @@ impl App {
                 KeyCode::Char('w') => { self.export_wav_file(); return true; }
                 KeyCode::Char('l') => { self.export_flac_file(); return true; }
                 KeyCode::Char('m') => { self.toggle_midi_clock(); return true; }
-                // Ctrl+1..8 select specific tracks
-                KeyCode::Char('1') => { self.select_track(0); return true; }
-                KeyCode::Char('2') => { self.select_track(1); return true; }
-                KeyCode::Char('3') => { self.select_track(2); return true; }
-                KeyCode::Char('4') => { self.select_track(3); return true; }
-                KeyCode::Char('5') => { self.select_track(4); return true; }
-                KeyCode::Char('6') => { self.select_track(5); return true; }
-                KeyCode::Char('7') => { self.select_track(6); return true; }
-                KeyCode::Char('8') => { self.select_track(7); return true; }
                 // Ctrl+F9-F12: solo channels on current page
                 KeyCode::F(9) => { let ch = self.track_page * CHANNELS_PER_PAGE; self.toggle_solo(ch); return true; }
                 KeyCode::F(10) => { let ch = self.track_page * CHANNELS_PER_PAGE + 1; self.toggle_solo(ch); return true; }
@@ -837,9 +984,9 @@ impl App {
             KeyCode::F(7) => { self.open_instrument_list(); return true; }
             KeyCode::F(8) => { self.cycle_theme(); return true; }
 
-            // Track page navigation
-            KeyCode::Tab => { self.toggle_track_page(); return true; }
-            KeyCode::BackTab => { self.reverse_track_page(); return true; }
+            // Track cycling
+            KeyCode::Tab => { self.cycle_track(1); return true; }
+            KeyCode::BackTab => { self.cycle_track(-1); return true; }
 
             // Navigation
             KeyCode::Up => { self.move_cursor_up(1); return true; }
@@ -862,19 +1009,17 @@ impl App {
         false
     }
 
-    /// Reverse track page (Shift-Tab behavior), extracted from duplication.
-    fn reverse_track_page(&mut self) {
-        let max_pages = (self.song.channels + CHANNELS_PER_PAGE - 1) / CHANNELS_PER_PAGE;
-        if max_pages > 1 {
-            self.track_page = if self.track_page == 0 { max_pages - 1 } else { self.track_page - 1 };
-            let page_start = self.track_page * CHANNELS_PER_PAGE;
-            let page_end = (page_start + CHANNELS_PER_PAGE).min(self.song.channels);
-            if self.cursor_channel < page_start || self.cursor_channel >= page_end {
-                self.cursor_channel = page_start;
-                self.cursor_sub = SubColumn::Note;
-            }
-            self.status_message = Some(format!("Track page {} (ch {}-{})", self.track_page + 1, page_start + 1, page_end));
-        }
+    /// Cycle to next/previous track, wrapping around. Updates track page automatically.
+    fn cycle_track(&mut self, dir: i32) {
+        let n = self.song.channels;
+        if n == 0 { return; }
+        self.cursor_channel = if dir > 0 {
+            (self.cursor_channel + 1) % n
+        } else {
+            (self.cursor_channel + n - 1) % n
+        };
+        self.cursor_sub = SubColumn::Note;
+        self.track_page = self.cursor_channel / CHANNELS_PER_PAGE;
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) {
@@ -922,6 +1067,9 @@ impl App {
                 self.prev_mode = self.mode;
                 self.mode = Mode::Command;
             }
+
+            // Track config (name, type, effects)
+            KeyCode::Enter => self.open_track_config(),
 
             // Row insert/delete
             KeyCode::Insert => self.insert_row_at_cursor(),
@@ -1064,17 +1212,29 @@ impl App {
 
         self.push_undo();
 
-        // Preview the note (check current cell for instrument assignment)
+        // Determine instrument: use track default if set (Synth tracks), else cell's existing value
         let pattern_idx = self.song.order[self.current_order_position()];
-        let current_inst = self.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel).instrument;
+        let ch = self.cursor_channel;
+        let track_inst = if self.channel_types.get(ch).copied() == Some(ChannelType::Synth) {
+            self.channel_instruments.get(ch).copied().flatten()
+        } else {
+            None
+        };
+        let current_inst = track_inst.or(self.song.patterns[pattern_idx].get(self.cursor_row, ch).instrument);
+
+        // Preview the note
         if let Some(midi_note) = note.to_midi_note() {
-            let midi_ch = self.midi_channel_for(self.cursor_channel);
+            let midi_ch = self.midi_channel_for(ch);
             self.preview_note_with_instrument(midi_ch, midi_note, 0x7F, current_inst);
         }
 
         // Write to pattern
-        let cell = self.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+        let cell = self.song.patterns[pattern_idx].get_mut(self.cursor_row, ch);
         cell.note = Some(note);
+        // Auto-fill instrument from track default
+        if let Some(inst) = track_inst {
+            cell.instrument = Some(inst);
+        }
 
         // Advance cursor
         self.move_cursor_down(self.edit_step);
@@ -1188,32 +1348,6 @@ impl App {
         self.status_message = Some(format!("Deleted row at {:02X}", self.cursor_row));
     }
 
-    /// Toggle track page (0 = tracks 1-4, 1 = tracks 5-8, etc.)
-    fn toggle_track_page(&mut self) {
-        let max_pages = (self.song.channels + CHANNELS_PER_PAGE - 1) / CHANNELS_PER_PAGE;
-        if max_pages <= 1 {
-            return;
-        }
-        self.track_page = (self.track_page + 1) % max_pages;
-        // Move cursor to same relative position on the new page
-        let page_start = self.track_page * CHANNELS_PER_PAGE;
-        let page_end = (page_start + CHANNELS_PER_PAGE).min(self.song.channels);
-        if self.cursor_channel < page_start || self.cursor_channel >= page_end {
-            self.cursor_channel = page_start;
-            self.cursor_sub = SubColumn::Note;
-        }
-        let page_display = self.track_page + 1;
-        self.status_message = Some(format!("Track page {} (ch {}-{})", page_display, page_start + 1, page_end));
-    }
-
-    /// Select a specific track by number (0-indexed)
-    fn select_track(&mut self, track: usize) {
-        if track < self.song.channels {
-            self.cursor_channel = track;
-            self.cursor_sub = SubColumn::Note;
-            self.track_page = track / CHANNELS_PER_PAGE;
-        }
-    }
 
     fn toggle_follow(&mut self) {
         self.follow_playback = !self.follow_playback;

@@ -72,7 +72,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::SampleEditor => sample_editor::draw_sample_editor(f, app),
         Mode::SynthEditor => synth_editor::draw_synth_editor(f, app),
         Mode::QuitConfirm => draw_quit_confirm(f, app, &theme),
-        Mode::ChannelRename => draw_channel_rename(f, app, &theme),
+        Mode::TrackConfig => draw_track_config(f, app, &theme),
         _ => {}
     }
 }
@@ -177,7 +177,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Mode::SampleEditor => Span::styled(" SAMPLE EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::SynthEditor => Span::styled(" SYNTH EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::QuitConfirm => Span::styled(" QUIT? ", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)),
-        Mode::ChannelRename => Span::styled(" RENAME ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
+        Mode::TrackConfig => Span::styled(" TRACK ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::PatternMatrix => Span::styled(" MATRIX ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::Command => Span::from(""), // handled above, never reached
     };
@@ -223,8 +223,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  F3           ", key_style), Span::styled("Toggle Ableton Link", text_style)]),
         Line::from(vec![Span::styled("  Space        ", key_style), Span::styled("Play / Stop", text_style)]),
         Line::from(vec![Span::styled("  Esc          ", key_style), Span::styled("Toggle Normal / Insert mode", text_style)]),
-        Line::from(vec![Span::styled("  Tab/S-Tab    ", key_style), Span::styled("Next / prev track page", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+1..8    ", key_style), Span::styled("Select track 1-8 directly", text_style)]),
+        Line::from(vec![Span::styled("  Tab/S-Tab    ", key_style), Span::styled("Next / prev track (wraps)", text_style)]),
         Line::from(vec![Span::styled("  Arrows       ", key_style), Span::styled("Move cursor", text_style)]),
         Line::from(vec![Span::styled("  PgUp/PgDn    ", key_style), Span::styled("Move cursor 16 rows", text_style)]),
         Line::from(vec![Span::styled("  Home/End     ", key_style), Span::styled("Jump to first / last row", text_style)]),
@@ -237,7 +236,6 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  Shift+Up/Dn  ", key_style), Span::styled("Transpose note(s) up/down semitone", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+I       ", key_style), Span::styled("Interpolate block (volume/effect ramp)", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+F       ", key_style), Span::styled("Toggle follow mode (cursor follows playback)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+R       ", key_style), Span::styled("Rename current channel", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+L/R     ", key_style), Span::styled("Next / prev order position", text_style)]),
         Line::from(vec![Span::styled("  F9-F12       ", key_style), Span::styled("Mute/unmute ch (current page)", text_style)]),
         Line::from(vec![Span::styled("  ( / )        ", key_style), Span::styled("Edit step down / up", text_style)]),
@@ -247,6 +245,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  q            ", key_style), Span::styled("Quit", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+N       ", key_style), Span::styled("New pattern (append to order)", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+D       ", key_style), Span::styled("Clone current pattern", text_style)]),
+        Line::from(vec![Span::styled("  Enter        ", key_style), Span::styled("Track config (name, type, effects)", text_style)]),
         Line::from(vec![Span::styled("  :            ", key_style), Span::styled("Command mode (vim-style)", text_style)]),
         Line::from(vec![Span::styled("  Ins / Bksp   ", key_style), Span::styled("Insert / delete row in pattern", text_style)]),
         Line::from(vec![Span::styled("  F6           ", key_style), Span::styled("Song settings dialog", text_style)]),
@@ -276,6 +275,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  :set         ", key_style), Span::styled("Song settings", text_style)]),
         Line::from(vec![Span::styled("  :inst        ", key_style), Span::styled("Instrument list", text_style)]),
         Line::from(vec![Span::styled("  :midi        ", key_style), Span::styled("MIDI port selector", text_style)]),
+        Line::from(vec![Span::styled("  :fx :effects ", key_style), Span::styled("Track config (name, type, effects)", text_style)]),
         Line::from(vec![Span::styled("  :wav :flac   ", key_style), Span::styled("Export audio", text_style)]),
         Line::from(vec![Span::styled("  :link        ", key_style), Span::styled("Toggle Ableton Link", text_style)]),
         Line::from(""),
@@ -487,45 +487,146 @@ fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
     f.render_widget(widget, popup_area);
 }
 
-fn draw_channel_rename(f: &mut Frame, app: &App, theme: &Theme) {
+fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
-    let popup_area = centered_rect(40, 5, area);
-    f.render_widget(Clear, popup_area);
-
     let ch = app.cursor_channel;
     let ch_type = app.channel_types.get(ch).copied().unwrap_or(crate::app::ChannelType::Midi);
-    let lines = vec![
-        Line::from(""),
+    let is_synth = ch_type == crate::app::ChannelType::Synth;
+    let has_fx = ch_type != crate::app::ChannelType::Midi;
+
+    let popup_h = match ch_type {
+        crate::app::ChannelType::Midi => 5,
+        crate::app::ChannelType::Synth => 18,
+        crate::app::ChannelType::Sample => 16,
+    };
+    let popup_area = centered_rect(60, popup_h, area);
+    f.render_widget(Clear, popup_area);
+
+    let params = app.channel_effects_params.get(ch)
+        .cloned()
+        .unwrap_or_default();
+    let field = app.ch_fx_field;
+    // Effects fields start at different offsets depending on track type
+    let fx_off: usize = if is_synth { 3 } else { 2 };
+
+    let active = Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD);
+    let normal = Style::default().fg(theme.popup_text);
+    let on_style = Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD);
+    let off_style = Style::default().fg(theme.muted_dim);
+    let dim = Style::default().fg(theme.status_hint);
+
+    let style_for = |f_idx: usize| -> Style {
+        if field == f_idx { active } else { normal }
+    };
+
+    let on_off = |enabled: bool, f_idx: usize| -> Span {
+        if enabled {
+            Span::styled("[x]", if field == f_idx { active } else { on_style })
+        } else {
+            Span::styled("[ ]", if field == f_idx { active } else { off_style })
+        }
+    };
+
+    let name_display = if field == 0 {
+        format!("{}_", app.rename_buf)
+    } else {
+        app.rename_buf.clone()
+    };
+
+    let mut lines = vec![
         Line::from(vec![
-            Span::styled(
-                format!("  Name: "),
-                Style::default().fg(theme.popup_text),
-            ),
-            Span::styled(
-                format!("{}_", app.rename_buf),
-                Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("  Name: ", style_for(0)),
+            Span::styled(name_display, style_for(0)),
         ]),
         Line::from(vec![
-            Span::styled(
-                format!("  Type: "),
-                Style::default().fg(theme.popup_text),
-            ),
-            Span::styled(
-                format!("{}", ch_type.label()),
-                Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  (Tab to cycle)",
-                Style::default().fg(theme.status_hint),
-            ),
+            Span::styled("  Type: ", style_for(1)),
+            Span::styled(ch_type.label().to_string(), style_for(1)),
+            Span::styled("  (Left/Right)", dim),
         ]),
     ];
 
+    if is_synth {
+        let inst_val = app.channel_instruments.get(ch).copied().flatten();
+        let inst_display = match inst_val {
+            Some(i) => {
+                let inst = &app.instruments[i as usize];
+                let label = if !inst.name.is_empty() {
+                    inst.name.clone()
+                } else if let Some(ref sp) = inst.synth_params {
+                    crate::audio::synth::Patch::from_program(sp.waveform).name().to_string()
+                } else {
+                    // No synth_params configured yet -- show default patch name
+                    crate::audio::synth::Patch::from_program(i).name().to_string()
+                };
+                format!("{:02X} {}", i, label)
+            }
+            None => "-- (none)".to_string(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Inst: ", style_for(2)),
+            Span::styled(inst_display, style_for(2)),
+        ]));
+    }
+
+    if has_fx {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("  -- Effects --", dim)));
+        lines.push(Line::from(vec![
+            Span::styled("  Filter:     ", style_for(fx_off)),
+            on_off(params.filter_enabled, fx_off),
+            Span::styled("  Cutoff: ", style_for(fx_off + 1)),
+            Span::styled(format!("{:.0}", params.filter_cutoff), style_for(fx_off + 1)),
+            Span::styled("  Res: ", style_for(fx_off + 2)),
+            Span::styled(format!("{:.2}", params.filter_resonance), style_for(fx_off + 2)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Distortion: ", style_for(fx_off + 3)),
+            on_off(params.distortion_enabled, fx_off + 3),
+            Span::styled("  Drive: ", style_for(fx_off + 4)),
+            Span::styled(format!("{:.1}", params.distortion_drive), style_for(fx_off + 4)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Chorus:     ", style_for(fx_off + 5)),
+            on_off(params.chorus_enabled, fx_off + 5),
+            Span::styled("  Rate: ", style_for(fx_off + 6)),
+            Span::styled(format!("{:.1}", params.chorus_rate), style_for(fx_off + 6)),
+            Span::styled("  Depth: ", style_for(fx_off + 7)),
+            Span::styled(format!("{:.1}", params.chorus_depth), style_for(fx_off + 7)),
+            Span::styled("  Mix: ", style_for(fx_off + 8)),
+            Span::styled(format!("{:.2}", params.chorus_mix), style_for(fx_off + 8)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Delay:      ", style_for(fx_off + 9)),
+            on_off(params.delay_enabled, fx_off + 9),
+            Span::styled("  Time: ", style_for(fx_off + 10)),
+            Span::styled(format!("{:.0}ms", params.delay_time), style_for(fx_off + 10)),
+            Span::styled("  Fdbk: ", style_for(fx_off + 11)),
+            Span::styled(format!("{:.2}", params.delay_feedback), style_for(fx_off + 11)),
+            Span::styled("  Mix: ", style_for(fx_off + 12)),
+            Span::styled(format!("{:.2}", params.delay_mix), style_for(fx_off + 12)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Reverb:     ", style_for(fx_off + 13)),
+            on_off(params.reverb_enabled, fx_off + 13),
+            Span::styled("  Size: ", style_for(fx_off + 14)),
+            Span::styled(format!("{:.2}", params.reverb_size), style_for(fx_off + 14)),
+            Span::styled("  Damp: ", style_for(fx_off + 15)),
+            Span::styled(format!("{:.2}", params.reverb_damp), style_for(fx_off + 15)),
+            Span::styled("  Mix: ", style_for(fx_off + 16)),
+            Span::styled(format!("{:.2}", params.reverb_mix), style_for(fx_off + 16)),
+        ]));
+    }
+
+    let hint = if has_fx {
+        " Tab:next  Left/Right:adjust  Enter/Esc:close "
+    } else {
+        " Tab:next  Left/Right:cycle  Enter/Esc:close "
+    };
+
     let widget = Paragraph::new(lines).block(
         Block::default()
-            .title(format!(" Channel {} ", ch + 1))
-            .title_bottom(" Enter/Esc:confirm  Tab:type ")
+            .title(format!(" Track {} ", ch + 1))
+            .title_bottom(hint)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );

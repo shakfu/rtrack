@@ -1,3 +1,4 @@
+pub mod channel_effects;
 pub mod effects;
 pub mod envelope;
 pub mod synth;
@@ -17,6 +18,7 @@ use crate::audio::envelope::Envelope;
 use crate::sample::playback::{SamplePlaybackEngine, SampleVoice};
 use crate::sample::SampleBank;
 
+use channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
 use effects::EffectsChain;
 use synth::{BuiltinSynth, SynthParams};
 
@@ -55,6 +57,7 @@ enum AudioCommand {
     SampleNoteOff { channel: u8, note: u8 },
     SampleNoteOffChannel { channel: u8 },
     SampleNoteOffAll,
+    SetChannelEffects { channel: u8, params: Box<ChannelEffectsParams> },
 }
 
 /// Unified audio engine. Supports:
@@ -117,8 +120,13 @@ impl AudioEngine {
         // Create built-in synth
         let builtin_synth = BuiltinSynth::new(sr_f64);
 
-        // Create effects chain
+        // Create effects chain (master)
         let effects = EffectsChain::new(sr_f64);
+
+        // Create per-channel effects
+        let channel_effects: Vec<ChannelEffects> = (0..MAX_EFFECT_CHANNELS)
+            .map(|_| ChannelEffects::new(sr_f64))
+            .collect();
 
         // Create sample playback engine
         let sample_engine = SamplePlaybackEngine::new(32);
@@ -140,11 +148,19 @@ impl AudioEngine {
             let mut sf2_synth = sf2_synth;
             let mut builtin_synth = builtin_synth;
             let mut effects = effects;
+            let mut channel_effects = channel_effects;
             let mut sample_engine = sample_engine;
             let mut sample_bank = sample_bank;
             let mut consumer = consumer;
             let mut scratch_left = vec![0.0f32; MAX_CALLBACK_FRAMES];
             let mut scratch_right = vec![0.0f32; MAX_CALLBACK_FRAMES];
+            // Per-channel scratch buffers for channel effects
+            let mut ch_buf_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                .collect();
+            let mut ch_buf_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                .collect();
 
             device
                 .build_output_stream(
@@ -159,6 +175,7 @@ impl AudioEngine {
                                 &mut sf2_synth,
                                 &mut builtin_synth,
                                 &mut effects,
+                                &mut channel_effects,
                                 &mut sample_engine,
                                 &mut sample_bank,
                                 callback_has_sf2,
@@ -171,31 +188,82 @@ impl AudioEngine {
                         if scratch_left.len() < frames {
                             scratch_left.resize(frames, 0.0);
                             scratch_right.resize(frames, 0.0);
+                            for ch in 0..MAX_EFFECT_CHANNELS {
+                                ch_buf_left[ch].resize(frames, 0.0);
+                                ch_buf_right[ch].resize(frames, 0.0);
+                            }
                         }
 
                         let left = &mut scratch_left[..frames];
                         let right = &mut scratch_right[..frames];
 
-                        // Zero the scratch buffers
+                        // Zero the master scratch buffers
                         for s in left.iter_mut() { *s = 0.0; }
                         for s in right.iter_mut() { *s = 0.0; }
 
-                        // Render SF2 synth
+                        // Check if any channel has effects enabled
+                        let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
+
+                        // Render SF2 synth (always to master -- can't separate by channel)
                         if let Some(ref mut sf2) = sf2_synth {
                             sf2.render(left, right);
                         }
 
-                        // Render built-in synth
-                        for i in 0..frames {
-                            let (l, r) = builtin_synth.render_sample();
-                            left[i] += l;
-                            right[i] += r;
+                        if any_ch_fx {
+                            // Per-channel rendering path
+                            // Zero per-channel buffers
+                            for ch in 0..MAX_EFFECT_CHANNELS {
+                                for s in ch_buf_left[ch][..frames].iter_mut() { *s = 0.0; }
+                                for s in ch_buf_right[ch][..frames].iter_mut() { *s = 0.0; }
+                            }
+
+                            // Render built-in synth per-channel
+                            for i in 0..frames {
+                                let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
+                                builtin_synth.render_sample_per_channel(&mut ch_out);
+                                for ch in 0..MAX_EFFECT_CHANNELS {
+                                    ch_buf_left[ch][i] += ch_out[ch][0];
+                                    ch_buf_right[ch][i] += ch_out[ch][1];
+                                }
+                            }
+
+                            // Render samples per-channel
+                            {
+                                let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
+                                // Safety: we need mutable borrows of different elements
+                                // Use split_at_mut chain to get independent slices
+                                let (ch_l_slices, ch_r_slices) = (&mut ch_buf_left, &mut ch_buf_right);
+                                for ch in 0..MAX_EFFECT_CHANNELS {
+                                    let l = &mut ch_l_slices[ch][..frames] as *mut [f32];
+                                    let r = &mut ch_r_slices[ch][..frames] as *mut [f32];
+                                    // SAFETY: each channel index is unique, no aliasing
+                                    unsafe { slices.push((&mut *l, &mut *r)); }
+                                }
+                                sample_engine.render_per_channel(&sample_bank, &mut slices);
+                            }
+
+                            // Apply per-channel effects and sum to master
+                            for ch in 0..MAX_EFFECT_CHANNELS {
+                                channel_effects[ch].process(
+                                    &mut ch_buf_left[ch][..frames],
+                                    &mut ch_buf_right[ch][..frames],
+                                );
+                                for i in 0..frames {
+                                    left[i] += ch_buf_left[ch][i];
+                                    right[i] += ch_buf_right[ch][i];
+                                }
+                            }
+                        } else {
+                            // Fast path: no per-channel effects, render directly to master
+                            for i in 0..frames {
+                                let (l, r) = builtin_synth.render_sample();
+                                left[i] += l;
+                                right[i] += r;
+                            }
+                            sample_engine.render(&sample_bank, left, right);
                         }
 
-                        // Render sample playback
-                        sample_engine.render(&sample_bank, left, right);
-
-                        // Apply effects chain
+                        // Apply master effects chain
                         effects.process(left, right);
 
                         // Interleave into output buffer with soft clamp
@@ -314,6 +382,14 @@ impl AudioEngine {
         self.send(AudioCommand::SampleNoteOffAll);
     }
 
+    /// Set per-channel effects parameters
+    pub fn set_channel_effects(&mut self, channel: u8, params: &ChannelEffectsParams) {
+        self.send(AudioCommand::SetChannelEffects {
+            channel,
+            params: Box::new(params.clone()),
+        });
+    }
+
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
@@ -325,6 +401,7 @@ fn process_command(
     sf2_synth: &mut Option<Synthesizer>,
     builtin_synth: &mut BuiltinSynth,
     effects: &mut EffectsChain,
+    channel_effects: &mut [ChannelEffects],
     sample_engine: &mut SamplePlaybackEngine,
     sample_bank: &mut Arc<SampleBank>,
     has_sf2: bool,
@@ -442,6 +519,12 @@ fn process_command(
         }
         AudioCommand::SampleNoteOffAll => {
             sample_engine.note_off_all();
+        }
+        AudioCommand::SetChannelEffects { channel, params } => {
+            let ch = channel as usize;
+            if ch < channel_effects.len() {
+                channel_effects[ch].params = *params;
+            }
         }
     }
 }

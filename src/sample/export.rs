@@ -5,6 +5,7 @@ use dasp::Sample as DaspSample;
 
 use super::playback::SamplePlaybackEngine;
 use super::SampleBank;
+use crate::audio::channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::EffectsChain;
 use crate::audio::synth::{BuiltinSynth, SynthParams};
 use crate::tracker::{Note, Song};
@@ -69,9 +70,10 @@ pub fn render_to_wav(
     song: &Song,
     bank: &SampleBank,
     instruments: &[ExportInstrument],
+    channel_fx_params: &[ChannelEffectsParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(song, bank, instruments, sample_rate)?;
+    let (left, right) = render_song(song, bank, instruments, channel_fx_params, sample_rate)?;
     write_wav(path, &left, &right, sample_rate)
 }
 
@@ -80,6 +82,7 @@ fn render_song(
     song: &Song,
     bank: &SampleBank,
     instruments: &[ExportInstrument],
+    channel_fx_params: &[ChannelEffectsParams],
     sample_rate: u32,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
     let sr = sample_rate as f64;
@@ -88,6 +91,18 @@ fn render_song(
     let mut synth = BuiltinSynth::new(sr);
     let mut sample_engine = SamplePlaybackEngine::new(32);
     let mut effects = EffectsChain::new(sr);
+
+    // Create per-channel effects for offline render
+    let mut channel_effects: Vec<ChannelEffects> = (0..MAX_EFFECT_CHANNELS)
+        .map(|ch| {
+            let mut fx = ChannelEffects::new(sr);
+            if let Some(params) = channel_fx_params.get(ch) {
+                fx.params = params.clone();
+            }
+            fx
+        })
+        .collect();
+    let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
 
     let mut all_left = Vec::new();
     let mut all_right = Vec::new();
@@ -353,17 +368,51 @@ fn render_song(
                 let mut left = vec![0.0f32; fpt];
                 let mut right = vec![0.0f32; fpt];
 
-                // Render built-in synth
-                for i in 0..fpt {
-                    let (l, r) = synth.render_sample();
-                    left[i] += l;
-                    right[i] += r;
+                if any_ch_fx {
+                    // Per-channel rendering path
+                    let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+                        .map(|_| vec![0.0f32; fpt])
+                        .collect();
+                    let mut ch_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+                        .map(|_| vec![0.0f32; fpt])
+                        .collect();
+
+                    for i in 0..fpt {
+                        let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
+                        synth.render_sample_per_channel(&mut ch_out);
+                        for ch in 0..MAX_EFFECT_CHANNELS {
+                            ch_left[ch][i] += ch_out[ch][0];
+                            ch_right[ch][i] += ch_out[ch][1];
+                        }
+                    }
+
+                    {
+                        let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
+                        for ch in 0..MAX_EFFECT_CHANNELS {
+                            let l = &mut ch_left[ch][..fpt] as *mut [f32];
+                            let r = &mut ch_right[ch][..fpt] as *mut [f32];
+                            unsafe { slices.push((&mut *l, &mut *r)); }
+                        }
+                        sample_engine.render_per_channel(bank, &mut slices);
+                    }
+
+                    for ch in 0..MAX_EFFECT_CHANNELS {
+                        channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
+                        for i in 0..fpt {
+                            left[i] += ch_left[ch][i];
+                            right[i] += ch_right[ch][i];
+                        }
+                    }
+                } else {
+                    for i in 0..fpt {
+                        let (l, r) = synth.render_sample();
+                        left[i] += l;
+                        right[i] += r;
+                    }
+                    sample_engine.render(bank, &mut left, &mut right);
                 }
 
-                // Render samples
-                sample_engine.render(bank, &mut left, &mut right);
-
-                // Apply effects
+                // Apply master effects
                 effects.process(&mut left, &mut right);
 
                 all_left.extend_from_slice(&left);
@@ -412,10 +461,34 @@ fn render_song(
     let tail_frames = (sr * 2.0) as usize; // 2 seconds tail
     let mut tail_left = vec![0.0f32; tail_frames];
     let mut tail_right = vec![0.0f32; tail_frames];
-    for i in 0..tail_frames {
-        let (l, r) = synth.render_sample();
-        tail_left[i] += l;
-        tail_right[i] += r;
+    if any_ch_fx {
+        let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+            .map(|_| vec![0.0f32; tail_frames])
+            .collect();
+        let mut ch_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+            .map(|_| vec![0.0f32; tail_frames])
+            .collect();
+        for i in 0..tail_frames {
+            let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
+            synth.render_sample_per_channel(&mut ch_out);
+            for ch in 0..MAX_EFFECT_CHANNELS {
+                ch_left[ch][i] += ch_out[ch][0];
+                ch_right[ch][i] += ch_out[ch][1];
+            }
+        }
+        for ch in 0..MAX_EFFECT_CHANNELS {
+            channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
+            for i in 0..tail_frames {
+                tail_left[i] += ch_left[ch][i];
+                tail_right[i] += ch_right[ch][i];
+            }
+        }
+    } else {
+        for i in 0..tail_frames {
+            let (l, r) = synth.render_sample();
+            tail_left[i] += l;
+            tail_right[i] += r;
+        }
     }
     effects.process(&mut tail_left, &mut tail_right);
     all_left.extend_from_slice(&tail_left);
@@ -467,9 +540,10 @@ pub fn render_to_flac(
     song: &Song,
     bank: &SampleBank,
     instruments: &[ExportInstrument],
+    channel_fx_params: &[ChannelEffectsParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(song, bank, instruments, sample_rate)?;
+    let (left, right) = render_song(song, bank, instruments, channel_fx_params, sample_rate)?;
     let samples_i16 = to_interleaved_i16(&left, &right);
     write_flac(path, &samples_i16, sample_rate)
 }
@@ -514,7 +588,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_empty.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, &[], 44100);
         assert!(result.is_ok());
 
         // Verify the file exists and is a valid WAV
@@ -547,7 +621,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_synth.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, &[], 44100);
         assert!(result.is_ok());
 
         // Should have some audio content (not all silence)
@@ -607,7 +681,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_sample.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, &[], 44100);
         assert!(result.is_ok());
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -646,7 +720,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path_with = dir.join("rtrack_test_porta.wav");
 
-        render_to_wav(&path_with, &song, &bank, &instruments, 44100).unwrap();
+        render_to_wav(&path_with, &song, &bank, &instruments, &[], 44100).unwrap();
 
         // Now render without the effect for comparison
         let mut song_no_fx = Song::new(1, 4);
@@ -659,7 +733,7 @@ mod tests {
         });
 
         let path_without = dir.join("rtrack_test_no_porta.wav");
-        render_to_wav(&path_without, &song_no_fx, &bank, &instruments, 44100).unwrap();
+        render_to_wav(&path_without, &song_no_fx, &bank, &instruments, &[], 44100).unwrap();
 
         // Read both and compare -- they should differ
         let r1 = hound::WavReader::open(&path_with).unwrap();
@@ -707,7 +781,7 @@ mod tests {
 
         // Render with volume slide
         let path_slide = dir.join("rtrack_test_volslide.wav");
-        render_to_wav(&path_slide, &song, &bank, &instruments, 44100).unwrap();
+        render_to_wav(&path_slide, &song, &bank, &instruments, &[], 44100).unwrap();
 
         // Render without (static volume)
         let mut song_static = Song::new(1, 4);
@@ -719,7 +793,7 @@ mod tests {
             ..Cell::default()
         });
         let path_static = dir.join("rtrack_test_volstatic.wav");
-        render_to_wav(&path_static, &song_static, &bank, &instruments, 44100).unwrap();
+        render_to_wav(&path_static, &song_static, &bank, &instruments, &[], 44100).unwrap();
 
         let r1 = hound::WavReader::open(&path_slide).unwrap();
         let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
@@ -756,7 +830,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_export.flac");
 
-        let result = render_to_flac(&path, &song, &bank, &instruments, 44100);
+        let result = render_to_flac(&path, &song, &bank, &instruments, &[], 44100);
         assert!(result.is_ok(), "FLAC export failed: {:?}", result.err());
 
         // Verify the file exists and is non-empty

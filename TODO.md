@@ -100,8 +100,9 @@
 - [x] Better sample interpolation -- cubic hermite (4-point Catmull-Rom) instead of linear
 - [x] Smarter voice stealing -- steals quietest voice (lowest envelope_level * velocity) instead of FIFO
 - [x] ADSR envelope on sample voices -- 2ms attack, full sustain, 50ms exponential release
-- [ ] More effects -- chorus, filter, distortion/saturation
-- [ ] Per-channel effects routing -- route individual channels through different effect chains
+- [x] More effects -- chorus, filter, distortion/saturation (per-channel)
+- [x] Per-channel effects routing -- track-level effects chain (filter, distortion, chorus)
+- [ ] Send/return effects routing -- shared effect buses with per-channel wet/dry sends
 - [x] Replace `Arc<Mutex<AudioState>>` with lock-free command queue (rtrb SPSC ring buffer) for real-time audio callback
 
 ## MIDI Improvements
@@ -118,7 +119,8 @@
 - [ ] Row highlight configurability (beat/bar intervals beyond 4/16, for time signature support)
 - [ ] Recent files list for quick re-open
 - [ ] Auto-save to temp file periodically
-- [ ] Pattern matrix view (arrangement overview)
+- [x] Pattern matrix view (full-screen arrangement with repeat counts)
+- [ ] Keybinding customization (config file with tracker presets)
 - [ ] Piano roll view (alternative note entry)
 - [ ] Plugin hosting (VST/CLAP)
 - [ ] Tempo automation (BPM changes beyond Fxx effect)
