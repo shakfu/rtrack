@@ -326,6 +326,29 @@ impl App {
                 SynthField::Detune => {
                     params.detune = (params.detune + delta as f32 * 0.1).clamp(0.0, 50.0);
                 }
+                SynthField::FilterType => {
+                    use crate::audio::synth::FilterType;
+                    params.filter_type = match (params.filter_type, delta > 0) {
+                        (FilterType::LowPass, true) => FilterType::HighPass,
+                        (FilterType::HighPass, true) => FilterType::BandPass,
+                        (FilterType::BandPass, true) => FilterType::LowPass,
+                        (FilterType::LowPass, false) => FilterType::BandPass,
+                        (FilterType::HighPass, false) => FilterType::LowPass,
+                        (FilterType::BandPass, false) => FilterType::HighPass,
+                    };
+                }
+                SynthField::SubOsc => {
+                    params.sub_osc = (params.sub_osc + delta as f32 * 0.01).clamp(0.0, 1.0);
+                }
+                SynthField::FmRatio => {
+                    params.fm_ratio = (params.fm_ratio + delta as f32 * 0.1).clamp(0.0, 16.0);
+                }
+                SynthField::FmIndex => {
+                    params.fm_index = (params.fm_index + delta as f32 * 0.1).clamp(0.0, 10.0);
+                }
+                SynthField::PulseWidth => {
+                    params.pulse_width = (params.pulse_width + delta as f32 * 0.01).clamp(0.05, 0.95);
+                }
             }
         }
     }

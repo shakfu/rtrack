@@ -5,11 +5,11 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, SynthField};
-use crate::audio::synth::Patch;
+use crate::audio::synth::{FilterType, Patch};
 
 /// Draw the synth editor popup
 pub fn draw_synth_editor(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 18, f.area());
+    let area = centered_rect(60, 24, f.area());
     f.render_widget(Clear, area);
 
     let slot = app.synth_editor_slot;
@@ -33,16 +33,26 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
     if let Some(ref params) = app.instruments[slot].synth_params {
         let patch = Patch::from_program(params.waveform);
 
+        let filter_type_str = match params.filter_type {
+            FilterType::LowPass => "LP",
+            FilterType::HighPass => "HP",
+            FilterType::BandPass => "BP",
+        };
         let fields: Vec<(SynthField, &str, String)> = vec![
             (SynthField::Waveform, "Waveform", format!("{} ({})", params.waveform, patch.name())),
             (SynthField::Attack, "Attack", format!("{:.3}s", params.attack)),
             (SynthField::Decay, "Decay", format!("{:.3}s", params.decay)),
             (SynthField::Sustain, "Sustain", format!("{:.2}", params.sustain)),
             (SynthField::Release, "Release", format!("{:.3}s", params.release)),
+            (SynthField::FilterType, "Filter Type", filter_type_str.to_string()),
             (SynthField::FilterCutoff, "Filter Cut", format!("{:.1}x", params.filter_cutoff)),
             (SynthField::FilterResonance, "Filter Res", format!("{:.2}", params.filter_resonance)),
             (SynthField::FilterEnv, "Filter Env", format!("{:.1} oct", params.filter_env)),
             (SynthField::Detune, "Detune", format!("{:.1} cents", params.detune)),
+            (SynthField::SubOsc, "Sub Osc", format!("{:.2}", params.sub_osc)),
+            (SynthField::FmRatio, "FM Ratio", format!("{:.1}", params.fm_ratio)),
+            (SynthField::FmIndex, "FM Index", format!("{:.1}", params.fm_index)),
+            (SynthField::PulseWidth, "Pulse Width", format!("{:.2}", params.pulse_width)),
         ];
 
         lines.push(Line::from(""));

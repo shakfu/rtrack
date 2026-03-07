@@ -225,10 +225,15 @@ pub enum SynthField {
     Decay,
     Sustain,
     Release,
+    FilterType,
     FilterCutoff,
     FilterResonance,
     FilterEnv,
     Detune,
+    SubOsc,
+    FmRatio,
+    FmIndex,
+    PulseWidth,
 }
 
 impl SynthField {
@@ -238,25 +243,35 @@ impl SynthField {
             Self::Attack => Self::Decay,
             Self::Decay => Self::Sustain,
             Self::Sustain => Self::Release,
-            Self::Release => Self::FilterCutoff,
+            Self::Release => Self::FilterType,
+            Self::FilterType => Self::FilterCutoff,
             Self::FilterCutoff => Self::FilterResonance,
             Self::FilterResonance => Self::FilterEnv,
             Self::FilterEnv => Self::Detune,
-            Self::Detune => Self::Waveform,
+            Self::Detune => Self::SubOsc,
+            Self::SubOsc => Self::FmRatio,
+            Self::FmRatio => Self::FmIndex,
+            Self::FmIndex => Self::PulseWidth,
+            Self::PulseWidth => Self::Waveform,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Waveform => Self::Detune,
+            Self::Waveform => Self::PulseWidth,
             Self::Attack => Self::Waveform,
             Self::Decay => Self::Attack,
             Self::Sustain => Self::Decay,
             Self::Release => Self::Sustain,
-            Self::FilterCutoff => Self::Release,
+            Self::FilterType => Self::Release,
+            Self::FilterCutoff => Self::FilterType,
             Self::FilterResonance => Self::FilterCutoff,
             Self::FilterEnv => Self::FilterResonance,
             Self::Detune => Self::FilterEnv,
+            Self::SubOsc => Self::Detune,
+            Self::FmRatio => Self::SubOsc,
+            Self::FmIndex => Self::FmRatio,
+            Self::PulseWidth => Self::FmIndex,
         }
     }
 }
