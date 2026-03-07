@@ -268,7 +268,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 |-----|--------|
 | Space | Play / stop |
 | Esc | Toggle Normal / Insert mode |
-| Tab / Shift-Tab | Next / previous track (wraps around) |
+| Tab / Shift+Tab | Next / previous track (wraps around) |
 | Enter | Open Track Config for current channel |
 | Arrows | Move cursor (auto-switches page at boundaries) |
 | PgUp / PgDn | Jump 16 rows |
@@ -288,7 +288,6 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | Ctrl+B | Toggle block selection |
 | Ctrl+I | Interpolate block (volume/effect ramp) |
 | Ctrl+F | Toggle follow mode (cursor follows playback) |
-| Ctrl+R | Rename current channel |
 | Ctrl+S | Save |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+C / X / V | Copy / cut / paste row (or block if selected) |
@@ -303,9 +302,9 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | Key | Action |
 |-----|--------|
 | q | Quit (confirms if unsaved changes) |
+| `:` | Enter command mode |
 | Ctrl+N | New pattern |
 | Ctrl+D | Clone current pattern |
-| F4 / F5 | Insert / remove order entry |
 | Insert | Insert row at cursor |
 | Backspace | Delete row at cursor |
 
@@ -313,10 +312,66 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 
 | Key | Action |
 |-----|--------|
-| Piano keys | Enter note |
+| Piano keys | Enter note (see [Note Entry](#note-entry)) |
 | `0`-`9`, `a`-`f` | Hex digit (instrument / volume / effect columns) |
 | Delete / Backspace | Clear cell |
 | `=` | Note off (`===`) |
+
+### Command Mode (`:` from Normal mode)
+
+| Command | Action |
+|---------|--------|
+| `:p` / `:pattern` | Open pattern matrix |
+| `:set` / `:settings` | Song settings |
+| `:fx` / `:effects` | Track config / effects editor |
+| `:inst` / `:instruments` | Instrument list |
+| `:midi` | MIDI port selector |
+| `:link` | Toggle Ableton Link |
+| `:w` / `:write` | Save |
+| `:q` / `:quit` | Quit |
+| `:q!` | Force quit (discard changes) |
+| `:wq` | Save and quit |
+| `:h` / `:help` | Help screen |
+| `:ew` / `:wav` | Export WAV |
+| `:ef` / `:flac` | Export FLAC |
+| `:em` / `:exportmidi` | Export MIDI |
+
+### Track Config (Enter on channel)
+
+| Key | Action |
+|---------|--------|
+| Up / Down / Tab | Navigate fields |
+| Left / Right | Adjust value (type, instrument, effect params) |
+| Type chars | Edit channel name (when on name field) |
+| Enter / Esc | Save and close |
+
+### Instrument List (F7)
+
+| Key | Action |
+|---------|--------|
+| Up / Down | Navigate instruments |
+| PgUp / PgDn | Jump 16 slots |
+| Enter | Open sample editor for selected instrument |
+| Tab | Open synth editor for selected instrument |
+| Type chars | Edit instrument name |
+| Backspace | Delete character from name |
+| Esc / F7 | Close |
+
+### Pattern Matrix (`:p`)
+
+| Key | Action |
+|---------|--------|
+| Up / Down / j / k | Navigate order entries |
+| PgUp / PgDn | Jump 8 entries |
+| Home / End | First / last entry |
+| Left / Right / +  / - | Change pattern assignment |
+| `[` / `]` | Decrease / increase repeat count |
+| Insert | Duplicate order entry |
+| Delete / Backspace | Remove order entry |
+| Ctrl+N | New empty pattern (insert after cursor) |
+| Ctrl+D | Clone current pattern (insert after cursor) |
+| Enter | Jump to order position and close |
+| Esc / q | Close |
 
 ## Examples
 

@@ -82,28 +82,50 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let pattern_idx = app.current_order_position();
     let pattern_num = song.order.get(pattern_idx).copied().unwrap_or(0);
 
-    let link_span = if app.link.is_enabled() {
-        Span::styled(
-            format!(" L:{}", app.link.num_peers()),
-            Style::default().fg(theme.link_active),
-        )
+    // Draw the border first
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.header_border));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Two-column layout: left has all info, right is for status symbols (Link, etc.)
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(20),       // left: song info + transport + position
+            Constraint::Length(6),      // right: status symbols (right-justified)
+        ])
+        .split(inner);
+
+    // -- Left: song info + bpm + transport + position + edit state --
+    let title_display = if app.dirty {
+        format!("{}*", song.title)
     } else {
-        Span::styled(" L:--", Style::default().fg(theme.link_inactive))
+        song.title.clone()
     };
 
-    let header_text = vec![Line::from(vec![
+    let mut left_spans = vec![
         Span::styled(" rtrack", Style::default().fg(theme.header_title).add_modifier(Modifier::BOLD)),
         Span::raw(" "),
-        Span::styled(&song.title, Style::default().fg(theme.status_text)),
-        Span::raw(if app.dirty { " [*]" } else { "" }),
+        Span::styled(title_display, Style::default().fg(theme.status_text)),
         Span::styled(
-            format!(" {}bpm s{}", song.bpm, song.speed),
+            format!(" {}bpm", song.bpm),
             Style::default().fg(theme.header_bpm),
         ),
+        Span::raw(if app.is_playing() { " \u{25B6}" } else { " \u{25A0}" }),
+    ];
+    let mins = (app.playback_elapsed / 60.0) as u32;
+    let secs = (app.playback_elapsed % 60.0) as u32;
+    let centis = ((app.playback_elapsed.fract()) * 100.0) as u32;
+    left_spans.push(Span::styled(
+        format!(" {:02}:{:02}:{:02}", mins, secs, centis),
+        Style::default().fg(theme.header_bpm),
+    ));
+    left_spans.extend([
         Span::styled(
-            format!(" P:{:02X}/{:02X} O:{:02X}/{:02X}",
-                pattern_num, song.current_pattern_count() - 1,
-                pattern_idx, song.order.len().saturating_sub(1)),
+            format!(" P:{:02X}/{:02X}",
+                pattern_num, song.current_pattern_count() - 1),
             Style::default().fg(theme.header_position),
         ),
         Span::styled(
@@ -115,33 +137,27 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.header_octave),
         ),
         Span::styled(
-            format!(" Ch:{}/{} Pg:{}",
+            format!(" Ch:{}/{}",
                 app.cursor_channel + 1,
-                app.song.channels,
-                app.track_page + 1),
+                app.song.channels),
             Style::default().fg(theme.header_octave),
         ),
-        Span::raw(if app.is_playing() { " PLAY" } else { " STOP" }),
-        if app.is_playing() {
-            let mins = (app.playback_elapsed / 60.0) as u32;
-            let secs = (app.playback_elapsed % 60.0) as u32;
-            Span::styled(
-                format!(" {}:{:02}", mins, secs),
-                Style::default().fg(theme.header_bpm),
-            )
-        } else {
-            Span::raw("")
-        },
-        Span::raw(if app.follow_playback { " FLW" } else { "" }),
-        link_span,
-    ])];
+    ]);
+    f.render_widget(Paragraph::new(Line::from(left_spans)), columns[0]);
 
-    let header = Paragraph::new(header_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.header_border)),
-    );
-    f.render_widget(header, area);
+    // -- Right: status symbols (right-justified) --
+    let mut right_spans: Vec<Span> = Vec::new();
+    if app.link.is_enabled() {
+        right_spans.push(Span::styled(
+            format!("L{}", app.link.num_peers()),
+            Style::default().fg(theme.link_active).add_modifier(Modifier::REVERSED),
+        ));
+    }
+    if !right_spans.is_empty() {
+        let right = Paragraph::new(Line::from(right_spans))
+            .alignment(ratatui::layout::Alignment::Right);
+        f.render_widget(right, columns[1]);
+    }
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {

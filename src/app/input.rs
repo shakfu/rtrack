@@ -1021,9 +1021,13 @@ impl App {
             KeyCode::Home => { self.cursor_row = 0; return true; }
             KeyCode::End => { self.cursor_row = self.current_pattern_rows() - 1; return true; }
 
-            // Octave up
+            // Octave up/down
             KeyCode::Char('+') => {
                 if self.current_octave < 9 { self.current_octave += 1; }
+                return true;
+            }
+            KeyCode::Char('-') => {
+                if self.current_octave > 0 { self.current_octave -= 1; }
                 return true;
             }
 
@@ -1069,13 +1073,6 @@ impl App {
             }
             KeyCode::Esc => self.mode = Mode::Insert,
 
-            // Octave down (plain '-' in Normal mode)
-            KeyCode::Char('-') => {
-                if self.current_octave > 0 {
-                    self.current_octave -= 1;
-                }
-            }
-
             // BPM
             KeyCode::Char(']') => self.change_bpm(1),
             KeyCode::Char('[') => self.change_bpm(-1),
@@ -1108,13 +1105,6 @@ impl App {
 
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
-
-            // Octave down (Ctrl+- in Insert mode since '-' could be hex)
-            KeyCode::Char('-') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.current_octave > 0 {
-                    self.current_octave -= 1;
-                }
-            }
 
             // Delete current cell content
             KeyCode::Delete | KeyCode::Backspace => {
