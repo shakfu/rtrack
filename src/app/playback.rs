@@ -4,7 +4,7 @@ use crate::midi::MidiInputEvent;
 use crate::tracker::{Note, NoteValue};
 
 use super::{
-    App, ChannelState, Mode,
+    App, ChannelState, ChannelType, Mode,
     EFFECT_ARPEGGIO, EFFECT_MIDI_CC, EFFECT_NOTE_DELAY, EFFECT_PATTERN_BREAK,
     EFFECT_PORTA_DOWN, EFFECT_PORTA_UP, EFFECT_POSITION_JUMP, EFFECT_PROGRAM_CHANGE,
     EFFECT_SET_SPEED, EFFECT_TONE_PORTA, EFFECT_VIBRATO, EFFECT_VOLUME_SLIDE,
@@ -145,7 +145,15 @@ impl App {
         let cells: Vec<(Option<Note>, Option<u8>, Option<u8>, Option<u8>, Option<u8>)> = (0..channels)
             .map(|ch| {
                 let cell = self.song.patterns[pattern_idx].get(self.playback_row, ch);
-                (cell.note, cell.volume, cell.effect, cell.effect_value, cell.instrument)
+                // Fall back to track default instrument for Synth tracks
+                let inst = cell.instrument.or_else(|| {
+                    if self.channel_types.get(ch).copied() == Some(ChannelType::Synth) {
+                        self.channel_instruments.get(ch).copied().flatten()
+                    } else {
+                        None
+                    }
+                });
+                (cell.note, cell.volume, cell.effect, cell.effect_value, inst)
             })
             .collect();
 

@@ -32,11 +32,11 @@ rtrack supports three ways to produce sound, and they can be combined:
 
 | Mode | How to activate | What it does |
 |------|----------------|--------------|
-| **Built-in synth** | Default (always on) | 9 waveform patches with ADSR envelopes and SVF/Moog filters. Select with `Exx` effect (0-8), or configure per-instrument (F7 > Tab). |
+| **Built-in synth** | Default (always on) | 30 waveform patches with ADSR envelopes, SVF filters, sub-oscillator, and FM synthesis. Select with `Exx` effect (0-29), or configure per-instrument (F7 > Tab). |
 | **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
 | **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
-All modes output through [cpal](https://crates.io/crates/cpal) with a stereo delay effects chain. MIDI output runs in parallel regardless of audio mode.
+All modes output through [cpal](https://crates.io/crates/cpal) with per-channel effects (distortion, filter, chorus, delay, reverb) and a master stereo delay. MIDI output runs in parallel regardless of audio mode.
 
 ```sh
 cargo run -- --sf2 gm.sf2                                # SoundFont mode
@@ -74,13 +74,14 @@ Upper octave:  q 2 w 3 e r 5 t 6 y 7 u
                C C#D D#E F F#G G#A A#B
 ```
 
-Use `+`/`-` to shift octave. Ctrl+1..8 to select tracks, arrow keys to navigate.
+Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to navigate.
 
 ## Features
 
 ### Pattern Editing
 
-- Up to 8 channels, displayed in pages of 4 (Tab/Shift-Tab to switch pages)
+- Up to 8 channels with Tab/Shift+Tab track cycling (wraps around)
+- Track Config popup (Enter on channel): set channel type (Midi/Synth/Sample), MIDI channel, default instrument (used as fallback during playback and auto-filled on note entry), and per-channel effects
 - Column headers above the pattern grid (shows channel name or "Not In Vl Fx" labels)
 - Channel rename (Ctrl+R): name channels ("Kick", "Bass", etc.) shown in headers
 - Configurable channel count and rows per pattern (default 4 channels, 64 rows)
@@ -130,12 +131,61 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 - 256 instrument slots (F7 to browse)
 - Per-instrument sample assignment -- load WAV/AIFF files into slots
 - Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
-- Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter, and detune
+- Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter (type/cutoff/resonance/env), detune, sub-oscillator, FM ratio/index, pulse width
 - Pitch-shifted playback with cubic hermite interpolation, up to 32 simultaneous voices with ADSR envelopes
 - Smart voice stealing: quietest voice is stolen when at capacity
 - Per-channel volume control (applied as velocity scaling during playback)
 
-### Effects
+### Built-in Synth Patches
+
+30 patches available via `Exx` program change or the synth editor (F7 > Tab):
+
+| # | Name | Oscillator | Character |
+|---|------|-----------|-----------|
+| 0 | Saw | PolyBLEP saw | Classic detuned saw |
+| 1 | Square | PolyBLEP square | Hollow, filtered |
+| 2 | Sine | Sine | Clean, pure tone |
+| 3 | Triangle | Triangle | Soft, detuned pair |
+| 4 | Pulse | PolyBLEP pulse | 25% duty, heavy filter env |
+| 5 | FM Bell | 2-op FM (3.5:1) | Metallic bell, long decay |
+| 6 | Organ | Additive (3 harmonics) | Drawbar organ |
+| 7 | Noise | LCG noise | Filtered noise hit |
+| 8 | Fundsp Pad | fundsp saws + moog | Warm pad |
+| 9 | Bass | Saw + sub-osc | Deep bass, resonant LP |
+| 10 | Pluck | Saw | Fast decay, bright attack |
+| 11 | Pad | Saw + sub-osc | Slow attack, wide detune |
+| 12 | Lead | Saw + sub-osc | Bright, sustained |
+| 13 | Keys | FM (2:1) | Electric piano |
+| 14 | Brass | Saw | Slow attack, filter sweep |
+| 15 | Strings | Saw + sub-osc | Wide detune, slow attack |
+| 16 | Perc | Noise + BP filter | Percussive hit |
+| 17 | Sub | Saw + sub-osc (0.8) | Deep sub-bass |
+| 18 | Acid | Saw | TB-303 style, high resonance |
+| 19 | Chip | Pulse (12.5%) | 8-bit chiptune |
+| 20 | Stab | Saw | Short sharp synth stab |
+| 21 | Mallet | FM (4:1) | Vibraphone/marimba |
+| 22 | Flute | Triangle + HP | Soft, breathy |
+| 23 | Reese | Saw + sub-osc | Heavy detuned bass |
+| 24 | Wire | Square + BP | Metallic, resonant |
+| 25 | Chime | FM (5:1) | Bright bell, long tail |
+| 26 | Growl | Saw + FM (1.5:1) | Aggressive, gritty |
+| 27 | Whistle | Sine | Clean whistle tone |
+| 28 | Siren | Triangle | Bright filter sweep |
+| 29 | Dist | Saw | Driven filter, high resonance |
+
+### Per-Channel Effects
+
+Each Synth/Sample track can have its own effects chain, configured via Track Config (Enter):
+
+| Effect | Parameters |
+|--------|-----------|
+| Distortion | Enable, drive amount |
+| Filter | Enable, cutoff, resonance |
+| Chorus | Enable, rate, depth, mix |
+| Delay | Enable, time (10-2000ms), feedback, mix |
+| Reverb | Enable, room size, damping, mix |
+
+### Pattern Effects
 
 | Cmd | Name | Description |
 |-----|------|-------------|
@@ -192,9 +242,11 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
     { "slot": 0, "name": "Kick", "sample_index": 0 },
     { "slot": 5, "name": "Lead", "midi_program": 80 },
     { "slot": 10, "name": "Pad", "synth_params": {
-        "waveform": 0, "attack": 0.05, "decay": 0.3, "sustain": 0.6,
-        "release": 0.4, "filter_cutoff": 6.0, "filter_resonance": 0.3,
-        "filter_env": 2.0, "detune": 8.0 } }
+        "waveform": 11, "attack": 0.3, "decay": 0.5, "sustain": 0.7,
+        "release": 0.8, "filter_cutoff": 3.0, "filter_resonance": 0.2,
+        "filter_env": 1.0, "detune": 15.0, "filter_type": "LowPass",
+        "sub_osc": 0.2, "fm_ratio": 0.0, "fm_index": 0.0,
+        "pulse_width": 0.25 } }
   ],
   "sample_refs": [
     { "slot": 0, "name": "kick", "path": "samples/0-kick.wav",
@@ -204,7 +256,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ```
 
 - **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment, synth params)
-- **Synth params**: optional per-instrument synthesis parameters (waveform, ADSR envelope, filter cutoff/resonance/envelope, detune). When present, overrides the channel's default patch.
+- **Synth params**: optional per-instrument synthesis parameters (waveform, ADSR envelope, filter type/cutoff/resonance/envelope, detune, sub-oscillator, FM ratio/index, pulse width). When present, overrides the channel's default patch. New fields use serde defaults for backwards compatibility.
 - **Sample refs**: file paths stored relative to the `.rtrk` file, plus all metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
 - **Backwards compatible**: old `.rtrk` files without `instruments`, `sample_refs`, or `synth_params` fields load fine.
 
@@ -216,8 +268,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 |-----|--------|
 | Space | Play / stop |
 | Esc | Toggle Normal / Insert mode |
-| Tab / Shift-Tab | Next / previous track page (groups of 4) |
-| Ctrl+1..8 | Select track 1-8 directly |
+| Tab / Shift-Tab | Next / previous track (wraps around) |
+| Enter | Open Track Config for current channel |
 | Arrows | Move cursor (auto-switches page at boundaries) |
 | PgUp / PgDn | Jump 16 rows |
 | Home / End | First / last row |
@@ -278,7 +330,7 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `arpeggio-demo.rtrk` | Effects -- `0xy` arpeggio, `4xy` vibrato, `Exx` program change |
 | `portamento-slide.rtrk` | Effects -- `1xx` porta up, `3xx` tone portamento, `5xy` volume slide |
 | `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `Bxx` position jump |
-| `all-patches.rtrk` | All 9 built-in synth patches cycled with `Exx` program change |
+| `all-patches.rtrk` | Built-in synth patches cycled with `Exx` program change |
 | `fundsp-pad.rtrk` | FundspPad patch (program 8) -- pad chord progression using fundsp synthesis |
 | `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
 
@@ -300,7 +352,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (209 tests)
+make test     # run tests (234 tests)
 ```
 
 ## Architecture
@@ -315,9 +367,10 @@ src/
   midi_file.rs          MIDI file (.mid) export and import
   audio/
     mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)
-    synth.rs            Built-in subtractive synth (9 patches, PolyBLEP + SVF/Moog + ADSR)
+    synth.rs            Built-in subtractive synth (30 patches, PolyBLEP + SVF + FM + sub-osc + ADSR)
+    channel_effects.rs  Per-channel effects (distortion, filter, chorus, delay, reverb)
     envelope.rs         Shared ADSR envelope (used by synth + sample voices)
-    effects.rs          Stereo delay effect (fundsp)
+    effects.rs          Master stereo delay effect (fundsp)
   sample/
     mod.rs              Sample loading (WAV via hound, AIFF parser, dasp conversion)
     playback.rs         Sample voice manager, pitch-shifted rendering
@@ -331,8 +384,9 @@ src/
     mod.rs              MIDI output + input (midir)
   ui/
     mod.rs              Header, status bar, popups
-    pattern_editor.rs   Pattern grid renderer (page-aware)
+    pattern_editor.rs   Pattern grid renderer
     sample_editor.rs    Sample editor (waveform, trim, loop)
+    synth_editor.rs     Synth editor (waveform, ADSR, filter, FM, sub-osc)
     theme.rs            Color themes (dark, light, monokai)
 ```
 

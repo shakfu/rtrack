@@ -673,7 +673,17 @@ impl App {
             return;
         }
 
-        // Route 3: default synth (channel program)
+        // Route 3: instrument number maps to preset patch (when instrument is explicitly set)
+        if instrument.is_some() {
+            let params = crate::audio::synth::SynthParams::from_patch(inst_idx as u8);
+            let _ = self.midi.note_on(channel, note, velocity);
+            if let Some(ref mut audio) = self.audio {
+                audio.note_on_with_params(channel, note, velocity, &params);
+            }
+            return;
+        }
+
+        // Route 4: default synth (channel program, no instrument specified)
         self.send_note_on(channel, note, velocity);
     }
 

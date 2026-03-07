@@ -4,6 +4,35 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Extended Synth & Track Config)
+
+- 30 built-in synth patches (up from 9), selected via `Exx` program change (0-29):
+  - Original 9: Saw, Square, Sine, Triangle, Pulse, FM Bell, Organ, Noise, Fundsp Pad
+  - Batch 1 (9): Bass, Pluck, Pad, Lead, Keys, Brass, Strings, Perc, Sub
+  - Batch 2 (12): Acid, Chip, Stab, Mallet, Flute, Reese, Wire, Chime, Growl, Whistle, Siren, Dist
+- Extended DSP capabilities for built-in synth:
+  - Filter type selection: LowPass, HighPass, BandPass (SVF computes all three, now selectable)
+  - Sub-oscillator: sine one octave below, mixable 0.0-1.0
+  - Configurable FM synthesis: carrier:modulator ratio (0-16) and modulation index (0-10)
+  - Variable pulse width (0.05-0.95) for Pulse waveform
+- Per-channel audio effects chain: distortion, SVF filter, LFO chorus, stereo delay, Schroeder reverb
+  - Each effect independently toggleable per track via Track Config
+  - Delay: configurable time (10-2000ms), feedback (0-0.95), wet mix
+  - Reverb: Schroeder algorithm (4 comb + 2 allpass filters), configurable size, damping, wet mix
+  - Effects hidden for MIDI-type tracks (only apply to Synth/Sample tracks)
+- Track Config popup (Enter key on channel header):
+  - Channel type (Midi/Synth/Sample), MIDI channel, default instrument (Synth tracks only)
+  - All per-channel effects with checkbox-style enable/disable indicators
+  - Enter/Esc to close, Left/Right arrows to adjust values
+- Tab/Shift+Tab now cycles through all tracks with wrapping (replaces page-based navigation)
+- Per-track default instrument for Synth-type tracks, auto-filled on note entry and used as fallback during playback
+- Synth editor extended with 5 new parameters: Filter Type, Sub Osc, FM Ratio, FM Index, Pulse Width
+- Test count increased from 209 to 234
+
+### Fixed (Track Config)
+
+- Fixed track default instrument not affecting playback: cells without an explicit instrument value now fall back to the track's default instrument during playback (Synth tracks only). Previously, changing the instrument in Track Config only affected newly entered notes.
+
 ### Added (Architecture & Audio Improvements)
 
 - Lock-free audio engine: replaced `Arc<Mutex<AudioState>>` with a lock-free SPSC command queue (`rtrb`). UI thread sends commands (note on/off, CC, pitch bend, etc.) via ring buffer; audio callback owns all synth/sample state and drains commands each callback. No mutex held during rendering.
