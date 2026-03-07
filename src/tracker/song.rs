@@ -104,6 +104,9 @@ pub struct Song {
     pub speed: u8, // ticks per row
     pub patterns: Vec<Pattern>,
     pub order: Vec<usize>, // indices into patterns
+    /// Per-order-entry repeat count: 0=skip, 1=play once (default), 2+=repeat
+    #[serde(default)]
+    pub order_repeats: Vec<u8>,
     pub channels: usize,
     pub rows_per_pattern: usize,
 }
@@ -117,9 +120,15 @@ impl Song {
             speed: 6,
             patterns: vec![initial_pattern],
             order: vec![0],
+            order_repeats: vec![1],
             channels,
             rows_per_pattern,
         }
+    }
+
+    /// Ensure order_repeats matches order length (for backwards compat with old files)
+    pub fn sync_order_repeats(&mut self) {
+        self.order_repeats.resize(self.order.len(), 1);
     }
 
     pub fn current_pattern_count(&self) -> usize {

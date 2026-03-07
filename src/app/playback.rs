@@ -40,6 +40,9 @@ impl App {
         self.tick_accumulator = 0.0;
         self.clock_tick_accumulator = 0.0;
         self.playback_elapsed = 0.0;
+        self.playback_repeat_count = 0;
+        // Skip order entries with repeat=0 at start
+        self.skip_zero_repeats_forward();
         // Reset channel states and ensure we have enough for all channels
         let ch_count = self.song.channels;
         self.channel_states = vec![ChannelState::default(); ch_count];
@@ -272,6 +275,8 @@ impl App {
                 self.playback_generation += 1;
             }
             self.playback_order = target;
+            self.playback_repeat_count = 0;
+            self.skip_zero_repeats_forward();
             let target_pattern = self.song.order[self.playback_order];
             let target_rows = self.song.patterns[target_pattern].rows;
             self.playback_row = break_row.unwrap_or(0).min(target_rows - 1);
@@ -280,11 +285,7 @@ impl App {
 
         // Process pattern break (Dxx)
         if let Some(target_row) = break_row {
-            self.playback_order += 1;
-            if self.playback_order >= self.song.order.len() {
-                self.playback_order = 0;
-                self.playback_generation += 1;
-            }
+            self.advance_order_position();
             let target_pattern = self.song.order[self.playback_order];
             let target_rows = self.song.patterns[target_pattern].rows;
             self.playback_row = target_row.min(target_rows - 1);
@@ -295,12 +296,50 @@ impl App {
         self.playback_row += 1;
         if self.playback_row >= pattern_rows {
             self.playback_row = 0;
+            self.advance_order_position();
+        }
+    }
+
+    /// Advance to the next order position, respecting repeat counts.
+    fn advance_order_position(&mut self) {
+        let repeat = self.order_repeat_at(self.playback_order);
+        self.playback_repeat_count += 1;
+        if repeat > 1 && self.playback_repeat_count < repeat {
+            // Stay on same order entry (repeat)
+            return;
+        }
+        // Move to next entry
+        self.playback_repeat_count = 0;
+        self.playback_order += 1;
+        if self.playback_order >= self.song.order.len() {
+            self.playback_order = 0;
+            self.playback_generation += 1;
+        }
+        self.skip_zero_repeats_forward();
+    }
+
+    /// Skip order entries with repeat=0 (starting from current position).
+    fn skip_zero_repeats_forward(&mut self) {
+        let len = self.song.order.len();
+        let start = self.playback_order;
+        for _ in 0..len {
+            if self.order_repeat_at(self.playback_order) > 0 {
+                return;
+            }
             self.playback_order += 1;
-            if self.playback_order >= self.song.order.len() {
+            if self.playback_order >= len {
                 self.playback_order = 0;
                 self.playback_generation += 1;
             }
+            if self.playback_order == start {
+                // All entries are 0 -- stop to avoid infinite loop
+                return;
+            }
         }
+    }
+
+    fn order_repeat_at(&self, idx: usize) -> u8 {
+        self.song.order_repeats.get(idx).copied().unwrap_or(1)
     }
 
     /// Ticks 1..speed-1: process continuous effects (arpeggio, portamento, vibrato, volume slide).

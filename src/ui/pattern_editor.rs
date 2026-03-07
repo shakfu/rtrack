@@ -44,10 +44,11 @@ const INST_WIDTH: u16 = 2;    // "01"
 const VOL_WIDTH: u16 = 2;     // "80"
 const FX_WIDTH: u16 = 3;      // "000"
 #[allow(dead_code)]
-const GAPS: u16 = 4;          // spaces between sub-columns
+const GAPS: u16 = 3;          // spaces between sub-columns
 #[allow(dead_code)]
 const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
 const SEPARATOR_WIDTH: u16 = 3; // " | "
+pub const MAX_CHANNEL_NAME: usize = 5;
 
 #[allow(dead_code)]
 pub fn channel_total_width(num_channels: usize) -> u16 {
@@ -78,26 +79,55 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 hx += SEPARATOR_WIDTH;
             }
             let col_start = hx;
-            // Show channel name if set, otherwise show column labels
             let ch_name = app.channel_names.get(ch).filter(|n| !n.is_empty());
-            if let Some(name) = ch_name {
-                let display: String = format!("{:<14}", name).chars().take(14).collect();
-                write_str(buf, hx, header_y, &display, header_style);
+            let ch_type = app.channel_types.get(ch).copied().unwrap_or(crate::app::ChannelType::Midi);
+            let type_label = ch_type.label();
+            let type_style = Style::default().fg(match ch_type {
+                crate::app::ChannelType::Midi => theme.header_bpm,
+                crate::app::ChannelType::Synth => theme.header_octave,
+                crate::app::ChannelType::Sample => theme.effect_set,
+            }).add_modifier(Modifier::BOLD);
+
+            // Layout: <name> <pad> [TYP] M   (right-justified type + indicator)
+            // Indicator: last char (pos 12), type: pos 6-10, space at 11
+            let w = CHANNEL_WIDTH as usize; // 13
+            let name_str: String = if let Some(name) = ch_name {
+                name.chars().take(MAX_CHANNEL_NAME).collect()
             } else {
-                write_str(buf, hx, header_y, "Not", header_style);
-                write_str(buf, hx + NOTE_WIDTH, header_y, " ", dim_header);
-                write_str(buf, hx + NOTE_WIDTH + 1, header_y, "In", header_style);
-                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH, header_y, " ", dim_header);
-                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1, header_y, "Vl", header_style);
-                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1 + VOL_WIDTH, header_y, " ", dim_header);
-                write_str(buf, hx + NOTE_WIDTH + 1 + INST_WIDTH + 1 + VOL_WIDTH + 1, header_y, "Fx ", header_style);
-            }
-            // Mute/Solo indicator at end of channel header
-            let indicator_x = col_start + CHANNEL_WIDTH - 2;
-            if app.solo_channel == Some(ch) {
-                write_str(buf, indicator_x, header_y, "S", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD));
+                format!("{}", ch + 1)
+            };
+
+            // Mute/solo indicator char
+            let indicator = if app.solo_channel == Some(ch) {
+                'S'
             } else if app.muted_channels.get(ch).copied().unwrap_or(false) {
-                write_str(buf, indicator_x, header_y, "M", Style::default().fg(theme.muted_dim).add_modifier(Modifier::BOLD));
+                'M'
+            } else {
+                ' '
+            };
+
+            // Right portion: "[MID] M" = 7 chars (type_label + space + indicator)
+            let right = format!("{} {}", type_label, indicator);
+            let right_len = right.len(); // 7
+            let left_space = w.saturating_sub(right_len);
+            let padded_name = format!("{:<width$}", name_str, width = left_space);
+            let header_full: String = format!("{}{}", padded_name, right)
+                .chars().take(w).collect();
+
+            // Write full string in dim style as background
+            write_str(buf, hx, header_y, &header_full, dim_header);
+            // Overlay name in bold
+            write_str(buf, hx, header_y, &name_str, header_style);
+            // Overlay type label in color (right-justified)
+            let type_x = hx + left_space as u16;
+            write_str(buf, type_x, header_y, type_label, type_style);
+            // Overlay indicator in color
+            if indicator == 'S' {
+                write_str(buf, hx + (w - 1) as u16, header_y, "S",
+                    Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD));
+            } else if indicator == 'M' {
+                write_str(buf, hx + (w - 1) as u16, header_y, "M",
+                    Style::default().fg(theme.muted_dim).add_modifier(Modifier::BOLD));
             }
 
             hx = col_start + CHANNEL_WIDTH;
@@ -260,9 +290,9 @@ mod tests {
 
     #[test]
     fn test_channel_total_width() {
-        // 1 channel: 3 (row) + 3 (sep) + 14 (channel) = 20
-        assert_eq!(channel_total_width(1), 20);
-        // 4 channels: 3 + 3 + 4*14 + 3*3 = 71
-        assert_eq!(channel_total_width(4), 71);
+        // 1 channel: 3 (row) + 3 (sep) + 13 (channel) = 19
+        assert_eq!(channel_total_width(1), 19);
+        // 4 channels: 3 + 3 + 4*13 + 3*3 = 67
+        assert_eq!(channel_total_width(4), 67);
     }
 }

@@ -45,17 +45,23 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, app, chunks[0], &theme);
 
-    // Split main area: order sidebar + pattern editor
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(7), // order list sidebar
-            Constraint::Min(20),  // pattern editor
-        ])
-        .split(chunks[1]);
+    if app.mode == Mode::PatternMatrix {
+        // Full-screen pattern matrix replaces order sidebar + pattern editor
+        draw_pattern_matrix(f, app, chunks[1], &theme);
+    } else {
+        // Split main area: order sidebar + pattern editor
+        let main_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(7), // order list sidebar
+                Constraint::Min(20),  // pattern editor
+            ])
+            .split(chunks[1]);
 
-    draw_order_sidebar(f, app, main_chunks[0], &theme);
-    pattern_editor::draw(f, app, main_chunks[1], &theme);
+        draw_order_sidebar(f, app, main_chunks[0], &theme);
+        pattern_editor::draw(f, app, main_chunks[1], &theme);
+    }
+
     draw_status_bar(f, app, chunks[2], &theme);
 
     match app.mode {
@@ -139,6 +145,14 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    if app.mode == Mode::Command {
+        let text = format!(":{}", app.command_buf);
+        let cmd_line = Paragraph::new(text)
+            .style(Style::default().fg(theme.popup_highlight_fg));
+        f.render_widget(cmd_line, area);
+        return;
+    }
+
     let midi_status = if app.midi.send_error_count > 0 {
         Span::styled(
             format!(" MIDI:ERR({}) ", app.midi.send_error_count),
@@ -164,6 +178,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Mode::SynthEditor => Span::styled(" SYNTH EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::QuitConfirm => Span::styled(" QUIT? ", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)),
         Mode::ChannelRename => Span::styled(" RENAME ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
+        Mode::PatternMatrix => Span::styled(" MATRIX ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
+        Mode::Command => Span::from(""), // handled above, never reached
     };
 
     let audio_span = if app.has_sf2() {
@@ -184,7 +200,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Span::styled(format!(" {} ", msg), Style::default().fg(theme.status_text))
     } else {
         Span::styled(
-            " [F1]Help [Space]Play/Stop [Esc]Mode [Tab]Page [Ctrl+1-8]Track [F2]MIDI [+/-]Oct [q]Quit ",
+            " [:]Cmd [F1]Help [Space]Play/Stop [Esc]Mode [Tab]Page [q]Quit ",
             Style::default().fg(theme.status_hint),
         )
     };
@@ -231,7 +247,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  q            ", key_style), Span::styled("Quit", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+N       ", key_style), Span::styled("New pattern (append to order)", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+D       ", key_style), Span::styled("Clone current pattern", text_style)]),
-        Line::from(vec![Span::styled("  F4 / F5      ", key_style), Span::styled("Insert / remove order entry", text_style)]),
+        Line::from(vec![Span::styled("  :            ", key_style), Span::styled("Command mode (vim-style)", text_style)]),
         Line::from(vec![Span::styled("  Ins / Bksp   ", key_style), Span::styled("Insert / delete row in pattern", text_style)]),
         Line::from(vec![Span::styled("  F6           ", key_style), Span::styled("Song settings dialog", text_style)]),
         Line::from(vec![Span::styled("  F7           ", key_style), Span::styled("Instrument list", text_style)]),
@@ -249,6 +265,19 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  Del/Bksp     ", key_style), Span::styled("Clear sub-column at cursor", text_style)]),
         Line::from(vec![Span::styled("  =            ", key_style), Span::styled("Enter note-off (===)", text_style)]),
         Line::from(vec![Span::styled("  Esc          ", key_style), Span::styled("Return to Normal mode", text_style)]),
+        Line::from(""),
+        Line::from(Span::styled("--- Commands (: in Normal) ---", section_style)),
+        Line::from(vec![Span::styled("  :p :pattern  ", key_style), Span::styled("Pattern matrix (full screen)", text_style)]),
+        Line::from(vec![Span::styled("  :w :write    ", key_style), Span::styled("Save file", text_style)]),
+        Line::from(vec![Span::styled("  :q :quit     ", key_style), Span::styled("Quit (prompts if unsaved)", text_style)]),
+        Line::from(vec![Span::styled("  :q!          ", key_style), Span::styled("Force quit without saving", text_style)]),
+        Line::from(vec![Span::styled("  :wq          ", key_style), Span::styled("Save and quit", text_style)]),
+        Line::from(vec![Span::styled("  :h :help     ", key_style), Span::styled("Help screen", text_style)]),
+        Line::from(vec![Span::styled("  :set         ", key_style), Span::styled("Song settings", text_style)]),
+        Line::from(vec![Span::styled("  :inst        ", key_style), Span::styled("Instrument list", text_style)]),
+        Line::from(vec![Span::styled("  :midi        ", key_style), Span::styled("MIDI port selector", text_style)]),
+        Line::from(vec![Span::styled("  :wav :flac   ", key_style), Span::styled("Export audio", text_style)]),
+        Line::from(vec![Span::styled("  :link        ", key_style), Span::styled("Toggle Ableton Link", text_style)]),
         Line::from(""),
         Line::from(Span::styled("  [Up/Down] scroll | [Esc/F1] close", dim_style)),
     ]
@@ -460,15 +489,16 @@ fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
 
 fn draw_channel_rename(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
-    let popup_area = centered_rect(36, 4, area);
+    let popup_area = centered_rect(40, 5, area);
     f.render_widget(Clear, popup_area);
 
     let ch = app.cursor_channel;
+    let ch_type = app.channel_types.get(ch).copied().unwrap_or(crate::app::ChannelType::Midi);
     let lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                format!("  Ch {}: ", ch + 1),
+                format!("  Name: "),
                 Style::default().fg(theme.popup_text),
             ),
             Span::styled(
@@ -476,12 +506,26 @@ fn draw_channel_rename(f: &mut Frame, app: &App, theme: &Theme) {
                 Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  Type: "),
+                Style::default().fg(theme.popup_text),
+            ),
+            Span::styled(
+                format!("{}", ch_type.label()),
+                Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  (Tab to cycle)",
+                Style::default().fg(theme.status_hint),
+            ),
+        ]),
     ];
 
     let widget = Paragraph::new(lines).block(
         Block::default()
-            .title(" Rename Channel ")
-            .title_bottom(" Enter/Esc:confirm ")
+            .title(format!(" Channel {} ", ch + 1))
+            .title_bottom(" Enter/Esc:confirm  Tab:type ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );
@@ -524,4 +568,143 @@ fn draw_port_selector(f: &mut Frame, app: &App, theme: &Theme) {
     );
 
     f.render_widget(list, popup_area);
+}
+
+fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    use ratatui::style::Color;
+
+    let num_channels = app.song.channels;
+    let ch_col_w: u16 = 5;
+    let label_w: u16 = 15; // " 0: [00] x01 |"
+
+    let block = Block::default()
+        .title(" Pattern Matrix ")
+        .title_bottom(" Enter:jump Ins:dup Del:rm +/-:pat [/]:rep ^N:new ^D:clone ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.popup_border));
+    f.render_widget(block, area);
+
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+
+    if inner.height < 2 || inner.width < 10 {
+        return;
+    }
+
+    let buf = f.buffer_mut();
+    let header_style = Style::default().fg(theme.header_title).add_modifier(Modifier::BOLD);
+    let dim_style = Style::default().fg(theme.popup_text);
+
+    // Header row: "Pos Pat  Rep | Ch1  Ch2  ..."
+    let header_y = inner.y;
+    let header_label = "Pos Pat  Rep |";
+    write_str(buf, inner.x, header_y, inner, header_label, header_style);
+    for ch in 0..num_channels {
+        let col_x = inner.x + label_w + ch as u16 * ch_col_w;
+        let name = app.channel_names.get(ch).filter(|n| !n.is_empty());
+        let label = match name {
+            Some(n) => format!("{:>4} ", &n[..n.len().min(4)]),
+            None => format!(" Ch{} ", ch + 1),
+        };
+        write_str(buf, col_x, header_y, inner, &label, header_style);
+    }
+
+    // Separator line
+    let sep_y = inner.y + 1;
+    if sep_y < inner.y + inner.height {
+        for x in inner.x..inner.x + inner.width {
+            buf[(x, sep_y)].set_char('-');
+            buf[(x, sep_y)].set_style(dim_style);
+        }
+    }
+
+    // Compute visible range with centered scrolling
+    let data_height = (inner.height.saturating_sub(2)) as usize;
+    let order_len = app.song.order.len();
+    let half = data_height / 2;
+    let scroll_offset = if order_len <= data_height {
+        0
+    } else if app.matrix_cursor <= half {
+        0
+    } else if app.matrix_cursor + half >= order_len {
+        order_len.saturating_sub(data_height)
+    } else {
+        app.matrix_cursor - half
+    };
+
+    // Precompute: for each pattern, which channels have data?
+    let pattern_channel_has_data: Vec<Vec<bool>> = app.song.patterns.iter().map(|pat| {
+        let mut channel_data = vec![false; pat.channels];
+        for row in &pat.data {
+            for (ch, cell) in row.iter().enumerate() {
+                if !cell.is_empty() {
+                    channel_data[ch] = true;
+                }
+            }
+        }
+        channel_data
+    }).collect();
+
+    // Draw order rows
+    for vis_row in 0..data_height {
+        let ord_idx = scroll_offset + vis_row;
+        if ord_idx >= order_len {
+            break;
+        }
+        let y = inner.y + 2 + vis_row as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        let pat_idx = app.song.order[ord_idx];
+        let is_cursor = ord_idx == app.matrix_cursor;
+        let is_playing = app.playing && ord_idx == app.playback_order;
+
+        // Row label: " 0: [00] x01 |"
+        let repeat = app.song.order_repeats.get(ord_idx).copied().unwrap_or(1);
+        let rep_str = if repeat == 0 { " -- ".to_string() } else { format!(" x{:<2}", repeat) };
+        let label = format!("{:>2}: [{:02X}]{} |", ord_idx, pat_idx, rep_str);
+        let label_style = if is_cursor {
+            Style::default().fg(theme.popup_highlight_fg).bg(theme.popup_highlight_bg).add_modifier(Modifier::BOLD)
+        } else if is_playing {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            dim_style
+        };
+        write_str(buf, inner.x, y, inner, &label, label_style);
+
+        // Channel cells: filled block vs dots
+        let has_data = pattern_channel_has_data.get(pat_idx);
+        for ch in 0..num_channels {
+            let col_x = inner.x + label_w + ch as u16 * ch_col_w;
+            let ch_has_data = has_data.and_then(|d| d.get(ch)).copied().unwrap_or(false);
+            let (cell_text, cell_style) = if is_cursor {
+                let text = if ch_has_data { "#### " } else { "  .  " };
+                let style = Style::default()
+                    .fg(theme.popup_highlight_fg)
+                    .bg(theme.popup_highlight_bg)
+                    .add_modifier(if ch_has_data { Modifier::BOLD } else { Modifier::empty() });
+                (text, style)
+            } else if ch_has_data {
+                ("#### ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else {
+                ("  .  ", Style::default().fg(theme.muted_dim))
+            };
+            write_str(buf, col_x, y, inner, cell_text, cell_style);
+        }
+    }
+}
+
+/// Write a string into the buffer, clipping to `bounds`.
+fn write_str(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, bounds: Rect, s: &str, style: Style) {
+    for (i, c) in s.chars().enumerate() {
+        let cx = x + i as u16;
+        if cx < bounds.x + bounds.width && y < bounds.y + bounds.height {
+            buf[(cx, y)].set_char(c);
+            buf[(cx, y)].set_style(style);
+        }
+    }
 }

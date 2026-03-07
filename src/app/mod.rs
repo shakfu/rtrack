@@ -87,6 +87,31 @@ impl Default for ChannelState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelType {
+    Midi,
+    Synth,
+    Sample,
+}
+
+impl ChannelType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Midi => "[MID]",
+            Self::Synth => "[SYN]",
+            Self::Sample => "[SMP]",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Midi => Self::Synth,
+            Self::Synth => Self::Sample,
+            Self::Sample => Self::Midi,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Insert,
@@ -98,6 +123,8 @@ pub enum Mode {
     SynthEditor,
     QuitConfirm,
     ChannelRename,
+    PatternMatrix,
+    Command,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +299,8 @@ pub struct App {
     pub(crate) clock_tick_accumulator: f64,
     /// Elapsed playback time in seconds
     pub playback_elapsed: f64,
+    /// How many times the current order entry has been played (for repeat tracking)
+    pub(crate) playback_repeat_count: u8,
     /// Per-channel effect state
     pub(crate) channel_states: Vec<ChannelState>,
 
@@ -294,6 +323,10 @@ pub struct App {
     pub(crate) redo_stack: Vec<Song>,
     /// Channel rename edit buffer
     pub rename_buf: String,
+    /// Pattern matrix view: cursor row (order position)
+    pub matrix_cursor: usize,
+    /// Command-line buffer for :command mode
+    pub command_buf: String,
 
     // -----------------------------------------------------------------------
     // Dialog State
@@ -330,6 +363,8 @@ pub struct App {
     /// Preview note: (channel, note, timestamp) -- auto note-off after timeout
     pub(crate) preview_note: Option<(u8, u8, Instant)>,
     pub channel_names: Vec<String>,
+    /// Per-channel type (Midi, Synth, Sample)
+    pub channel_types: Vec<ChannelType>,
     /// Per-channel volume (0.0..1.0, default 1.0)
     pub channel_volumes: Vec<f32>,
     /// Per-channel pan (-1.0=left, 0.0=center, 1.0=right)
@@ -390,6 +425,7 @@ impl App {
             theme_index: 0,
             clock_tick_accumulator: 0.0,
             playback_elapsed: 0.0,
+            playback_repeat_count: 0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
@@ -406,7 +442,10 @@ impl App {
             block_clipboard: None,
             follow_playback: true,
             channel_names: vec![String::new(); 4],
+            channel_types: vec![ChannelType::Midi; 4],
             rename_buf: String::new(),
+            matrix_cursor: 0,
+            command_buf: String::new(),
             channel_volumes: vec![1.0; 4],
             channel_pans: vec![0.0; 4],
         }
@@ -750,6 +789,7 @@ impl App {
         self.push_undo();
         let idx = self.song.add_pattern();
         self.song.order.push(idx);
+        self.song.order_repeats.push(1);
         self.edit_order = self.song.order.len() - 1;
         self.cursor_row = 0;
         self.status_message = Some(format!("New pattern {:02X}, order pos {:02X}", idx, self.edit_order));
@@ -762,31 +802,10 @@ impl App {
         let new_idx = self.song.patterns.len();
         self.song.patterns.push(cloned);
         self.song.order.insert(self.edit_order + 1, new_idx);
+        self.song.order_repeats.insert(self.edit_order + 1, 1);
         self.edit_order += 1;
         self.cursor_row = 0;
         self.status_message = Some(format!("Cloned pattern {:02X} -> {:02X}", src_idx, new_idx));
-    }
-
-    pub fn insert_order_entry(&mut self) {
-        self.push_undo();
-        let current_pattern = self.song.order[self.edit_order];
-        self.song.order.insert(self.edit_order + 1, current_pattern);
-        self.edit_order += 1;
-        self.status_message = Some(format!("Inserted order entry {:02X}", self.edit_order));
-    }
-
-    pub fn remove_order_entry(&mut self) {
-        if self.song.order.len() <= 1 {
-            self.status_message = Some("Cannot remove last order entry".to_string());
-            return;
-        }
-        self.push_undo();
-        self.song.order.remove(self.edit_order);
-        if self.edit_order >= self.song.order.len() {
-            self.edit_order = self.song.order.len() - 1;
-        }
-        self.cursor_row = 0;
-        self.status_message = Some("Removed order entry".to_string());
     }
 
     pub fn midi_channel_for(&self, tracker_channel: usize) -> u8 {
@@ -912,10 +931,12 @@ impl App {
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
                 self.channel_names = vec![String::new(); song.channels];
+                self.channel_types = vec![ChannelType::Midi; song.channels];
                 self.channel_volumes = vec![1.0; song.channels];
                 self.channel_pans = vec![0.0; song.channels];
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
+                self.song.sync_order_repeats();
                 self.cursor_row = 0;
                 self.cursor_channel = 0;
                 self.cursor_sub = SubColumn::Note;
@@ -1151,6 +1172,7 @@ impl App {
                 self.muted_channels = vec![false; song.channels];
                 self.solo_channel = None;
                 self.channel_names = vec![String::new(); song.channels];
+                self.channel_types = vec![ChannelType::Midi; song.channels];
                 self.channel_volumes = vec![1.0; song.channels];
                 self.channel_pans = vec![0.0; song.channels];
                 self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
@@ -1254,6 +1276,7 @@ mod tests {
             theme_index: 0,
             clock_tick_accumulator: 0.0,
             playback_elapsed: 0.0,
+            playback_repeat_count: 0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
@@ -1268,7 +1291,10 @@ mod tests {
             block_clipboard: None,
             follow_playback: true,
             channel_names: vec![String::new(); 4],
+            channel_types: vec![ChannelType::Midi; 4],
             rename_buf: String::new(),
+            matrix_cursor: 0,
+            command_buf: String::new(),
             channel_volumes: vec![1.0; 4],
             channel_pans: vec![0.0; 4],
         }
@@ -1725,22 +1751,6 @@ mod tests {
         // The cloned pattern should have the same note
         let cell = app.song.patterns[1].get(0, 0);
         assert!(cell.note.is_some());
-    }
-
-    #[test]
-    fn test_insert_remove_order_entry() {
-        let mut app = make_app();
-        assert_eq!(app.song.order.len(), 1);
-
-        app.insert_order_entry();
-        assert_eq!(app.song.order.len(), 2);
-
-        app.remove_order_entry();
-        assert_eq!(app.song.order.len(), 1);
-
-        // Can't remove last entry
-        app.remove_order_entry();
-        assert_eq!(app.song.order.len(), 1);
     }
 
     #[test]
@@ -2992,5 +3002,219 @@ mod tests {
         // Absolute path -- should be reduced to just the filename under base
         let absolute = resolve_relative(base, "/etc/passwd");
         assert_eq!(absolute, std::path::PathBuf::from("/home/user/songs/passwd"));
+    }
+
+    /// Helper: enter command mode and execute a command via :cmd<Enter>
+    fn run_command(app: &mut App, cmd: &str) {
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Command);
+        for c in cmd.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_command_mode_open_close() {
+        let mut app = make_app();
+        // ':' enters command mode
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Command);
+
+        // Esc cancels
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_command_mode_unknown() {
+        let mut app = make_app();
+        run_command(&mut app, "nonsense");
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status_message.as_ref().unwrap().contains("Unknown command"));
+    }
+
+    #[test]
+    fn test_command_mode_backspace_cancels() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        // Type a char then backspace twice (second empties buffer -> cancel)
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Command); // still in command mode, buffer empty
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal); // cancelled
+    }
+
+    #[test]
+    fn test_pattern_matrix_open_close() {
+        let mut app = make_app();
+        assert_eq!(app.mode, Mode::Normal);
+
+        // :p opens pattern matrix
+        run_command(&mut app, "p");
+        assert_eq!(app.mode, Mode::PatternMatrix);
+        assert_eq!(app.matrix_cursor, 0);
+
+        // Esc returns to Normal
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_pattern_matrix_navigation() {
+        let mut app = make_app();
+        app.song.order.push(0);
+        app.song.order.push(0);
+
+        run_command(&mut app, "p");
+        assert_eq!(app.mode, Mode::PatternMatrix);
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 2);
+
+        // Can't go past end
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 0);
+    }
+
+    #[test]
+    fn test_pattern_matrix_enter_jumps() {
+        let mut app = make_app();
+        app.song.order.push(0);
+        app.song.order.push(0);
+
+        run_command(&mut app, "p");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.matrix_cursor, 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.edit_order, 2);
+        assert_eq!(app.cursor_row, 0);
+    }
+
+    #[test]
+    fn test_pattern_matrix_insert_delete() {
+        let mut app = make_app();
+        assert_eq!(app.song.order.len(), 1);
+
+        run_command(&mut app, "p");
+
+        app.handle_key(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE));
+        assert_eq!(app.song.order.len(), 2);
+        assert_eq!(app.song.order[0], 0);
+        assert_eq!(app.song.order[1], 0);
+        assert_eq!(app.matrix_cursor, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.song.order.len(), 1);
+        assert_eq!(app.matrix_cursor, 0);
+
+        // Can't delete the last entry
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.song.order.len(), 1);
+    }
+
+    #[test]
+    fn test_pattern_matrix_new_clone() {
+        let mut app = make_app();
+        assert_eq!(app.song.patterns.len(), 1);
+
+        run_command(&mut app, "p");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.song.patterns.len(), 2);
+        assert_eq!(app.song.order.len(), 2);
+        assert_eq!(app.song.order[1], 1);
+        assert_eq!(app.matrix_cursor, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(app.song.patterns.len(), 3);
+        assert_eq!(app.song.order.len(), 3);
+        assert_eq!(app.matrix_cursor, 2);
+    }
+
+    #[test]
+    fn test_pattern_matrix_change_pattern() {
+        let mut app = make_app();
+        app.song.add_pattern();
+        assert_eq!(app.song.order[0], 0);
+
+        run_command(&mut app, "p");
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.song.order[0], 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.song.order[0], 0);
+
+        // Can't go below 0
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.song.order[0], 0);
+    }
+
+    #[test]
+    fn test_pattern_matrix_repeat() {
+        let mut app = make_app();
+        run_command(&mut app, "p");
+
+        // Default repeat is 1
+        assert_eq!(app.song.order_repeats[0], 1);
+
+        // ] increases repeat
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats[0], 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats[0], 3);
+
+        // [ decreases repeat
+        app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats[0], 2);
+
+        // Can go to 0 (skip)
+        app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats[0], 0);
+
+        // Can't go below 0
+        app.handle_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats[0], 0);
+    }
+
+    #[test]
+    fn test_order_repeats_sync_on_insert_delete() {
+        let mut app = make_app();
+        run_command(&mut app, "p");
+
+        // Set repeat to 3
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats[0], 3);
+
+        // Insert: new entry gets repeat=1
+        app.handle_key(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats.len(), 2);
+        assert_eq!(app.song.order_repeats[0], 3); // original preserved
+        assert_eq!(app.song.order_repeats[1], 1); // new entry
+
+        // Delete: removes the entry's repeat too
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.song.order_repeats.len(), 1);
+        assert_eq!(app.song.order_repeats[0], 3); // original still there
     }
 }

@@ -511,6 +511,7 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         bpm,
         speed,
         patterns,
+        order_repeats: vec![1; order.len()],
         order,
         channels: num_channels,
         rows_per_pattern,

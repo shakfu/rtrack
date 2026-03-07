@@ -102,15 +102,26 @@ fn render_song(
     let mut ch_states: Vec<ExportChannelState> = vec![ExportChannelState::default(); num_channels];
 
     while order_pos < song.order.len() {
+        // Check repeat count: 0 = skip
+        let repeat_count = song.order_repeats.get(order_pos).copied().unwrap_or(1);
+        if repeat_count == 0 {
+            order_pos += 1;
+            continue;
+        }
         let pattern_idx = song.order[order_pos];
         if pattern_idx >= song.patterns.len() {
             break;
         }
         let pattern = &song.patterns[pattern_idx];
-        let mut row = start_row;
-        start_row = 0; // reset for next pattern
+        let mut repeats_done = 0u8;
         let mut jump_order: Option<usize> = None;
         let mut break_row: Option<usize> = None;
+
+      'repeat_loop: while repeats_done < repeat_count {
+        let mut row = start_row;
+        start_row = 0;
+        jump_order = None;
+        break_row = None;
 
         while row < pattern.rows {
             jump_order = None;
@@ -363,30 +374,31 @@ fn render_song(
             if let Some(target) = jump_order {
                 order_pos = target.min(song.order.len() - 1);
                 start_row = break_row.unwrap_or(0);
-                // Clamp start_row to target pattern bounds
                 let target_pat = song.order[order_pos];
                 if target_pat < song.patterns.len() {
                     start_row = start_row.min(song.patterns[target_pat].rows.saturating_sub(1));
                 }
-                break;
+                break 'repeat_loop;
             }
             if let Some(target_row) = break_row {
                 order_pos += 1;
                 if order_pos >= song.order.len() {
                     order_pos = 0;
                 }
-                // Set start_row for the next pattern
                 if order_pos < song.order.len() {
                     let target_pat = song.order[order_pos];
                     if target_pat < song.patterns.len() {
                         start_row = target_row.min(song.patterns[target_pat].rows.saturating_sub(1));
                     }
                 }
-                break;
+                break 'repeat_loop;
             }
 
             row += 1;
         }
+
+        repeats_done += 1;
+      } // end repeat_loop
 
         // Normal advance (only if no jump/break occurred)
         if jump_order.is_none() && break_row.is_none() {

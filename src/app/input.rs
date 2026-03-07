@@ -7,7 +7,7 @@ use crate::tracker::NoteValue;
 use crate::ui::pattern_editor::SubColumn;
 
 use super::{
-    App, Mode, SampleField, SettingsField,
+    App, ChannelType, Mode, SampleField, SettingsField,
     CHANNELS_PER_PAGE, MAX_CHANNELS, MAX_INSTRUMENTS,
 };
 
@@ -76,6 +76,7 @@ impl App {
                         }
                         self.muted_channels.resize(v, false);
                         self.channel_names.resize(v, String::new());
+                        self.channel_types.resize(v, ChannelType::Midi);
                         self.channel_volumes.resize(v, 1.0);
                         self.channel_pans.resize(v, 0.0);
                         self.midi_channel_map = (0..v).map(|i| i as u8).collect();
@@ -369,14 +370,254 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                if self.rename_buf.len() < 10 {
+                if self.rename_buf.len() < crate::ui::pattern_editor::MAX_CHANNEL_NAME {
                     self.rename_buf.push(c);
                 }
             }
             KeyCode::Backspace => {
                 self.rename_buf.pop();
             }
+            KeyCode::Tab => {
+                // Cycle channel type
+                let ch = self.cursor_channel;
+                if ch < self.channel_types.len() {
+                    self.channel_types[ch] = self.channel_types[ch].next();
+                    let type_label = self.channel_types[ch].label();
+                    self.status_message = Some(format!("Ch {} type: {}", ch + 1, type_label));
+                }
+            }
             _ => {}
+        }
+    }
+
+    // -- Pattern matrix --
+
+    fn open_pattern_matrix(&mut self) {
+        self.matrix_cursor = self.current_order_position();
+        self.prev_mode = self.mode;
+        self.mode = Mode::PatternMatrix;
+    }
+
+    fn handle_pattern_matrix_key(&mut self, key: KeyEvent) {
+        let order_len = self.song.order.len();
+
+        // Ctrl combos
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('n') => {
+                    // New empty pattern, insert after cursor
+                    self.push_undo();
+                    let idx = self.song.add_pattern();
+                    self.song.order.insert(self.matrix_cursor + 1, idx);
+                    self.song.order_repeats.insert(self.matrix_cursor + 1, 1);
+                    self.matrix_cursor += 1;
+                    self.dirty = true;
+                    self.status_message = Some(format!("New pattern {:02X}", idx));
+                    return;
+                }
+                KeyCode::Char('d') => {
+                    // Clone current pattern, insert after cursor
+                    self.push_undo();
+                    let src_idx = self.song.order[self.matrix_cursor];
+                    let cloned = self.song.patterns[src_idx].clone();
+                    let new_idx = self.song.patterns.len();
+                    self.song.patterns.push(cloned);
+                    self.song.order.insert(self.matrix_cursor + 1, new_idx);
+                    self.song.order_repeats.insert(self.matrix_cursor + 1, 1);
+                    self.matrix_cursor += 1;
+                    self.dirty = true;
+                    self.status_message = Some(format!("Cloned {:02X} -> {:02X}", src_idx, new_idx));
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.matrix_cursor > 0 {
+                    self.matrix_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.matrix_cursor + 1 < order_len {
+                    self.matrix_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.matrix_cursor = 0;
+            }
+            KeyCode::End => {
+                if order_len > 0 {
+                    self.matrix_cursor = order_len - 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.matrix_cursor = self.matrix_cursor.saturating_sub(8);
+            }
+            KeyCode::PageDown => {
+                self.matrix_cursor = (self.matrix_cursor + 8).min(order_len.saturating_sub(1));
+            }
+            KeyCode::Enter => {
+                // Jump to the selected order position and close
+                self.edit_order = self.matrix_cursor;
+                if !self.playing {
+                    self.playback_order = self.matrix_cursor;
+                }
+                self.cursor_row = 0;
+                self.mode = Mode::Normal;
+            }
+            // Insert duplicate order entry after cursor
+            KeyCode::Insert => {
+                self.push_undo();
+                let pat = self.song.order[self.matrix_cursor];
+                self.song.order.insert(self.matrix_cursor + 1, pat);
+                self.song.order_repeats.insert(self.matrix_cursor + 1, 1);
+                self.matrix_cursor += 1;
+                self.dirty = true;
+            }
+            // Delete order entry at cursor
+            KeyCode::Delete | KeyCode::Backspace => {
+                if self.song.order.len() > 1 {
+                    self.push_undo();
+                    self.song.order.remove(self.matrix_cursor);
+                    self.song.order_repeats.remove(self.matrix_cursor);
+                    if self.matrix_cursor >= self.song.order.len() {
+                        self.matrix_cursor = self.song.order.len() - 1;
+                    }
+                    self.dirty = true;
+                    self.status_message = Some("Removed order entry".to_string());
+                } else {
+                    self.status_message = Some("Cannot remove last entry".to_string());
+                }
+            }
+            // Increase repeat count
+            KeyCode::Char(']') => {
+                self.push_undo();
+                self.song.sync_order_repeats();
+                let cur = self.song.order_repeats[self.matrix_cursor];
+                if cur < 99 {
+                    self.song.order_repeats[self.matrix_cursor] = cur + 1;
+                    self.dirty = true;
+                }
+            }
+            // Decrease repeat count
+            KeyCode::Char('[') => {
+                self.push_undo();
+                self.song.sync_order_repeats();
+                let cur = self.song.order_repeats[self.matrix_cursor];
+                if cur > 0 {
+                    self.song.order_repeats[self.matrix_cursor] = cur - 1;
+                    self.dirty = true;
+                }
+            }
+            // Change which pattern this order entry points to
+            KeyCode::Right | KeyCode::Char('+') => {
+                let max_pat = self.song.patterns.len() - 1;
+                let cur = self.song.order[self.matrix_cursor];
+                if cur < max_pat {
+                    self.push_undo();
+                    self.song.order[self.matrix_cursor] = cur + 1;
+                    self.dirty = true;
+                }
+            }
+            KeyCode::Left | KeyCode::Char('-') => {
+                let cur = self.song.order[self.matrix_cursor];
+                if cur > 0 {
+                    self.push_undo();
+                    self.song.order[self.matrix_cursor] = cur - 1;
+                    self.dirty = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // -- Command mode --
+
+    fn handle_command_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = self.prev_mode;
+                self.command_buf.clear();
+            }
+            KeyCode::Enter => {
+                let cmd = self.command_buf.trim().to_string();
+                self.command_buf.clear();
+                self.execute_command(&cmd);
+            }
+            KeyCode::Backspace => {
+                if self.command_buf.pop().is_none() {
+                    // Empty buffer, cancel command mode
+                    self.mode = self.prev_mode;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.command_buf.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_command(&mut self, cmd: &str) {
+        match cmd {
+            "p" | "pattern" => {
+                self.open_pattern_matrix();
+            }
+            "q" | "quit" => {
+                if self.dirty {
+                    self.prev_mode = Mode::Normal;
+                    self.mode = Mode::QuitConfirm;
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            "q!" => {
+                self.should_quit = true;
+            }
+            "w" | "write" => {
+                self.mode = Mode::Normal;
+                self.save();
+            }
+            "wq" => {
+                self.save();
+                self.should_quit = true;
+            }
+            "h" | "help" => {
+                self.open_help();
+            }
+            "set" | "settings" => {
+                self.open_song_settings();
+            }
+            "inst" | "instruments" => {
+                self.open_instrument_list();
+            }
+            "midi" => {
+                self.open_port_selector();
+            }
+            "link" => {
+                self.mode = Mode::Normal;
+                self.toggle_link();
+            }
+            "ew" | "wav" => {
+                self.mode = Mode::Normal;
+                self.export_wav_file();
+            }
+            "ef" | "flac" => {
+                self.mode = Mode::Normal;
+                self.export_flac_file();
+            }
+            "em" | "exportmidi" => {
+                self.mode = Mode::Normal;
+                self.export_midi();
+            }
+            _ => {
+                self.mode = self.prev_mode;
+                self.status_message = Some(format!("Unknown command: {}", cmd));
+            }
         }
     }
 
@@ -499,6 +740,8 @@ impl App {
             Mode::SynthEditor => self.handle_synth_editor_key(key),
             Mode::QuitConfirm => self.handle_quit_confirm_key(key),
             Mode::ChannelRename => self.handle_channel_rename_key(key),
+            Mode::PatternMatrix => self.handle_pattern_matrix_key(key),
+            Mode::Command => self.handle_command_key(key),
         }
     }
 
@@ -657,8 +900,6 @@ impl App {
                 }
             }
             KeyCode::Esc => self.mode = Mode::Insert,
-            KeyCode::F(4) => self.insert_order_entry(),
-            KeyCode::F(5) => self.remove_order_entry(),
 
             // Octave down (plain '-' in Normal mode)
             KeyCode::Char('-') => {
@@ -674,6 +915,13 @@ impl App {
             // Edit step
             KeyCode::Char(')') => self.change_edit_step(1),
             KeyCode::Char('(') => self.change_edit_step(-1),
+
+            // Command mode
+            KeyCode::Char(':') => {
+                self.command_buf.clear();
+                self.prev_mode = self.mode;
+                self.mode = Mode::Command;
+            }
 
             // Row insert/delete
             KeyCode::Insert => self.insert_row_at_cursor(),
