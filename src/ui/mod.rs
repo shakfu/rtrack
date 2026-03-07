@@ -376,7 +376,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
     use crate::app::SettingsField;
 
     let area = f.area();
-    let popup_area = centered_rect(42, 9, area);
+    let popup_area = centered_rect(42, 12, area);
 
     f.render_widget(Clear, popup_area);
 
@@ -386,6 +386,9 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
         (SettingsField::Speed, "Speed"),
         (SettingsField::Channels, "Channels"),
         (SettingsField::Rows, "Rows"),
+        (SettingsField::HighlightBeat, "Beat Hilight"),
+        (SettingsField::HighlightBar, "Bar Hilight"),
+        (SettingsField::Swing, "Swing"),
     ];
 
     let lines: Vec<Line> = fields.iter().map(|(field, label)| {
@@ -399,6 +402,9 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
                 SettingsField::Speed => app.song.speed.to_string(),
                 SettingsField::Channels => app.song.channels.to_string(),
                 SettingsField::Rows => app.song.rows_per_pattern.to_string(),
+                SettingsField::HighlightBeat => app.song.highlight_beat.to_string(),
+                SettingsField::HighlightBar => app.song.highlight_bar.to_string(),
+                SettingsField::Swing => format!("{}%", app.song.swing),
             }
         };
         let label_style = Style::default().fg(theme.settings_label);
@@ -408,7 +414,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
             Style::default().fg(theme.settings_value)
         };
         Line::from(vec![
-            Span::styled(format!("  {:10}", label), label_style),
+            Span::styled(format!("  {:14}", label), label_style),
             Span::styled(display_val, val_style),
         ])
     }).collect();

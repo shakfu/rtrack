@@ -31,10 +31,14 @@ pub(crate) const EFFECT_SET_SPEED: u8 = 0xF;     // Fxx: xx<0x20 = set speed, xx
 
 /// Pitch bend center (no bend) = 0x2000 = 8192
 pub(crate) const PITCH_BEND_CENTER: u16 = 0x2000;
-/// Pitch bend range in semitones (standard MIDI default = 2)
-const PITCH_BEND_RANGE: f64 = 2.0;
-/// Pitch bend units per semitone
-pub(crate) const PITCH_BEND_PER_SEMITONE: f64 = (PITCH_BEND_CENTER as f64) / PITCH_BEND_RANGE;
+/// Default pitch bend range in semitones (standard MIDI default = 2)
+pub(crate) const DEFAULT_PITCH_BEND_RANGE: f64 = 2.0;
+/// Pitch bend units per semitone (at default range)
+#[allow(dead_code)]
+pub(crate) const PITCH_BEND_PER_SEMITONE: f64 = (PITCH_BEND_CENTER as f64) / DEFAULT_PITCH_BEND_RANGE;
+
+/// Auto-save interval in seconds
+const AUTOSAVE_INTERVAL_SECS: u64 = 60;
 
 /// Number of channels displayed per track page
 pub(crate) const CHANNELS_PER_PAGE: usize = 4;
@@ -68,6 +72,8 @@ pub struct ChannelState {
     pub delayed_note: Option<(u8, u8, bool)>,
     /// Tick on which to trigger delayed note
     pub delay_tick: u8,
+    /// Active instrument index on this channel (for pitch bend range lookup)
+    pub active_instrument: Option<u8>,
 }
 
 impl Default for ChannelState {
@@ -82,6 +88,7 @@ impl Default for ChannelState {
             effect_param: 0,
             delayed_note: None,
             delay_tick: 0,
+            active_instrument: None,
         }
     }
 }
@@ -167,6 +174,9 @@ pub enum SettingsField {
     Speed,
     Channels,
     Rows,
+    HighlightBeat,
+    HighlightBar,
+    Swing,
 }
 
 impl SettingsField {
@@ -176,17 +186,23 @@ impl SettingsField {
             Self::Bpm => Self::Speed,
             Self::Speed => Self::Channels,
             Self::Channels => Self::Rows,
-            Self::Rows => Self::Title,
+            Self::Rows => Self::HighlightBeat,
+            Self::HighlightBeat => Self::HighlightBar,
+            Self::HighlightBar => Self::Swing,
+            Self::Swing => Self::Title,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Title => Self::Rows,
+            Self::Title => Self::Swing,
             Self::Bpm => Self::Title,
             Self::Speed => Self::Bpm,
             Self::Channels => Self::Speed,
             Self::Rows => Self::Channels,
+            Self::HighlightBeat => Self::Rows,
+            Self::HighlightBar => Self::HighlightBeat,
+            Self::Swing => Self::HighlightBar,
         }
     }
 }
@@ -242,6 +258,8 @@ pub struct Instrument {
     pub midi_program: Option<u8>,
     pub sample_index: Option<usize>,
     pub synth_params: Option<crate::audio::synth::SynthParams>,
+    /// Pitch bend range in semitones (None = use default of 2)
+    pub pitch_bend_range: Option<f64>,
 }
 
 impl Default for Instrument {
@@ -251,6 +269,7 @@ impl Default for Instrument {
             midi_program: None,
             sample_index: None,
             synth_params: None,
+            pitch_bend_range: None,
         }
     }
 }
@@ -367,6 +386,8 @@ pub struct App {
     pub clock_mode: ClockMode,
     /// Count of received external MIDI clock ticks (0xF8)
     pub(crate) ext_clock_count: u32,
+    /// Last Link beat position (for beat-timeline-driven playback)
+    pub(crate) last_link_beat: f64,
 
     // -----------------------------------------------------------------------
     // Editor State
@@ -426,6 +447,8 @@ pub struct App {
     // -----------------------------------------------------------------------
     pub file_path: Option<PathBuf>,
     pub status_message: Option<String>,
+    /// Last auto-save timestamp
+    pub(crate) last_autosave: Instant,
     pub edit_order: usize,
     pub muted_channels: Vec<bool>,
     pub solo_channel: Option<usize>,
@@ -490,6 +513,7 @@ impl App {
             edit_step: 1,
             file_path: None,
             status_message: None,
+            last_autosave: Instant::now(),
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             clipboard: None,
@@ -522,6 +546,7 @@ impl App {
             channel_states: vec![ChannelState::default(); 4],
             clock_mode: ClockMode::Internal,
             ext_clock_count: 0,
+            last_link_beat: 0.0,
             help_scroll: 0,
             file_browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             file_browser_entries: Vec::new(),
@@ -1107,6 +1132,16 @@ impl App {
         }
     }
 
+    /// Get the effective pitch bend range for a channel (checks active instrument).
+    pub(crate) fn channel_pitch_bend_per_semitone(&self, ch: usize) -> f64 {
+        let range = self.channel_states.get(ch)
+            .and_then(|cs| cs.active_instrument)
+            .and_then(|idx| self.instruments.get(idx as usize))
+            .and_then(|inst| inst.pitch_bend_range)
+            .unwrap_or(DEFAULT_PITCH_BEND_RANGE);
+        (PITCH_BEND_CENTER as f64) / range
+    }
+
     // -- File I/O --
 
     pub fn save(&mut self) {
@@ -1119,12 +1154,51 @@ impl App {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.dirty = false;
+                self.last_autosave = Instant::now();
                 self.status_message = Some(format!("Saved: {}", path.display()));
+                // Clean up autosave file
+                let _ = std::fs::remove_file(autosave_path_for(&path));
             }
             Err(e) => {
                 self.status_message = Some(format!("Save failed: {}", e));
             }
         }
+    }
+
+    /// Auto-save to a temporary file if dirty and enough time has elapsed.
+    pub fn auto_save(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        if self.last_autosave.elapsed().as_secs() < AUTOSAVE_INTERVAL_SECS {
+            return;
+        }
+        self.last_autosave = Instant::now();
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => {
+                let name = self.song.title.replace(' ', "_").to_lowercase();
+                PathBuf::from(format!("{}.rtrk", name))
+            }
+        };
+        let autosave_path = autosave_path_for(&path);
+        let song_file = self.build_song_file(&path);
+        if let Err(e) = song_file.save(&autosave_path) {
+            self.status_message = Some(format!("Auto-save failed: {}", e));
+        }
+    }
+
+    /// Remove the auto-save temp file (called after manual save or on clean quit).
+    pub fn cleanup_autosave(&self) {
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => {
+                let name = self.song.title.replace(' ', "_").to_lowercase();
+                PathBuf::from(format!("{}.rtrk", name))
+            }
+        };
+        let autosave_path = autosave_path_for(&path);
+        let _ = std::fs::remove_file(autosave_path);
     }
 
     /// Build a SongFile with instrument definitions and sample references
@@ -1141,6 +1215,7 @@ impl App {
                     midi_program: inst.midi_program,
                     sample_index: inst.sample_index,
                     synth_params: inst.synth_params.clone(),
+                    pitch_bend_range: inst.pitch_bend_range,
                 },
             })
             .collect();
@@ -1208,6 +1283,7 @@ impl App {
                         self.instruments[entry.slot].midi_program = entry.def.midi_program;
                         self.instruments[entry.slot].sample_index = entry.def.sample_index;
                         self.instruments[entry.slot].synth_params = entry.def.synth_params.clone();
+                        self.instruments[entry.slot].pitch_bend_range = entry.def.pitch_bend_range;
                     }
                 }
 
@@ -1456,6 +1532,13 @@ impl App {
 }
 
 /// Make a path relative to a base directory. Falls back to absolute if no common prefix.
+/// Compute the auto-save path for a given song file path.
+fn autosave_path_for(path: &std::path::Path) -> std::path::PathBuf {
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let name = path.file_name().and_then(|f| f.to_str()).unwrap_or("song");
+    dir.join(format!(".{}.autosave", name))
+}
+
 fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String {
     // Try to canonicalize both for reliable comparison
     let base_abs = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
@@ -1516,9 +1599,11 @@ mod tests {
             channel_states: vec![ChannelState::default(); 4],
             clock_mode: ClockMode::Internal,
             ext_clock_count: 0,
+            last_link_beat: 0.0,
             edit_step: 1,
             file_path: None,
             status_message: None,
+            last_autosave: Instant::now(),
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             clipboard: None,
@@ -3828,5 +3913,229 @@ mod tests {
         for i in 0..count {
             assert!(app.sample_bank.get(i).is_some(), "Slice {} missing", i);
         }
+    }
+
+    // -- Auto-save tests --
+
+    #[test]
+    fn test_autosave_only_when_dirty() {
+        let mut app = make_app();
+        let tmp = std::env::temp_dir().join("test_autosave_dirty.rtrk");
+        app.file_path = Some(tmp.clone());
+        app.dirty = false;
+        // Force elapsed time
+        app.last_autosave = Instant::now() - std::time::Duration::from_secs(120);
+        app.auto_save();
+        let autosave = autosave_path_for(&tmp);
+        assert!(!autosave.exists(), "Should not auto-save when not dirty");
+    }
+
+    #[test]
+    fn test_autosave_creates_file() {
+        let mut app = make_app();
+        let tmp = std::env::temp_dir().join("test_autosave_creates.rtrk");
+        app.file_path = Some(tmp.clone());
+        app.dirty = true;
+        app.last_autosave = Instant::now() - std::time::Duration::from_secs(120);
+        app.auto_save();
+        let autosave = autosave_path_for(&tmp);
+        assert!(autosave.exists(), "Auto-save file should exist");
+        let _ = std::fs::remove_file(&autosave);
+    }
+
+    #[test]
+    fn test_autosave_cleanup_on_save() {
+        let mut app = make_app();
+        let tmp = std::env::temp_dir().join("test_autosave_cleanup.rtrk");
+        app.file_path = Some(tmp.clone());
+        app.dirty = true;
+        app.last_autosave = Instant::now() - std::time::Duration::from_secs(120);
+        app.auto_save();
+        let autosave = autosave_path_for(&tmp);
+        assert!(autosave.exists());
+
+        // Manual save should clean up autosave
+        app.save();
+        assert!(!autosave.exists(), "Auto-save should be cleaned up after manual save");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // -- Row highlight tests --
+
+    #[test]
+    fn test_highlight_defaults() {
+        let song = Song::new(4, 64);
+        assert_eq!(song.highlight_beat, 4);
+        assert_eq!(song.highlight_bar, 16);
+    }
+
+    #[test]
+    fn test_highlight_settings() {
+        let mut app = make_app();
+        app.open_song_settings();
+        app.settings_field = SettingsField::HighlightBeat;
+        app.settings_edit_buf = "3".to_string();
+        app.settings_apply_field();
+        assert_eq!(app.song.highlight_beat, 3);
+
+        app.settings_field = SettingsField::HighlightBar;
+        app.settings_edit_buf = "12".to_string();
+        app.settings_apply_field();
+        assert_eq!(app.song.highlight_bar, 12);
+    }
+
+    // -- Swing tests --
+
+    #[test]
+    fn test_swing_default() {
+        let song = Song::new(4, 64);
+        assert_eq!(song.swing, 50);
+    }
+
+    #[test]
+    fn test_swing_seconds_per_tick() {
+        let mut song = Song::new(4, 64);
+        let base = song.seconds_per_tick();
+
+        // No swing: even and odd rows should be equal
+        assert!((song.swing_seconds_per_tick(0) - base).abs() < 1e-12);
+        assert!((song.swing_seconds_per_tick(1) - base).abs() < 1e-12);
+
+        // 67% swing: even rows longer, odd rows shorter
+        song.swing = 67;
+        let even = song.swing_seconds_per_tick(0);
+        let odd = song.swing_seconds_per_tick(1);
+        assert!(even > base, "Even row should be longer with swing > 50");
+        assert!(odd < base, "Odd row should be shorter with swing > 50");
+        // Total of a pair should equal 2 * base
+        assert!(((even + odd) - 2.0 * base).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_swing_settings() {
+        let mut app = make_app();
+        app.open_song_settings();
+        app.settings_field = SettingsField::Swing;
+        app.settings_edit_buf = "67".to_string();
+        app.settings_apply_field();
+        assert_eq!(app.song.swing, 67);
+
+        // Clamp to 100
+        app.settings_edit_buf = "150".to_string();
+        app.settings_apply_field();
+        assert_eq!(app.song.swing, 100);
+    }
+
+    // -- Tempo automation tests --
+
+    #[test]
+    fn test_tempo_map_lookup() {
+        let mut song = Song::new(4, 64);
+        song.tempo_map.push(crate::tracker::TempoPoint { order: 0, row: 16, bpm: 140.0 });
+        song.tempo_map.push(crate::tracker::TempoPoint { order: 1, row: 0, bpm: 160.0 });
+
+        assert_eq!(song.tempo_at(0, 0), None);
+        assert_eq!(song.tempo_at(0, 16), Some(140.0));
+        assert_eq!(song.tempo_at(1, 0), Some(160.0));
+        assert_eq!(song.tempo_at(1, 1), None);
+    }
+
+    #[test]
+    fn test_tempo_map_serialization() {
+        let mut song = Song::new(4, 16);
+        song.tempo_map.push(crate::tracker::TempoPoint { order: 0, row: 8, bpm: 150.5 });
+        let json = serde_json::to_string(&song).unwrap();
+        let loaded: Song = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.tempo_map.len(), 1);
+        assert_eq!(loaded.tempo_map[0].order, 0);
+        assert_eq!(loaded.tempo_map[0].row, 8);
+        assert!((loaded.tempo_map[0].bpm - 150.5).abs() < 1e-9);
+    }
+
+    // -- Pitch bend range tests --
+
+    #[test]
+    fn test_pitch_bend_range_default() {
+        let app = make_app();
+        // Default: no instrument active -> use default range
+        let pb = app.channel_pitch_bend_per_semitone(0);
+        let expected = (PITCH_BEND_CENTER as f64) / DEFAULT_PITCH_BEND_RANGE;
+        assert!((pb - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pitch_bend_range_custom() {
+        let mut app = make_app();
+        // Set instrument 0 with custom pitch bend range of 12 semitones
+        app.instruments[0].pitch_bend_range = Some(12.0);
+        app.channel_states[0].active_instrument = Some(0);
+
+        let pb = app.channel_pitch_bend_per_semitone(0);
+        let expected = (PITCH_BEND_CENTER as f64) / 12.0;
+        assert!((pb - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pitch_bend_range_serialization() {
+        use crate::tracker::{InstrumentDef, InstrumentEntry, SongFile};
+        let song = Song::new(1, 16);
+        let song_file = SongFile {
+            song,
+            instruments: vec![InstrumentEntry {
+                slot: 0,
+                def: InstrumentDef {
+                    name: "Test".to_string(),
+                    midi_program: None,
+                    sample_index: None,
+                    synth_params: None,
+                    pitch_bend_range: Some(7.0),
+                },
+            }],
+            sample_refs: vec![],
+        };
+        let json = serde_json::to_string(&song_file).unwrap();
+        let loaded: SongFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.instruments[0].def.pitch_bend_range, Some(7.0));
+    }
+
+    // -- Link beat timeline test --
+
+    #[test]
+    fn test_link_beat_at_time() {
+        let mut engine = crate::link::LinkEngine::new(120.0);
+        engine.enable();
+        let beat = engine.beat_at_time_now();
+        // Just verify it returns a number (exact value depends on timing)
+        assert!(beat.is_finite());
+        engine.disable();
+    }
+
+    // -- Backwards compatibility tests --
+
+    #[test]
+    fn test_song_backwards_compat_new_fields() {
+        // Old format without new fields should load with defaults
+        let json = r#"{
+            "title": "Old",
+            "bpm": 120,
+            "speed": 6,
+            "patterns": [{"rows": 16, "channels": 4, "data": []}],
+            "order": [0],
+            "channels": 4,
+            "rows_per_pattern": 16
+        }"#;
+        let song: Song = serde_json::from_str(json).unwrap();
+        assert_eq!(song.highlight_beat, 4);
+        assert_eq!(song.highlight_bar, 16);
+        assert_eq!(song.swing, 50);
+        assert!(song.tempo_map.is_empty());
+    }
+
+    #[test]
+    fn test_instrument_def_backwards_compat() {
+        // Old format without pitch_bend_range
+        let json = r#"{"name": "Test", "sample_index": 0}"#;
+        let def: crate::tracker::InstrumentDef = serde_json::from_str(json).unwrap();
+        assert_eq!(def.pitch_bend_range, None);
     }
 }

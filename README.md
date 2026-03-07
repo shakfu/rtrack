@@ -139,6 +139,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 - Pitch-shifted playback with cubic hermite interpolation, up to 32 simultaneous voices with ADSR envelopes
 - Smart voice stealing: quietest voice is stolen when at capacity
 - Per-channel volume control (applied as velocity scaling during playback)
+- Configurable pitch bend range per instrument (default +/-2 semitones, adjustable for wide portamento or fine vibrato)
 
 ### Built-in Synth Patches
 
@@ -208,6 +209,13 @@ Each Synth/Sample track can have its own effects chain, configured via Track Con
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 
+### Timing & Groove
+
+- **Swing**: configurable groove amount (0-100%, 50% = straight). Even rows get proportionally more time, odd rows less. Set via Song Settings (F6).
+- **Tempo automation**: BPM changes beyond the `Fxx` effect via `tempo_map` in the song file. Supports fractional BPM and values outside the 32-255 range.
+- **Configurable row highlighting**: beat interval (default 4) and bar interval (default 16) are editable in Song Settings, supporting time signatures like 3/4, 6/8, 5/4, etc.
+- **Auto-save**: periodically saves to a `.{filename}.autosave` temp file every 60 seconds when changes exist. Cleaned up on manual save or quit.
+
 ### MIDI
 
 - Virtual output port `RTRACK_MIDI` (macOS/Linux) -- visible to any DAW
@@ -219,11 +227,13 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ### Sync
 
 - [Ableton Link](https://www.ableton.com/en/link/) (F3): bidirectional BPM and transport sync with Link-enabled apps
+- Link beat-timeline mode: when Link is enabled, playback timing is driven directly from Link's beat position instead of accumulating wall-clock deltas, eliminating drift
 
 ### Import / Export
 
 - Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references (see [File Format](#file-format))
 - Atomic save -- writes to temp file then renames, preventing corruption on crash
+- Auto-save to temp file every 60 seconds when unsaved changes exist
 - Dirty flag -- `[*]` in header when unsaved changes exist, quit confirmation prompt
 - Import from standard MIDI files (`.mid`) with CC and program change preservation
 - Export to MIDI (Ctrl+E)
@@ -238,8 +248,9 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ```json
 {
   "title": "My Song",
-  "bpm": 140, "speed": 6,
+  "bpm": 140, "speed": 6, "swing": 50,
   "channels": 4, "rows_per_pattern": 64,
+  "highlight_beat": 4, "highlight_bar": 16,
   "patterns": [ ... ],
   "order": [0, 1, 2],
   "instruments": [
@@ -262,7 +273,9 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment, synth params)
 - **Synth params**: optional per-instrument synthesis parameters (waveform, ADSR envelope, filter type/cutoff/resonance/envelope, detune, sub-oscillator, FM ratio/index, pulse width). When present, overrides the channel's default patch. New fields use serde defaults for backwards compatibility.
 - **Sample refs**: file paths stored relative to the `.rtrk` file, plus all metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
-- **Backwards compatible**: old `.rtrk` files without `instruments`, `sample_refs`, or `synth_params` fields load fine.
+- **Pitch bend range**: optional `pitch_bend_range` on instruments (default 2 semitones). Affects portamento, vibrato, and arpeggio MIDI pitch bend calculations.
+- **Timing fields**: `highlight_beat`, `highlight_bar`, `swing`, `tempo_map` are optional with serde defaults for backwards compatibility.
+- **Backwards compatible**: old `.rtrk` files without `instruments`, `sample_refs`, `synth_params`, or timing fields load fine.
 
 ## Keybindings
 
@@ -416,7 +429,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (285 tests)
+make test     # run tests (301 tests)
 ```
 
 ## Architecture
@@ -441,7 +454,7 @@ src/
     export.rs           Offline song render to WAV
   tracker/
     pattern.rs          Pattern grid, Cell, Note (serde)
-    song.rs             Song, SongFile, order list, instrument/sample refs
+    song.rs             Song, SongFile, order list, instrument/sample refs, tempo map
   link/
     mod.rs              Ableton Link (rusty_link)
   midi/

@@ -8,7 +8,7 @@ use super::{
     EFFECT_ARPEGGIO, EFFECT_MIDI_CC, EFFECT_NOTE_DELAY, EFFECT_PATTERN_BREAK,
     EFFECT_PORTA_DOWN, EFFECT_PORTA_UP, EFFECT_POSITION_JUMP, EFFECT_PROGRAM_CHANGE,
     EFFECT_SET_SPEED, EFFECT_TONE_PORTA, EFFECT_VIBRATO, EFFECT_VOLUME_SLIDE,
-    PITCH_BEND_CENTER, PITCH_BEND_PER_SEMITONE,
+    PITCH_BEND_CENTER,
 };
 
 impl App {
@@ -41,6 +41,10 @@ impl App {
         self.clock_tick_accumulator = 0.0;
         self.playback_elapsed = 0.0;
         self.playback_repeat_count = 0;
+        // Capture initial Link beat position for beat-timeline mode
+        if self.link.is_enabled() {
+            self.last_link_beat = self.link.beat_at_time_now();
+        }
         // Skip order entries with repeat=0 at start
         self.skip_zero_repeats_forward();
         // Reset channel states and ensure we have enough for all channels
@@ -93,6 +97,31 @@ impl App {
             return;
         }
 
+        // Link beat-timeline mode: drive ticks from Link's beat position
+        if self.link.is_enabled() {
+            let beat = self.link.beat_at_time_now();
+            // 24 ticks per beat (standard tracker convention)
+            let link_ticks = beat * 24.0;
+            let last_ticks = self.last_link_beat * 24.0;
+            let delta_ticks = link_ticks - last_ticks;
+            if delta_ticks > 0.0 {
+                let spt = self.song.swing_seconds_per_tick(self.playback_row);
+                let ticks_per_second = 1.0 / spt;
+                // Convert Link tick delta to our tracker ticks
+                let tracker_ticks = delta_ticks / (self.song.bpm as f64 * 24.0 / 60.0) * ticks_per_second;
+                self.tick_accumulator += tracker_ticks * spt;
+                self.playback_elapsed += delta_ticks / (self.song.bpm as f64 * 24.0 / 60.0);
+            }
+            self.last_link_beat = beat;
+
+            let spt = self.song.swing_seconds_per_tick(self.playback_row);
+            while self.tick_accumulator >= spt {
+                self.tick_accumulator -= spt;
+                self.process_tick();
+            }
+            return;
+        }
+
         let now = Instant::now();
         if let Some(last) = self.last_tick {
             let elapsed = now.duration_since(last).as_secs_f64();
@@ -109,7 +138,7 @@ impl App {
                 }
             }
 
-            let spt = self.song.seconds_per_tick();
+            let spt = self.song.swing_seconds_per_tick(self.playback_row);
             while self.tick_accumulator >= spt {
                 self.tick_accumulator -= spt;
                 self.process_tick();
@@ -186,6 +215,17 @@ impl App {
             }
         }
 
+        // Check tempo automation map
+        if let Some(bpm) = self.song.tempo_at(self.playback_order, self.playback_row) {
+            let new_bpm = bpm.round() as u16;
+            if new_bpm >= 1 {
+                self.song.bpm = new_bpm;
+                if self.link.is_enabled() {
+                    self.link.set_tempo(bpm);
+                }
+            }
+        }
+
         // Play the current row and set up per-channel effect state
         for (ch, (note, volume, effect, effect_value, instrument)) in cells.into_iter().enumerate() {
             let midi_ch = self.midi_channel_for(ch);
@@ -240,6 +280,7 @@ impl App {
                             self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
                             self.send_note_on_with_instrument(midi_ch, midi_note, scaled_vel, instrument);
                             self.channel_states[ch].note = Some(midi_note);
+                            self.channel_states[ch].active_instrument = instrument;
                             self.channel_states[ch].volume = vel;  // Store unscaled for effect processing
                         }
                     }
@@ -393,6 +434,7 @@ impl App {
                 Some(n) => n,
                 None => continue,
             };
+            let pb_per_semi = self.channel_pitch_bend_per_semitone(ch);
 
             match effect {
                 Some(EFFECT_ARPEGGIO) if param != 0 => {
@@ -405,20 +447,20 @@ impl App {
                         1 => x as f64,
                         _ => y as f64,
                     };
-                    let bend = (offset * PITCH_BEND_PER_SEMITONE) as i32;
+                    let bend = (offset * pb_per_semi) as i32;
                     let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 Some(EFFECT_PORTA_UP) => {
                     // Slide pitch up by param units per tick (param in 16ths of a semitone)
                     self.channel_states[ch].pitch_offset += param as f64 / 16.0;
-                    let bend = (self.channel_states[ch].pitch_offset * PITCH_BEND_PER_SEMITONE) as i32;
+                    let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
                     let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 Some(EFFECT_PORTA_DOWN) => {
                     self.channel_states[ch].pitch_offset -= param as f64 / 16.0;
-                    let bend = (self.channel_states[ch].pitch_offset * PITCH_BEND_PER_SEMITONE) as i32;
+                    let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
                     let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
@@ -432,7 +474,7 @@ impl App {
                         } else if current > target_f {
                             self.channel_states[ch].pitch_offset -= speed.min(current - target_f);
                         }
-                        let bend = (self.channel_states[ch].pitch_offset * PITCH_BEND_PER_SEMITONE) as i32;
+                        let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
                         let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
                         self.send_pitch_bend(midi_ch, value);
                     }
@@ -447,7 +489,7 @@ impl App {
                     let sine = (self.channel_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
                     let offset = sine * depth / 16.0; // depth in 16ths of a semitone
                     let total = self.channel_states[ch].pitch_offset + offset;
-                    let bend = (total * PITCH_BEND_PER_SEMITONE) as i32;
+                    let bend = (total * pb_per_semi) as i32;
                     let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }

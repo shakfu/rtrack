@@ -262,9 +262,28 @@ fn render_song(
                 ch_states[ch].effect_param = param;
             }
 
-            // Recalculate frames_per_tick in case BPM changed
-            let tps = (current_bpm as f64 * 24.0) / 60.0;
-            let fpt = (sr / tps) as usize;
+            // Recalculate frames_per_tick with swing
+            let base_tps = (current_bpm as f64 * 24.0) / 60.0;
+            let base_spt = 1.0 / base_tps;
+            let swing_spt = if song.swing == 50 {
+                base_spt
+            } else {
+                let swing_f = song.swing as f64;
+                if row % 2 == 0 {
+                    base_spt * swing_f / 50.0
+                } else {
+                    base_spt * (100.0 - swing_f) / 50.0
+                }
+            };
+            let fpt = (sr * swing_spt) as usize;
+
+            // Check tempo automation
+            if let Some(bpm) = song.tempo_at(order_pos, row) {
+                let new_bpm = bpm.round() as u16;
+                if new_bpm >= 1 {
+                    current_bpm = new_bpm;
+                }
+            }
 
             // Render audio for all ticks of this row
             for tick in 0..current_speed {

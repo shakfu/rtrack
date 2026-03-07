@@ -167,8 +167,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
         let is_cursor_row = !app.is_playing() && row_idx == app.cursor_row;
         let is_playback_row = app.is_playing() && row_idx == app.playback_row;
-        let is_beat = row_idx % 4 == 0;
-        let is_bar = row_idx % 16 == 0;
+        let beat_interval = app.song.highlight_beat.max(1);
+        let bar_interval = app.song.highlight_bar.max(1);
+        let is_beat = row_idx % beat_interval == 0;
+        let is_bar = row_idx % bar_interval == 0;
 
         // Row number
         let row_num_style = if is_bar {

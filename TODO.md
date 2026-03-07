@@ -11,12 +11,12 @@
 ## Medium Priority (quality-of-life, moderate effort)
 
 - [x] Sample slicing (equal-segment auto-slice, transient-detection sensitivity, slice-to-pattern mapping)
-- [ ] Auto-save to temp file periodically
-- [ ] Row highlight configurability (beat/bar intervals beyond 4/16, for time signature support)
-- [ ] Tempo automation (BPM changes beyond Fxx effect)
-- [ ] Swing/groove (non-uniform tick spacing)
-- [ ] Configurable pitch bend range per instrument (currently hardcoded +/-2 semitones)
-- [ ] Link timing: use beat timeline directly instead of accumulating deltas
+- [x] Auto-save to temp file periodically
+- [x] Row highlight configurability (beat/bar intervals beyond 4/16, for time signature support)
+- [x] Tempo automation (BPM changes beyond Fxx effect)
+- [x] Swing/groove (non-uniform tick spacing)
+- [x] Configurable pitch bend range per instrument (currently hardcoded +/-2 semitones)
+- [x] Link timing: use beat timeline directly instead of accumulating deltas
 
 ## Low Priority (nice-to-have or high effort)
 

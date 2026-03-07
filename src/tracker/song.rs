@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 use super::Pattern;
 use crate::audio::synth::SynthParams;
 
+/// A tempo change point in the song
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TempoPoint {
+    pub order: usize,
+    pub row: usize,
+    pub bpm: f64,
+}
+
 /// Serializable instrument definition (stored in .rtrk files)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstrumentDef {
@@ -16,6 +24,8 @@ pub struct InstrumentDef {
     pub sample_index: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synth_params: Option<SynthParams>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch_bend_range: Option<f64>,
 }
 
 /// Serializable sample reference (metadata only, no audio data)
@@ -109,7 +119,23 @@ pub struct Song {
     pub order_repeats: Vec<u8>,
     pub channels: usize,
     pub rows_per_pattern: usize,
+    /// Row highlight interval for beats (default 4)
+    #[serde(default = "default_highlight_beat")]
+    pub highlight_beat: usize,
+    /// Row highlight interval for bars (default 16)
+    #[serde(default = "default_highlight_bar")]
+    pub highlight_bar: usize,
+    /// Swing amount: 50 = none, 0-100 (even rows get swing% of pair time, odd rows get rest)
+    #[serde(default = "default_swing")]
+    pub swing: u8,
+    /// Tempo automation points (order, row, bpm)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tempo_map: Vec<TempoPoint>,
 }
+
+fn default_highlight_beat() -> usize { 4 }
+fn default_highlight_bar() -> usize { 16 }
+fn default_swing() -> u8 { 50 }
 
 impl Song {
     pub fn new(channels: usize, rows_per_pattern: usize) -> Self {
@@ -123,6 +149,10 @@ impl Song {
             order_repeats: vec![1],
             channels,
             rows_per_pattern,
+            highlight_beat: 4,
+            highlight_bar: 16,
+            swing: 50,
+            tempo_map: Vec::new(),
         }
     }
 
@@ -189,6 +219,25 @@ impl Song {
     pub fn seconds_per_tick(&self) -> f64 {
         let ticks_per_second = (self.bpm as f64 * 24.0) / 60.0;
         1.0 / ticks_per_second
+    }
+
+    /// Seconds per tick with swing applied. Even rows get swing% of a pair, odd rows get the rest.
+    pub fn swing_seconds_per_tick(&self, row: usize) -> f64 {
+        let base = self.seconds_per_tick();
+        if self.swing == 50 {
+            return base;
+        }
+        let swing_f = self.swing as f64;
+        if row % 2 == 0 {
+            base * swing_f / 50.0
+        } else {
+            base * (100.0 - swing_f) / 50.0
+        }
+    }
+
+    /// Look up a tempo automation point at the given position.
+    pub fn tempo_at(&self, order: usize, row: usize) -> Option<f64> {
+        self.tempo_map.iter().find(|tp| tp.order == order && tp.row == row).map(|tp| tp.bpm)
     }
 }
 
@@ -274,6 +323,7 @@ mod tests {
                         midi_program: None,
                         sample_index: Some(0),
                         synth_params: None,
+                        pitch_bend_range: None,
                     },
                 },
                 InstrumentEntry {
@@ -283,6 +333,7 @@ mod tests {
                         midi_program: Some(80),
                         sample_index: None,
                         synth_params: None,
+                        pitch_bend_range: None,
                     },
                 },
             ],

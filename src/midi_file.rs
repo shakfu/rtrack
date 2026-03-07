@@ -660,6 +660,10 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         order,
         channels: num_channels,
         rows_per_pattern,
+        highlight_beat: 4,
+        highlight_bar: 16,
+        swing: 50,
+        tempo_map: Vec::new(),
     })
 }
 

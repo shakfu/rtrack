@@ -4,6 +4,33 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Timing, Groove & Auto-save)
+
+- Auto-save: periodically saves to `.{filename}.autosave` every 60 seconds when the song has unsaved changes
+  - Autosave file is cleaned up on manual save or quit
+  - Uses the same atomic write strategy (temp file + rename) as manual save
+- Row highlight configurability: `highlight_beat` and `highlight_bar` fields on Song (defaults 4 and 16)
+  - Configurable via Song Settings dialog (F6): Beat Highlight (1-64) and Bar Highlight (1-256)
+  - Pattern editor uses song values instead of hardcoded 4/16
+  - Backwards-compatible via `#[serde(default)]`
+- Tempo automation: `tempo_map` field on Song stores `Vec<TempoPoint>` (order, row, bpm)
+  - Tempo changes checked during `advance_playback()` and applied to live BPM
+  - Offline export (WAV/FLAC) also respects tempo automation points
+- Swing/groove: `swing` field on Song (0-100, default 50 = no swing)
+  - Even rows get `swing/50` of base tick time, odd rows get `(100-swing)/50`
+  - Total time of an even+odd row pair is conserved (equals 2x base time)
+  - Applied in both live playback and offline export
+  - Configurable via Song Settings dialog as percentage
+- Configurable pitch bend range per instrument: `pitch_bend_range` field on InstrumentDef (default 2.0 semitones)
+  - All pitch bend effects (arpeggio, portamento, tone portamento, vibrato) use per-instrument range
+  - `ChannelState.active_instrument` tracks which instrument is playing on each channel
+  - `channel_pitch_bend_per_semitone()` helper replaces the old global constant
+- Link beat timeline: `LinkEngine::beat_at_time_now()` captures current beat position
+  - `tick_playback()` uses beat delta instead of wall-clock delta when Link is enabled
+  - More accurate sync with Link peers, avoids drift from accumulating time deltas
+- 16 new tests: auto-save (3), highlight (2), swing (4), tempo automation (2), pitch bend range (3), Link beat (1), backwards compat (1)
+- Test count increased from 285 to 301 (289 unit + 12 integration)
+
 ### Added (Sample Slicing & File Browser)
 
 - Sample slicing in the sample editor (Enter from instrument list):

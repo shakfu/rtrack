@@ -96,6 +96,13 @@ impl LinkEngine {
         self.link.commit_app_session_state(&self.session_state);
     }
 
+    /// Get the current beat position from the Link timeline.
+    pub fn beat_at_time_now(&mut self) -> f64 {
+        self.link.capture_app_session_state(&mut self.session_state);
+        let time = self.link.clock_micros();
+        self.session_state.beat_at_time(time, self.quantum)
+    }
+
     /// Request transport stop
     pub fn request_stop(&mut self) {
         let time = self.link.clock_micros();

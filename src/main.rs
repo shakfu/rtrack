@@ -203,9 +203,11 @@ fn run_app(
         }
 
         app.expire_preview_note();
+        app.auto_save();
 
         if app.should_quit {
             app.stop();
+            app.cleanup_autosave();
             break;
         }
     }

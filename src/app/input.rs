@@ -33,6 +33,9 @@ impl App {
             SettingsField::Speed => self.song.speed.to_string(),
             SettingsField::Channels => self.song.channels.to_string(),
             SettingsField::Rows => self.song.rows_per_pattern.to_string(),
+            SettingsField::HighlightBeat => self.song.highlight_beat.to_string(),
+            SettingsField::HighlightBar => self.song.highlight_bar.to_string(),
+            SettingsField::Swing => self.song.swing.to_string(),
         };
     }
 
@@ -94,6 +97,27 @@ impl App {
                         self.push_undo();
                         self.song.rows_per_pattern = v;
                     }
+                }
+            }
+            SettingsField::HighlightBeat => {
+                if let Ok(v) = self.settings_edit_buf.parse::<usize>() {
+                    let v = v.clamp(1, 64);
+                    self.push_undo();
+                    self.song.highlight_beat = v;
+                }
+            }
+            SettingsField::HighlightBar => {
+                if let Ok(v) = self.settings_edit_buf.parse::<usize>() {
+                    let v = v.clamp(1, 256);
+                    self.push_undo();
+                    self.song.highlight_bar = v;
+                }
+            }
+            SettingsField::Swing => {
+                if let Ok(v) = self.settings_edit_buf.parse::<u8>() {
+                    let v = v.clamp(0, 100);
+                    self.push_undo();
+                    self.song.swing = v;
                 }
             }
         }

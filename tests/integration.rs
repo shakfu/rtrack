@@ -512,6 +512,7 @@ fn test_generate_sliced_amen() {
                 midi_program: None,
                 sample_index: Some(i),
                 synth_params: None,
+                pitch_bend_range: None,
             },
         })
         .collect();
