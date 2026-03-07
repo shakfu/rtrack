@@ -1,5 +1,5 @@
 use rtrack::app::{App, Mode};
-use rtrack::tracker::{Cell, Note, NoteValue, Song};
+use rtrack::tracker::{Cell, Note, NoteValue, Song, SongFile, InstrumentEntry, InstrumentDef, SampleRefEntry, SampleRef};
 use rtrack::ui::pattern_editor::SubColumn;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -445,4 +445,119 @@ fn test_send_bus_in_render() {
 
     let _ = std::fs::remove_file(&path_dry);
     let _ = std::fs::remove_file(&path_wet);
+}
+
+#[test]
+fn test_generate_sliced_amen() {
+    use std::path::Path;
+
+    let amen_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/amen.wav");
+    if !amen_path.exists() {
+        eprintln!("Skipping: examples/data/amen.wav not found");
+        return;
+    }
+
+    // Load the sample
+    let mut bank = rtrack::sample::SampleBank::new();
+    bank.load(0, &amen_path).expect("Failed to load amen.wav");
+    let sample = bank.get(0).unwrap();
+
+    // Slice into 8 equal segments
+    let num_slices: usize = 8;
+    let total_frames = sample.end();
+    let slice_len = total_frames / num_slices;
+    let slices = rtrack::sample::slice_equal(sample, num_slices);
+    assert_eq!(slices.len(), num_slices);
+
+    // Calculate trim points within the original sample for each slice
+    let slice_bounds: Vec<(usize, usize)> = (0..num_slices)
+        .map(|i| {
+            let start = i * slice_len;
+            let end = if i == num_slices - 1 { total_frames } else { start + slice_len };
+            (start, end)
+        })
+        .collect();
+
+    // Build a 32-row, 1-channel song at 170 BPM (classic amen tempo)
+    // Notes every 4 rows so each slice rings for 4 rows (~176ms gate)
+    let rows = 32;
+    let mut song = Song::new(1, rows);
+    song.title = "Sliced Amen".to_string();
+    song.bpm = 170;
+    song.speed = 3;
+
+    for i in 0..num_slices {
+        let row = i * 4;
+        song.patterns[0].set_cell(
+            row,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                instrument: Some(i as u8),
+                volume: Some(127),
+                ..Cell::default()
+            },
+        );
+    }
+
+    // Set up instruments and sample refs with trim points into the original file
+    let instruments: Vec<InstrumentEntry> = (0..num_slices)
+        .map(|i| InstrumentEntry {
+            slot: i,
+            def: InstrumentDef {
+                name: slices[i].name.clone(),
+                midi_program: None,
+                sample_index: Some(i),
+                synth_params: None,
+            },
+        })
+        .collect();
+
+    let sample_refs: Vec<SampleRefEntry> = (0..num_slices)
+        .map(|i| SampleRefEntry {
+            slot: i,
+            sample_ref: SampleRef {
+                name: slices[i].name.clone(),
+                path: "data/amen.wav".to_string(),
+                base_note: slices[i].base_note,
+                trim_start: slice_bounds[i].0,
+                trim_end: slice_bounds[i].1,
+                loop_enabled: false,
+                loop_start: 0,
+                loop_end: 0,
+            },
+        })
+        .collect();
+
+    let song_file = SongFile {
+        song,
+        instruments,
+        sample_refs,
+    };
+
+    let out_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/sliced-amen.rtrk");
+    song_file.save(&out_path).expect("Failed to save sliced-amen.rtrk");
+
+    // Verify it loads back
+    let loaded = SongFile::load(&out_path).expect("Failed to reload");
+    assert_eq!(loaded.song.title, "Sliced Amen");
+    assert_eq!(loaded.song.bpm, 170);
+    assert_eq!(loaded.instruments.len(), 8);
+    assert_eq!(loaded.sample_refs.len(), 8);
+
+    // Verify pattern has notes every 4 rows
+    for i in 0..8 {
+        let row = i * 4;
+        let cell = loaded.song.patterns[0].get(row, 0);
+        assert!(cell.note.is_some(), "Row {} should have a note", row);
+        assert_eq!(cell.instrument, Some(i as u8));
+        // Rows between should be empty
+        if row + 1 < 32 {
+            let gap = loaded.song.patterns[0].get(row + 1, 0);
+            assert!(gap.note.is_none(), "Row {} should be empty", row + 1);
+        }
+    }
 }

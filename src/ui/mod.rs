@@ -5,7 +5,7 @@ pub mod theme;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -73,6 +73,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::SynthEditor => synth_editor::draw_synth_editor(f, app),
         Mode::QuitConfirm => draw_quit_confirm(f, app, &theme),
         Mode::TrackConfig => draw_track_config(f, app, &theme),
+        Mode::FileBrowser => draw_file_browser(f, app, &theme),
         _ => {}
     }
 }
@@ -198,6 +199,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Mode::QuitConfirm => Span::styled(" QUIT? ", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)),
         Mode::TrackConfig => Span::styled(" TRACK ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::PatternMatrix => Span::styled(" MATRIX ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
+        Mode::FileBrowser => Span::styled(" FILES ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::Command => Span::from(""), // handled above, never reached
     };
 
@@ -513,10 +515,11 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let is_synth = ch_type == crate::app::ChannelType::Synth;
     let has_fx = ch_type != crate::app::ChannelType::Midi;
 
+    let is_sample = ch_type == crate::app::ChannelType::Sample;
     let popup_h = match ch_type {
         crate::app::ChannelType::Midi => 5,
         crate::app::ChannelType::Synth => 18,
-        crate::app::ChannelType::Sample => 16,
+        crate::app::ChannelType::Sample => 18,
     };
     let popup_area = centered_rect(60, popup_h, area);
     f.render_widget(Clear, popup_area);
@@ -525,8 +528,8 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         .cloned()
         .unwrap_or_default();
     let field = app.ch_fx_field;
-    // Effects fields start at different offsets depending on track type
-    let fx_off: usize = if is_synth { 3 } else { 2 };
+    // Effects fields start at offset 3 for Synth and Sample, 2 for Midi
+    let fx_off: usize = if is_synth || is_sample { 3 } else { 2 };
 
     let active = Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD);
     let normal = Style::default().fg(theme.popup_text);
@@ -584,6 +587,17 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         lines.push(Line::from(vec![
             Span::styled("  Inst: ", style_for(2)),
             Span::styled(inst_display, style_for(2)),
+        ]));
+    }
+
+    if is_sample {
+        let sample_display = app.sample_bank.get(ch)
+            .map(|s| format!("{} ({:.1}s)", s.name, s.duration()))
+            .unwrap_or_else(|| "(none)".to_string());
+        lines.push(Line::from(vec![
+            Span::styled("  Load: ", style_for(2)),
+            Span::styled(sample_display, style_for(2)),
+            Span::styled("  (Enter/L/R)", dim),
         ]));
     }
 
@@ -650,6 +664,78 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
             .border_style(Style::default().fg(theme.popup_border)),
     );
     f.render_widget(widget, popup_area);
+}
+
+fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
+    let area = f.area();
+    let popup_h = 20.min(area.height.saturating_sub(4));
+    let popup_area = centered_rect(70, popup_h, area);
+    f.render_widget(Clear, popup_area);
+
+    let dir_display = app.file_browser_dir.to_string_lossy().to_string();
+    let title = format!(" {} ", dir_display);
+
+    let block = Block::default()
+        .title(title)
+        .title_bottom(" Up/Down:nav  Enter:open  Backspace:parent  Esc:cancel ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.popup_border));
+
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let visible_rows = inner.height as usize;
+    let num_entries = app.file_browser_entries.len();
+    let cursor = app.file_browser_cursor;
+
+    // Calculate scroll offset to keep cursor visible
+    let scroll = if cursor >= visible_rows {
+        cursor - visible_rows + 1
+    } else {
+        0
+    };
+
+    let mut lines = Vec::new();
+
+    if num_entries == 0 {
+        lines.push(Line::from(Span::styled(
+            "  (empty directory)",
+            Style::default().fg(theme.status_hint),
+        )));
+    } else {
+        for (i, entry) in app.file_browser_entries.iter().enumerate().skip(scroll).take(visible_rows) {
+            let is_selected = i == cursor;
+            let marker = if is_selected { "> " } else { "  " };
+
+            let (icon, name_style) = if entry.is_dir {
+                ("/", if is_selected {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                })
+            } else {
+                ("", if is_selected {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.popup_text)
+                })
+            };
+
+            let marker_style = if is_selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.status_hint)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(format!("{}{}", entry.name, icon), name_style),
+            ]));
+        }
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
 }
 
 fn draw_port_selector(f: &mut Frame, app: &App, theme: &Theme) {

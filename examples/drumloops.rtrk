@@ -1,0 +1,217 @@
+{
+  "title": "Drum Loops",
+  "bpm": 130,
+  "speed": 6,
+  "patterns": [
+    {
+      "rows": 64,
+      "channels": 1,
+      "data": [
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 0, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 1, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 2, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 3, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 4, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 5, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 6, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": {"On": {"value": "C", "octave": 5}}, "instrument": 7, "volume": 127, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": null, "instrument": null, "volume": null, "effect": null, "effect_value": null}],
+        [{"note": "Off", "instrument": null, "volume": null, "effect": null, "effect_value": null}]
+      ]
+    }
+  ],
+  "order": [
+    0
+  ],
+  "order_repeats": [
+    1
+  ],
+  "channels": 1,
+  "rows_per_pattern": 64,
+  "instruments": [
+    {
+      "slot": 0,
+      "name": "amen_S00",
+      "sample_index": 0
+    },
+    {
+      "slot": 1,
+      "name": "amen_S01",
+      "sample_index": 1
+    },
+    {
+      "slot": 2,
+      "name": "amen_S02",
+      "sample_index": 2
+    },
+    {
+      "slot": 3,
+      "name": "amen_S03",
+      "sample_index": 3
+    },
+    {
+      "slot": 4,
+      "name": "amen_S04",
+      "sample_index": 4
+    },
+    {
+      "slot": 5,
+      "name": "amen_S05",
+      "sample_index": 5
+    },
+    {
+      "slot": 6,
+      "name": "amen_S06",
+      "sample_index": 6
+    },
+    {
+      "slot": 7,
+      "name": "amen_S07",
+      "sample_index": 7
+    }
+  ],
+  "sample_refs": [
+    {
+      "slot": 0,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 0,
+      "trim_end": 15120,
+      "loop_enabled": true,
+      "loop_start": 0,
+      "loop_end": 15120
+    },
+    {
+      "slot": 1,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 15120,
+      "trim_end": 30240,
+      "loop_enabled": true,
+      "loop_start": 15120,
+      "loop_end": 30240
+    },
+    {
+      "slot": 2,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 30240,
+      "trim_end": 45360,
+      "loop_enabled": true,
+      "loop_start": 30240,
+      "loop_end": 45360
+    },
+    {
+      "slot": 3,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 45360,
+      "trim_end": 60480,
+      "loop_enabled": true,
+      "loop_start": 45360,
+      "loop_end": 60480
+    },
+    {
+      "slot": 4,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 60480,
+      "trim_end": 75600,
+      "loop_enabled": true,
+      "loop_start": 60480,
+      "loop_end": 75600
+    },
+    {
+      "slot": 5,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 75600,
+      "trim_end": 90720,
+      "loop_enabled": true,
+      "loop_start": 75600,
+      "loop_end": 90720
+    },
+    {
+      "slot": 6,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 90720,
+      "trim_end": 105840,
+      "loop_enabled": true,
+      "loop_start": 90720,
+      "loop_end": 105840
+    },
+    {
+      "slot": 7,
+      "name": "amen",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 105840,
+      "trim_end": 120960,
+      "loop_enabled": true,
+      "loop_start": 105840,
+      "loop_end": 120960
+    }
+  ]
+}

@@ -192,6 +192,24 @@ impl App {
             KeyCode::BackTab => {
                 self.sample_editor_field = self.sample_editor_field.prev();
             }
+            KeyCode::Enter => {
+                // Execute slice actions on Enter
+                match self.sample_editor_field {
+                    SampleField::SliceEqual => {
+                        match self.slice_sample(false) {
+                            Ok(n) => self.status_message = Some(format!("Sliced into {} equal segments", n)),
+                            Err(e) => self.status_message = Some(e),
+                        }
+                    }
+                    SampleField::SliceTransient => {
+                        match self.slice_sample(true) {
+                            Ok(n) => self.status_message = Some(format!("Sliced at {} transients", n)),
+                            Err(e) => self.status_message = Some(e),
+                        }
+                    }
+                    _ => {}
+                }
+            }
             KeyCode::Up => {
                 self.adjust_sample_field(slot, 1);
             }
@@ -209,6 +227,36 @@ impl App {
     }
 
     fn adjust_sample_field(&mut self, slot: usize, delta: i64) {
+        // Handle slice parameter fields (no sample mutation needed)
+        match self.sample_editor_field {
+            SampleField::SliceCount => {
+                self.sample_slice_count = (self.sample_slice_count as i64 + delta)
+                    .clamp(2, 64) as usize;
+                return;
+            }
+            SampleField::SliceSensitivity => {
+                let step = delta as f32 * 0.05;
+                self.sample_slice_sensitivity = (self.sample_slice_sensitivity + step)
+                    .clamp(0.0, 1.0);
+                return;
+            }
+            SampleField::SliceEqual => {
+                match self.slice_sample(false) {
+                    Ok(n) => self.status_message = Some(format!("Sliced into {} equal segments", n)),
+                    Err(e) => self.status_message = Some(e),
+                }
+                return;
+            }
+            SampleField::SliceTransient => {
+                match self.slice_sample(true) {
+                    Ok(n) => self.status_message = Some(format!("Sliced at {} transients", n)),
+                    Err(e) => self.status_message = Some(e),
+                }
+                return;
+            }
+            _ => {}
+        }
+
         let mut bank = (*self.sample_bank).clone();
         if let Some(ref mut sample) = bank.samples.get_mut(slot).and_then(|s| s.as_mut()) {
             match self.sample_editor_field {
@@ -243,6 +291,8 @@ impl App {
                         (sample.loop_end as i64 + delta * 100).clamp(0, max as i64) as usize
                     };
                 }
+                SampleField::SliceCount | SampleField::SliceSensitivity
+                | SampleField::SliceEqual | SampleField::SliceTransient => unreachable!(),
             }
             self.sample_bank = Arc::new(bank);
             if let Some(ref mut audio) = self.audio {
@@ -400,7 +450,7 @@ impl App {
         match ch_type {
             ChannelType::Midi => 2,
             ChannelType::Synth => 3 + Self::EFFECT_FIELDS, // Name, Type, Instrument + effects
-            ChannelType::Sample => 2 + Self::EFFECT_FIELDS, // Name, Type + effects
+            ChannelType::Sample => 3 + Self::EFFECT_FIELDS, // Name, Type, Load + effects
         }
     }
 
@@ -409,8 +459,8 @@ impl App {
         let ch = self.cursor_channel;
         let ch_type = self.channel_types.get(ch).copied().unwrap_or(ChannelType::Midi);
         match ch_type {
-            ChannelType::Synth => 3, // after Name, Type, Instrument
-            _ => 2, // after Name, Type
+            ChannelType::Synth | ChannelType::Sample => 3, // after Name, Type, Instrument/Load
+            ChannelType::Midi => 2, // after Name, Type
         }
     }
 
@@ -445,6 +495,15 @@ impl App {
                 self.adjust_track_config_field(ch, 1);
             }
             KeyCode::Enter => {
+                let ch_type = self.channel_types.get(ch).copied().unwrap_or(ChannelType::Midi);
+                // On the Load field for Sample tracks, open file browser
+                if self.ch_fx_field == 2 && ch_type == ChannelType::Sample {
+                    self.open_file_browser(
+                        super::FileBrowserAction::LoadSample(ch),
+                        vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
+                    );
+                    return;
+                }
                 // Save name
                 if ch < self.channel_names.len() {
                     self.channel_names[ch] = self.rename_buf.clone();
@@ -491,17 +550,30 @@ impl App {
                     }
                 }
             }
-            f if f == 2 && fx_off == 3 => {
-                // Instrument field (Synth tracks only)
-                if ch >= self.channel_instruments.len() {
-                    self.channel_instruments.resize(ch + 1, None);
-                }
-                match self.channel_instruments[ch] {
-                    None => self.channel_instruments[ch] = Some(0),
-                    Some(v) => {
-                        let next = (v as i32 + dir).clamp(0, 255) as u8;
-                        self.channel_instruments[ch] = Some(next);
+            2 => {
+                let ch_type = self.channel_types.get(ch).copied().unwrap_or(ChannelType::Midi);
+                match ch_type {
+                    ChannelType::Synth => {
+                        // Instrument field
+                        if ch >= self.channel_instruments.len() {
+                            self.channel_instruments.resize(ch + 1, None);
+                        }
+                        match self.channel_instruments[ch] {
+                            None => self.channel_instruments[ch] = Some(0),
+                            Some(v) => {
+                                let next = (v as i32 + dir).clamp(0, 255) as u8;
+                                self.channel_instruments[ch] = Some(next);
+                            }
+                        }
                     }
+                    ChannelType::Sample => {
+                        // Load sample -- open file browser
+                        self.open_file_browser(
+                            super::FileBrowserAction::LoadSample(ch),
+                            vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
+                        );
+                    }
+                    _ => {}
                 }
             }
             f if f == fx_off => self.channel_effects_params[ch].filter_enabled = !self.channel_effects_params[ch].filter_enabled,
@@ -713,6 +785,62 @@ impl App {
         }
     }
 
+    // -- File browser --
+
+    fn handle_file_browser_key(&mut self, key: KeyEvent) {
+        let num_entries = self.file_browser_entries.len();
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = self.prev_mode;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.file_browser_cursor > 0 {
+                    self.file_browser_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.file_browser_cursor + 1 < num_entries {
+                    self.file_browser_cursor += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.file_browser_cursor = self.file_browser_cursor.saturating_sub(10);
+            }
+            KeyCode::PageDown => {
+                self.file_browser_cursor = (self.file_browser_cursor + 10).min(num_entries.saturating_sub(1));
+            }
+            KeyCode::Home => {
+                self.file_browser_cursor = 0;
+            }
+            KeyCode::End => {
+                if num_entries > 0 {
+                    self.file_browser_cursor = num_entries - 1;
+                }
+            }
+            KeyCode::Backspace => {
+                // Go up one directory
+                if let Some(parent) = self.file_browser_dir.parent() {
+                    self.file_browser_dir = parent.to_path_buf();
+                    self.refresh_file_browser();
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = self.file_browser_entries.get(self.file_browser_cursor).cloned() {
+                    let path = self.file_browser_dir.join(&entry.name);
+                    if entry.is_dir {
+                        self.file_browser_dir = path;
+                        self.refresh_file_browser();
+                    } else {
+                        // File selected -- perform the action
+                        self.mode = self.prev_mode;
+                        self.on_file_selected(path);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // -- Command mode --
 
     fn handle_command_key(&mut self, key: KeyEvent) {
@@ -793,6 +921,20 @@ impl App {
             }
             "fx" | "effects" => {
                 self.open_track_config();
+            }
+            "load" => {
+                self.mode = Mode::Normal;
+                self.open_file_browser(
+                    super::FileBrowserAction::LoadSample(self.cursor_channel),
+                    vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
+                );
+            }
+            "open" => {
+                self.mode = Mode::Normal;
+                self.open_file_browser(
+                    super::FileBrowserAction::OpenSong,
+                    vec!["rtrk".to_string()],
+                );
             }
             _ => {
                 self.mode = self.prev_mode;
@@ -922,6 +1064,7 @@ impl App {
             Mode::TrackConfig => self.handle_track_config_key(key),
             Mode::PatternMatrix => self.handle_pattern_matrix_key(key),
             Mode::Command => self.handle_command_key(key),
+            Mode::FileBrowser => self.handle_file_browser_key(key),
         }
     }
 

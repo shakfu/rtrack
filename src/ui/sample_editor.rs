@@ -8,7 +8,7 @@ use crate::app::{App, SampleField};
 
 /// Draw the sample editor popup
 pub fn draw_sample_editor(f: &mut Frame, app: &App) {
-    let area = centered_rect(70, 22, f.area());
+    let area = centered_rect(70, 30, f.area());
     f.render_widget(Clear, area);
 
     let slot = app.sample_editor_slot;
@@ -52,7 +52,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
         lines.push(Line::from(""));
 
         // Editable fields
-        let fields = [
+        let fields: Vec<(SampleField, &str, String)> = vec![
             (SampleField::BaseNote, "Base Note", format!("{} (MIDI {})", note_name(sample.base_note), sample.base_note)),
             (SampleField::TrimStart, "Trim Start", format!("{}", sample.trim_start)),
             (SampleField::TrimEnd, "Trim End", format!("{}", if sample.trim_end == 0 { sample.data.len() } else { sample.trim_end })),
@@ -77,6 +77,40 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled(marker, label_style),
                 Span::styled(format!("{:<12}", label), label_style),
+                Span::styled(value.clone(), value_style),
+            ]));
+        }
+
+        // Slice section
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  -- Slice --",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let slice_fields: Vec<(SampleField, &str, String)> = vec![
+            (SampleField::SliceCount, "Slices", format!("{}", app.sample_slice_count)),
+            (SampleField::SliceSensitivity, "Sensitivity", format!("{:.0}%", app.sample_slice_sensitivity * 100.0)),
+            (SampleField::SliceEqual, "[Equal]", "Enter to slice".to_string()),
+            (SampleField::SliceTransient, "[Transient]", "Enter to slice".to_string()),
+        ];
+
+        for (field, label, value) in &slice_fields {
+            let is_active = *field == app.sample_editor_field;
+            let marker = if is_active { "> " } else { "  " };
+            let label_style = if is_active {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Magenta)
+            };
+            let value_style = if is_active {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, label_style),
+                Span::styled(format!("{:<14}", label), label_style),
                 Span::styled(value.clone(), value_style),
             ]));
         }

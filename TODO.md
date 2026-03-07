@@ -2,14 +2,15 @@
 
 ## High Priority (high impact, moderate effort)
 
-- [ ] Effects -> MIDI export (portamento/vibrato -> pitch bend, volume slide -> CC7)
-- [ ] MIDI input CC/pitch bend/program change handling (currently only Note On/Off)
-- [ ] External MIDI clock input/sync (currently output-only)
-- [ ] Send/return effects routing -- shared effect buses with per-channel wet/dry sends
-- [ ] Integration tests (load .rtrk, play, verify rendered audio)
+- [x] Effects -> MIDI export (portamento/vibrato -> pitch bend, volume slide -> CC7)
+- [x] MIDI input CC/pitch bend/program change handling (currently only Note On/Off)
+- [x] External MIDI clock input/sync (currently output-only)
+- [x] Send/return effects routing -- shared effect buses with per-channel wet/dry sends
+- [x] Integration tests (load .rtrk, play, verify rendered audio)
 
 ## Medium Priority (quality-of-life, moderate effort)
 
+- [x] Sample slicing (equal-segment auto-slice, transient-detection sensitivity, slice-to-pattern mapping)
 - [ ] Auto-save to temp file periodically
 - [ ] Row highlight configurability (beat/bar intervals beyond 4/16, for time signature support)
 - [ ] Tempo automation (BPM changes beyond Fxx effect)

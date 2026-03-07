@@ -141,6 +141,23 @@ pub enum Mode {
     TrackConfig,
     PatternMatrix,
     Command,
+    FileBrowser,
+}
+
+/// What action to perform when a file is selected in the file browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileBrowserAction {
+    /// Load a sample into a specific slot
+    LoadSample(usize),
+    /// Open/load a song file
+    OpenSong,
+}
+
+/// An entry in the file browser listing.
+#[derive(Debug, Clone)]
+pub struct FileBrowserEntry {
+    pub name: String,
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +199,10 @@ pub enum SampleField {
     LoopEnabled,
     LoopStart,
     LoopEnd,
+    SliceCount,
+    SliceSensitivity,
+    SliceEqual,
+    SliceTransient,
 }
 
 impl SampleField {
@@ -192,18 +213,26 @@ impl SampleField {
             Self::TrimEnd => Self::LoopEnabled,
             Self::LoopEnabled => Self::LoopStart,
             Self::LoopStart => Self::LoopEnd,
-            Self::LoopEnd => Self::BaseNote,
+            Self::LoopEnd => Self::SliceCount,
+            Self::SliceCount => Self::SliceSensitivity,
+            Self::SliceSensitivity => Self::SliceEqual,
+            Self::SliceEqual => Self::SliceTransient,
+            Self::SliceTransient => Self::BaseNote,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::BaseNote => Self::LoopEnd,
+            Self::BaseNote => Self::SliceTransient,
             Self::TrimStart => Self::BaseNote,
             Self::TrimEnd => Self::TrimStart,
             Self::LoopEnabled => Self::TrimEnd,
             Self::LoopStart => Self::LoopEnabled,
             Self::LoopEnd => Self::LoopStart,
+            Self::SliceCount => Self::LoopEnd,
+            Self::SliceSensitivity => Self::SliceCount,
+            Self::SliceEqual => Self::SliceSensitivity,
+            Self::SliceTransient => Self::SliceEqual,
         }
     }
 }
@@ -376,11 +405,21 @@ pub struct App {
     pub instrument_cursor: usize,
     pub sample_editor_slot: usize,
     pub sample_editor_field: SampleField,
+    pub sample_slice_count: usize,
+    pub sample_slice_sensitivity: f32,
     pub synth_editor_slot: usize,
     pub synth_editor_field: SynthField,
     pub midi_port_list: Vec<String>,
     pub midi_port_cursor: usize,
     pub help_scroll: usize,
+
+    // File browser state
+    pub file_browser_dir: PathBuf,
+    pub file_browser_entries: Vec<FileBrowserEntry>,
+    pub file_browser_cursor: usize,
+    pub file_browser_action: FileBrowserAction,
+    pub file_browser_filter: Vec<String>,
+    pub file_browser_scroll: usize,
 
     // -----------------------------------------------------------------------
     // Other state (file, audio, instruments, channels)
@@ -473,6 +512,8 @@ impl App {
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
+            sample_slice_count: 8,
+            sample_slice_sensitivity: 0.5,
             synth_editor_slot: 0,
             synth_editor_field: SynthField::Waveform,
             track_page: 0,
@@ -482,6 +523,12 @@ impl App {
             clock_mode: ClockMode::Internal,
             ext_clock_count: 0,
             help_scroll: 0,
+            file_browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            file_browser_entries: Vec::new(),
+            file_browser_cursor: 0,
+            file_browser_action: FileBrowserAction::OpenSong,
+            file_browser_filter: Vec::new(),
+            file_browser_scroll: 0,
             dirty: false,
             block_anchor: None,
             block_clipboard: None,
@@ -631,6 +678,146 @@ impl App {
         self.sample_editor_field = SampleField::BaseNote;
         self.prev_mode = self.mode;
         self.mode = Mode::SampleEditor;
+    }
+
+    /// Open the file browser with a specific action and extension filter.
+    pub fn open_file_browser(&mut self, action: FileBrowserAction, extensions: Vec<String>) {
+        self.file_browser_action = action;
+        self.file_browser_filter = extensions;
+        self.file_browser_cursor = 0;
+        self.file_browser_scroll = 0;
+        self.prev_mode = self.mode;
+        self.refresh_file_browser();
+        self.mode = Mode::FileBrowser;
+    }
+
+    /// Refresh the file browser entries from the current directory.
+    pub fn refresh_file_browser(&mut self) {
+        let mut entries = Vec::new();
+
+        if let Ok(read_dir) = std::fs::read_dir(&self.file_browser_dir) {
+            for entry in read_dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Skip hidden files
+                if name.starts_with('.') {
+                    continue;
+                }
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if is_dir {
+                    entries.push(FileBrowserEntry { name, is_dir: true });
+                } else if self.file_browser_filter.is_empty() {
+                    entries.push(FileBrowserEntry { name, is_dir: false });
+                } else {
+                    // Filter by extension
+                    let ext = std::path::Path::new(&name)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if self.file_browser_filter.iter().any(|f| f == &ext) {
+                        entries.push(FileBrowserEntry { name, is_dir: false });
+                    }
+                }
+            }
+        }
+
+        // Sort: directories first, then alphabetical
+        entries.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+
+        self.file_browser_entries = entries;
+        self.file_browser_cursor = 0;
+        self.file_browser_scroll = 0;
+    }
+
+    /// Handle file selection from the file browser.
+    pub fn on_file_selected(&mut self, path: PathBuf) {
+        match self.file_browser_action {
+            FileBrowserAction::LoadSample(slot) => {
+                let mut bank = (*self.sample_bank).clone();
+                match bank.load(slot, &path) {
+                    Ok(()) => {
+                        // Set up instrument to point to this sample
+                        if slot < self.instruments.len() {
+                            self.instruments[slot].sample_index = Some(slot);
+                            if self.instruments[slot].name.is_empty() {
+                                self.instruments[slot].name = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("sample")
+                                    .to_string();
+                            }
+                        }
+                        self.sample_bank = Arc::new(bank);
+                        if let Some(ref mut audio) = self.audio {
+                            audio.set_sample_bank(Arc::clone(&self.sample_bank));
+                        }
+                        self.status_message = Some(format!("Loaded sample into slot {:02X}", slot));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to load: {}", e));
+                    }
+                }
+            }
+            FileBrowserAction::OpenSong => {
+                self.load_file(path);
+            }
+        }
+    }
+
+    /// Slice the sample in the current editor slot and place results into consecutive slots.
+    /// Returns the number of slices created, or an error message.
+    pub fn slice_sample(&mut self, use_transients: bool) -> Result<usize, String> {
+        let slot = self.sample_editor_slot;
+        let sample = match self.sample_bank.get(slot) {
+            Some(s) => s.clone(),
+            None => return Err("No sample loaded in this slot".to_string()),
+        };
+
+        let slices = if use_transients {
+            let points = crate::sample::detect_transients(&sample, self.sample_slice_sensitivity);
+            crate::sample::slice_at_points(&sample, &points)
+        } else {
+            crate::sample::slice_equal(&sample, self.sample_slice_count)
+        };
+
+        if slices.is_empty() {
+            return Err("Sample too short to slice".to_string());
+        }
+
+        // Check that we have enough slots
+        let end_slot = slot + slices.len();
+        if end_slot > 256 {
+            return Err(format!("Not enough sample slots (need {} from slot {:02X})", slices.len(), slot));
+        }
+
+        let mut bank = (*self.sample_bank).clone();
+        for (i, s) in slices.iter().enumerate() {
+            bank.samples[slot + i] = Some(s.clone());
+        }
+        let count = slices.len();
+        self.sample_bank = Arc::new(bank);
+        if let Some(ref mut audio) = self.audio {
+            audio.set_sample_bank(Arc::clone(&self.sample_bank));
+        }
+
+        // Set up instruments to point to the new sample slots
+        for i in 0..count {
+            let inst_slot = slot + i;
+            if inst_slot < self.instruments.len() {
+                self.instruments[inst_slot].sample_index = Some(inst_slot);
+                if self.instruments[inst_slot].name.is_empty() {
+                    self.instruments[inst_slot].name = slices[i].name.clone();
+                }
+            }
+        }
+
+        Ok(count)
     }
 
     /// Export the song to a WAV file
@@ -1354,11 +1541,19 @@ mod tests {
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
+            sample_slice_count: 8,
+            sample_slice_sensitivity: 0.5,
             synth_editor_slot: 0,
             synth_editor_field: SynthField::Waveform,
             track_page: 0,
             preview_note: None,
             help_scroll: 0,
+            file_browser_dir: PathBuf::from("/tmp"),
+            file_browser_entries: Vec::new(),
+            file_browser_cursor: 0,
+            file_browser_action: FileBrowserAction::OpenSong,
+            file_browser_filter: Vec::new(),
+            file_browser_scroll: 0,
             dirty: false,
             block_anchor: None,
             block_clipboard: None,
@@ -3406,5 +3601,232 @@ mod tests {
         let cell = app.song.patterns[pattern_idx].get(0, 0);
         assert!(cell.note.is_some());
         assert_eq!(cell.instrument, Some(5));
+    }
+
+    #[test]
+    fn test_file_browser_open() {
+        let mut app = make_app();
+        app.open_file_browser(
+            FileBrowserAction::LoadSample(0),
+            vec!["wav".to_string(), "aiff".to_string()],
+        );
+        assert_eq!(app.mode, Mode::FileBrowser);
+        assert_eq!(app.file_browser_action, FileBrowserAction::LoadSample(0));
+        assert_eq!(app.file_browser_filter, vec!["wav", "aiff"]);
+        assert_eq!(app.file_browser_cursor, 0);
+    }
+
+    #[test]
+    fn test_file_browser_navigate() {
+        let mut app = make_app();
+        // Use temp dir which should exist
+        app.file_browser_dir = std::env::temp_dir();
+        app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
+        // Navigate down
+        let initial = app.file_browser_cursor;
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        if !app.file_browser_entries.is_empty() {
+            assert!(app.file_browser_cursor >= initial);
+        }
+        // Esc closes
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_ne!(app.mode, Mode::FileBrowser);
+    }
+
+    #[test]
+    fn test_file_browser_enter_directory() {
+        let mut app = make_app();
+        let dir = std::env::temp_dir().join("rtrack_fb_test_dir");
+        let sub = dir.join("subdir");
+        let _ = std::fs::create_dir_all(&sub);
+
+        app.file_browser_dir = dir.clone();
+        app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
+
+        // Find the subdir entry
+        let subdir_idx = app.file_browser_entries.iter().position(|e| e.name == "subdir" && e.is_dir);
+        if let Some(idx) = subdir_idx {
+            app.file_browser_cursor = idx;
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            // Should have navigated into subdir
+            assert_eq!(app.file_browser_dir, sub);
+            assert_eq!(app.mode, Mode::FileBrowser);
+        }
+
+        // Backspace goes up
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.file_browser_dir, dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_file_browser_filter() {
+        let mut app = make_app();
+        let dir = std::env::temp_dir().join("rtrack_fb_filter_test");
+        let _ = std::fs::create_dir_all(&dir);
+        // Create files with different extensions
+        std::fs::write(dir.join("sample.wav"), b"fake").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"text").unwrap();
+        std::fs::write(dir.join("beat.aiff"), b"fake").unwrap();
+
+        app.file_browser_dir = dir.clone();
+        app.open_file_browser(
+            FileBrowserAction::LoadSample(0),
+            vec!["wav".to_string(), "aiff".to_string()],
+        );
+
+        // Should only show wav and aiff files (not txt)
+        let names: Vec<&str> = app.file_browser_entries.iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(names.contains(&"sample.wav"));
+        assert!(names.contains(&"beat.aiff"));
+        assert!(!names.contains(&"notes.txt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_file_browser_select_file_loads_sample() {
+        let mut app = make_app();
+        let dir = std::env::temp_dir().join("rtrack_fb_load_test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Create a valid WAV file
+        let path = dir.join("kick.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..100 {
+            writer.write_sample((i * 100) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        app.file_browser_dir = dir.clone();
+        app.open_file_browser(
+            FileBrowserAction::LoadSample(5),
+            vec!["wav".to_string()],
+        );
+
+        // Find the wav file and select it
+        let wav_idx = app.file_browser_entries.iter().position(|e| e.name == "kick.wav");
+        assert!(wav_idx.is_some(), "WAV file should appear in browser");
+        app.file_browser_cursor = wav_idx.unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Should have loaded the sample
+        assert!(app.sample_bank.get(5).is_some());
+        assert_eq!(app.sample_bank.get(5).unwrap().name, "kick");
+        assert_eq!(app.instruments[5].sample_index, Some(5));
+        assert_ne!(app.mode, Mode::FileBrowser);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_file_browser_dirs_first() {
+        let mut app = make_app();
+        let dir = std::env::temp_dir().join("rtrack_fb_sort_test");
+        let _ = std::fs::create_dir_all(dir.join("aaa_dir"));
+        std::fs::write(dir.join("aaa_file.wav"), b"x").unwrap();
+
+        app.file_browser_dir = dir.clone();
+        app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
+
+        // Directories should come before files
+        if let Some(dir_idx) = app.file_browser_entries.iter().position(|e| e.name == "aaa_dir") {
+            if let Some(file_idx) = app.file_browser_entries.iter().position(|e| e.name == "aaa_file.wav") {
+                assert!(dir_idx < file_idx, "Directories should sort before files");
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_slice_sample_equal() {
+        let mut app = make_app();
+        // Load a sample into slot 0
+        let sample = crate::sample::Sample {
+            name: "kick".into(),
+            data: vec![[0.5, 0.5]; 4000],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        };
+        let mut bank = (*app.sample_bank).clone();
+        bank.samples[0] = Some(sample);
+        app.sample_bank = Arc::new(bank);
+        app.sample_editor_slot = 0;
+        app.sample_slice_count = 4;
+
+        let result = app.slice_sample(false);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 4);
+
+        // Check that slices are in consecutive slots
+        assert!(app.sample_bank.get(0).is_some());
+        assert!(app.sample_bank.get(1).is_some());
+        assert!(app.sample_bank.get(2).is_some());
+        assert!(app.sample_bank.get(3).is_some());
+        assert_eq!(app.sample_bank.get(0).unwrap().data.len(), 1000);
+        assert_eq!(app.sample_bank.get(0).unwrap().name, "kick_S00");
+        assert_eq!(app.sample_bank.get(3).unwrap().name, "kick_S03");
+
+        // Check instruments are set up
+        assert_eq!(app.instruments[0].sample_index, Some(0));
+        assert_eq!(app.instruments[3].sample_index, Some(3));
+    }
+
+    #[test]
+    fn test_slice_sample_no_sample() {
+        let mut app = make_app();
+        app.sample_editor_slot = 5;
+        let result = app.slice_sample(false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_slice_sample_transient() {
+        let mut app = make_app();
+        // Build sample with silence + burst pattern
+        let mut data = vec![[0.0f32; 2]; 44100];
+        for i in 11025..13000 { data[i] = [0.8, 0.8]; }
+        for i in 26460..28000 { data[i] = [0.9, 0.9]; }
+        let sample = crate::sample::Sample {
+            name: "breaks".into(),
+            data,
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0, trim_end: 0,
+            loop_enabled: false, loop_start: 0, loop_end: 0,
+            source_path: None,
+        };
+        let mut bank = (*app.sample_bank).clone();
+        bank.samples[0] = Some(sample);
+        app.sample_bank = Arc::new(bank);
+        app.sample_editor_slot = 0;
+        app.sample_slice_sensitivity = 0.5;
+
+        let result = app.slice_sample(true);
+        assert!(result.is_ok());
+        let count = result.unwrap();
+        assert!(count >= 2, "Expected at least 2 transient slices, got {}", count);
+
+        // All slices should exist in consecutive slots
+        for i in 0..count {
+            assert!(app.sample_bank.get(i).is_some(), "Slice {} missing", i);
+        }
     }
 }

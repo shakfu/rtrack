@@ -416,6 +416,136 @@ fn to_stereo_frames(samples: &[f32], channels: usize) -> Vec<[f32; 2]> {
     frames
 }
 
+/// Slice a sample into `num_slices` equal-length segments.
+/// Returns a Vec of new Sample objects, each named `<original>_S00`, `_S01`, etc.
+pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
+    if num_slices == 0 {
+        return Vec::new();
+    }
+    let start = sample.trim_start;
+    let end = sample.end();
+    if end <= start {
+        return Vec::new();
+    }
+    let total = end - start;
+    let slice_len = total / num_slices;
+    if slice_len == 0 {
+        return Vec::new();
+    }
+    (0..num_slices)
+        .map(|i| {
+            let s = start + i * slice_len;
+            let e = if i == num_slices - 1 { end } else { s + slice_len };
+            Sample {
+                name: format!("{}_S{:02}", sample.name, i),
+                data: sample.data[s..e].to_vec(),
+                sample_rate: sample.sample_rate,
+                base_note: sample.base_note,
+                trim_start: 0,
+                trim_end: 0,
+                loop_enabled: false,
+                loop_start: 0,
+                loop_end: 0,
+                source_path: sample.source_path.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Detect transient onsets in a sample using energy envelope derivative.
+/// `sensitivity` ranges from 0.0 (fewer slices) to 1.0 (more slices).
+/// Returns frame indices of detected transients (always includes frame 0).
+pub fn detect_transients(sample: &Sample, sensitivity: f32) -> Vec<usize> {
+    let start = sample.trim_start;
+    let end = sample.end();
+    if end <= start {
+        return vec![0];
+    }
+
+    // Window size for energy calculation (in frames). Smaller = more responsive.
+    let window = (sample.sample_rate as usize / 200).max(16); // ~5ms window
+    let hop = window / 2;
+
+    // Calculate RMS energy per window
+    let mut energies: Vec<f32> = Vec::new();
+    let mut pos = start;
+    while pos + window <= end {
+        let mut sum = 0.0f32;
+        for i in pos..pos + window {
+            let frame = sample.data[i];
+            let mono = (frame[0] + frame[1]) * 0.5;
+            sum += mono * mono;
+        }
+        energies.push((sum / window as f32).sqrt());
+        pos += hop;
+    }
+
+    if energies.len() < 2 {
+        return vec![start];
+    }
+
+    // Compute the positive derivative (energy increase) between consecutive windows
+    let mut deltas: Vec<f32> = Vec::with_capacity(energies.len());
+    deltas.push(0.0);
+    for i in 1..energies.len() {
+        deltas.push((energies[i] - energies[i - 1]).max(0.0));
+    }
+
+    // Find the maximum delta for threshold scaling
+    let max_delta = deltas.iter().cloned().fold(0.0f32, f32::max);
+    if max_delta <= 0.0 {
+        return vec![start];
+    }
+
+    // Threshold: higher sensitivity = lower threshold = more transients detected
+    let threshold = max_delta * (1.0 - sensitivity.clamp(0.0, 1.0)) * 0.8 + max_delta * 0.02;
+
+    // Minimum gap between transients (50ms worth of frames)
+    let min_gap = (sample.sample_rate as usize / 20).max(1);
+
+    let mut points = vec![start];
+    for (i, &d) in deltas.iter().enumerate() {
+        if d >= threshold {
+            let frame = start + i * hop;
+            if frame > *points.last().unwrap() + min_gap && frame < end {
+                points.push(frame);
+            }
+        }
+    }
+
+    points
+}
+
+/// Slice a sample at the given frame positions.
+/// Each slice runs from points[i] to points[i+1] (last slice runs to sample end).
+pub fn slice_at_points(sample: &Sample, points: &[usize]) -> Vec<Sample> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let end = sample.end();
+    let mut slices = Vec::with_capacity(points.len());
+    for (i, &p) in points.iter().enumerate() {
+        let slice_end = if i + 1 < points.len() { points[i + 1] } else { end };
+        if p >= slice_end || p >= sample.data.len() {
+            continue;
+        }
+        let actual_end = slice_end.min(sample.data.len());
+        slices.push(Sample {
+            name: format!("{}_S{:02}", sample.name, i),
+            data: sample.data[p..actual_end].to_vec(),
+            sample_rate: sample.sample_rate,
+            base_note: sample.base_note,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: sample.source_path.clone(),
+        });
+    }
+    slices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +731,181 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_slice_sample(len: usize) -> Sample {
+        let data: Vec<[f32; 2]> = (0..len)
+            .map(|i| {
+                let t = i as f32 / len as f32;
+                let val = (t * std::f32::consts::TAU * 4.0).sin();
+                [val, val]
+            })
+            .collect();
+        Sample {
+            name: "test".into(),
+            data,
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        }
+    }
+
+    #[test]
+    fn test_slice_equal_basic() {
+        let sample = make_slice_sample(1000);
+        let slices = slice_equal(&sample, 4);
+        assert_eq!(slices.len(), 4);
+        assert_eq!(slices[0].data.len(), 250);
+        assert_eq!(slices[1].data.len(), 250);
+        assert_eq!(slices[2].data.len(), 250);
+        assert_eq!(slices[3].data.len(), 250);
+        assert_eq!(slices[0].name, "test_S00");
+        assert_eq!(slices[3].name, "test_S03");
+    }
+
+    #[test]
+    fn test_slice_equal_preserves_metadata() {
+        let mut sample = make_slice_sample(1000);
+        sample.base_note = 48;
+        sample.sample_rate = 48000.0;
+        let slices = slice_equal(&sample, 2);
+        assert_eq!(slices[0].base_note, 48);
+        assert_eq!(slices[0].sample_rate, 48000.0);
+    }
+
+    #[test]
+    fn test_slice_equal_with_trim() {
+        let mut sample = make_slice_sample(1000);
+        sample.trim_start = 100;
+        sample.trim_end = 500;
+        let slices = slice_equal(&sample, 4);
+        assert_eq!(slices.len(), 4);
+        // (500-100)/4 = 100 frames each
+        assert_eq!(slices[0].data.len(), 100);
+        assert_eq!(slices[3].data.len(), 100);
+    }
+
+    #[test]
+    fn test_slice_equal_last_gets_remainder() {
+        let sample = make_slice_sample(1003);
+        let slices = slice_equal(&sample, 4);
+        assert_eq!(slices.len(), 4);
+        // 1003/4 = 250 per slice, last gets remainder
+        assert_eq!(slices[0].data.len(), 250);
+        assert_eq!(slices[3].data.len(), 253); // 1003 - 250*3 = 253
+    }
+
+    #[test]
+    fn test_slice_equal_zero() {
+        let sample = make_slice_sample(100);
+        assert!(slice_equal(&sample, 0).is_empty());
+    }
+
+    #[test]
+    fn test_slice_equal_one() {
+        let sample = make_slice_sample(100);
+        let slices = slice_equal(&sample, 1);
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].data.len(), 100);
+    }
+
+    #[test]
+    fn test_detect_transients_silent() {
+        let sample = Sample {
+            name: "silent".into(),
+            data: vec![[0.0; 2]; 44100],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        };
+        let points = detect_transients(&sample, 0.5);
+        assert_eq!(points.len(), 1); // just the start
+        assert_eq!(points[0], 0);
+    }
+
+    #[test]
+    fn test_detect_transients_with_onset() {
+        // Build a sample: silence then loud burst, repeated
+        let mut data = vec![[0.0f32; 2]; 44100]; // 1 second total
+        // Burst at ~0.25s
+        for i in 11025..13000 {
+            data[i] = [0.8, 0.8];
+        }
+        // Burst at ~0.6s
+        for i in 26460..28000 {
+            data[i] = [0.9, 0.9];
+        }
+        let sample = Sample {
+            name: "bursts".into(),
+            data,
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        };
+        let points = detect_transients(&sample, 0.5);
+        // Should detect at least the initial point and the two bursts
+        assert!(points.len() >= 2, "Expected at least 2 transient points, got {}", points.len());
+    }
+
+    #[test]
+    fn test_detect_transients_sensitivity() {
+        // Higher sensitivity should find more (or equal) transients
+        let mut data = vec![[0.0f32; 2]; 44100];
+        for i in 11025..12000 { data[i] = [0.5, 0.5]; }
+        for i in 22050..23000 { data[i] = [0.8, 0.8]; }
+        for i in 33075..34000 { data[i] = [0.3, 0.3]; }
+        let sample = Sample {
+            name: "multi".into(),
+            data,
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0, trim_end: 0,
+            loop_enabled: false, loop_start: 0, loop_end: 0,
+            source_path: None,
+        };
+        let low = detect_transients(&sample, 0.2);
+        let high = detect_transients(&sample, 0.9);
+        assert!(high.len() >= low.len(),
+            "Higher sensitivity should find >= transients: low={}, high={}", low.len(), high.len());
+    }
+
+    #[test]
+    fn test_slice_at_points() {
+        let sample = make_slice_sample(1000);
+        let points = vec![0, 250, 500, 750];
+        let slices = slice_at_points(&sample, &points);
+        assert_eq!(slices.len(), 4);
+        assert_eq!(slices[0].data.len(), 250);
+        assert_eq!(slices[3].data.len(), 250); // 750..1000
+        assert_eq!(slices[0].name, "test_S00");
+    }
+
+    #[test]
+    fn test_slice_at_points_empty() {
+        let sample = make_slice_sample(100);
+        assert!(slice_at_points(&sample, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_slice_at_points_single() {
+        let sample = make_slice_sample(100);
+        let slices = slice_at_points(&sample, &[0]);
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].data.len(), 100);
     }
 }
