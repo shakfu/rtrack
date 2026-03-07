@@ -93,14 +93,67 @@ fn write_track_event(track: &mut Vec<u8>, delta: u32, event_bytes: &[u8]) {
 // Export
 // ---------------------------------------------------------------------------
 
+/// Pitch bend range in semitones (standard GM default).
+const PITCH_BEND_RANGE: f64 = 2.0;
+/// MIDI pitch bend center value (14-bit).
+const PITCH_BEND_CENTER: i32 = 0x2000;
+/// Pitch bend units per semitone.
+const PITCH_BEND_PER_SEMITONE: f64 = (0x2000 as f64) / PITCH_BEND_RANGE;
+
+/// Per-channel state for sub-tick effect export.
+struct ExportMidiChannelState {
+    note: Option<u8>,
+    volume: u8,
+    pitch_offset: f64,
+    porta_target: Option<u8>,
+    vibrato_phase: f64,
+}
+
+impl Default for ExportMidiChannelState {
+    fn default() -> Self {
+        Self {
+            note: None,
+            volume: DEFAULT_VELOCITY,
+            pitch_offset: 0.0,
+            porta_target: None,
+            vibrato_phase: 0.0,
+        }
+    }
+}
+
+/// Emit a MIDI pitch bend event.
+fn write_pitch_bend(track: &mut Vec<u8>, delta: u32, midi_ch: u8, value: u16) {
+    let clamped = value.min(0x3FFF);
+    write_track_event(track, delta, &[0xE0 | midi_ch, (clamped & 0x7F) as u8, ((clamped >> 7) & 0x7F) as u8]);
+}
+
+/// Emit a MIDI CC event.
+fn write_cc(track: &mut Vec<u8>, delta: u32, midi_ch: u8, controller: u8, value: u8) {
+    write_track_event(track, delta, &[0xB0 | midi_ch, controller & 0x7F, value & 0x7F]);
+}
+
+/// Compute pitch bend value from a semitone offset.
+fn pitch_bend_from_offset(offset: f64) -> u16 {
+    let bend = (PITCH_BEND_CENTER as f64 + offset * PITCH_BEND_PER_SEMITONE) as i32;
+    bend.clamp(0, 0x3FFF) as u16
+}
+
 /// Export a `Song` to a standard MIDI file (format 1).
 ///
 /// Layout:
 /// - Track 0: tempo meta-event only.
 /// - Tracks 1..=channels: one per tracker channel, containing note and CC data.
+///
+/// Tracker effects are converted to MIDI events:
+/// - 1xx/2xx portamento -> pitch bend
+/// - 3xx tone portamento -> pitch bend
+/// - 4xy vibrato -> pitch bend
+/// - 5xy volume slide -> CC 7
 pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     let num_tracks = song.channels as u16 + 1; // tempo track + channel tracks
-    let ticks_per_row = ticks_per_row(song.speed);
+    let speed = song.speed;
+    let ticks_per_row = ticks_per_row(speed);
+    let ticks_per_subtick = ticks_per_row / speed as u32;
 
     // ---- Header chunk ----
     let mut file_buf: Vec<u8> = Vec::new();
@@ -116,17 +169,13 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     {
         let mut trk = Vec::new();
         let us_per_beat = bpm_to_microseconds(song.bpm);
-        // Meta event: FF 51 03 tt tt tt
         let tempo_bytes = [
-            0xFF,
-            0x51,
-            0x03,
+            0xFF, 0x51, 0x03,
             ((us_per_beat >> 16) & 0xFF) as u8,
             ((us_per_beat >> 8) & 0xFF) as u8,
             (us_per_beat & 0xFF) as u8,
         ];
         write_track_event(&mut trk, 0, &tempo_bytes);
-        // End of track
         write_track_event(&mut trk, 0, &[0xFF, 0x2F, 0x00]);
         write_chunk(&mut file_buf, b"MTrk", &trk);
     }
@@ -135,8 +184,9 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     for ch in 0..song.channels {
         let mut trk = Vec::new();
         let midi_ch = (ch & 0x0F) as u8;
-        let mut active_note: Option<u8> = None; // currently sounding MIDI note
+        let mut active_note: Option<u8> = None;
         let mut accumulated_delta: u32 = 0;
+        let mut state = ExportMidiChannelState::default();
 
         for &order_idx in &song.order {
             let pattern = match song.patterns.get(order_idx) {
@@ -145,73 +195,166 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
             };
             for row in 0..pattern.rows {
                 let cell = pattern.get(row, ch);
+                let effect = cell.effect;
+                let param = cell.effect_value.unwrap_or(0);
 
-                // -- Handle effects first (program change, CC) --
-                if let Some(eff) = cell.effect {
+                // -- Tick 0: handle effects (program change, CC), notes --
+                if let Some(eff) = effect {
                     match eff {
                         0x0E => {
-                            // Program change
-                            let prog = cell.effect_value.unwrap_or(0);
-                            write_track_event(
-                                &mut trk,
-                                accumulated_delta,
-                                &[0xC0 | midi_ch, prog & 0x7F],
-                            );
+                            write_track_event(&mut trk, accumulated_delta, &[0xC0 | midi_ch, param & 0x7F]);
                             accumulated_delta = 0;
                         }
                         0x0C => {
-                            // MIDI CC: controller = instrument column, value = effect_value
                             let controller = cell.instrument.unwrap_or(0) & 0x7F;
-                            let value = cell.effect_value.unwrap_or(0) & 0x7F;
-                            write_track_event(
-                                &mut trk,
-                                accumulated_delta,
-                                &[0xB0 | midi_ch, controller, value],
-                            );
+                            write_cc(&mut trk, accumulated_delta, midi_ch, controller, param);
                             accumulated_delta = 0;
                         }
-                        _ => {} // Other effects: not mapped to MIDI
+                        _ => {}
                     }
                 }
 
-                // -- Handle notes --
+                // Tone portamento: new note sets target instead of triggering
+                let is_tone_porta = effect == Some(0x03);
+
                 if let Some(note) = &cell.note {
                     match note {
                         Note::On { .. } => {
                             if let Some(midi_note) = note.to_midi_note() {
-                                // Kill previous note on this channel if active
-                                if let Some(prev) = active_note.take() {
-                                    write_track_event(
-                                        &mut trk,
-                                        accumulated_delta,
-                                        &[0x80 | midi_ch, prev, 0x00],
-                                    );
+                                if is_tone_porta {
+                                    state.porta_target = Some(midi_note);
+                                } else {
+                                    if let Some(prev) = active_note.take() {
+                                        write_track_event(&mut trk, accumulated_delta, &[0x80 | midi_ch, prev, 0x00]);
+                                        accumulated_delta = 0;
+                                    }
+                                    // Reset pitch bend on new note
+                                    state.pitch_offset = 0.0;
+                                    state.vibrato_phase = 0.0;
+                                    write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
                                     accumulated_delta = 0;
+
+                                    let velocity = cell.volume.unwrap_or(DEFAULT_VELOCITY).min(0x7F);
+                                    write_track_event(&mut trk, accumulated_delta, &[0x90 | midi_ch, midi_note, velocity]);
+                                    accumulated_delta = 0;
+                                    active_note = Some(midi_note);
+                                    state.note = Some(midi_note);
+                                    state.volume = velocity;
                                 }
-                                let velocity = cell.volume.unwrap_or(DEFAULT_VELOCITY).min(0x7F);
-                                write_track_event(
-                                    &mut trk,
-                                    accumulated_delta,
-                                    &[0x90 | midi_ch, midi_note, velocity],
-                                );
-                                accumulated_delta = 0;
-                                active_note = Some(midi_note);
                             }
                         }
                         Note::Off => {
                             if let Some(prev) = active_note.take() {
-                                write_track_event(
-                                    &mut trk,
-                                    accumulated_delta,
-                                    &[0x80 | midi_ch, prev, 0x00],
-                                );
+                                write_track_event(&mut trk, accumulated_delta, &[0x80 | midi_ch, prev, 0x00]);
+                                accumulated_delta = 0;
+                                // Reset pitch bend
+                                state.pitch_offset = 0.0;
+                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
                                 accumulated_delta = 0;
                             }
+                            state.note = None;
                         }
                     }
+                } else if let Some(vol) = cell.volume {
+                    state.volume = vol;
                 }
 
-                accumulated_delta += ticks_per_row;
+                // Store effect state
+                state.porta_target = if is_tone_porta {
+                    state.porta_target // already set above
+                } else {
+                    state.porta_target // keep existing target
+                };
+
+                // -- Ticks 1..speed-1: process continuous effects --
+                let has_continuous_effect = matches!(
+                    effect,
+                    Some(0x00) | Some(0x01) | Some(0x02) | Some(0x03) | Some(0x04) | Some(0x05)
+                );
+
+                if has_continuous_effect && state.note.is_some() {
+                    // Tick 0 delta already accounted for above; advance by ticks_per_subtick
+                    accumulated_delta += ticks_per_subtick;
+
+                    for tick in 1..speed {
+                        let base_note = state.note.unwrap();
+                        match effect {
+                            Some(0x00) if param != 0 => {
+                                // Arpeggio
+                                let x = (param >> 4) as f64;
+                                let y = (param & 0x0F) as f64;
+                                let offset = match tick % 3 {
+                                    0 => 0.0,
+                                    1 => x,
+                                    _ => y,
+                                };
+                                let value = pitch_bend_from_offset(offset);
+                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
+                                accumulated_delta = 0;
+                            }
+                            Some(0x01) => {
+                                // Portamento up
+                                state.pitch_offset += param as f64 / 16.0;
+                                let value = pitch_bend_from_offset(state.pitch_offset);
+                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
+                                accumulated_delta = 0;
+                            }
+                            Some(0x02) => {
+                                // Portamento down
+                                state.pitch_offset -= param as f64 / 16.0;
+                                let value = pitch_bend_from_offset(state.pitch_offset);
+                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
+                                accumulated_delta = 0;
+                            }
+                            Some(0x03) => {
+                                // Tone portamento
+                                if let Some(target) = state.porta_target {
+                                    let current = base_note as f64 + state.pitch_offset;
+                                    let target_f = target as f64;
+                                    let spd = param as f64 / 16.0;
+                                    if current < target_f {
+                                        state.pitch_offset += spd.min(target_f - current);
+                                    } else if current > target_f {
+                                        state.pitch_offset -= spd.min(current - target_f);
+                                    }
+                                    let value = pitch_bend_from_offset(state.pitch_offset);
+                                    write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
+                                    accumulated_delta = 0;
+                                }
+                            }
+                            Some(0x04) => {
+                                // Vibrato
+                                let speed_v = (param >> 4) as f64;
+                                let depth = (param & 0x0F) as f64;
+                                state.vibrato_phase += speed_v / 64.0;
+                                if state.vibrato_phase >= 1.0 {
+                                    state.vibrato_phase -= 1.0;
+                                }
+                                let sine = (state.vibrato_phase * std::f64::consts::TAU).sin();
+                                let offset = sine * depth / 16.0;
+                                let total = state.pitch_offset + offset;
+                                let value = pitch_bend_from_offset(total);
+                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
+                                accumulated_delta = 0;
+                            }
+                            Some(0x05) => {
+                                // Volume slide
+                                let up = (param >> 4) as i16;
+                                let down = (param & 0x0F) as i16;
+                                let new_vol = (state.volume as i16 + up - down).clamp(0, 127) as u8;
+                                state.volume = new_vol;
+                                write_cc(&mut trk, accumulated_delta, midi_ch, 7, new_vol);
+                                accumulated_delta = 0;
+                            }
+                            _ => {}
+                        }
+
+                        // Advance to next sub-tick
+                        accumulated_delta += ticks_per_subtick;
+                    }
+                } else {
+                    accumulated_delta += ticks_per_row;
+                }
             }
         }
 
@@ -220,9 +363,11 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
             write_track_event(&mut trk, accumulated_delta, &[0x80 | midi_ch, prev, 0x00]);
             accumulated_delta = 0;
         }
-        let _ = accumulated_delta; // suppress unused warning
+        // Reset pitch bend
+        write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
+        accumulated_delta = 0;
+        let _ = accumulated_delta;
 
-        // End of track
         write_track_event(&mut trk, 0, &[0xFF, 0x2F, 0x00]);
         write_chunk(&mut file_buf, b"MTrk", &trk);
     }
@@ -778,6 +923,98 @@ mod tests {
         assert!(result.is_err(), "Importing a non-MIDI file should fail");
 
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_export_portamento_produces_pitch_bend() {
+        let mut song = Song::new(1, 16);
+        song.speed = 6;
+        // Note C-4 with portamento up effect (1xx)
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(100),
+            effect: Some(0x01), // porta up
+            effect_value: Some(0x10), // speed
+        });
+        let tmp = std::env::temp_dir().join("rtrack_test_porta.mid");
+        export_midi(&song, &tmp).unwrap();
+
+        let data = std::fs::read(&tmp).unwrap();
+        // Check that pitch bend events (0xE0) are present in the file
+        let has_pitch_bend = data.windows(1).any(|w| w[0] & 0xF0 == 0xE0);
+        assert!(has_pitch_bend, "Portamento should produce pitch bend events");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_export_volume_slide_produces_cc7() {
+        let mut song = Song::new(1, 16);
+        song.speed = 6;
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: Some(100),
+            effect: Some(0x05), // volume slide
+            effect_value: Some(0x01), // slide down by 1 per tick
+        });
+        let tmp = std::env::temp_dir().join("rtrack_test_volslide.mid");
+        export_midi(&song, &tmp).unwrap();
+
+        let data = std::fs::read(&tmp).unwrap();
+        // Check for CC events (0xB0) with controller 7
+        let has_cc7 = data.windows(3).any(|w| w[0] & 0xF0 == 0xB0 && w[1] == 7);
+        assert!(has_cc7, "Volume slide should produce CC7 events");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_export_vibrato_produces_pitch_bend() {
+        let mut song = Song::new(1, 16);
+        song.speed = 6;
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None,
+            volume: None,
+            effect: Some(0x04), // vibrato
+            effect_value: Some(0x44), // speed 4, depth 4
+        });
+        let tmp = std::env::temp_dir().join("rtrack_test_vibrato.mid");
+        export_midi(&song, &tmp).unwrap();
+
+        let data = std::fs::read(&tmp).unwrap();
+        let has_pitch_bend = data.windows(1).any(|w| w[0] & 0xF0 == 0xE0);
+        assert!(has_pitch_bend, "Vibrato should produce pitch bend events");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_export_effects_larger_than_plain() {
+        let mut song_plain = Song::new(1, 16);
+        song_plain.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None, volume: None, effect: None, effect_value: None,
+        });
+
+        let mut song_fx = Song::new(1, 16);
+        song_fx.speed = 6;
+        song_fx.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None, volume: Some(100),
+            effect: Some(0x01), effect_value: Some(0x10),
+        });
+
+        let tmp_plain = std::env::temp_dir().join("rtrack_test_plain.mid");
+        let tmp_fx = std::env::temp_dir().join("rtrack_test_fx.mid");
+        export_midi(&song_plain, &tmp_plain).unwrap();
+        export_midi(&song_fx, &tmp_fx).unwrap();
+
+        let size_plain = std::fs::metadata(&tmp_plain).unwrap().len();
+        let size_fx = std::fs::metadata(&tmp_fx).unwrap().len();
+        assert!(size_fx > size_plain, "Effects export should be larger: {} vs {}", size_fx, size_plain);
+
+        let _ = std::fs::remove_file(&tmp_plain);
+        let _ = std::fs::remove_file(&tmp_fx);
     }
 
     #[test]

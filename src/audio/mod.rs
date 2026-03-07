@@ -58,6 +58,7 @@ enum AudioCommand {
     SampleNoteOffChannel { channel: u8 },
     SampleNoteOffAll,
     SetChannelEffects { channel: u8, params: Box<ChannelEffectsParams> },
+    SetSendBusParams { bus: u8, params: Box<effects::SendBusParams> },
 }
 
 /// Unified audio engine. Supports:
@@ -128,6 +129,11 @@ impl AudioEngine {
             .map(|_| ChannelEffects::new(sr_f64))
             .collect();
 
+        // Create send/return buses
+        let send_buses: Vec<effects::SendBus> = (0..effects::MAX_SEND_BUSES)
+            .map(|_| effects::SendBus::new(sr_f64))
+            .collect();
+
         // Create sample playback engine
         let sample_engine = SamplePlaybackEngine::new(32);
         let sample_bank = Arc::new(SampleBank::new());
@@ -151,6 +157,7 @@ impl AudioEngine {
             let mut channel_effects = channel_effects;
             let mut sample_engine = sample_engine;
             let mut sample_bank = sample_bank;
+            let mut send_buses = send_buses;
             let mut consumer = consumer;
             let mut scratch_left = vec![0.0f32; MAX_CALLBACK_FRAMES];
             let mut scratch_right = vec![0.0f32; MAX_CALLBACK_FRAMES];
@@ -176,6 +183,7 @@ impl AudioEngine {
                                 &mut builtin_synth,
                                 &mut effects,
                                 &mut channel_effects,
+                                &mut send_buses,
                                 &mut sample_engine,
                                 &mut sample_bank,
                                 callback_has_sf2,
@@ -209,8 +217,11 @@ impl AudioEngine {
                             sf2.render(left, right);
                         }
 
-                        if any_ch_fx {
-                            // Per-channel rendering path
+                        // Check if any send bus is enabled
+                        let any_send_bus = send_buses.iter().any(|b| b.params.enabled);
+
+                        if any_ch_fx || any_send_bus {
+                            // Per-channel rendering path (needed for channel effects or send buses)
                             // Zero per-channel buffers
                             for ch in 0..MAX_EFFECT_CHANNELS {
                                 for s in ch_buf_left[ch][..frames].iter_mut() { *s = 0.0; }
@@ -230,8 +241,6 @@ impl AudioEngine {
                             // Render samples per-channel
                             {
                                 let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
-                                // Safety: we need mutable borrows of different elements
-                                // Use split_at_mut chain to get independent slices
                                 let (ch_l_slices, ch_r_slices) = (&mut ch_buf_left, &mut ch_buf_right);
                                 for ch in 0..MAX_EFFECT_CHANNELS {
                                     let l = &mut ch_l_slices[ch][..frames] as *mut [f32];
@@ -242,16 +251,40 @@ impl AudioEngine {
                                 sample_engine.render_per_channel(&sample_bank, &mut slices);
                             }
 
-                            // Apply per-channel effects and sum to master
+                            // Clear send bus inputs
+                            for bus in send_buses.iter_mut() {
+                                bus.ensure_size(frames);
+                                bus.clear_inputs(frames);
+                            }
+
+                            // Apply per-channel effects, feed send buses, sum to master
                             for ch in 0..MAX_EFFECT_CHANNELS {
                                 channel_effects[ch].process(
                                     &mut ch_buf_left[ch][..frames],
                                     &mut ch_buf_right[ch][..frames],
                                 );
+
+                                // Feed send buses (post-channel-effects)
+                                let send_levels = channel_effects[ch].params.send_levels;
+                                for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
+                                    if bus.params.enabled && send_levels[bus_idx] > 0.0 {
+                                        bus.add_send(
+                                            &ch_buf_left[ch][..frames],
+                                            &ch_buf_right[ch][..frames],
+                                            send_levels[bus_idx],
+                                        );
+                                    }
+                                }
+
                                 for i in 0..frames {
                                     left[i] += ch_buf_left[ch][i];
                                     right[i] += ch_buf_right[ch][i];
                                 }
+                            }
+
+                            // Process send buses to master
+                            for bus in send_buses.iter_mut() {
+                                bus.process_to_master(left, right, frames);
                             }
                         } else {
                             // Fast path: no per-channel effects, render directly to master
@@ -390,6 +423,14 @@ impl AudioEngine {
         });
     }
 
+    /// Set parameters for a send/return bus
+    pub fn set_send_bus_params(&mut self, bus: u8, params: &effects::SendBusParams) {
+        self.send(AudioCommand::SetSendBusParams {
+            bus,
+            params: Box::new(params.clone()),
+        });
+    }
+
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
@@ -402,6 +443,7 @@ fn process_command(
     builtin_synth: &mut BuiltinSynth,
     effects: &mut EffectsChain,
     channel_effects: &mut [ChannelEffects],
+    send_buses: &mut [effects::SendBus],
     sample_engine: &mut SamplePlaybackEngine,
     sample_bank: &mut Arc<SampleBank>,
     has_sf2: bool,
@@ -524,6 +566,12 @@ fn process_command(
             let ch = channel as usize;
             if ch < channel_effects.len() {
                 channel_effects[ch].params = *params;
+            }
+        }
+        AudioCommand::SetSendBusParams { bus, params } => {
+            let idx = bus as usize;
+            if idx < send_buses.len() {
+                send_buses[idx].params = *params;
             }
         }
     }

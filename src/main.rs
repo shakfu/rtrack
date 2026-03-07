@@ -1,12 +1,3 @@
-mod app;
-mod audio;
-mod link;
-mod midi;
-mod midi_file;
-mod sample;
-mod tracker;
-mod ui;
-
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,7 +11,8 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::App;
+use rtrack::app::App;
+use rtrack::{audio, ui};
 
 #[derive(Parser)]
 #[command(name = "rtrack", about = "A TUI music tracker")]

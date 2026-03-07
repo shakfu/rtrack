@@ -4,7 +4,7 @@ use crate::midi::MidiInputEvent;
 use crate::tracker::{Note, NoteValue};
 
 use super::{
-    App, ChannelState, ChannelType, Mode,
+    App, ChannelState, ChannelType, ClockMode, Mode,
     EFFECT_ARPEGGIO, EFFECT_MIDI_CC, EFFECT_NOTE_DELAY, EFFECT_PATTERN_BREAK,
     EFFECT_PORTA_DOWN, EFFECT_PORTA_UP, EFFECT_POSITION_JUMP, EFFECT_PROGRAM_CHANGE,
     EFFECT_SET_SPEED, EFFECT_TONE_PORTA, EFFECT_VIBRATO, EFFECT_VOLUME_SLIDE,
@@ -85,6 +85,11 @@ impl App {
 
     pub fn tick_playback(&mut self) {
         if !self.playing {
+            return;
+        }
+
+        // In external clock mode, timing comes from MIDI clock messages, not internal timer
+        if self.clock_mode == ClockMode::ExternalMidi {
             return;
         }
 
@@ -460,6 +465,81 @@ impl App {
         }
     }
 
+    // -- External MIDI clock sync --
+
+    /// Toggle between internal and external clock modes
+    pub fn toggle_clock_mode(&mut self) {
+        self.clock_mode = match self.clock_mode {
+            ClockMode::Internal => {
+                self.ext_clock_count = 0;
+                ClockMode::ExternalMidi
+            }
+            ClockMode::ExternalMidi => ClockMode::Internal,
+        };
+    }
+
+    /// Handle an incoming MIDI clock tick (0xF8, 24 ppqn).
+    /// Maps MIDI clock ticks to tracker sub-ticks: every (24/speed) clock ticks = 1 tracker tick.
+    pub(crate) fn handle_external_clock(&mut self) {
+        if self.clock_mode != ClockMode::ExternalMidi || !self.playing {
+            return;
+        }
+
+        self.ext_clock_count += 1;
+
+        // 24 MIDI clock ticks = 1 beat. speed tracker ticks = 1 row.
+        // clocks_per_tracker_tick = 24 / speed
+        let clocks_per_tick = (24u32 / self.song.speed as u32).max(1);
+        if self.ext_clock_count >= clocks_per_tick {
+            self.ext_clock_count = 0;
+            self.process_tick();
+
+            // Update elapsed time based on BPM (estimated)
+            let spt = self.song.seconds_per_tick();
+            self.playback_elapsed += spt;
+        }
+    }
+
+    /// Handle external MIDI Start message (0xFA)
+    pub(crate) fn handle_external_start(&mut self) {
+        if self.clock_mode != ClockMode::ExternalMidi {
+            return;
+        }
+        self.playing = true;
+        self.playback_row = 0;
+        self.playback_order = 0;
+        self.playback_generation = 0;
+        self.playback_tick = 0;
+        self.ext_clock_count = 0;
+        self.playback_elapsed = 0.0;
+        self.playback_repeat_count = 0;
+        self.skip_zero_repeats_forward();
+        let ch_count = self.song.channels;
+        self.channel_states = vec![ChannelState::default(); ch_count];
+    }
+
+    /// Handle external MIDI Stop message (0xFC)
+    pub(crate) fn handle_external_stop(&mut self) {
+        if self.clock_mode != ClockMode::ExternalMidi {
+            return;
+        }
+        self.playing = false;
+        for ch in 0..self.channel_states.len() {
+            let midi_ch = self.midi_channel_for(ch);
+            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+        }
+        self.send_all_notes_off();
+    }
+
+    /// Handle external MIDI Continue message (0xFB)
+    pub(crate) fn handle_external_continue(&mut self) {
+        if self.clock_mode != ClockMode::ExternalMidi {
+            return;
+        }
+        self.playing = true;
+        self.ext_clock_count = 0;
+    }
+
     // -- MIDI input handling --
 
     /// Process incoming MIDI note events from external controllers
@@ -470,37 +550,62 @@ impl App {
     }
 
     pub(crate) fn handle_midi_input(&mut self, event: MidiInputEvent) {
-        // Only enter notes in Insert mode when not playing
-        if self.mode != Mode::Insert || self.playing {
-            // Still preview the note
-            let midi_ch = self.midi_channel_for(self.cursor_channel);
-            self.preview_note(midi_ch, event.note, event.velocity);
-            return;
-        }
+        match event {
+            MidiInputEvent::NoteOn { channel: _, note, velocity } => {
+                // Only enter notes in Insert mode when not playing
+                if self.mode != Mode::Insert || self.playing {
+                    let midi_ch = self.midi_channel_for(self.cursor_channel);
+                    self.preview_note(midi_ch, note, velocity);
+                    return;
+                }
 
-        // Convert MIDI note number to Note
-        let octave = event.note / 12;
-        let note_index = event.note % 12;
-        if let Some(note_val) = NoteValue::from_index(note_index) {
-            let note = Note::On {
-                value: note_val,
-                octave,
-            };
+                let octave = note / 12;
+                let note_index = note % 12;
+                if let Some(note_val) = NoteValue::from_index(note_index) {
+                    let tracker_note = Note::On { value: note_val, octave };
+                    self.push_undo();
+                    let midi_ch = self.midi_channel_for(self.cursor_channel);
+                    self.preview_note(midi_ch, note, velocity);
 
-            self.push_undo();
-
-            // Preview the note
-            let midi_ch = self.midi_channel_for(self.cursor_channel);
-            self.preview_note(midi_ch, event.note, event.velocity);
-
-            // Write to pattern
-            let pattern_idx = self.song.order[self.current_order_position()];
-            let cell = self.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-            cell.note = Some(note);
-            cell.volume = Some(event.velocity);
-
-            // Advance cursor
-            self.move_cursor_down(self.edit_step);
+                    let pattern_idx = self.song.order[self.current_order_position()];
+                    let cell = self.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+                    cell.note = Some(tracker_note);
+                    cell.volume = Some(velocity);
+                    self.move_cursor_down(self.edit_step);
+                }
+            }
+            MidiInputEvent::NoteOff { channel: _, note } => {
+                // Forward note-off to MIDI output (thru)
+                let midi_ch = self.midi_channel_for(self.cursor_channel);
+                self.send_note_off(midi_ch, note);
+            }
+            MidiInputEvent::CC { channel: _, controller, value } => {
+                // Forward CC to output (MIDI thru)
+                let midi_ch = self.midi_channel_for(self.cursor_channel);
+                self.send_cc(midi_ch, controller, value);
+            }
+            MidiInputEvent::PitchBend { channel: _, value } => {
+                // Forward pitch bend to output (MIDI thru)
+                let midi_ch = self.midi_channel_for(self.cursor_channel);
+                self.send_pitch_bend(midi_ch, value);
+            }
+            MidiInputEvent::ProgramChange { channel: _, program } => {
+                // Forward program change to output (MIDI thru)
+                let midi_ch = self.midi_channel_for(self.cursor_channel);
+                self.send_program_change(midi_ch, program);
+            }
+            MidiInputEvent::Clock => {
+                self.handle_external_clock();
+            }
+            MidiInputEvent::Start => {
+                self.handle_external_start();
+            }
+            MidiInputEvent::Stop => {
+                self.handle_external_stop();
+            }
+            MidiInputEvent::Continue => {
+                self.handle_external_continue();
+            }
         }
     }
 }

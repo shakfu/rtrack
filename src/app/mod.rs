@@ -120,6 +120,14 @@ impl ChannelType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockMode {
+    /// rtrack is the clock master (internal timing)
+    Internal,
+    /// rtrack slaves to external MIDI clock
+    ExternalMidi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Insert,
@@ -326,6 +334,10 @@ pub struct App {
     pub(crate) playback_repeat_count: u8,
     /// Per-channel effect state
     pub(crate) channel_states: Vec<ChannelState>,
+    /// External MIDI clock mode
+    pub clock_mode: ClockMode,
+    /// Count of received external MIDI clock ticks (0xF8)
+    pub(crate) ext_clock_count: u32,
 
     // -----------------------------------------------------------------------
     // Editor State
@@ -398,6 +410,8 @@ pub struct App {
     pub channel_pans: Vec<f32>,
     /// Per-channel effects parameters
     pub channel_effects_params: Vec<crate::audio::channel_effects::ChannelEffectsParams>,
+    /// Send/return bus parameters
+    pub send_bus_params: Vec<crate::audio::effects::SendBusParams>,
 }
 
 impl App {
@@ -465,6 +479,8 @@ impl App {
             preview_note: None,
             playback_tick: 0,
             channel_states: vec![ChannelState::default(); 4],
+            clock_mode: ClockMode::Internal,
+            ext_clock_count: 0,
             help_scroll: 0,
             dirty: false,
             block_anchor: None,
@@ -480,6 +496,7 @@ impl App {
             channel_volumes: vec![1.0; 4],
             channel_pans: vec![0.0; 4],
             channel_effects_params: (0..4).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect(),
+            send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
         }
     }
 
@@ -630,7 +647,7 @@ impl App {
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100);
         match crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, &self.send_bus_params, sample_rate,
         ) {
             Ok(()) => {
                 // status_message is not &mut self here; caller should set it
@@ -692,6 +709,14 @@ impl App {
         if let Some(ref mut audio) = self.audio {
             audio.note_off_all_channel(channel);
             audio.sample_note_off_channel(channel);
+        }
+    }
+
+    pub(crate) fn send_note_off(&mut self, channel: u8, note: u8) {
+        let _ = self.midi.note_off(channel, note);
+        if let Some(ref mut audio) = self.audio {
+            audio.note_off(channel, note);
+            audio.sample_note_off(channel, note);
         }
     }
 
@@ -1152,7 +1177,7 @@ impl App {
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100);
         match crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, &self.send_bus_params, sample_rate,
         ) {
             Ok(()) => {
                 self.status_message = Some(format!("Exported WAV: {}", path.display()));
@@ -1181,7 +1206,7 @@ impl App {
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100);
         match crate::sample::export::render_to_flac(
-            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, &self.send_bus_params, sample_rate,
         ) {
             Ok(()) => {
                 self.status_message = Some(format!("Exported FLAC: {}", path.display()));
@@ -1302,6 +1327,8 @@ mod tests {
             tick_accumulator: 0.0,
             playback_tick: 0,
             channel_states: vec![ChannelState::default(); 4],
+            clock_mode: ClockMode::Internal,
+            ext_clock_count: 0,
             edit_step: 1,
             file_path: None,
             status_message: None,
@@ -1346,6 +1373,7 @@ mod tests {
             channel_volumes: vec![1.0; 4],
             channel_pans: vec![0.0; 4],
             channel_effects_params: (0..4).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect(),
+            send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
         }
     }
 
@@ -2468,7 +2496,7 @@ mod tests {
         app.mode = Mode::Insert;
 
         // Simulate MIDI note C-4 (note 60)
-        app.handle_midi_input(MidiInputEvent { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
 
         let pattern_idx = app.song.order[0];
         let cell = app.song.patterns[pattern_idx].get(0, 0);
@@ -2483,7 +2511,7 @@ mod tests {
         let mut app = make_app();
         app.mode = Mode::Normal;
 
-        app.handle_midi_input(MidiInputEvent { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
 
         // Should not have written to pattern
         let pattern_idx = app.song.order[0];
@@ -2499,7 +2527,7 @@ mod tests {
         app.mode = Mode::Insert;
         app.playing = true;
 
-        app.handle_midi_input(MidiInputEvent { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
 
         let pattern_idx = app.song.order[0];
         let cell = app.song.patterns[pattern_idx].get(0, 0);

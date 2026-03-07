@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::effects::MAX_SEND_BUSES;
+
 /// Maximum tracker channels supported for per-channel effects.
 pub const MAX_EFFECT_CHANNELS: usize = 16;
 
@@ -50,6 +52,10 @@ pub struct ChannelEffectsParams {
     /// Wet mix (0.0..1.0)
     #[serde(default = "default_reverb_mix")]
     pub reverb_mix: f32,
+
+    /// Send levels to shared effect buses (0.0..1.0 per bus)
+    #[serde(default)]
+    pub send_levels: [f32; MAX_SEND_BUSES],
 }
 
 fn default_delay_time() -> f32 { 250.0 }
@@ -79,6 +85,7 @@ impl Default for ChannelEffectsParams {
             reverb_size: 0.5,
             reverb_damp: 0.5,
             reverb_mix: 0.3,
+            send_levels: [0.0; MAX_SEND_BUSES],
         }
     }
 }

@@ -6,7 +6,7 @@ use dasp::Sample as DaspSample;
 use super::playback::SamplePlaybackEngine;
 use super::SampleBank;
 use crate::audio::channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
-use crate::audio::effects::EffectsChain;
+use crate::audio::effects::{self, EffectsChain};
 use crate::audio::synth::{BuiltinSynth, SynthParams};
 use crate::tracker::{Note, Song};
 
@@ -71,9 +71,10 @@ pub fn render_to_wav(
     bank: &SampleBank,
     instruments: &[ExportInstrument],
     channel_fx_params: &[ChannelEffectsParams],
+    send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(song, bank, instruments, channel_fx_params, sample_rate)?;
+    let (left, right) = render_song(song, bank, instruments, channel_fx_params, send_bus_params, sample_rate)?;
     write_wav(path, &left, &right, sample_rate)
 }
 
@@ -83,6 +84,7 @@ fn render_song(
     bank: &SampleBank,
     instruments: &[ExportInstrument],
     channel_fx_params: &[ChannelEffectsParams],
+    send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
     let sr = sample_rate as f64;
@@ -102,6 +104,18 @@ fn render_song(
             fx
         })
         .collect();
+    // Create send/return buses for offline render
+    let mut send_buses: Vec<effects::SendBus> = (0..effects::MAX_SEND_BUSES)
+        .map(|i| {
+            let mut bus = effects::SendBus::new(sr);
+            if let Some(params) = send_bus_params.get(i) {
+                bus.params = params.clone();
+            }
+            bus
+        })
+        .collect();
+    let any_send_bus = send_buses.iter().any(|b| b.params.enabled);
+
     let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
 
     let mut all_left = Vec::new();
@@ -368,8 +382,8 @@ fn render_song(
                 let mut left = vec![0.0f32; fpt];
                 let mut right = vec![0.0f32; fpt];
 
-                if any_ch_fx {
-                    // Per-channel rendering path
+                if any_ch_fx || any_send_bus {
+                    // Per-channel rendering path (needed for channel effects or send buses)
                     let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
                         .map(|_| vec![0.0f32; fpt])
                         .collect();
@@ -396,12 +410,32 @@ fn render_song(
                         sample_engine.render_per_channel(bank, &mut slices);
                     }
 
+                    // Clear send bus inputs
+                    for bus in send_buses.iter_mut() {
+                        bus.ensure_size(fpt);
+                        bus.clear_inputs(fpt);
+                    }
+
                     for ch in 0..MAX_EFFECT_CHANNELS {
                         channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
+
+                        // Feed send buses (post-channel-effects)
+                        let send_levels = channel_effects[ch].params.send_levels;
+                        for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
+                            if bus.params.enabled && send_levels[bus_idx] > 0.0 {
+                                bus.add_send(&ch_left[ch], &ch_right[ch], send_levels[bus_idx]);
+                            }
+                        }
+
                         for i in 0..fpt {
                             left[i] += ch_left[ch][i];
                             right[i] += ch_right[ch][i];
                         }
+                    }
+
+                    // Process send buses to master
+                    for bus in send_buses.iter_mut() {
+                        bus.process_to_master(&mut left, &mut right, fpt);
                     }
                 } else {
                     for i in 0..fpt {
@@ -461,7 +495,7 @@ fn render_song(
     let tail_frames = (sr * 2.0) as usize; // 2 seconds tail
     let mut tail_left = vec![0.0f32; tail_frames];
     let mut tail_right = vec![0.0f32; tail_frames];
-    if any_ch_fx {
+    if any_ch_fx || any_send_bus {
         let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
             .map(|_| vec![0.0f32; tail_frames])
             .collect();
@@ -476,12 +510,26 @@ fn render_song(
                 ch_right[ch][i] += ch_out[ch][1];
             }
         }
+        // Clear send bus inputs for tail
+        for bus in send_buses.iter_mut() {
+            bus.ensure_size(tail_frames);
+            bus.clear_inputs(tail_frames);
+        }
         for ch in 0..MAX_EFFECT_CHANNELS {
             channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
+            let send_levels = channel_effects[ch].params.send_levels;
+            for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
+                if bus.params.enabled && send_levels[bus_idx] > 0.0 {
+                    bus.add_send(&ch_left[ch], &ch_right[ch], send_levels[bus_idx]);
+                }
+            }
             for i in 0..tail_frames {
                 tail_left[i] += ch_left[ch][i];
                 tail_right[i] += ch_right[ch][i];
             }
+        }
+        for bus in send_buses.iter_mut() {
+            bus.process_to_master(&mut tail_left, &mut tail_right, tail_frames);
         }
     } else {
         for i in 0..tail_frames {
@@ -541,9 +589,10 @@ pub fn render_to_flac(
     bank: &SampleBank,
     instruments: &[ExportInstrument],
     channel_fx_params: &[ChannelEffectsParams],
+    send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(song, bank, instruments, channel_fx_params, sample_rate)?;
+    let (left, right) = render_song(song, bank, instruments, channel_fx_params, send_bus_params, sample_rate)?;
     let samples_i16 = to_interleaved_i16(&left, &right);
     write_flac(path, &samples_i16, sample_rate)
 }
@@ -588,7 +637,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_empty.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, &[], 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
         assert!(result.is_ok());
 
         // Verify the file exists and is a valid WAV
@@ -621,7 +670,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_synth.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, &[], 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
         assert!(result.is_ok());
 
         // Should have some audio content (not all silence)
@@ -681,7 +730,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_sample.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, &[], 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
         assert!(result.is_ok());
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -720,7 +769,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path_with = dir.join("rtrack_test_porta.wav");
 
-        render_to_wav(&path_with, &song, &bank, &instruments, &[], 44100).unwrap();
+        render_to_wav(&path_with, &song, &bank, &instruments, &[], &[], 44100).unwrap();
 
         // Now render without the effect for comparison
         let mut song_no_fx = Song::new(1, 4);
@@ -733,7 +782,7 @@ mod tests {
         });
 
         let path_without = dir.join("rtrack_test_no_porta.wav");
-        render_to_wav(&path_without, &song_no_fx, &bank, &instruments, &[], 44100).unwrap();
+        render_to_wav(&path_without, &song_no_fx, &bank, &instruments, &[], &[], 44100).unwrap();
 
         // Read both and compare -- they should differ
         let r1 = hound::WavReader::open(&path_with).unwrap();
@@ -781,7 +830,7 @@ mod tests {
 
         // Render with volume slide
         let path_slide = dir.join("rtrack_test_volslide.wav");
-        render_to_wav(&path_slide, &song, &bank, &instruments, &[], 44100).unwrap();
+        render_to_wav(&path_slide, &song, &bank, &instruments, &[], &[], 44100).unwrap();
 
         // Render without (static volume)
         let mut song_static = Song::new(1, 4);
@@ -793,7 +842,7 @@ mod tests {
             ..Cell::default()
         });
         let path_static = dir.join("rtrack_test_volstatic.wav");
-        render_to_wav(&path_static, &song_static, &bank, &instruments, &[], 44100).unwrap();
+        render_to_wav(&path_static, &song_static, &bank, &instruments, &[], &[], 44100).unwrap();
 
         let r1 = hound::WavReader::open(&path_slide).unwrap();
         let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
@@ -830,7 +879,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_export.flac");
 
-        let result = render_to_flac(&path, &song, &bank, &instruments, &[], 44100);
+        let result = render_to_flac(&path, &song, &bank, &instruments, &[], &[], 44100);
         assert!(result.is_ok(), "FLAC export failed: {:?}", result.err());
 
         // Verify the file exists and is non-empty
