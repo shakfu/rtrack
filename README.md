@@ -130,7 +130,11 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 - 256 instrument slots (F7 to browse)
 - Per-instrument sample assignment -- load WAV/AIFF files into slots
-- Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview
+- Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview, slice tools
+- Sample slicing: auto-slice samples into equal segments or by transient detection (configurable sensitivity)
+  - Slice results create new instruments + sample refs with correct trim points
+  - Equal-segment: divides sample into N equal parts
+  - Transient detection: RMS energy envelope derivative with ~5ms windows, 50ms minimum gap between onsets
 - Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter (type/cutoff/resonance/env), detune, sub-oscillator, FM ratio/index, pulse width
 - Pitch-shifted playback with cubic hermite interpolation, up to 32 simultaneous voices with ADSR envelopes
 - Smart voice stealing: quietest voice is stolen when at capacity
@@ -335,6 +339,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | `:ew` / `:wav` | Export WAV |
 | `:ef` / `:flac` | Export FLAC |
 | `:em` / `:exportmidi` | Export MIDI |
+| `:load` | Open file browser to load a sample |
+| `:open` | Open file browser to load a song |
 
 ### Track Config (Enter on channel)
 
@@ -343,6 +349,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | Up / Down / Tab | Navigate fields |
 | Left / Right | Adjust value (type, instrument, effect params) |
 | Type chars | Edit channel name (when on name field) |
+| Enter | Open file browser (on Load field for Sample tracks) |
 | Enter / Esc | Save and close |
 
 ### Instrument List (F7)
@@ -388,6 +395,8 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `all-patches.rtrk` | Built-in synth patches cycled with `Exx` program change |
 | `fundsp-pad.rtrk` | FundspPad patch (program 8) -- pad chord progression using fundsp synthesis |
 | `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
+| `sliced-amen.rtrk` | Sample slicing -- 8 equal slices of amen.wav played sequentially (170 BPM) |
+| `drumloops.rtrk` | Looping drum slices -- 8 amen.wav slices with loop points enabled (130 BPM) |
 
 Load any example:
 
@@ -407,7 +416,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (234 tests)
+make test     # run tests (285 tests)
 ```
 
 ## Architecture
@@ -427,7 +436,7 @@ src/
     envelope.rs         Shared ADSR envelope (used by synth + sample voices)
     effects.rs          Master stereo delay effect (fundsp)
   sample/
-    mod.rs              Sample loading (WAV via hound, AIFF parser, dasp conversion)
+    mod.rs              Sample loading (WAV/AIFF), slicing (equal-segment, transient detection)
     playback.rs         Sample voice manager, pitch-shifted rendering
     export.rs           Offline song render to WAV
   tracker/

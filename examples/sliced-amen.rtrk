@@ -16,7 +16,7 @@
               }
             },
             "instrument": 0,
-            "volume": 19,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -57,7 +57,7 @@
               }
             },
             "instrument": 1,
-            "volume": 17,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -98,7 +98,7 @@
               }
             },
             "instrument": 2,
-            "volume": 51,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -139,7 +139,7 @@
               }
             },
             "instrument": 3,
-            "volume": 19,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -180,7 +180,7 @@
               }
             },
             "instrument": 4,
-            "volume": 17,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -221,7 +221,7 @@
               }
             },
             "instrument": 5,
-            "volume": 20,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -262,7 +262,7 @@
               }
             },
             "instrument": 6,
-            "volume": 31,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -303,7 +303,7 @@
               }
             },
             "instrument": 7,
-            "volume": 1,
+            "volume": 127,
             "effect": null,
             "effect_value": null
           }
@@ -391,7 +391,7 @@
   "sample_refs": [
     {
       "slot": 0,
-      "name": "amen",
+      "name": "amen_S00",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 0,
@@ -402,7 +402,7 @@
     },
     {
       "slot": 1,
-      "name": "amen",
+      "name": "amen_S01",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 15120,
@@ -413,7 +413,7 @@
     },
     {
       "slot": 2,
-      "name": "amen",
+      "name": "amen_S02",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 30240,
@@ -424,7 +424,7 @@
     },
     {
       "slot": 3,
-      "name": "amen",
+      "name": "amen_S03",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 45360,
@@ -435,7 +435,7 @@
     },
     {
       "slot": 4,
-      "name": "amen",
+      "name": "amen_S04",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 60480,
@@ -446,7 +446,7 @@
     },
     {
       "slot": 5,
-      "name": "amen",
+      "name": "amen_S05",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 75600,
@@ -457,7 +457,7 @@
     },
     {
       "slot": 6,
-      "name": "amen",
+      "name": "amen_S06",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 90720,
@@ -468,7 +468,7 @@
     },
     {
       "slot": 7,
-      "name": "amen",
+      "name": "amen_S07",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 105840,

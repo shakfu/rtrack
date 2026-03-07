@@ -4,6 +4,26 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (Sample Slicing & File Browser)
+
+- Sample slicing in the sample editor (Enter from instrument list):
+  - Equal-segment slicing: divides sample into N equal parts (configurable slice count)
+  - Transient detection: RMS energy envelope derivative with ~5ms windows, 50ms minimum onset gap, configurable sensitivity (0.0-1.0)
+  - Slice results automatically create new instruments and sample refs with correct trim points
+  - Three new functions: `slice_equal()`, `detect_transients()`, `slice_at_points()`
+- File browser dialog (`:load` / `:open` commands, or Enter on Load field in Track Config):
+  - Directory navigation with keyboard (Up/Down/PgUp/PgDn/Home/End/Backspace/Enter/Esc)
+  - Extension filtering (`.wav`/`.aiff` for samples, `.rtrk`/`.mid` for songs)
+  - Scrollable file list with cursor highlight
+  - Reusable `FileBrowserAction` callback pattern (LoadSample, OpenSong)
+- Track Config "Load" field for Sample-type channels: press Enter to open file browser for sample loading
+- New vim commands: `:load` (sample file browser), `:open` (song file browser)
+- New example files:
+  - `examples/sliced-amen.rtrk`: 8 equal slices of amen.wav at 170 BPM, speed 3, 32 rows
+  - `examples/drumloops.rtrk`: 8 amen.wav slices with loop points enabled at 130 BPM, speed 6, 64 rows
+- 22 new tests: 12 sample slicing (equal/transient/edge cases), 9 file browser + slice integration, 1 example generation
+- Test count increased from 263 to 285 (273 unit + 12 integration)
+
 ### Added (Extended Synth & Track Config)
 
 - 30 built-in synth patches (up from 9), selected via `Exx` program change (0-29):
