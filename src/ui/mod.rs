@@ -107,10 +107,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     let mut left_spans = vec![
         Span::styled(" rtrack", Style::default().fg(theme.header_title).add_modifier(Modifier::BOLD)),
-        Span::raw(" "),
+        Span::raw("  "),
         Span::styled(title_display, Style::default().fg(theme.status_text)),
+        Span::raw("  "),
         Span::styled(
-            format!(" {}bpm", song.bpm),
+            format!("{}bpm", song.bpm),
             Style::default().fg(theme.header_bpm),
         ),
         Span::raw(if app.is_playing() { " \u{25B6}" } else { " \u{25A0}" }),
@@ -123,13 +124,15 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Style::default().fg(theme.header_bpm),
     ));
     left_spans.extend([
+        Span::raw("  "),
         Span::styled(
-            format!(" P:{:02X}/{:02X}",
+            format!("P:{:02X}/{:02X}",
                 pattern_num, song.current_pattern_count() - 1),
             Style::default().fg(theme.header_position),
         ),
+        Span::raw("  "),
         Span::styled(
-            format!(" Oct:{}", app.current_octave),
+            format!("Oct:{}", app.current_octave),
             Style::default().fg(theme.header_octave),
         ),
         Span::styled(
