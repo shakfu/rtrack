@@ -4229,4 +4229,108 @@ mod tests {
         let def: crate::tracker::InstrumentDef = serde_json::from_str(json).unwrap();
         assert_eq!(def.pitch_bend_range, None);
     }
+
+    #[test]
+    fn test_track_config_sample_select_cycles_loaded() {
+        let mut app = make_app();
+        // Load two samples into the bank
+        let mut bank = (*app.sample_bank).clone();
+        bank.samples[2] = Some(crate::sample::Sample {
+            name: "kick".to_string(),
+            data: vec![[0.0; 2]; 100],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        });
+        bank.samples[5] = Some(crate::sample::Sample {
+            name: "snare".to_string(),
+            data: vec![[0.0; 2]; 100],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        });
+        app.sample_bank = std::sync::Arc::new(bank);
+        app.channels[0].channel_type = ChannelType::Sample;
+
+        // Open track config and navigate to sample field
+        run_command(&mut app, "fx");
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Sample
+        assert_eq!(app.ch_fx_field, 2);
+
+        // Right arrow selects first loaded sample (slot 2)
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channels[0].default_instrument, Some(2));
+
+        // Right again cycles to slot 5
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channels[0].default_instrument, Some(5));
+
+        // Right again wraps to slot 2
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.channels[0].default_instrument, Some(2));
+
+        // Left goes back to slot 5
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.channels[0].default_instrument, Some(5));
+    }
+
+    #[test]
+    fn test_track_config_sample_select_no_samples_opens_browser() {
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Sample;
+
+        // Open track config and navigate to sample field
+        run_command(&mut app, "fx");
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        // Right arrow with no samples loaded should open file browser
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::FileBrowser);
+    }
+
+    #[test]
+    fn test_sample_bank_loaded_slots() {
+        let mut bank = crate::sample::SampleBank::new();
+        assert!(bank.loaded_slots().is_empty());
+
+        bank.samples[3] = Some(crate::sample::Sample {
+            name: "test".to_string(),
+            data: vec![[0.0; 2]; 10],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        });
+        bank.samples[7] = Some(crate::sample::Sample {
+            name: "test2".to_string(),
+            data: vec![[0.0; 2]; 10],
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        });
+
+        let slots = bank.loaded_slots();
+        assert_eq!(slots, vec![3, 7]);
+    }
 }

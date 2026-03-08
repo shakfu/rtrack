@@ -583,11 +583,35 @@ impl App {
                         }
                     }
                     ChannelType::Sample => {
-                        // Load sample -- open file browser
-                        self.open_file_browser(
-                            super::FileBrowserAction::LoadSample(ch),
-                            vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
-                        );
+                        // Cycle through loaded sample bank slots
+                        let slots = self.sample_bank.loaded_slots();
+                        if slots.is_empty() {
+                            // No samples loaded -- fall back to file browser
+                            self.open_file_browser(
+                                super::FileBrowserAction::LoadSample(ch),
+                                vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
+                            );
+                            return;
+                        }
+                        let current = self.channels[ch].default_instrument.map(|i| i as usize);
+                        let cur_idx = current.and_then(|c| slots.iter().position(|&s| s == c));
+                        let next_idx = match cur_idx {
+                            Some(i) => {
+                                if dir > 0 {
+                                    (i + 1) % slots.len()
+                                } else {
+                                    (i + slots.len() - 1) % slots.len()
+                                }
+                            }
+                            None => 0,
+                        };
+                        let slot = slots[next_idx];
+                        self.channels[ch].default_instrument = Some(slot as u8);
+                        // Preview the selected sample
+                        let midi_ch = self.midi_channel_for(ch);
+                        let note = self.current_octave * 12 + 12; // C at current octave
+                        self.preview_note_with_instrument(midi_ch, note, 100, Some(slot as u8));
+                        self.dirty = true;
                     }
                     _ => {}
                 }

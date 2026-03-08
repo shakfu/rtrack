@@ -616,13 +616,21 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     }
 
     if is_sample {
-        let sample_display = app.sample_bank.get(ch)
-            .map(|s| format!("{} ({:.1}s)", s.name, s.duration()))
+        let selected_slot = app.channels.get(ch).and_then(|c| c.default_instrument);
+        let sample_display = selected_slot
+            .and_then(|s| app.sample_bank.get(s as usize))
+            .map(|s| format!("{:02X} {} ({:.1}s)", selected_slot.unwrap(), s.name, s.duration()))
             .unwrap_or_else(|| "(none)".to_string());
+        let loaded = app.sample_bank.loaded_slots();
+        let hint_text = if loaded.is_empty() {
+            "  (Enter:browse)"
+        } else {
+            "  (L/R:select  Enter:browse)"
+        };
         lines.push(Line::from(vec![
-            Span::styled("  Load: ", style_for(2)),
+            Span::styled("  Smpl: ", style_for(2)),
             Span::styled(sample_display, style_for(2)),
-            Span::styled("  (Enter/L/R)", dim),
+            Span::styled(hint_text, dim),
         ]));
     }
 

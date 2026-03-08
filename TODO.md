@@ -17,6 +17,7 @@
 - [x] Swing/groove (non-uniform tick spacing)
 - [x] Configurable pitch bend range per instrument (currently hardcoded +/-2 semitones)
 - [x] Link timing: use beat timeline directly instead of accumulating deltas
+- [x] Sample selector in track config (cycle loaded samples with L/R, audition on select)
 
 ## Low Priority (nice-to-have or high effort)
 

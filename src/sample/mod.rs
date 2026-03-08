@@ -106,6 +106,13 @@ impl SampleBank {
         self.samples.get(slot).and_then(|s| s.as_ref())
     }
 
+    /// Return sorted list of slot indices that have samples loaded.
+    pub fn loaded_slots(&self) -> Vec<usize> {
+        self.samples.iter().enumerate()
+            .filter_map(|(i, s)| if s.is_some() { Some(i) } else { None })
+            .collect()
+    }
+
     /// Load samples from a directory. Files should be named `<slot>-<name>.wav` or `.aiff`.
     /// Optionally reads `samples.json` for metadata (base_note, bpm, mappings).
     pub fn load_directory(&mut self, dir: &Path) -> Result<SampleDirMeta> {
