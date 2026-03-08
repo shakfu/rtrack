@@ -129,23 +129,19 @@ fn test_play_stop_cycle() {
 #[test]
 fn test_playback_advances_position() {
     let mut app = app_with_note();
-    app.song.bpm = 240; // fast tempo for quick advancement
-    app.song.speed = 1;
+    app.song.speed = 1; // 1 tick per row = each process_tick advances a row
 
     app.handle_key(key(KeyCode::Char(' '))); // play
     assert!(app.is_playing());
 
     let start_row = app.engine.row;
 
-    // Tick enough to advance at least one row
-    // At 240 BPM, speed 1: tps = 240*24/60 = 96
-    // tick_playback uses real elapsed time, so we need to simulate enough passes
-    for _ in 0..5000 {
-        app.tick_playback();
-        std::thread::sleep(std::time::Duration::from_micros(100));
+    // Drive the engine deterministically -- no wall-clock sleeping needed.
+    // With speed=1, each process_tick advances one row.
+    for _ in 0..4 {
+        app.engine.process_tick(&app.song);
     }
 
-    // Position should have advanced (or wrapped)
     let end_row = app.engine.row;
     assert!(
         end_row != start_row || app.engine.order != 0,

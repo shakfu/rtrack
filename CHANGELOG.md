@@ -4,9 +4,27 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (MIDI Recording)
+
+- Punch-in recording (`Ctrl+R` toggle): record incoming MIDI notes directly into the pattern during playback
+  - When armed (playing + recording + Insert mode), NoteOn writes to the pattern at the engine's current playback position with velocity in the volume column
+  - NoteOff during punch-in writes note-off at the current playback position
+  - Instrument auto-fill from track default for Synth and Sample channel types (both punch-in and step recording)
+  - Does not advance cursor (engine manages position); does not record NoteOff in step mode (key release timing is meaningless during step entry)
+  - Record indicator in header bar: filled circle, bold red when armed, dim when off
+  - 8 new tests: recording toggle, punch-in at engine position, no-record without flag, NoteOff punch-in, NoteOff not recorded in step mode, instrument auto-fill (punch-in + step), dirty flag
+- Header transport indicators: play triangle, stop square, and record circle shown in the top bar
+- Link indicator redesigned: shows `Link:N` in bold yellow when active (peers > 0), dim when enabled but alone; no longer uses reversed/red background
+
 ### Fixed
 
 - Fixed sample track note preview using synth instead of sample engine during insert mode. Loading a sample via the file browser now auto-sets the channel's `default_instrument`, so `try_enter_note()` routes preview through the sample engine instead of falling through to the default synth.
+- Fixed `sample_dir` config option having no effect: `load_sample_directory()` ran before `load_file()` in `setup_app()`, so loading a song file wiped the samples. Reordered so song loads first, then samples overlay on top.
+
+### Changed (Testing & Tooling)
+
+- Replaced wall-clock sleep loop in `test_playback_advances_position` with deterministic `engine.process_tick()` calls; integration suite dropped from ~670ms to ~70ms
+- Makefile: added `fmt`, `clippy`, `lint`, `test-unit`, and `test-integration` targets
 
 ### Added (Configuration)
 
@@ -51,7 +69,7 @@ All notable changes to rtrack will be documented in this file.
 - Space now starts playback from the current order position and cursor row instead of always restarting from order 0
 - Ctrl+Space starts playback from the beginning (order 0, row 0) for when you want to hear the full song
 - 3 new tests: play from edit order, play from start, Ctrl+Space keybinding
-- Test count increased from 301 to 328 (316 unit + 12 integration)
+- Test count increased from 301 to 336 (324 unit + 12 integration)
 
 ### Added (Code Quality)
 

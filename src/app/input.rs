@@ -1123,6 +1123,7 @@ impl App {
                 KeyCode::Char('w') => { self.export_wav_file(); return true; }
                 KeyCode::Char('l') => { self.export_flac_file(); return true; }
                 KeyCode::Char('m') => { self.toggle_midi_clock(); return true; }
+                KeyCode::Char('r') => { self.toggle_recording(); return true; }
                 // Ctrl+F9-F12: solo channels on current page
                 KeyCode::F(9) => { let ch = self.track_page * CHANNELS_PER_PAGE; self.toggle_solo(ch); return true; }
                 KeyCode::F(10) => { let ch = self.track_page * CHANNELS_PER_PAGE + 1; self.toggle_solo(ch); return true; }

@@ -501,6 +501,8 @@ pub struct App {
     // Playback State
     // -----------------------------------------------------------------------
     pub playing: bool,
+    /// Punch-in recording: when true + playing + Insert mode, incoming MIDI writes to pattern
+    pub recording: bool,
     /// The deterministic playback engine (owns row/order/generation/tick/channel_states).
     pub engine: crate::engine::TrackerEngine,
     /// Timing accumulators (internal to playback loop)
@@ -582,6 +584,7 @@ impl App {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             playing: false,
+            recording: false,
             engine,
             timing: PlaybackTiming::new(),
             edit_step: 1,
@@ -1568,6 +1571,7 @@ mod tests {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             playing: false,
+            recording: false,
             engine,
             timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
@@ -2739,6 +2743,148 @@ mod tests {
         let pattern_idx = app.song.order[0];
         let cell = app.song.patterns[pattern_idx].get(0, 0);
         assert!(cell.note.is_none());
+    }
+
+    #[test]
+    fn test_recording_toggle() {
+        let mut app = make_app();
+        assert!(!app.recording);
+        app.toggle_recording();
+        assert!(app.recording);
+        app.toggle_recording();
+        assert!(!app.recording);
+    }
+
+    #[test]
+    fn test_punch_in_records_at_engine_position() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.playing = true;
+        app.recording = true;
+        // Position engine at row 5
+        app.engine.row = 5;
+        app.engine.order = 0;
+
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 110 });
+
+        let pattern_idx = app.song.order[0];
+        // Written at engine row (5), not cursor_row (0)
+        let cell = app.song.patterns[pattern_idx].get(5, 0);
+        assert!(cell.note.is_some());
+        assert_eq!(cell.volume, Some(110));
+        // Cursor row should not have advanced
+        assert_eq!(app.cursor_row, 0);
+        // Pattern at cursor row should be untouched
+        let cell0 = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell0.note.is_none());
+    }
+
+    #[test]
+    fn test_punch_in_no_record_without_flag() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.playing = true;
+        app.recording = false;
+
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+
+        // Should not record (preview only)
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell.note.is_none());
+    }
+
+    #[test]
+    fn test_punch_in_noteoff_recorded() {
+        use crate::midi::MidiInputEvent;
+        use crate::tracker::Note;
+
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.playing = true;
+        app.recording = true;
+        app.engine.row = 3;
+        app.engine.order = 0;
+
+        app.handle_midi_input(MidiInputEvent::NoteOff { channel: 0, note: 60 });
+
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(3, 0);
+        assert_eq!(cell.note, Some(Note::Off));
+    }
+
+    #[test]
+    fn test_noteoff_not_recorded_in_step_mode() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.playing = false;
+
+        app.handle_midi_input(MidiInputEvent::NoteOff { channel: 0, note: 60 });
+
+        // Step mode should NOT record note-off from MIDI
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell.note.is_none());
+    }
+
+    #[test]
+    fn test_punch_in_auto_fills_instrument() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Synth;
+        app.channels[0].default_instrument = Some(7);
+        app.mode = Mode::Insert;
+        app.playing = true;
+        app.recording = true;
+        app.engine.row = 2;
+        app.engine.order = 0;
+
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 64, velocity: 100 });
+
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(2, 0);
+        assert!(cell.note.is_some());
+        assert_eq!(cell.instrument, Some(7));
+    }
+
+    #[test]
+    fn test_step_record_auto_fills_instrument() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Sample;
+        app.channels[0].default_instrument = Some(3);
+        app.mode = Mode::Insert;
+        app.playing = false;
+
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell.note.is_some());
+        assert_eq!(cell.instrument, Some(3));
+    }
+
+    #[test]
+    fn test_punch_in_sets_dirty() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.playing = true;
+        app.recording = true;
+        app.dirty = false;
+
+        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+
+        assert!(app.dirty);
     }
 
     #[test]

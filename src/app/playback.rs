@@ -26,6 +26,15 @@ impl App {
         }
     }
 
+    pub fn toggle_recording(&mut self) {
+        self.recording = !self.recording;
+        if self.recording {
+            self.status_message = Some("Recording armed".to_string());
+        } else {
+            self.status_message = Some("Recording off".to_string());
+        }
+    }
+
     pub fn play_from_start(&mut self) {
         self.edit_order = 0;
         self.cursor_row = 0;
@@ -289,32 +298,84 @@ impl App {
     pub(crate) fn handle_midi_input(&mut self, event: MidiInputEvent) {
         match event {
             MidiInputEvent::NoteOn { channel: _, note, velocity } => {
-                // Only enter notes in Insert mode when not playing
-                if self.mode != Mode::Insert || self.playing {
-                    let midi_ch = self.midi_channel_for(self.cursor_channel);
+                let ch = self.cursor_channel;
+                let midi_ch = self.midi_channel_for(ch);
+
+                // Punch-in recording: playing + recording + Insert mode
+                if self.playing && self.recording && self.mode == Mode::Insert {
+                    let octave = note / SEMITONES_PER_OCTAVE;
+                    let note_index = note % SEMITONES_PER_OCTAVE;
+                    if let Some(note_val) = NoteValue::from_index(note_index) {
+                        let tracker_note = Note::On { value: note_val, octave };
+                        let order = self.engine.order;
+                        let row = self.engine.row;
+                        if order < self.song.order.len() {
+                            let pattern_idx = self.song.order[order];
+                            if pattern_idx < self.song.patterns.len() {
+                                let cell = self.song.patterns[pattern_idx].get_mut(row, ch);
+                                cell.note = Some(tracker_note);
+                                cell.volume = Some(velocity);
+                                // Auto-fill instrument from track default
+                                let ch_type = self.channels.get(ch).map(|c| c.channel_type);
+                                if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
+                                    if let Some(inst) = self.channels.get(ch).and_then(|c| c.default_instrument) {
+                                        cell.instrument = Some(inst);
+                                    }
+                                }
+                                self.dirty = true;
+                            }
+                        }
+                    }
                     self.preview_note(midi_ch, note, velocity);
                     return;
                 }
 
-                let octave = note / SEMITONES_PER_OCTAVE;
-                let note_index = note % SEMITONES_PER_OCTAVE;
-                if let Some(note_val) = NoteValue::from_index(note_index) {
-                    let tracker_note = Note::On { value: note_val, octave };
-                    self.push_undo();
-                    let midi_ch = self.midi_channel_for(self.cursor_channel);
-                    self.preview_note(midi_ch, note, velocity);
+                // Step recording: Insert mode + stopped
+                if self.mode == Mode::Insert && !self.playing {
+                    let octave = note / SEMITONES_PER_OCTAVE;
+                    let note_index = note % SEMITONES_PER_OCTAVE;
+                    if let Some(note_val) = NoteValue::from_index(note_index) {
+                        let tracker_note = Note::On { value: note_val, octave };
+                        self.push_undo();
+                        self.preview_note(midi_ch, note, velocity);
 
-                    let pattern_idx = self.song.order[self.current_order_position()];
-                    let cell = self.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-                    cell.note = Some(tracker_note);
-                    cell.volume = Some(velocity);
-                    self.move_cursor_down(self.edit_step);
+                        let pattern_idx = self.song.order[self.current_order_position()];
+                        let cell = self.song.patterns[pattern_idx].get_mut(self.cursor_row, ch);
+                        cell.note = Some(tracker_note);
+                        cell.volume = Some(velocity);
+                        // Auto-fill instrument from track default
+                        let ch_type = self.channels.get(ch).map(|c| c.channel_type);
+                        if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
+                            if let Some(inst) = self.channels.get(ch).and_then(|c| c.default_instrument) {
+                                cell.instrument = Some(inst);
+                            }
+                        }
+                        self.dirty = true;
+                        self.move_cursor_down(self.edit_step);
+                    }
+                    return;
                 }
+
+                // All other modes: preview only
+                self.preview_note(midi_ch, note, velocity);
             }
             MidiInputEvent::NoteOff { channel: _, note } => {
-                // Forward note-off to MIDI output (thru)
                 let midi_ch = self.midi_channel_for(self.cursor_channel);
                 self.send_note_off(midi_ch, note);
+
+                // Punch-in: record note-off at engine position
+                if self.playing && self.recording && self.mode == Mode::Insert {
+                    let order = self.engine.order;
+                    let row = self.engine.row;
+                    if order < self.song.order.len() {
+                        let pattern_idx = self.song.order[order];
+                        if pattern_idx < self.song.patterns.len() {
+                            let cell = self.song.patterns[pattern_idx].get_mut(row, self.cursor_channel);
+                            cell.note = Some(Note::Off);
+                            self.dirty = true;
+                        }
+                    }
+                }
             }
             MidiInputEvent::CC { channel: _, controller, value } => {
                 // Forward CC to output (MIDI thru)

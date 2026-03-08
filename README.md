@@ -93,7 +93,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 - Up to 8 channels with Tab/Shift+Tab track cycling (wraps around)
 - Track Config popup (Enter on channel): set channel type (Midi/Synth/Sample), MIDI channel, default instrument (used as fallback during playback and auto-filled on note entry), and per-channel effects
 - Column headers above the pattern grid (shows channel name or "Not In Vl Fx" labels)
-- Channel rename (Ctrl+R): name channels ("Kick", "Bass", etc.) shown in headers
+- Channel rename: name channels ("Kick", "Bass", etc.) shown in headers (via Track Config name field)
 - Configurable channel count and rows per pattern (default 4 channels, 64 rows)
 - Note, instrument, volume, and effect columns per cell
 - Normal mode (navigation) and Insert mode (data entry)
@@ -230,8 +230,11 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 
 - Virtual output port `RTRACK_MIDI` (macOS/Linux) -- visible to any DAW
 - Virtual input port `RTRACK_MIDI_IN` -- play notes from external controllers
+- Step recording: notes from MIDI input are written to the pattern in Insert mode (with velocity and instrument auto-fill)
+- Punch-in recording (Ctrl+R): arm recording, then play -- incoming MIDI notes are written at the playback position in real time
 - MIDI port selection (F2) for switching to hardware ports
 - MIDI clock output (Ctrl+M) at 24 ppqn with start/stop messages
+- External MIDI clock input: slave to incoming MIDI clock when clock mode is set to External
 - Per-channel MIDI channel mapping
 
 ### Sync
@@ -325,6 +328,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | Ctrl+W | Export WAV |
 | Ctrl+L | Export FLAC |
 | Ctrl+M | Toggle MIDI clock |
+| Ctrl+R | Toggle recording (punch-in MIDI during playback) |
 
 ### Normal Mode
 
@@ -436,12 +440,28 @@ cargo run -- examples/chord-progression.rtrk
 - macOS/Linux: virtual MIDI ports created automatically
 - Windows: requires a third-party virtual MIDI driver (e.g., [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
 
+## Configuration
+
+rtrack reads optional settings from `~/.config/rtrack/config.toml` (or `$XDG_CONFIG_HOME/rtrack/config.toml`):
+
+```toml
+sf2 = "/path/to/soundfont.sf2"
+sample_dir = "/path/to/samples"
+```
+
+CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed config files are silently ignored.
+
 ## Build
 
 ```sh
-make build    # compile
-make run      # compile and run
-make test     # run tests (304 tests)
+make build            # compile
+make run              # compile and run
+make test             # run all tests (336 tests)
+make test-unit        # unit tests only
+make test-integration # integration tests only
+make fmt              # format code
+make clippy           # lint with clippy
+make lint             # fmt + clippy
 ```
 
 ## Architecture
@@ -449,11 +469,14 @@ make test     # run tests (304 tests)
 ```text
 src/
   main.rs               Entry point, event loop, clap CLI
+  config.rs             User config (~/.config/rtrack/config.toml)
   constants.rs          Shared constants (MIDI protocol, music theory, effect commands)
+  engine/
+    mod.rs              Deterministic TrackerEngine (tick-based playback, effects, events)
   app/
     mod.rs              App state, undo/redo, file I/O, song management
     input.rs            Keyboard/mouse input handling, mode dispatch
-    playback.rs         Playback engine, tick processing, effects
+    playback.rs         Playback driver, MIDI input/recording, Link sync
   midi_file.rs          MIDI file (.mid) export and import
   audio/
     mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)

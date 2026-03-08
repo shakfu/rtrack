@@ -33,3 +33,4 @@
 - [ ] Plugin hosting (VST/CLAP) - (see: <https://crates.io/crates/rack>)
 - [ ] Piano roll view (alternative note entry)
 - [ ] Audio recording to sample slots
+- [ ] Live granular editing / waveform scrubbing -- would require per-slot `Arc<Sample>` in `SampleBank` to avoid O(256 x frames) clone on every edit. Current clone-and-swap is fine for load-once-play-many but not for real-time sample manipulation.

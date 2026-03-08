@@ -130,6 +130,16 @@ fn setup_app(
         }
     }
 
+    // Load song file first, since it resets sample bank and instruments
+    if let Some(path) = file {
+        if path.extension().map_or(false, |e| e == "mid" || e == "midi") {
+            app.import_midi_file(path);
+        } else {
+            app.load_file(path);
+        }
+    }
+
+    // Load samples after file so they aren't wiped by load_file
     for spec in &samples {
         if let Some((slot_str, file_str)) = spec.split_once(':') {
             if let Ok(slot) = slot_str.parse::<usize>() {
@@ -140,14 +150,6 @@ fn setup_app(
 
     if let Some(dir) = sample_dir {
         app.load_sample_directory(&dir);
-    }
-
-    if let Some(path) = file {
-        if path.extension().map_or(false, |e| e == "mid" || e == "midi") {
-            app.import_midi_file(path);
-        } else {
-            app.load_file(path);
-        }
     }
 
     Ok(app)

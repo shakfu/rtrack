@@ -95,7 +95,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(20),       // left: song info + transport + position
-            Constraint::Length(6),      // right: status symbols (right-justified)
+            Constraint::Length(8),      // right: status symbols (right-justified)
         ])
         .split(inner);
 
@@ -115,7 +115,22 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             format!("{}bpm", song.bpm),
             Style::default().fg(theme.header_bpm),
         ),
-        Span::raw(if app.is_playing() { " \u{25B6}" } else { " \u{25A0}" }),
+        Span::styled(
+            if app.is_playing() { " \u{25B6}" } else { " \u{25A0}" },
+            if app.is_playing() {
+                Style::default().fg(theme.header_title)
+            } else {
+                Style::default()
+            },
+        ),
+        Span::styled(
+            " \u{25CF}",
+            if app.recording {
+                Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.status_hint)
+            },
+        ),
     ];
     let mins = (app.timing.playback_elapsed / 60.0) as u32;
     let secs = (app.timing.playback_elapsed % 60.0) as u32;
@@ -152,10 +167,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     // -- Right: status symbols (right-justified) --
     let mut right_spans: Vec<Span> = Vec::new();
     if app.link.is_enabled() {
-        right_spans.push(Span::styled(
-            format!("L{}", app.link.num_peers()),
-            Style::default().fg(theme.link_active).add_modifier(Modifier::REVERSED),
-        ));
+        let peers = app.link.num_peers();
+        let style = if peers > 0 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.status_hint)
+        };
+        right_spans.push(Span::styled(format!("Link:{}", peers), style));
     }
     if !right_spans.is_empty() {
         let right = Paragraph::new(Line::from(right_spans))
@@ -257,6 +275,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  Shift+Up/Dn  ", key_style), Span::styled("Transpose note(s) up/down semitone", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+I       ", key_style), Span::styled("Interpolate block (volume/effect ramp)", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+F       ", key_style), Span::styled("Toggle follow mode (cursor follows playback)", text_style)]),
+        Line::from(vec![Span::styled("  Ctrl+R       ", key_style), Span::styled("Toggle recording (punch-in MIDI notes during playback)", text_style)]),
         Line::from(vec![Span::styled("  Ctrl+L/R     ", key_style), Span::styled("Next / prev order position", text_style)]),
         Line::from(vec![Span::styled("  F9-F12       ", key_style), Span::styled("Mute/unmute ch (current page)", text_style)]),
         Line::from(vec![Span::styled("  ( / )        ", key_style), Span::styled("Edit step down / up", text_style)]),
