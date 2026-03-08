@@ -79,8 +79,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 hx += SEPARATOR_WIDTH;
             }
             let col_start = hx;
-            let ch_name = app.channel_names.get(ch).filter(|n| !n.is_empty());
-            let ch_type = app.channel_types.get(ch).copied().unwrap_or(crate::app::ChannelType::Midi);
+            let ch_name = app.channels.get(ch).map(|c| &c.name).filter(|n| !n.is_empty());
+            let ch_type = app.channels.get(ch).map(|c| c.channel_type).unwrap_or(crate::app::ChannelType::Midi);
             let type_label = ch_type.label();
             let type_style = Style::default().fg(match ch_type {
                 crate::app::ChannelType::Midi => theme.header_bpm,
@@ -100,7 +100,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             // Mute/solo indicator char
             let indicator = if app.solo_channel == Some(ch) {
                 'S'
-            } else if app.muted_channels.get(ch).copied().unwrap_or(false) {
+            } else if app.channels.get(ch).map_or(false, |c| c.muted) {
                 'M'
             } else {
                 ' '
@@ -143,7 +143,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     // Determine which rows to display, centered on cursor/playback position
     let focus_row = if app.is_playing() {
-        app.playback_row
+        app.engine.row
     } else {
         app.cursor_row
     };
@@ -166,7 +166,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
 
         let is_cursor_row = !app.is_playing() && row_idx == app.cursor_row;
-        let is_playback_row = app.is_playing() && row_idx == app.playback_row;
+        let is_playback_row = app.is_playing() && row_idx == app.engine.row;
         let beat_interval = app.song.highlight_beat.max(1);
         let bar_interval = app.song.highlight_bar.max(1);
         let is_beat = row_idx % beat_interval == 0;

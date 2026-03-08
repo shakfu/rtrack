@@ -1,6 +1,7 @@
 pub mod app;
 pub mod audio;
 pub mod constants;
+pub mod engine;
 pub mod link;
 pub mod midi;
 pub mod midi_file;

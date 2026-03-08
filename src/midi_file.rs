@@ -8,6 +8,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::constants::*;
+use crate::engine::{TrackerEngine, TrackerEvent};
 use crate::tracker::{Note, NoteValue, Pattern, Song};
 
 /// Events collected during MIDI import
@@ -93,38 +94,6 @@ fn write_track_event(track: &mut Vec<u8>, delta: u32, event_bytes: &[u8]) {
 // ---------------------------------------------------------------------------
 
 
-/// Per-channel state for sub-tick effect export.
-struct ExportMidiChannelState {
-    note: Option<u8>,
-    volume: u8,
-    pitch_offset: f64,
-    porta_target: Option<u8>,
-    vibrato_phase: f64,
-}
-
-impl Default for ExportMidiChannelState {
-    fn default() -> Self {
-        Self {
-            note: None,
-            volume: MIDI_DEFAULT_VELOCITY,
-            pitch_offset: 0.0,
-            porta_target: None,
-            vibrato_phase: 0.0,
-        }
-    }
-}
-
-/// Emit a MIDI pitch bend event.
-fn write_pitch_bend(track: &mut Vec<u8>, delta: u32, midi_ch: u8, value: u16) {
-    let clamped = value.min(PITCH_BEND_MAX);
-    write_track_event(track, delta, &[0xE0 | midi_ch, (clamped & 0x7F) as u8, ((clamped >> 7) & 0x7F) as u8]);
-}
-
-/// Emit a MIDI CC event.
-fn write_cc(track: &mut Vec<u8>, delta: u32, midi_ch: u8, controller: u8, value: u8) {
-    write_track_event(track, delta, &[0xB0 | midi_ch, controller & 0x7F, value & 0x7F]);
-}
-
 /// Compute pitch bend value from a semitone offset.
 fn pitch_bend_from_offset(offset: f64) -> u16 {
     let bend = (PITCH_BEND_CENTER as f64 + offset * PITCH_BEND_PER_SEMITONE) as i32;
@@ -137,230 +106,132 @@ fn pitch_bend_from_offset(offset: f64) -> u16 {
 /// - Track 0: tempo meta-event only.
 /// - Tracks 1..=channels: one per tracker channel, containing note and CC data.
 ///
-/// Tracker effects are converted to MIDI events:
+/// Tracker effects are converted to MIDI events via the TrackerEngine:
 /// - 1xx/2xx portamento -> pitch bend
 /// - 3xx tone portamento -> pitch bend
 /// - 4xy vibrato -> pitch bend
 /// - 5xy volume slide -> CC 7
 pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
-    let num_tracks = song.channels as u16 + 1; // tempo track + channel tracks
-    let speed = song.speed;
-    let ticks_per_row = ticks_per_row(speed);
-    let ticks_per_subtick = ticks_per_row / speed as u32;
+    let num_tracks = song.channels as u16 + 1;
+    let ticks_per_subtick = TICKS_PER_BEAT as u32 / 24;
 
-    // ---- Header chunk ----
-    let mut file_buf: Vec<u8> = Vec::new();
-    {
-        let mut hdr_data = Vec::with_capacity(6);
-        hdr_data.extend_from_slice(&1u16.to_be_bytes()); // format 1
-        hdr_data.extend_from_slice(&num_tracks.to_be_bytes());
-        hdr_data.extend_from_slice(&TICKS_PER_BEAT.to_be_bytes());
-        write_chunk(&mut file_buf, b"MThd", &hdr_data);
+    // Run engine to collect per-channel MIDI events as (abs_tick, raw_bytes)
+    let mut engine = TrackerEngine::new(song, false);
+    let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
+    let mut active_notes: Vec<Option<u8>> = vec![None; song.channels];
+    let mut abs_tick: u32 = 0;
+
+    while !engine.finished {
+        engine.process_tick(song);
+        let events = engine.drain_events();
+
+        for event in &events {
+            match event {
+                TrackerEvent::NoteOn { channel, midi_note, velocity, .. } => {
+                    if *channel >= song.channels { continue; }
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    // Note off previous
+                    if let Some(prev) = active_notes[*channel].take() {
+                        channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+                    }
+                    // Reset pitch bend
+                    let center = PITCH_BEND_CENTER as u16;
+                    channel_events[*channel].push((abs_tick, vec![
+                        0xE0 | midi_ch, (center & 0x7F) as u8, ((center >> 7) & 0x7F) as u8,
+                    ]));
+                    // Note on
+                    let vel = (*velocity).min(0x7F);
+                    channel_events[*channel].push((abs_tick, vec![0x90 | midi_ch, *midi_note, vel]));
+                    active_notes[*channel] = Some(*midi_note);
+                }
+                TrackerEvent::NoteOff { channel } => {
+                    if *channel >= song.channels { continue; }
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    if let Some(prev) = active_notes[*channel].take() {
+                        channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+                        let center = PITCH_BEND_CENTER as u16;
+                        channel_events[*channel].push((abs_tick, vec![
+                            0xE0 | midi_ch, (center & 0x7F) as u8, ((center >> 7) & 0x7F) as u8,
+                        ]));
+                    }
+                }
+                TrackerEvent::PitchBend { channel, semitone_offset } => {
+                    if *channel >= song.channels { continue; }
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    let value = pitch_bend_from_offset(*semitone_offset).min(PITCH_BEND_MAX);
+                    channel_events[*channel].push((abs_tick, vec![
+                        0xE0 | midi_ch, (value & 0x7F) as u8, ((value >> 7) & 0x7F) as u8,
+                    ]));
+                }
+                TrackerEvent::VolumeChange { channel, volume } => {
+                    if *channel >= song.channels { continue; }
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    channel_events[*channel].push((abs_tick, vec![0xB0 | midi_ch, 7, *volume & 0x7F]));
+                }
+                TrackerEvent::MidiCC { channel, controller, value } => {
+                    if *channel >= song.channels { continue; }
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    channel_events[*channel].push((abs_tick, vec![0xB0 | midi_ch, *controller & 0x7F, *value & 0x7F]));
+                }
+                TrackerEvent::ProgramChange { channel, program } => {
+                    if *channel >= song.channels { continue; }
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    channel_events[*channel].push((abs_tick, vec![0xC0 | midi_ch, *program & 0x7F]));
+                }
+                _ => {} // RowAdvanced, SpeedChanged, TempoChanged, GenerationAdvanced
+            }
+        }
+
+        abs_tick += ticks_per_subtick;
     }
 
-    // ---- Track 0: tempo ----
+    // Final note-offs
+    for ch in 0..song.channels {
+        if let Some(prev) = active_notes[ch].take() {
+            let midi_ch = (ch & 0x0F) as u8;
+            channel_events[ch].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+            let center = PITCH_BEND_CENTER as u16;
+            channel_events[ch].push((abs_tick, vec![
+                0xE0 | midi_ch, (center & 0x7F) as u8, ((center >> 7) & 0x7F) as u8,
+            ]));
+        }
+    }
+
+    // ---- Write MIDI file ----
+    let mut file_buf: Vec<u8> = Vec::new();
+
+    // Header chunk
+    {
+        let mut hdr = Vec::with_capacity(6);
+        hdr.extend_from_slice(&1u16.to_be_bytes());
+        hdr.extend_from_slice(&num_tracks.to_be_bytes());
+        hdr.extend_from_slice(&TICKS_PER_BEAT.to_be_bytes());
+        write_chunk(&mut file_buf, b"MThd", &hdr);
+    }
+
+    // Track 0: tempo
     {
         let mut trk = Vec::new();
-        let us_per_beat = bpm_to_microseconds(song.bpm);
-        let tempo_bytes = [
+        let us = bpm_to_microseconds(song.bpm);
+        write_track_event(&mut trk, 0, &[
             0xFF, 0x51, 0x03,
-            ((us_per_beat >> 16) & 0xFF) as u8,
-            ((us_per_beat >> 8) & 0xFF) as u8,
-            (us_per_beat & 0xFF) as u8,
-        ];
-        write_track_event(&mut trk, 0, &tempo_bytes);
+            ((us >> 16) & 0xFF) as u8,
+            ((us >> 8) & 0xFF) as u8,
+            (us & 0xFF) as u8,
+        ]);
         write_track_event(&mut trk, 0, &[0xFF, 0x2F, 0x00]);
         write_chunk(&mut file_buf, b"MTrk", &trk);
     }
 
-    // ---- Tracks 1..N: one per channel ----
+    // Tracks 1..N: one per channel
     for ch in 0..song.channels {
         let mut trk = Vec::new();
-        let midi_ch = (ch & 0x0F) as u8;
-        let mut active_note: Option<u8> = None;
-        let mut accumulated_delta: u32 = 0;
-        let mut state = ExportMidiChannelState::default();
-
-        for &order_idx in &song.order {
-            let pattern = match song.patterns.get(order_idx) {
-                Some(p) => p,
-                None => continue,
-            };
-            for row in 0..pattern.rows {
-                let cell = pattern.get(row, ch);
-                let effect = cell.effect;
-                let param = cell.effect_value.unwrap_or(0);
-
-                // -- Tick 0: handle effects (program change, CC), notes --
-                if let Some(eff) = effect {
-                    match eff {
-                        0x0E => {
-                            write_track_event(&mut trk, accumulated_delta, &[0xC0 | midi_ch, param & 0x7F]);
-                            accumulated_delta = 0;
-                        }
-                        0x0C => {
-                            let controller = cell.instrument.unwrap_or(0) & 0x7F;
-                            write_cc(&mut trk, accumulated_delta, midi_ch, controller, param);
-                            accumulated_delta = 0;
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Tone portamento: new note sets target instead of triggering
-                let is_tone_porta = effect == Some(0x03);
-
-                if let Some(note) = &cell.note {
-                    match note {
-                        Note::On { .. } => {
-                            if let Some(midi_note) = note.to_midi_note() {
-                                if is_tone_porta {
-                                    state.porta_target = Some(midi_note);
-                                } else {
-                                    if let Some(prev) = active_note.take() {
-                                        write_track_event(&mut trk, accumulated_delta, &[0x80 | midi_ch, prev, 0x00]);
-                                        accumulated_delta = 0;
-                                    }
-                                    // Reset pitch bend on new note
-                                    state.pitch_offset = 0.0;
-                                    state.vibrato_phase = 0.0;
-                                    write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
-                                    accumulated_delta = 0;
-
-                                    let velocity = cell.volume.unwrap_or(MIDI_DEFAULT_VELOCITY).min(0x7F);
-                                    write_track_event(&mut trk, accumulated_delta, &[0x90 | midi_ch, midi_note, velocity]);
-                                    accumulated_delta = 0;
-                                    active_note = Some(midi_note);
-                                    state.note = Some(midi_note);
-                                    state.volume = velocity;
-                                }
-                            }
-                        }
-                        Note::Off => {
-                            if let Some(prev) = active_note.take() {
-                                write_track_event(&mut trk, accumulated_delta, &[0x80 | midi_ch, prev, 0x00]);
-                                accumulated_delta = 0;
-                                // Reset pitch bend
-                                state.pitch_offset = 0.0;
-                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
-                                accumulated_delta = 0;
-                            }
-                            state.note = None;
-                        }
-                    }
-                } else if let Some(vol) = cell.volume {
-                    state.volume = vol;
-                }
-
-                // Store effect state
-                state.porta_target = if is_tone_porta {
-                    state.porta_target // already set above
-                } else {
-                    state.porta_target // keep existing target
-                };
-
-                // -- Ticks 1..speed-1: process continuous effects --
-                let has_continuous_effect = matches!(
-                    effect,
-                    Some(0x00) | Some(0x01) | Some(0x02) | Some(0x03) | Some(0x04) | Some(0x05)
-                );
-
-                if has_continuous_effect && state.note.is_some() {
-                    // Tick 0 delta already accounted for above; advance by ticks_per_subtick
-                    accumulated_delta += ticks_per_subtick;
-
-                    for tick in 1..speed {
-                        let base_note = state.note.unwrap();
-                        match effect {
-                            Some(0x00) if param != 0 => {
-                                // Arpeggio
-                                let x = (param >> 4) as f64;
-                                let y = (param & 0x0F) as f64;
-                                let offset = match tick % 3 {
-                                    0 => 0.0,
-                                    1 => x,
-                                    _ => y,
-                                };
-                                let value = pitch_bend_from_offset(offset);
-                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
-                                accumulated_delta = 0;
-                            }
-                            Some(0x01) => {
-                                // Portamento up
-                                state.pitch_offset += param as f64 / 16.0;
-                                let value = pitch_bend_from_offset(state.pitch_offset);
-                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
-                                accumulated_delta = 0;
-                            }
-                            Some(0x02) => {
-                                // Portamento down
-                                state.pitch_offset -= param as f64 / 16.0;
-                                let value = pitch_bend_from_offset(state.pitch_offset);
-                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
-                                accumulated_delta = 0;
-                            }
-                            Some(0x03) => {
-                                // Tone portamento
-                                if let Some(target) = state.porta_target {
-                                    let current = base_note as f64 + state.pitch_offset;
-                                    let target_f = target as f64;
-                                    let spd = param as f64 / 16.0;
-                                    if current < target_f {
-                                        state.pitch_offset += spd.min(target_f - current);
-                                    } else if current > target_f {
-                                        state.pitch_offset -= spd.min(current - target_f);
-                                    }
-                                    let value = pitch_bend_from_offset(state.pitch_offset);
-                                    write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
-                                    accumulated_delta = 0;
-                                }
-                            }
-                            Some(0x04) => {
-                                // Vibrato
-                                let speed_v = (param >> 4) as f64;
-                                let depth = (param & 0x0F) as f64;
-                                state.vibrato_phase += speed_v / 64.0;
-                                if state.vibrato_phase >= 1.0 {
-                                    state.vibrato_phase -= 1.0;
-                                }
-                                let sine = (state.vibrato_phase * std::f64::consts::TAU).sin();
-                                let offset = sine * depth / 16.0;
-                                let total = state.pitch_offset + offset;
-                                let value = pitch_bend_from_offset(total);
-                                write_pitch_bend(&mut trk, accumulated_delta, midi_ch, value);
-                                accumulated_delta = 0;
-                            }
-                            Some(0x05) => {
-                                // Volume slide
-                                let up = (param >> 4) as i16;
-                                let down = (param & 0x0F) as i16;
-                                let new_vol = (state.volume as i16 + up - down).clamp(0, MIDI_MAX_VALUE as i16) as u8;
-                                state.volume = new_vol;
-                                write_cc(&mut trk, accumulated_delta, midi_ch, 7, new_vol);
-                                accumulated_delta = 0;
-                            }
-                            _ => {}
-                        }
-
-                        // Advance to next sub-tick
-                        accumulated_delta += ticks_per_subtick;
-                    }
-                } else {
-                    accumulated_delta += ticks_per_row;
-                }
-            }
+        let mut last_tick: u32 = 0;
+        for (tick, data) in &channel_events[ch] {
+            let delta = tick - last_tick;
+            write_track_event(&mut trk, delta, data);
+            last_tick = *tick;
         }
-
-        // Kill any lingering note
-        if let Some(prev) = active_note.take() {
-            write_track_event(&mut trk, accumulated_delta, &[0x80 | midi_ch, prev, 0x00]);
-            accumulated_delta = 0;
-        }
-        // Reset pitch bend
-        write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
-        accumulated_delta = 0;
-        let _ = accumulated_delta;
-
         write_track_event(&mut trk, 0, &[0xFF, 0x2F, 0x00]);
         write_chunk(&mut file_buf, b"MTrk", &trk);
     }
@@ -665,6 +536,7 @@ pub fn import_midi(path: &Path) -> Result<Song> {
 // ---------------------------------------------------------------------------
 
 /// Compute ticks per row for export (always uses TICKS_PER_BEAT = 480).
+#[cfg(test)]
 fn ticks_per_row(speed: u8) -> u32 {
     speed as u32 * (TICKS_PER_BEAT as u32 / 24)
 }

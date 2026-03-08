@@ -49,7 +49,7 @@ fn test_export_wav_roundtrip() {
         &app.song,
         &app.sample_bank,
         &instruments,
-        &app.channel_effects_params,
+        &app.channel_effects_params_slice(),
         &app.send_bus_params,
         44100,
     );
@@ -135,7 +135,7 @@ fn test_playback_advances_position() {
     app.handle_key(key(KeyCode::Char(' '))); // play
     assert!(app.is_playing());
 
-    let start_row = app.playback_row;
+    let start_row = app.engine.row;
 
     // Tick enough to advance at least one row
     // At 240 BPM, speed 1: tps = 240*24/60 = 96
@@ -146,9 +146,9 @@ fn test_playback_advances_position() {
     }
 
     // Position should have advanced (or wrapped)
-    let end_row = app.playback_row;
+    let end_row = app.engine.row;
     assert!(
-        end_row != start_row || app.playback_order != 0,
+        end_row != start_row || app.engine.order != 0,
         "Playback should advance position"
     );
 

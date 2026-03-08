@@ -8,38 +8,8 @@ use super::SampleBank;
 use crate::audio::channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::{self, EffectsChain};
 use crate::audio::synth::{BuiltinSynth, SynthParams};
-use crate::constants::*;
-use crate::tracker::{Note, Song};
-
-/// Per-channel state for offline effect processing
-#[derive(Clone)]
-struct ExportChannelState {
-    note: Option<u8>,
-    volume: u8,
-    effect: Option<u8>,
-    effect_param: u8,
-    pitch_offset: f64,
-    porta_target: Option<u8>,
-    vibrato_phase: f64,
-    delayed_note: Option<(u8, u8, bool)>,
-    delay_tick: u8,
-}
-
-impl Default for ExportChannelState {
-    fn default() -> Self {
-        Self {
-            note: None,
-            volume: MIDI_DEFAULT_VELOCITY,
-            effect: None,
-            effect_param: 0,
-            pitch_offset: 0.0,
-            porta_target: None,
-            vibrato_phase: 0.0,
-            delayed_note: None,
-            delay_tick: 0,
-        }
-    }
-}
+use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::tracker::Song;
 
 /// Render an entire song to a WAV file (offline, non-real-time).
 ///
@@ -80,9 +50,8 @@ fn render_song(
     // Create offline audio components
     let mut synth = BuiltinSynth::new(sr);
     let mut sample_engine = SamplePlaybackEngine::new(32);
-    let mut effects = EffectsChain::new(sr);
+    let mut master_fx = EffectsChain::new(sr);
 
-    // Create per-channel effects for offline render
     let mut channel_effects: Vec<ChannelEffects> = (0..MAX_EFFECT_CHANNELS)
         .map(|ch| {
             let mut fx = ChannelEffects::new(sr);
@@ -92,7 +61,6 @@ fn render_song(
             fx
         })
         .collect();
-    // Create send/return buses for offline render
     let mut send_buses: Vec<effects::SendBus> = (0..effects::MAX_SEND_BUSES)
         .map(|i| {
             let mut bus = effects::SendBus::new(sr);
@@ -103,403 +71,159 @@ fn render_song(
         })
         .collect();
     let any_send_bus = send_buses.iter().any(|b| b.params.enabled);
-
     let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
 
     let mut all_left = Vec::new();
     let mut all_right = Vec::new();
 
-    let mut current_speed = song.speed;
-    let mut current_bpm = song.bpm;
-    let mut order_pos = 0;
-    let mut start_row = 0usize; // support break-to-row
-
-    // Per-channel effect state
+    // Drive playback via TrackerEngine (no wrap = stop at end)
+    let mut engine = TrackerEngine::new(song, false);
     let num_channels = song.channels.max(1);
-    let mut ch_states: Vec<ExportChannelState> = vec![ExportChannelState::default(); num_channels];
+    let mut active_notes: Vec<Option<u8>> = vec![None; num_channels];
+    let mut frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
 
-    while order_pos < song.order.len() {
-        // Check repeat count: 0 = skip
-        let repeat_count = song.order_repeats.get(order_pos).copied().unwrap_or(1);
-        if repeat_count == 0 {
-            order_pos += 1;
-            continue;
-        }
-        let pattern_idx = song.order[order_pos];
-        if pattern_idx >= song.patterns.len() {
-            break;
-        }
-        let pattern = &song.patterns[pattern_idx];
-        let mut repeats_done = 0u8;
-        let mut jump_order: Option<usize> = None;
-        let mut break_row: Option<usize> = None;
-
-      'repeat_loop: while repeats_done < repeat_count {
-        let mut row = start_row;
-        start_row = 0;
-        jump_order = None;
-        break_row = None;
-
-        while row < pattern.rows {
-            jump_order = None;
-            break_row = None;
-
-            // Ensure channel states cover all channels
-            while ch_states.len() < pattern.channels {
-                ch_states.push(ExportChannelState::default());
-            }
-
-            // -- Tick 0: process new row (trigger notes, scan effects) --
-            for ch in 0..pattern.channels {
-                let cell = pattern.get(row, ch);
-                let midi_ch = (ch & 0x0F) as u8;
-                let param = cell.effect_value.unwrap_or(0);
-
-                // Pattern-level effects
-                match cell.effect {
-                    Some(EFFECT_POSITION_JUMP) => {
-                        jump_order = Some(param as usize);
-                    }
-                    Some(EFFECT_PATTERN_BREAK) => {
-                        break_row = Some(param as usize);
-                    }
-                    Some(EFFECT_SET_SPEED) => {
-                        if param > 0 && param < 0x20 {
-                            current_speed = param;
-                        } else if param >= 0x20 {
-                            current_bpm = param as u16;
-                        }
-                    }
-                    Some(EFFECT_PROGRAM_CHANGE) => {
-                        synth.program_change(midi_ch, param);
-                    }
-                    _ => {}
-                }
-
-                let is_tone_porta = cell.effect == Some(EFFECT_TONE_PORTA);
-                let is_note_delay = cell.effect == Some(EFFECT_NOTE_DELAY) && param > 0;
-
-                ch_states[ch].delayed_note = None;
-
-                // Note events
-                match cell.note {
-                    Some(Note::On { .. }) => {
-                        if let Some(midi_note) = cell.note.unwrap().to_midi_note() {
-                            if is_tone_porta {
-                                ch_states[ch].porta_target = Some(midi_note);
-                            } else if is_note_delay {
-                                let vel = cell.volume.unwrap_or(ch_states[ch].volume);
-                                ch_states[ch].delayed_note = Some((midi_note, vel, false));
-                                ch_states[ch].delay_tick = param;
-                            } else {
-                                let vel = cell.volume.unwrap_or(ch_states[ch].volume);
-                                ch_states[ch].pitch_offset = 0.0;
-                                ch_states[ch].vibrato_phase = 0.0;
-
-                                // Note off previous
-                                if let Some(prev) = ch_states[ch].note {
-                                    synth.note_off(midi_ch, prev);
-                                    sample_engine.note_off(midi_ch, prev);
-                                }
-
-                                // Route to sample, custom synth, or default synth
-                                let inst_idx = cell.instrument.unwrap_or(0) as usize;
-                                let inst = instruments.get(inst_idx);
-                                let has_sample = inst
-                                    .and_then(|i| i.sample_index)
-                                    .and_then(|idx| bank.get(idx))
-                                    .is_some();
-
-                                if has_sample {
-                                    let sample_idx = inst.unwrap().sample_index.unwrap();
-                                    let sample = bank.get(sample_idx).unwrap();
-                                    sample_engine.note_on(
-                                        sample_idx, midi_note, vel, midi_ch, sample, sr,
-                                    );
-                                } else if let Some(ref sp) = inst.and_then(|i| i.synth_params.as_ref()) {
-                                    synth.note_on_with_params(midi_ch, midi_note, vel, sp);
-                                } else {
-                                    synth.note_on(midi_ch, midi_note, vel);
-                                }
-                                ch_states[ch].note = Some(midi_note);
-                                ch_states[ch].volume = vel;
-                            }
-                        }
-                    }
-                    Some(Note::Off) => {
-                        if is_note_delay {
-                            ch_states[ch].delayed_note = Some((0, 0, true));
-                            ch_states[ch].delay_tick = param;
-                        } else {
-                            if let Some(prev) = ch_states[ch].note {
-                                synth.note_off(midi_ch, prev);
-                                sample_engine.note_off(midi_ch, prev);
-                            }
-                            ch_states[ch].note = None;
-                            ch_states[ch].pitch_offset = 0.0;
-                        }
-                    }
-                    None => {
-                        if let Some(vol) = cell.volume {
-                            ch_states[ch].volume = vol;
-                        }
-                    }
-                }
-
-                ch_states[ch].effect = cell.effect;
-                ch_states[ch].effect_param = param;
-            }
-
-            // Recalculate frames_per_tick with swing
-            let base_tps = (current_bpm as f64 * MIDI_CLOCKS_PER_BEAT) / 60.0;
-            let base_spt = 1.0 / base_tps;
-            let swing_spt = if song.swing == 50 {
-                base_spt
-            } else {
-                let swing_f = song.swing as f64;
-                if row % 2 == 0 {
-                    base_spt * swing_f / 50.0
-                } else {
-                    base_spt * (100.0 - swing_f) / 50.0
-                }
-            };
-            let fpt = (sr * swing_spt) as usize;
-
-            // Check tempo automation
-            if let Some(bpm) = song.tempo_at(order_pos, row) {
-                let new_bpm = bpm.round() as u16;
-                if new_bpm >= 1 {
-                    current_bpm = new_bpm;
-                }
-            }
-
-            // Render audio for all ticks of this row
-            for tick in 0..current_speed {
-                // -- Ticks 1+: process continuous effects --
-                if tick > 0 {
-                    for ch in 0..pattern.channels.min(ch_states.len()) {
-                        let midi_ch = (ch & 0x0F) as u8;
-
-                        // Note delay trigger
-                        if ch_states[ch].effect == Some(EFFECT_NOTE_DELAY) {
-                            if let Some((midi_note, vel, is_off)) = ch_states[ch].delayed_note {
-                                if tick == ch_states[ch].delay_tick {
-                                    if is_off {
-                                        if let Some(prev) = ch_states[ch].note {
-                                            synth.note_off(midi_ch, prev);
-                                            sample_engine.note_off(midi_ch, prev);
-                                        }
-                                        ch_states[ch].note = None;
-                                        ch_states[ch].pitch_offset = 0.0;
-                                    } else {
-                                        ch_states[ch].pitch_offset = 0.0;
-                                        ch_states[ch].vibrato_phase = 0.0;
-                                        if let Some(prev) = ch_states[ch].note {
-                                            synth.note_off(midi_ch, prev);
-                                            sample_engine.note_off(midi_ch, prev);
-                                        }
-                                        synth.note_on(midi_ch, midi_note, vel);
-                                        ch_states[ch].note = Some(midi_note);
-                                        ch_states[ch].volume = vel;
-                                    }
-                                    ch_states[ch].delayed_note = None;
-                                }
-                            }
-                            continue;
-                        }
-
-                        let param = ch_states[ch].effect_param;
-                        let base_note = match ch_states[ch].note {
-                            Some(n) => n,
-                            None => continue,
-                        };
-
-                        match ch_states[ch].effect {
-                            Some(EFFECT_ARPEGGIO) if param != 0 => {
-                                let x = (param >> 4) as f64;
-                                let y = (param & 0x0F) as f64;
-                                let phase = tick % 3;
-                                let offset = match phase {
-                                    0 => 0.0,
-                                    1 => x,
-                                    _ => y,
-                                };
-                                // Apply arpeggio as pitch offset
-                                let midi_ch = (ch & 0x0F) as u8;
-                                synth.set_channel_pitch_offset(midi_ch, offset as f32);
-                                sample_engine.set_channel_pitch_offset(midi_ch, offset, bank, sr);
-                            }
-                            Some(EFFECT_PORTA_UP) => {
-                                ch_states[ch].pitch_offset += param as f64 / 16.0;
-                            }
-                            Some(EFFECT_PORTA_DOWN) => {
-                                ch_states[ch].pitch_offset -= param as f64 / 16.0;
-                            }
-                            Some(EFFECT_TONE_PORTA) => {
-                                if let Some(target) = ch_states[ch].porta_target {
-                                    let current = base_note as f64 + ch_states[ch].pitch_offset;
-                                    let target_f = target as f64;
-                                    let speed = param as f64 / 16.0;
-                                    if current < target_f {
-                                        ch_states[ch].pitch_offset += speed.min(target_f - current);
-                                    } else if current > target_f {
-                                        ch_states[ch].pitch_offset -= speed.min(current - target_f);
-                                    }
-                                }
-                            }
-                            Some(EFFECT_VIBRATO) => {
-                                let speed = (param >> 4) as f64;
-                                let depth = (param & 0x0F) as f64;
-                                ch_states[ch].vibrato_phase += speed / 64.0;
-                                if ch_states[ch].vibrato_phase >= 1.0 {
-                                    ch_states[ch].vibrato_phase -= 1.0;
-                                }
-                                let sine = (ch_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
-                                let vib_offset = sine * depth / 16.0;
-                                // Apply pitch_offset + vibrato (vibrato is instantaneous, not cumulative)
-                                let total = ch_states[ch].pitch_offset + vib_offset;
-                                let midi_ch = (ch & 0x0F) as u8;
-                                synth.set_channel_pitch_offset(midi_ch, total as f32);
-                                sample_engine.set_channel_pitch_offset(midi_ch, total, bank, sr);
-                            }
-                            Some(EFFECT_VOLUME_SLIDE) => {
-                                let up = (param >> 4) as i16;
-                                let down = (param & 0x0F) as i16;
-                                let delta = up - down;
-                                let new_vol = (ch_states[ch].volume as i16 + delta).clamp(0, MIDI_MAX_VALUE as i16) as u8;
-                                ch_states[ch].volume = new_vol;
-                            }
-                            _ => {}
-                        }
-
-                        // Apply accumulated pitch offset and volume to engines
-                        // (arpeggio and vibrato handle pitch themselves above)
-                        let eff = ch_states[ch].effect;
-                        if eff != Some(EFFECT_ARPEGGIO) && eff != Some(EFFECT_VIBRATO) {
-                            let midi_ch = (ch & 0x0F) as u8;
-                            synth.set_channel_pitch_offset(midi_ch, ch_states[ch].pitch_offset as f32);
-                            sample_engine.set_channel_pitch_offset(midi_ch, ch_states[ch].pitch_offset, bank, sr);
-                        }
-                        let midi_ch = (ch & 0x0F) as u8;
-                        synth.set_channel_volume(midi_ch, ch_states[ch].volume);
-                        sample_engine.set_channel_volume(midi_ch, ch_states[ch].volume);
-                    }
-                }
-
-                let mut left = vec![0.0f32; fpt];
-                let mut right = vec![0.0f32; fpt];
-
-                if any_ch_fx || any_send_bus {
-                    // Per-channel rendering path (needed for channel effects or send buses)
-                    let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-                        .map(|_| vec![0.0f32; fpt])
-                        .collect();
-                    let mut ch_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-                        .map(|_| vec![0.0f32; fpt])
-                        .collect();
-
-                    for i in 0..fpt {
-                        let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
-                        synth.render_sample_per_channel(&mut ch_out);
-                        for ch in 0..MAX_EFFECT_CHANNELS {
-                            ch_left[ch][i] += ch_out[ch][0];
-                            ch_right[ch][i] += ch_out[ch][1];
-                        }
-                    }
-
-                    {
-                        let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
-                        for ch in 0..MAX_EFFECT_CHANNELS {
-                            let l = &mut ch_left[ch][..fpt] as *mut [f32];
-                            let r = &mut ch_right[ch][..fpt] as *mut [f32];
-                            unsafe { slices.push((&mut *l, &mut *r)); }
-                        }
-                        sample_engine.render_per_channel(bank, &mut slices);
-                    }
-
-                    // Clear send bus inputs
-                    for bus in send_buses.iter_mut() {
-                        bus.ensure_size(fpt);
-                        bus.clear_inputs(fpt);
-                    }
-
-                    for ch in 0..MAX_EFFECT_CHANNELS {
-                        channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
-
-                        // Feed send buses (post-channel-effects)
-                        let send_levels = channel_effects[ch].params.send_levels;
-                        for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
-                            if bus.params.enabled && send_levels[bus_idx] > 0.0 {
-                                bus.add_send(&ch_left[ch], &ch_right[ch], send_levels[bus_idx]);
-                            }
-                        }
-
-                        for i in 0..fpt {
-                            left[i] += ch_left[ch][i];
-                            right[i] += ch_right[ch][i];
-                        }
-                    }
-
-                    // Process send buses to master
-                    for bus in send_buses.iter_mut() {
-                        bus.process_to_master(&mut left, &mut right, fpt);
-                    }
-                } else {
-                    for i in 0..fpt {
-                        let (l, r) = synth.render_sample();
-                        left[i] += l;
-                        right[i] += r;
-                    }
-                    sample_engine.render(bank, &mut left, &mut right);
-                }
-
-                // Apply master effects
-                effects.process(&mut left, &mut right);
-
-                all_left.extend_from_slice(&left);
-                all_right.extend_from_slice(&right);
-            }
-
-            // Handle jumps/breaks
-            if let Some(target) = jump_order {
-                order_pos = target.min(song.order.len() - 1);
-                start_row = break_row.unwrap_or(0);
-                let target_pat = song.order[order_pos];
-                if target_pat < song.patterns.len() {
-                    start_row = start_row.min(song.patterns[target_pat].rows.saturating_sub(1));
-                }
-                break 'repeat_loop;
-            }
-            if let Some(target_row) = break_row {
-                order_pos += 1;
-                if order_pos >= song.order.len() {
-                    order_pos = 0;
-                }
-                if order_pos < song.order.len() {
-                    let target_pat = song.order[order_pos];
-                    if target_pat < song.patterns.len() {
-                        start_row = target_row.min(song.patterns[target_pat].rows.saturating_sub(1));
-                    }
-                }
-                break 'repeat_loop;
-            }
-
-            row += 1;
+    while !engine.finished {
+        // Snapshot timing before tick 0 advances the row
+        if engine.tick == 0 {
+            frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
         }
 
-        repeats_done += 1;
-      } // end repeat_loop
+        engine.process_tick(song);
+        let events = engine.drain_events();
 
-        // Normal advance (only if no jump/break occurred)
-        if jump_order.is_none() && break_row.is_none() {
-            order_pos += 1;
+        // Dispatch engine events to synth/sample engines
+        for event in &events {
+            match event {
+                TrackerEvent::NoteOn { channel, midi_note, velocity, instrument } => {
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    // Turn off previous note on this channel
+                    if let Some(prev) = active_notes.get(*channel).copied().flatten() {
+                        synth.note_off(midi_ch, prev);
+                        sample_engine.note_off(midi_ch, prev);
+                    }
+                    while active_notes.len() <= *channel {
+                        active_notes.push(None);
+                    }
+                    // Route based on instrument
+                    let inst_idx = instrument.unwrap_or(0) as usize;
+                    let inst = instruments.get(inst_idx);
+                    let has_sample = inst
+                        .and_then(|i| i.sample_index)
+                        .and_then(|idx| bank.get(idx))
+                        .is_some();
+                    if has_sample {
+                        let sample_idx = inst.unwrap().sample_index.unwrap();
+                        let sample = bank.get(sample_idx).unwrap();
+                        sample_engine.note_on(
+                            sample_idx, *midi_note, *velocity, midi_ch, sample, sr,
+                        );
+                    } else if let Some(ref sp) = inst.and_then(|i| i.synth_params.as_ref()) {
+                        synth.note_on_with_params(midi_ch, *midi_note, *velocity, sp);
+                    } else {
+                        synth.note_on(midi_ch, *midi_note, *velocity);
+                    }
+                    active_notes[*channel] = Some(*midi_note);
+                }
+                TrackerEvent::NoteOff { channel } => {
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    if let Some(prev) = active_notes.get(*channel).copied().flatten() {
+                        synth.note_off(midi_ch, prev);
+                        sample_engine.note_off(midi_ch, prev);
+                    }
+                    if *channel < active_notes.len() {
+                        active_notes[*channel] = None;
+                    }
+                }
+                TrackerEvent::PitchBend { channel, semitone_offset } => {
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    synth.set_channel_pitch_offset(midi_ch, *semitone_offset as f32);
+                    sample_engine.set_channel_pitch_offset(midi_ch, *semitone_offset, bank, sr);
+                }
+                TrackerEvent::VolumeChange { channel, volume } => {
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    synth.set_channel_volume(midi_ch, *volume);
+                    sample_engine.set_channel_volume(midi_ch, *volume);
+                }
+                TrackerEvent::ProgramChange { channel, program } => {
+                    let midi_ch = (*channel & 0x0F) as u8;
+                    synth.program_change(midi_ch, *program);
+                }
+                _ => {} // RowAdvanced, SpeedChanged, TempoChanged, GenerationAdvanced handled by engine
+            }
         }
+
+        // Render audio for this tick
+        let fpt = frames_per_tick;
+        let mut left = vec![0.0f32; fpt];
+        let mut right = vec![0.0f32; fpt];
+
+        if any_ch_fx || any_send_bus {
+            let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+                .map(|_| vec![0.0f32; fpt])
+                .collect();
+            let mut ch_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
+                .map(|_| vec![0.0f32; fpt])
+                .collect();
+
+            for i in 0..fpt {
+                let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
+                synth.render_sample_per_channel(&mut ch_out);
+                for ch in 0..MAX_EFFECT_CHANNELS {
+                    ch_left[ch][i] += ch_out[ch][0];
+                    ch_right[ch][i] += ch_out[ch][1];
+                }
+            }
+
+            {
+                let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
+                for ch in 0..MAX_EFFECT_CHANNELS {
+                    let l = &mut ch_left[ch][..fpt] as *mut [f32];
+                    let r = &mut ch_right[ch][..fpt] as *mut [f32];
+                    unsafe { slices.push((&mut *l, &mut *r)); }
+                }
+                sample_engine.render_per_channel(bank, &mut slices);
+            }
+
+            for bus in send_buses.iter_mut() {
+                bus.ensure_size(fpt);
+                bus.clear_inputs(fpt);
+            }
+
+            for ch in 0..MAX_EFFECT_CHANNELS {
+                channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
+                let send_levels = channel_effects[ch].params.send_levels;
+                for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
+                    if bus.params.enabled && send_levels[bus_idx] > 0.0 {
+                        bus.add_send(&ch_left[ch], &ch_right[ch], send_levels[bus_idx]);
+                    }
+                }
+                for i in 0..fpt {
+                    left[i] += ch_left[ch][i];
+                    right[i] += ch_right[ch][i];
+                }
+            }
+
+            for bus in send_buses.iter_mut() {
+                bus.process_to_master(&mut left, &mut right, fpt);
+            }
+        } else {
+            for i in 0..fpt {
+                let (l, r) = synth.render_sample();
+                left[i] += l;
+                right[i] += r;
+            }
+            sample_engine.render(bank, &mut left, &mut right);
+        }
+
+        master_fx.process(&mut left, &mut right);
+        all_left.extend_from_slice(&left);
+        all_right.extend_from_slice(&right);
     }
 
     // Turn off all remaining notes and render a short tail for reverb/release
     synth.note_off_all();
     sample_engine.note_off_all();
-    let tail_frames = (sr * 2.0) as usize; // 2 seconds tail
+    let tail_frames = (sr * 2.0) as usize;
     let mut tail_left = vec![0.0f32; tail_frames];
     let mut tail_right = vec![0.0f32; tail_frames];
     if any_ch_fx || any_send_bus {
@@ -517,7 +241,6 @@ fn render_song(
                 ch_right[ch][i] += ch_out[ch][1];
             }
         }
-        // Clear send bus inputs for tail
         for bus in send_buses.iter_mut() {
             bus.ensure_size(tail_frames);
             bus.clear_inputs(tail_frames);
@@ -545,7 +268,7 @@ fn render_song(
             tail_right[i] += r;
         }
     }
-    effects.process(&mut tail_left, &mut tail_right);
+    master_fx.process(&mut tail_left, &mut tail_right);
     all_left.extend_from_slice(&tail_left);
     all_right.extend_from_slice(&tail_right);
 
@@ -634,6 +357,7 @@ fn write_flac(path: &Path, samples_i16: &[i16], sample_rate: u32) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::*;
     use crate::tracker::{Cell, Note, NoteValue, Song};
 
     #[test]

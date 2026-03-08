@@ -1,10 +1,11 @@
 use std::time::Instant;
 
 use crate::constants::*;
+use crate::engine::TrackerEvent;
 use crate::midi::MidiInputEvent;
 use crate::tracker::{Note, NoteValue};
 
-use super::{App, ChannelState, ChannelType, ClockMode, Mode};
+use super::{App, ChannelType, ClockMode, Mode};
 
 impl App {
     // -- Playback --
@@ -25,28 +26,23 @@ impl App {
         }
     }
 
+    pub fn play_from_start(&mut self) {
+        self.edit_order = 0;
+        self.cursor_row = 0;
+        self.play();
+    }
+
     pub fn play(&mut self) {
         self.playing = true;
-        self.playback_row = self.cursor_row;
-        self.playback_order = 0;
-        self.playback_generation = 0;
-        self.playback_tick = 0;
+        self.engine.reset(&self.song, self.edit_order, self.cursor_row);
+        self.sync_engine_channel_info();
         self.last_tick = Some(Instant::now());
         self.tick_accumulator = 0.0;
         self.clock_tick_accumulator = 0.0;
         self.playback_elapsed = 0.0;
-        self.playback_repeat_count = 0;
         // Capture initial Link beat position for beat-timeline mode
         if self.link.is_enabled() {
             self.last_link_beat = self.link.beat_at_time_now();
-        }
-        // Skip order entries with repeat=0 at start
-        self.skip_zero_repeats_forward();
-        // Reset channel states and ensure we have enough for all channels
-        let ch_count = self.song.channels;
-        self.channel_states = vec![ChannelState::default(); ch_count];
-
-        if self.link.is_enabled() {
             self.link.request_play();
         }
         let _ = self.midi.send_start();
@@ -56,7 +52,7 @@ impl App {
         self.playing = false;
         self.last_tick = None;
         // Reset pitch bends to center before killing notes
-        for ch in 0..self.channel_states.len() {
+        for ch in 0..self.engine.channel_states.len() {
             let midi_ch = self.midi_channel_for(ch);
             self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
         }
@@ -78,8 +74,22 @@ impl App {
             let new_bpm = new_tempo.round() as u16;
             if new_bpm != self.song.bpm && new_bpm >= 32 && new_bpm <= 300 {
                 self.song.bpm = new_bpm;
+                self.engine.bpm = new_bpm;
             }
         }
+    }
+
+    /// Push channel audibility/volume info from App's channel configs into the engine.
+    fn sync_engine_channel_info(&mut self) {
+        let infos: Vec<crate::engine::ChannelInfo> = self.channels.iter().enumerate().map(|(i, ch)| {
+            crate::engine::ChannelInfo {
+                audible: self.is_channel_audible(i),
+                volume_scale: ch.volume,
+                default_instrument: ch.default_instrument,
+                is_synth: ch.channel_type == ChannelType::Synth,
+            }
+        }).collect();
+        self.engine.set_channel_info(infos);
     }
 
     pub fn tick_playback(&mut self) {
@@ -100,16 +110,16 @@ impl App {
             let last_ticks = self.last_link_beat * MIDI_CLOCKS_PER_BEAT;
             let delta_ticks = link_ticks - last_ticks;
             if delta_ticks > 0.0 {
-                let spt = self.song.swing_seconds_per_tick(self.playback_row);
+                let spt = self.engine.seconds_per_tick(&self.song);
                 let ticks_per_second = 1.0 / spt;
                 // Convert Link tick delta to our tracker ticks
-                let tracker_ticks = delta_ticks / (self.song.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
+                let tracker_ticks = delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
                 self.tick_accumulator += tracker_ticks * spt;
-                self.playback_elapsed += delta_ticks / (self.song.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0);
+                self.playback_elapsed += delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0);
             }
             self.last_link_beat = beat;
 
-            let spt = self.song.swing_seconds_per_tick(self.playback_row);
+            let spt = self.engine.seconds_per_tick(&self.song);
             while self.tick_accumulator >= spt {
                 self.tick_accumulator -= spt;
                 self.process_tick();
@@ -126,14 +136,14 @@ impl App {
             // Send MIDI clock: 24 ppqn (pulses per quarter note)
             if self.midi.clock_enabled {
                 self.clock_tick_accumulator += elapsed;
-                let clock_interval = 60.0 / (self.song.bpm as f64 * MIDI_CLOCKS_PER_BEAT);
+                let clock_interval = 60.0 / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT);
                 while self.clock_tick_accumulator >= clock_interval {
                     self.clock_tick_accumulator -= clock_interval;
                     let _ = self.midi.send_clock();
                 }
             }
 
-            let spt = self.song.swing_seconds_per_tick(self.playback_row);
+            let spt = self.engine.seconds_per_tick(&self.song);
             while self.tick_accumulator >= spt {
                 self.tick_accumulator -= spt;
                 self.process_tick();
@@ -142,362 +152,60 @@ impl App {
         self.last_tick = Some(now);
     }
 
-    /// Process a single sub-tick. Tick 0 = new row (notes + row effects). Ticks 1+ = continuous effects.
+    /// Process a single sub-tick by delegating to the engine and dispatching events.
     pub(crate) fn process_tick(&mut self) {
-        if self.playback_tick == 0 {
-            self.advance_playback();
-            if self.follow_playback {
-                self.cursor_row = self.playback_row;
-                self.edit_order = self.playback_order;
-            }
-        } else {
-            self.process_effects_tick();
-        }
-        self.playback_tick += 1;
-        if self.playback_tick >= self.song.speed {
-            self.playback_tick = 0;
+        self.engine.process_tick(&self.song);
+        let events = self.engine.drain_events();
+        self.dispatch_engine_events(events);
+        // Update follow-playback cursor from engine position (post-advance)
+        if self.follow_playback && self.engine.tick == 1 {
+            // tick was just incremented from 0 to 1, meaning we just processed row advance
+            self.cursor_row = self.engine.row;
+            self.edit_order = self.engine.order;
         }
     }
 
-    /// Tick 0: process the new row -- trigger notes, set up channel effect state, advance row pointer.
-    pub(crate) fn advance_playback(&mut self) {
-        let pattern_idx = self.song.order[self.playback_order];
-        let pattern_rows = self.song.patterns[pattern_idx].rows;
-        let channels = self.song.patterns[pattern_idx].channels;
-
-        // Ensure channel_states has enough entries
-        while self.channel_states.len() < channels {
-            self.channel_states.push(ChannelState::default());
-        }
-
-        // Collect cell data we need before mutating self
-        let cells: Vec<(Option<Note>, Option<u8>, Option<u8>, Option<u8>, Option<u8>)> = (0..channels)
-            .map(|ch| {
-                let cell = self.song.patterns[pattern_idx].get(self.playback_row, ch);
-                // Fall back to track default instrument for Synth tracks
-                let inst = cell.instrument.or_else(|| {
-                    if self.channel_types.get(ch).copied() == Some(ChannelType::Synth) {
-                        self.channel_instruments.get(ch).copied().flatten()
-                    } else {
-                        None
-                    }
-                });
-                (cell.note, cell.volume, cell.effect, cell.effect_value, inst)
-            })
-            .collect();
-
-        // Scan for pattern-level effects (first one wins)
-        let mut jump_order: Option<usize> = None;
-        let mut break_row: Option<usize> = None;
-
-        for &(_, _, effect, effect_value, _) in &cells {
-            match effect {
-                Some(EFFECT_POSITION_JUMP) => {
-                    jump_order = Some(effect_value.unwrap_or(0) as usize);
+    /// Translate engine events to MIDI/audio output.
+    fn dispatch_engine_events(&mut self, events: Vec<TrackerEvent>) {
+        for event in events {
+            match event {
+                TrackerEvent::NoteOn { channel, midi_note, velocity, instrument } => {
+                    let midi_ch = self.midi_channel_for(channel);
+                    self.send_note_on_with_instrument(midi_ch, midi_note, velocity, instrument);
                 }
-                Some(EFFECT_PATTERN_BREAK) => {
-                    break_row = Some(effect_value.unwrap_or(0) as usize);
+                TrackerEvent::NoteOff { channel } => {
+                    let midi_ch = self.midi_channel_for(channel);
+                    self.send_channel_note_off(midi_ch);
                 }
-                Some(EFFECT_SET_SPEED) => {
-                    let val = effect_value.unwrap_or(0);
-                    if val > 0 && val < 0x20 {
-                        self.song.speed = val;
-                    } else if val >= 0x20 {
-                        self.song.bpm = val as u16;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Check tempo automation map
-        if let Some(bpm) = self.song.tempo_at(self.playback_order, self.playback_row) {
-            let new_bpm = bpm.round() as u16;
-            if new_bpm >= 1 {
-                self.song.bpm = new_bpm;
-                if self.link.is_enabled() {
-                    self.link.set_tempo(bpm);
-                }
-            }
-        }
-
-        // Play the current row and set up per-channel effect state
-        for (ch, (note, volume, effect, effect_value, instrument)) in cells.into_iter().enumerate() {
-            let midi_ch = self.midi_channel_for(ch);
-            let param = effect_value.unwrap_or(0);
-
-            // For tone portamento (3xx), a new note sets the target instead of triggering
-            let is_tone_porta = effect == Some(EFFECT_TONE_PORTA);
-
-            if !self.is_channel_audible(ch) {
-                // Still update channel state for muted channels so effects resume correctly
-                if let Some(Note::On { .. }) = note {
-                    if let Some(midi_note) = note.unwrap().to_midi_note() {
-                        if is_tone_porta {
-                            self.channel_states[ch].porta_target = Some(midi_note);
-                        } else {
-                            self.channel_states[ch].note = Some(midi_note);
-                        }
-                    }
-                }
-                self.channel_states[ch].effect = effect;
-                self.channel_states[ch].effect_param = param;
-                continue;
-            }
-
-            // Clear any previous delayed note
-            self.channel_states[ch].delayed_note = None;
-
-            // Note delay (6xx): defer note trigger to tick xx
-            let is_note_delay = effect == Some(EFFECT_NOTE_DELAY) && param > 0;
-
-            // Process notes
-            match note {
-                Some(Note::On { .. }) => {
-                    if let Some(midi_note) = note.unwrap().to_midi_note() {
-                        if is_tone_porta {
-                            // Tone portamento: set target, don't retrigger
-                            self.channel_states[ch].porta_target = Some(midi_note);
-                        } else if is_note_delay {
-                            // Defer note trigger to the specified tick
-                            let vel = volume.unwrap_or(self.channel_states[ch].volume);
-                            // Apply per-channel volume
-                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, MIDI_MAX_VALUE as f32) as u8;
-                            self.channel_states[ch].delayed_note = Some((midi_note, scaled_vel, false));
-                            self.channel_states[ch].delay_tick = param;
-                        } else {
-                            let vel = volume.unwrap_or(self.channel_states[ch].volume);
-                            // Apply per-channel volume
-                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, MIDI_MAX_VALUE as f32) as u8;
-                            // Reset pitch bend on new note
-                            self.channel_states[ch].pitch_offset = 0.0;
-                            self.channel_states[ch].vibrato_phase = 0.0;
-                            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
-                            self.send_note_on_with_instrument(midi_ch, midi_note, scaled_vel, instrument);
-                            self.channel_states[ch].note = Some(midi_note);
-                            self.channel_states[ch].active_instrument = instrument;
-                            self.channel_states[ch].volume = vel;  // Store unscaled for effect processing
-                        }
-                    }
-                }
-                Some(Note::Off) => {
-                    if is_note_delay {
-                        // Defer note-off to the specified tick
-                        self.channel_states[ch].delayed_note = Some((0, 0, true));
-                        self.channel_states[ch].delay_tick = param;
-                    } else {
-                        self.send_channel_note_off(midi_ch);
-                        self.channel_states[ch].note = None;
-                        self.channel_states[ch].pitch_offset = 0.0;
-                        self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
-                    }
-                }
-                None => {
-                    // No note: update volume if specified
-                    if let Some(vol) = volume {
-                        self.channel_states[ch].volume = vol;
-                    }
-                }
-            }
-
-            // Store effect state for subsequent ticks
-            self.channel_states[ch].effect = effect;
-            self.channel_states[ch].effect_param = param;
-
-            // Process immediate (tick 0) effects
-            match effect {
-                Some(EFFECT_MIDI_CC) => {
-                    let controller = instrument.unwrap_or(0);
-                    self.send_cc(midi_ch, controller, param);
-                }
-                Some(EFFECT_PROGRAM_CHANGE) => {
-                    self.send_program_change(midi_ch, param);
-                }
-                _ => {}
-            }
-        }
-
-        // Process position jump (Bxx)
-        if let Some(target_order) = jump_order {
-            let target = target_order.min(self.song.order.len() - 1);
-            if target <= self.playback_order {
-                self.playback_generation += 1;
-            }
-            self.playback_order = target;
-            self.playback_repeat_count = 0;
-            self.skip_zero_repeats_forward();
-            let target_pattern = self.song.order[self.playback_order];
-            let target_rows = self.song.patterns[target_pattern].rows;
-            self.playback_row = break_row.unwrap_or(0).min(target_rows - 1);
-            return;
-        }
-
-        // Process pattern break (Dxx)
-        if let Some(target_row) = break_row {
-            self.advance_order_position();
-            let target_pattern = self.song.order[self.playback_order];
-            let target_rows = self.song.patterns[target_pattern].rows;
-            self.playback_row = target_row.min(target_rows - 1);
-            return;
-        }
-
-        // Normal advance
-        self.playback_row += 1;
-        if self.playback_row >= pattern_rows {
-            self.playback_row = 0;
-            self.advance_order_position();
-        }
-    }
-
-    /// Advance to the next order position, respecting repeat counts.
-    fn advance_order_position(&mut self) {
-        let repeat = self.order_repeat_at(self.playback_order);
-        self.playback_repeat_count += 1;
-        if repeat > 1 && self.playback_repeat_count < repeat {
-            // Stay on same order entry (repeat)
-            return;
-        }
-        // Move to next entry
-        self.playback_repeat_count = 0;
-        self.playback_order += 1;
-        if self.playback_order >= self.song.order.len() {
-            self.playback_order = 0;
-            self.playback_generation += 1;
-        }
-        self.skip_zero_repeats_forward();
-    }
-
-    /// Skip order entries with repeat=0 (starting from current position).
-    fn skip_zero_repeats_forward(&mut self) {
-        let len = self.song.order.len();
-        let start = self.playback_order;
-        for _ in 0..len {
-            if self.order_repeat_at(self.playback_order) > 0 {
-                return;
-            }
-            self.playback_order += 1;
-            if self.playback_order >= len {
-                self.playback_order = 0;
-                self.playback_generation += 1;
-            }
-            if self.playback_order == start {
-                // All entries are 0 -- stop to avoid infinite loop
-                return;
-            }
-        }
-    }
-
-    fn order_repeat_at(&self, idx: usize) -> u8 {
-        self.song.order_repeats.get(idx).copied().unwrap_or(1)
-    }
-
-    /// Ticks 1..speed-1: process continuous effects (arpeggio, portamento, vibrato, volume slide).
-    pub(crate) fn process_effects_tick(&mut self) {
-        let channels = self.channel_states.len();
-        for ch in 0..channels {
-            if !self.is_channel_audible(ch) {
-                continue;
-            }
-            let midi_ch = self.midi_channel_for(ch);
-
-            // Process note delay before other effects (note may not exist yet)
-            if self.channel_states[ch].effect == Some(EFFECT_NOTE_DELAY) {
-                if let Some((midi_note, vel, is_off)) = self.channel_states[ch].delayed_note {
-                    if self.playback_tick == self.channel_states[ch].delay_tick {
-                        if is_off {
-                            self.send_channel_note_off(midi_ch);
-                            self.channel_states[ch].note = None;
-                            self.channel_states[ch].pitch_offset = 0.0;
-                            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
-                        } else {
-                            self.channel_states[ch].pitch_offset = 0.0;
-                            self.channel_states[ch].vibrato_phase = 0.0;
-                            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
-                            self.send_note_on(midi_ch, midi_note, vel);
-                            self.channel_states[ch].note = Some(midi_note);
-                            self.channel_states[ch].volume = vel;
-                        }
-                        self.channel_states[ch].delayed_note = None;
-                    }
-                }
-                continue;
-            }
-
-            let effect = self.channel_states[ch].effect;
-            let param = self.channel_states[ch].effect_param;
-            let base_note = match self.channel_states[ch].note {
-                Some(n) => n,
-                None => continue,
-            };
-            let pb_per_semi = self.channel_pitch_bend_per_semitone(ch);
-
-            match effect {
-                Some(EFFECT_ARPEGGIO) if param != 0 => {
-                    let x = (param >> 4) as u8;
-                    let y = (param & 0x0F) as u8;
-                    // Cycle through base, base+x, base+y on ticks 1, 2, 3...
-                    let phase = self.playback_tick % 3;
-                    let offset = match phase {
-                        0 => 0.0,
-                        1 => x as f64,
-                        _ => y as f64,
-                    };
-                    let bend = (offset * pb_per_semi) as i32;
+                TrackerEvent::PitchBend { channel, semitone_offset } => {
+                    let midi_ch = self.midi_channel_for(channel);
+                    let pb_per_semi = self.channel_pitch_bend_per_semitone(channel);
+                    let bend = (semitone_offset * pb_per_semi) as i32;
                     let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
-                Some(EFFECT_PORTA_UP) => {
-                    // Slide pitch up by param units per tick (param in 16ths of a semitone)
-                    self.channel_states[ch].pitch_offset += param as f64 / 16.0;
-                    let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
-                    self.send_pitch_bend(midi_ch, value);
+                TrackerEvent::VolumeChange { channel, volume } => {
+                    let midi_ch = self.midi_channel_for(channel);
+                    self.send_cc(midi_ch, 7, volume);
                 }
-                Some(EFFECT_PORTA_DOWN) => {
-                    self.channel_states[ch].pitch_offset -= param as f64 / 16.0;
-                    let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
-                    self.send_pitch_bend(midi_ch, value);
+                TrackerEvent::MidiCC { channel, controller, value } => {
+                    let midi_ch = self.midi_channel_for(channel);
+                    self.send_cc(midi_ch, controller, value);
                 }
-                Some(EFFECT_TONE_PORTA) => {
-                    if let Some(target) = self.channel_states[ch].porta_target {
-                        let current = base_note as f64 + self.channel_states[ch].pitch_offset;
-                        let target_f = target as f64;
-                        let speed = param as f64 / 16.0;
-                        if current < target_f {
-                            self.channel_states[ch].pitch_offset += speed.min(target_f - current);
-                        } else if current > target_f {
-                            self.channel_states[ch].pitch_offset -= speed.min(current - target_f);
-                        }
-                        let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
-                        let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
-                        self.send_pitch_bend(midi_ch, value);
+                TrackerEvent::ProgramChange { channel, program } => {
+                    let midi_ch = self.midi_channel_for(channel);
+                    self.send_program_change(midi_ch, program);
+                }
+                TrackerEvent::SpeedChanged { speed } => {
+                    self.song.speed = speed;
+                }
+                TrackerEvent::TempoChanged { bpm } => {
+                    self.song.bpm = bpm;
+                    if self.link.is_enabled() {
+                        self.link.set_tempo(bpm as f64);
                     }
                 }
-                Some(EFFECT_VIBRATO) => {
-                    let speed = (param >> 4) as f64;
-                    let depth = (param & 0x0F) as f64;
-                    self.channel_states[ch].vibrato_phase += speed / 64.0;
-                    if self.channel_states[ch].vibrato_phase >= 1.0 {
-                        self.channel_states[ch].vibrato_phase -= 1.0;
-                    }
-                    let sine = (self.channel_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
-                    let offset = sine * depth / 16.0; // depth in 16ths of a semitone
-                    let total = self.channel_states[ch].pitch_offset + offset;
-                    let bend = (total * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
-                    self.send_pitch_bend(midi_ch, value);
-                }
-                Some(EFFECT_VOLUME_SLIDE) => {
-                    let up = (param >> 4) as i16;
-                    let down = (param & 0x0F) as i16;
-                    let delta = up - down;
-                    let new_vol = (self.channel_states[ch].volume as i16 + delta).clamp(0, MIDI_MAX_VALUE as i16) as u8;
-                    self.channel_states[ch].volume = new_vol;
-                    // Send volume as CC 7
-                    self.send_cc(midi_ch, 7, new_vol);
-                }
-                _ => {}
+                TrackerEvent::RowAdvanced { .. } | TrackerEvent::GenerationAdvanced { .. } => {}
             }
         }
     }
@@ -526,13 +234,13 @@ impl App {
 
         // 24 MIDI clock ticks = 1 beat. speed tracker ticks = 1 row.
         // clocks_per_tracker_tick = 24 / speed
-        let clocks_per_tick = (24u32 / self.song.speed as u32).max(1);
+        let clocks_per_tick = (24u32 / self.engine.speed as u32).max(1);
         if self.ext_clock_count >= clocks_per_tick {
             self.ext_clock_count = 0;
             self.process_tick();
 
             // Update elapsed time based on BPM (estimated)
-            let spt = self.song.seconds_per_tick();
+            let spt = self.engine.seconds_per_tick(&self.song);
             self.playback_elapsed += spt;
         }
     }
@@ -543,16 +251,10 @@ impl App {
             return;
         }
         self.playing = true;
-        self.playback_row = 0;
-        self.playback_order = 0;
-        self.playback_generation = 0;
-        self.playback_tick = 0;
+        self.engine.reset(&self.song, 0, 0);
+        self.sync_engine_channel_info();
         self.ext_clock_count = 0;
         self.playback_elapsed = 0.0;
-        self.playback_repeat_count = 0;
-        self.skip_zero_repeats_forward();
-        let ch_count = self.song.channels;
-        self.channel_states = vec![ChannelState::default(); ch_count];
     }
 
     /// Handle external MIDI Stop message (0xFC)
@@ -561,7 +263,7 @@ impl App {
             return;
         }
         self.playing = false;
-        for ch in 0..self.channel_states.len() {
+        for ch in 0..self.engine.channel_states.len() {
             let midi_ch = self.midi_channel_for(ch);
             self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
         }

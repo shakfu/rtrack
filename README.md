@@ -13,7 +13,17 @@ cargo run -- recording.mid               # import a MIDI file
 cargo run -- --sample-dir samples/       # load a directory of samples
 ```
 
-Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back. Press **F1** for the full help screen.
+Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back from the current position (or **Ctrl+Space** to play from the beginning). Press **F1** for the full help screen.
+
+### Offline Render
+
+Render a song to an audio file without real-time playback or an audio device:
+
+```sh
+cargo run -- --render song.rtrk -o out.wav                # render to WAV
+cargo run -- --render song.rtrk -o out.flac               # render to FLAC
+cargo run -- --render --sf2 gm.sf2 song.rtrk -o out.wav   # with SoundFont
+```
 
 ### Headless Playback
 
@@ -239,6 +249,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - Export to MIDI (Ctrl+E)
 - Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
 - Export to FLAC (Ctrl+L) -- lossless audio export
+- CLI offline render (`--render song.rtrk -o out.wav`) -- no audio device needed, format from extension
 - Color themes: dark (default), light, monokai (F8 to cycle)
 
 ## File Format
@@ -283,7 +294,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 
 | Key | Action |
 |-----|--------|
-| Space | Play / stop |
+| Space | Play / stop (from current position) |
+| Ctrl+Space | Play / stop (from beginning) |
 | Esc | Toggle Normal / Insert mode |
 | Tab / Shift+Tab | Next / previous track (wraps around) |
 | Enter | Open Track Config for current channel |
@@ -429,7 +441,7 @@ cargo run -- examples/chord-progression.rtrk
 ```sh
 make build    # compile
 make run      # compile and run
-make test     # run tests (301 tests)
+make test     # run tests (304 tests)
 ```
 
 ## Architecture
@@ -437,6 +449,7 @@ make test     # run tests (301 tests)
 ```text
 src/
   main.rs               Entry point, event loop, clap CLI
+  constants.rs          Shared constants (MIDI protocol, music theory, effect commands)
   app/
     mod.rs              App state, undo/redo, file I/O, song management
     input.rs            Keyboard/mouse input handling, mode dispatch

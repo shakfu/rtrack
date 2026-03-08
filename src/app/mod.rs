@@ -23,47 +23,8 @@ const MAX_UNDO_HISTORY: usize = 100;
 /// Preview note auto-off timeout in milliseconds
 const PREVIEW_NOTE_TIMEOUT_MS: u64 = 250;
 
-/// Per-channel state for continuous effects (arpeggio, portamento, vibrato, volume slide)
-#[derive(Debug, Clone)]
-pub struct ChannelState {
-    /// Last triggered MIDI note on this channel
-    pub note: Option<u8>,
-    /// Current volume (0-127)
-    pub volume: u8,
-    /// Accumulated pitch offset in semitones (for portamento)
-    pub pitch_offset: f64,
-    /// Target note for tone portamento
-    pub porta_target: Option<u8>,
-    /// Vibrato phase (0.0..1.0)
-    pub vibrato_phase: f64,
-    /// Current active effect
-    pub effect: Option<u8>,
-    /// Current effect parameter
-    pub effect_param: u8,
-    /// Delayed note: (midi_note, velocity, is_off)
-    pub delayed_note: Option<(u8, u8, bool)>,
-    /// Tick on which to trigger delayed note
-    pub delay_tick: u8,
-    /// Active instrument index on this channel (for pitch bend range lookup)
-    pub active_instrument: Option<u8>,
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self {
-            note: None,
-            volume: 100,
-            pitch_offset: 0.0,
-            porta_target: None,
-            vibrato_phase: 0.0,
-            effect: None,
-            effect_param: 0,
-            delayed_note: None,
-            delay_tick: 0,
-            active_instrument: None,
-        }
-    }
-}
+/// Re-export ChannelState from the engine module.
+pub use crate::engine::ChannelState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelType {
@@ -137,6 +98,121 @@ pub enum FileBrowserAction {
 pub struct FileBrowserEntry {
     pub name: String,
     pub is_dir: bool,
+}
+
+/// Self-contained file browser dialog state.
+pub struct FileBrowserState {
+    pub dir: PathBuf,
+    pub entries: Vec<FileBrowserEntry>,
+    pub cursor: usize,
+    pub action: FileBrowserAction,
+    pub filter: Vec<String>,
+    pub scroll: usize,
+}
+
+impl FileBrowserState {
+    pub fn new() -> Self {
+        Self {
+            dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            entries: Vec::new(),
+            cursor: 0,
+            action: FileBrowserAction::OpenSong,
+            filter: Vec::new(),
+            scroll: 0,
+        }
+    }
+
+    /// Refresh the entries from the current directory.
+    pub fn refresh(&mut self) {
+        let mut entries = Vec::new();
+
+        if let Ok(read_dir) = std::fs::read_dir(&self.dir) {
+            for entry in read_dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') {
+                    continue;
+                }
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if is_dir {
+                    entries.push(FileBrowserEntry { name, is_dir: true });
+                } else if self.filter.is_empty() {
+                    entries.push(FileBrowserEntry { name, is_dir: false });
+                } else {
+                    let ext = std::path::Path::new(&name)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if self.filter.iter().any(|f| f == &ext) {
+                        entries.push(FileBrowserEntry { name, is_dir: false });
+                    }
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+
+        self.entries = entries;
+        self.cursor = 0;
+        self.scroll = 0;
+    }
+
+    /// Open the browser with a specific action and extension filter.
+    pub fn open(&mut self, action: FileBrowserAction, extensions: Vec<String>) {
+        self.action = action;
+        self.filter = extensions;
+        self.cursor = 0;
+        self.scroll = 0;
+        self.refresh();
+    }
+}
+
+/// Per-channel configuration (audio routing, effects, naming).
+/// One entry per tracker channel; the Vec always matches `song.channels` in length.
+pub struct ChannelConfig {
+    pub muted: bool,
+    pub name: String,
+    pub channel_type: ChannelType,
+    /// Default instrument for this track (Synth tracks auto-fill on note entry)
+    pub default_instrument: Option<u8>,
+    pub volume: f32,
+    pub pan: f32,
+    pub effects_params: crate::audio::channel_effects::ChannelEffectsParams,
+    /// MIDI channel this tracker channel maps to (0-15)
+    pub midi_channel: u8,
+}
+
+impl ChannelConfig {
+    pub fn new(midi_channel: u8) -> Self {
+        Self {
+            muted: false,
+            name: String::new(),
+            channel_type: ChannelType::Midi,
+            default_instrument: None,
+            volume: 1.0,
+            pan: 0.0,
+            effects_params: crate::audio::channel_effects::ChannelEffectsParams::default(),
+            midi_channel,
+        }
+    }
+}
+
+impl App {
+    /// Create default channel configs for `n` channels.
+    pub fn default_channel_configs(n: usize) -> Vec<ChannelConfig> {
+        (0..n).map(|i| ChannelConfig::new(i as u8)).collect()
+    }
+
+    /// Collect a Vec of ChannelEffectsParams refs for passing to export functions.
+    pub fn channel_effects_params_slice(&self) -> Vec<crate::audio::channel_effects::ChannelEffectsParams> {
+        self.channels.iter().map(|c| c.effects_params.clone()).collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,27 +409,16 @@ pub struct App {
 
     // -----------------------------------------------------------------------
     // Playback State
-    // Fields: playing, playback_row, playback_order, playback_generation,
-    //         last_tick, tick_accumulator, playback_tick,
-    //         clock_tick_accumulator, channel_states
     // -----------------------------------------------------------------------
     pub playing: bool,
-    pub playback_row: usize,
-    pub playback_order: usize,
-    /// Incremented each time playback wraps past the end of the order list
-    pub playback_generation: u32,
+    /// The deterministic playback engine (owns row/order/generation/tick/channel_states).
+    pub engine: crate::engine::TrackerEngine,
     pub(crate) last_tick: Option<Instant>,
     pub(crate) tick_accumulator: f64,
-    /// Current sub-tick within a row (0..speed-1). Tick 0 = new row, ticks 1+ = effect processing.
-    pub(crate) playback_tick: u8,
     /// MIDI clock tick accumulator
     pub(crate) clock_tick_accumulator: f64,
     /// Elapsed playback time in seconds
     pub playback_elapsed: f64,
-    /// How many times the current order entry has been played (for repeat tracking)
-    pub(crate) playback_repeat_count: u8,
-    /// Per-channel effect state
-    pub(crate) channel_states: Vec<ChannelState>,
     /// External MIDI clock mode
     pub clock_mode: ClockMode,
     /// Count of received external MIDI clock ticks (0xF8)
@@ -407,12 +472,7 @@ pub struct App {
     pub help_scroll: usize,
 
     // File browser state
-    pub file_browser_dir: PathBuf,
-    pub file_browser_entries: Vec<FileBrowserEntry>,
-    pub file_browser_cursor: usize,
-    pub file_browser_action: FileBrowserAction,
-    pub file_browser_filter: Vec<String>,
-    pub file_browser_scroll: usize,
+    pub file_browser: FileBrowserState,
 
     // -----------------------------------------------------------------------
     // Other state (file, audio, instruments, channels)
@@ -422,9 +482,7 @@ pub struct App {
     /// Last auto-save timestamp
     pub(crate) last_autosave: Instant,
     pub edit_order: usize,
-    pub muted_channels: Vec<bool>,
     pub solo_channel: Option<usize>,
-    pub midi_channel_map: Vec<u8>,
     /// The mode to return to after closing the port selector
     pub(crate) prev_mode: Mode,
     pub instruments: Vec<Instrument>,
@@ -433,17 +491,8 @@ pub struct App {
     pub sample_bank: Arc<SampleBank>,
     /// Preview note: (channel, note, timestamp) -- auto note-off after timeout
     pub(crate) preview_note: Option<(u8, u8, Instant)>,
-    pub channel_names: Vec<String>,
-    /// Per-channel type (Midi, Synth, Sample)
-    pub channel_types: Vec<ChannelType>,
-    /// Default instrument per track (used for Synth tracks to auto-fill instrument on note entry)
-    pub channel_instruments: Vec<Option<u8>>,
-    /// Per-channel volume (0.0..1.0, default 1.0)
-    pub channel_volumes: Vec<f32>,
-    /// Per-channel pan (-1.0=left, 0.0=center, 1.0=right)
-    pub channel_pans: Vec<f32>,
-    /// Per-channel effects parameters
-    pub channel_effects_params: Vec<crate::audio::channel_effects::ChannelEffectsParams>,
+    /// Per-channel config (routing, effects, naming) -- always matches song.channels in length
+    pub channels: Vec<ChannelConfig>,
     /// Send/return bus parameters
     pub send_bus_params: Vec<crate::audio::effects::SendBusParams>,
 }
@@ -464,6 +513,7 @@ impl App {
 
         let song = Song::new(4, 64);
         let link = LinkEngine::new(song.bpm as f64);
+        let engine = crate::engine::TrackerEngine::new(&song, true);
 
         Self {
             song,
@@ -477,9 +527,7 @@ impl App {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             playing: false,
-            playback_row: 0,
-            playback_order: 0,
-            playback_generation: 0,
+            engine,
             last_tick: None,
             tick_accumulator: 0.0,
             edit_step: 1,
@@ -490,9 +538,7 @@ impl App {
             redo_stack: Vec::new(),
             clipboard: None,
             edit_order: 0,
-            muted_channels: vec![false; 4],
             solo_channel: None,
-            midi_channel_map: (0..4).map(|i| i as u8).collect(),
             midi_port_list: Vec::new(),
             midi_port_cursor: 0,
             prev_mode: Mode::Normal,
@@ -503,7 +549,6 @@ impl App {
             theme_index: 0,
             clock_tick_accumulator: 0.0,
             playback_elapsed: 0.0,
-            playback_repeat_count: 0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
@@ -514,32 +559,20 @@ impl App {
             synth_editor_field: SynthField::Waveform,
             track_page: 0,
             preview_note: None,
-            playback_tick: 0,
-            channel_states: vec![ChannelState::default(); 4],
             clock_mode: ClockMode::Internal,
             ext_clock_count: 0,
             last_link_beat: 0.0,
             help_scroll: 0,
-            file_browser_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-            file_browser_entries: Vec::new(),
-            file_browser_cursor: 0,
-            file_browser_action: FileBrowserAction::OpenSong,
-            file_browser_filter: Vec::new(),
-            file_browser_scroll: 0,
+            file_browser: FileBrowserState::new(),
             dirty: false,
             block_anchor: None,
             block_clipboard: None,
             follow_playback: true,
-            channel_names: vec![String::new(); 4],
-            channel_types: vec![ChannelType::Midi; 4],
-            channel_instruments: vec![None; 4],
             rename_buf: String::new(),
             ch_fx_field: 0,
             matrix_cursor: 0,
             command_buf: String::new(),
-            channel_volumes: vec![1.0; 4],
-            channel_pans: vec![0.0; 4],
-            channel_effects_params: (0..4).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect(),
+            channels: Self::default_channel_configs(4),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
         }
     }
@@ -679,62 +712,14 @@ impl App {
 
     /// Open the file browser with a specific action and extension filter.
     pub fn open_file_browser(&mut self, action: FileBrowserAction, extensions: Vec<String>) {
-        self.file_browser_action = action;
-        self.file_browser_filter = extensions;
-        self.file_browser_cursor = 0;
-        self.file_browser_scroll = 0;
         self.prev_mode = self.mode;
-        self.refresh_file_browser();
+        self.file_browser.open(action, extensions);
         self.mode = Mode::FileBrowser;
-    }
-
-    /// Refresh the file browser entries from the current directory.
-    pub fn refresh_file_browser(&mut self) {
-        let mut entries = Vec::new();
-
-        if let Ok(read_dir) = std::fs::read_dir(&self.file_browser_dir) {
-            for entry in read_dir.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Skip hidden files
-                if name.starts_with('.') {
-                    continue;
-                }
-                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                if is_dir {
-                    entries.push(FileBrowserEntry { name, is_dir: true });
-                } else if self.file_browser_filter.is_empty() {
-                    entries.push(FileBrowserEntry { name, is_dir: false });
-                } else {
-                    // Filter by extension
-                    let ext = std::path::Path::new(&name)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("")
-                        .to_lowercase();
-                    if self.file_browser_filter.iter().any(|f| f == &ext) {
-                        entries.push(FileBrowserEntry { name, is_dir: false });
-                    }
-                }
-            }
-        }
-
-        // Sort: directories first, then alphabetical
-        entries.sort_by(|a, b| {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            }
-        });
-
-        self.file_browser_entries = entries;
-        self.file_browser_cursor = 0;
-        self.file_browser_scroll = 0;
     }
 
     /// Handle file selection from the file browser.
     pub fn on_file_selected(&mut self, path: PathBuf) {
-        match self.file_browser_action {
+        match self.file_browser.action {
             FileBrowserAction::LoadSample(slot) => {
                 let mut bank = (*self.sample_bank).clone();
                 match bank.load(slot, &path) {
@@ -817,25 +802,33 @@ impl App {
         Ok(count)
     }
 
-    /// Export the song to a WAV file
-    #[allow(dead_code)]
-    pub fn export_wav(&self, path: std::path::PathBuf) {
-        let instruments: Vec<crate::sample::export::ExportInstrument> = self.instruments.iter()
+    /// Build export instrument descriptors from the current instrument list.
+    pub fn export_instruments(&self) -> Vec<crate::sample::export::ExportInstrument> {
+        self.instruments.iter()
             .map(|i| crate::sample::export::ExportInstrument {
                 sample_index: i.sample_index,
                 midi_program: i.midi_program.unwrap_or(0),
                 synth_params: i.synth_params.clone(),
             })
-            .collect();
-        let sample_rate = self.audio.as_ref()
+            .collect()
+    }
+
+    /// Return the audio sample rate (from the audio engine, or 44100 as default).
+    pub fn export_sample_rate(&self) -> u32 {
+        self.audio.as_ref()
             .map(|a| a.sample_rate() as u32)
-            .unwrap_or(44100);
+            .unwrap_or(44100)
+    }
+
+    /// Export the song to a WAV file
+    #[allow(dead_code)]
+    pub fn export_wav(&self, path: std::path::PathBuf) {
+        let instruments = self.export_instruments();
+        let sample_rate = self.export_sample_rate();
         match crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, &self.send_bus_params, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params_slice(), &self.send_bus_params, sample_rate,
         ) {
-            Ok(()) => {
-                // status_message is not &mut self here; caller should set it
-            }
+            Ok(()) => {}
             Err(_e) => {}
         }
     }
@@ -1014,7 +1007,7 @@ impl App {
 
     pub fn current_order_position(&self) -> usize {
         if self.playing {
-            self.playback_order
+            self.engine.order
         } else {
             self.edit_order
         }
@@ -1060,7 +1053,9 @@ impl App {
     }
 
     pub fn midi_channel_for(&self, tracker_channel: usize) -> u8 {
-        let ch = self.midi_channel_map.get(tracker_channel).copied().unwrap_or(tracker_channel as u8);
+        let ch = self.channels.get(tracker_channel)
+            .map(|c| c.midi_channel)
+            .unwrap_or(tracker_channel as u8);
         ch & 0x0F // clamp to valid MIDI channel range 0-15
     }
 
@@ -1068,19 +1063,17 @@ impl App {
         if let Some(solo) = self.solo_channel {
             return channel == solo;
         }
-        if channel < self.muted_channels.len() && self.muted_channels[channel] {
-            return false;
-        }
-        true
+        self.channels.get(channel).map_or(true, |c| !c.muted)
     }
 
     pub fn toggle_channel_mute(&mut self, channel: usize) {
-        if channel < self.muted_channels.len() {
+        if let Some(ch_cfg) = self.channels.get_mut(channel) {
             self.solo_channel = None;
-            self.muted_channels[channel] = !self.muted_channels[channel];
-            let state = if self.muted_channels[channel] { "muted" } else { "unmuted" };
+            ch_cfg.muted = !ch_cfg.muted;
+            let muted = ch_cfg.muted;
+            let state = if muted { "muted" } else { "unmuted" };
             self.status_message = Some(format!("Ch {} {}", channel + 1, state));
-            if self.muted_channels[channel] {
+            if muted {
                 let midi_ch = self.midi_channel_for(channel);
                 self.send_channel_note_off(midi_ch);
             }
@@ -1095,7 +1088,7 @@ impl App {
             self.solo_channel = Some(channel);
             self.status_message = Some(format!("Solo ch {}", channel + 1));
             // Kill notes on all non-solo channels
-            for ch in 0..self.muted_channels.len() {
+            for ch in 0..self.channels.len() {
                 if ch != channel {
                     let midi_ch = self.midi_channel_for(ch);
                     self.send_channel_note_off(midi_ch);
@@ -1106,7 +1099,7 @@ impl App {
 
     /// Get the effective pitch bend range for a channel (checks active instrument).
     pub(crate) fn channel_pitch_bend_per_semitone(&self, ch: usize) -> f64 {
-        let range = self.channel_states.get(ch)
+        let range = self.engine.channel_states.get(ch)
             .and_then(|cs| cs.active_instrument)
             .and_then(|idx| self.instruments.get(idx as usize))
             .and_then(|inst| inst.pitch_bend_range)
@@ -1229,15 +1222,8 @@ impl App {
         match SongFile::load(&path) {
             Ok(song_file) => {
                 let song = song_file.song;
-                self.muted_channels = vec![false; song.channels];
+                self.channels = Self::default_channel_configs(song.channels);
                 self.solo_channel = None;
-                self.channel_names = vec![String::new(); song.channels];
-                self.channel_types = vec![ChannelType::Midi; song.channels];
-                self.channel_instruments = vec![None; song.channels];
-                self.channel_volumes = vec![1.0; song.channels];
-                self.channel_pans = vec![0.0; song.channels];
-                self.channel_effects_params = (0..song.channels).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect();
-                self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.song.sync_order_repeats();
                 self.cursor_row = 0;
@@ -1401,18 +1387,10 @@ impl App {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.wav", name))
             });
-        let instruments: Vec<crate::sample::export::ExportInstrument> = self.instruments.iter()
-            .map(|i| crate::sample::export::ExportInstrument {
-                sample_index: i.sample_index,
-                midi_program: i.midi_program.unwrap_or(0),
-                synth_params: i.synth_params.clone(),
-            })
-            .collect();
-        let sample_rate = self.audio.as_ref()
-            .map(|a| a.sample_rate() as u32)
-            .unwrap_or(44100);
+        let instruments = self.export_instruments();
+        let sample_rate = self.export_sample_rate();
         match crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, &self.send_bus_params, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params_slice(), &self.send_bus_params, sample_rate,
         ) {
             Ok(()) => {
                 self.status_message = Some(format!("Exported WAV: {}", path.display()));
@@ -1430,18 +1408,10 @@ impl App {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.flac", name))
             });
-        let instruments: Vec<crate::sample::export::ExportInstrument> = self.instruments.iter()
-            .map(|i| crate::sample::export::ExportInstrument {
-                sample_index: i.sample_index,
-                midi_program: i.midi_program.unwrap_or(0),
-                synth_params: i.synth_params.clone(),
-            })
-            .collect();
-        let sample_rate = self.audio.as_ref()
-            .map(|a| a.sample_rate() as u32)
-            .unwrap_or(44100);
+        let instruments = self.export_instruments();
+        let sample_rate = self.export_sample_rate();
         match crate::sample::export::render_to_flac(
-            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params, &self.send_bus_params, sample_rate,
+            &path, &self.song, &self.sample_bank, &instruments, &self.channel_effects_params_slice(), &self.send_bus_params, sample_rate,
         ) {
             Ok(()) => {
                 self.status_message = Some(format!("Exported FLAC: {}", path.display()));
@@ -1473,15 +1443,8 @@ impl App {
         match crate::midi_file::import_midi(&path) {
             Ok(song) => {
                 self.push_undo();
-                self.muted_channels = vec![false; song.channels];
+                self.channels = Self::default_channel_configs(song.channels);
                 self.solo_channel = None;
-                self.channel_names = vec![String::new(); song.channels];
-                self.channel_types = vec![ChannelType::Midi; song.channels];
-                self.channel_instruments = vec![None; song.channels];
-                self.channel_volumes = vec![1.0; song.channels];
-                self.channel_pans = vec![0.0; song.channels];
-                self.channel_effects_params = (0..song.channels).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect();
-                self.midi_channel_map = (0..song.channels).map(|i| i as u8).collect();
                 self.song = song;
                 self.cursor_row = 0;
                 self.cursor_channel = 0;
@@ -1550,8 +1513,10 @@ mod tests {
     use crate::tracker::Note;
 
     fn make_app() -> App {
+        let song = Song::new(4, 64);
+        let engine = crate::engine::TrackerEngine::new(&song, true);
         App {
-            song: Song::new(4, 64),
+            song,
             midi: MidiEngine::new(),
             midi_input: MidiInputEngine::new(),
             link: LinkEngine::new(120.0),
@@ -1562,13 +1527,9 @@ mod tests {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             playing: false,
-            playback_row: 0,
-            playback_order: 0,
-            playback_generation: 0,
+            engine,
             last_tick: None,
             tick_accumulator: 0.0,
-            playback_tick: 0,
-            channel_states: vec![ChannelState::default(); 4],
             clock_mode: ClockMode::Internal,
             ext_clock_count: 0,
             last_link_beat: 0.0,
@@ -1580,9 +1541,7 @@ mod tests {
             redo_stack: Vec::new(),
             clipboard: None,
             edit_order: 0,
-            muted_channels: vec![false; 4],
             solo_channel: None,
-            midi_channel_map: vec![0, 1, 2, 3],
             midi_port_list: Vec::new(),
             midi_port_cursor: 0,
             prev_mode: Mode::Normal,
@@ -1593,7 +1552,6 @@ mod tests {
             theme_index: 0,
             clock_tick_accumulator: 0.0,
             playback_elapsed: 0.0,
-            playback_repeat_count: 0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
             sample_editor_slot: 0,
@@ -1605,26 +1563,16 @@ mod tests {
             track_page: 0,
             preview_note: None,
             help_scroll: 0,
-            file_browser_dir: PathBuf::from("/tmp"),
-            file_browser_entries: Vec::new(),
-            file_browser_cursor: 0,
-            file_browser_action: FileBrowserAction::OpenSong,
-            file_browser_filter: Vec::new(),
-            file_browser_scroll: 0,
+            file_browser: FileBrowserState { dir: PathBuf::from("/tmp"), entries: Vec::new(), cursor: 0, action: FileBrowserAction::OpenSong, filter: Vec::new(), scroll: 0 },
             dirty: false,
             block_anchor: None,
             block_clipboard: None,
             follow_playback: true,
-            channel_names: vec![String::new(); 4],
-            channel_types: vec![ChannelType::Midi; 4],
-            channel_instruments: vec![None; 4],
             rename_buf: String::new(),
             ch_fx_field: 0,
             matrix_cursor: 0,
             command_buf: String::new(),
-            channel_volumes: vec![1.0; 4],
-            channel_pans: vec![0.0; 4],
-            channel_effects_params: (0..4).map(|_| crate::audio::channel_effects::ChannelEffectsParams::default()).collect(),
+            channels: App::default_channel_configs(4),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
         }
     }
@@ -1747,6 +1695,44 @@ mod tests {
     }
 
     #[test]
+    fn test_play_starts_from_edit_order() {
+        let mut app = make_app();
+        app.song.order = vec![0, 0, 0];
+        app.edit_order = 2;
+        app.cursor_row = 5;
+
+        app.play();
+        assert_eq!(app.engine.order, 2);
+        assert_eq!(app.engine.row, 5);
+    }
+
+    #[test]
+    fn test_play_from_start() {
+        let mut app = make_app();
+        app.song.order = vec![0, 0, 0];
+        app.edit_order = 2;
+        app.cursor_row = 5;
+
+        app.play_from_start();
+        assert_eq!(app.engine.order, 0);
+        assert_eq!(app.engine.row, 0);
+        assert_eq!(app.edit_order, 0);
+    }
+
+    #[test]
+    fn test_ctrl_space_plays_from_start() {
+        let mut app = make_app();
+        app.song.order = vec![0, 0, 0];
+        app.edit_order = 2;
+        app.cursor_row = 5;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert!(app.playing);
+        assert_eq!(app.engine.order, 0);
+        assert_eq!(app.engine.row, 0);
+    }
+
+    #[test]
     fn test_mode_toggle() {
         let mut app = make_app();
         assert_eq!(app.mode, Mode::Normal);
@@ -1789,8 +1775,7 @@ mod tests {
                 row.resize(8, crate::tracker::Cell::default());
             }
         }
-        app.muted_channels = vec![false; 8];
-        app.midi_channel_map = (0..8).map(|i| i as u8).collect();
+        app.channels = App::default_channel_configs(8);
 
         app.cursor_channel = 3;
         app.track_page = 0;
@@ -2184,39 +2169,30 @@ mod tests {
         cell.effect = Some(EFFECT_PATTERN_BREAK);
         cell.effect_value = Some(8);
 
-        // Start playback
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        // Advance one row -- should trigger pattern break
-        app.advance_playback();
-        assert_eq!(app.playback_order, 1);
-        assert_eq!(app.playback_row, 8);
+        // Tick 0: advance row -> pattern break fires
+        app.process_tick();
+        assert_eq!(app.engine.order, 1);
+        assert_eq!(app.engine.row, 8);
     }
 
     #[test]
     fn test_position_jump_effect() {
         let mut app = make_app();
-        // Need 3 patterns in order
         let pat2 = app.song.add_pattern();
         let pat3 = app.song.add_pattern();
         app.song.order.push(pat2);
         app.song.order.push(pat3);
 
-        // Set position jump (B02) at row 0 of pattern 0
         let pat_idx = app.song.order[0];
         let cell = app.song.patterns[pat_idx].get_mut(0, 0);
         cell.effect = Some(EFFECT_POSITION_JUMP);
         cell.effect_value = Some(2);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        app.advance_playback();
-        assert_eq!(app.playback_order, 2);
-        assert_eq!(app.playback_row, 0);
+        app.process_tick();
+        assert_eq!(app.engine.order, 2);
+        assert_eq!(app.engine.row, 0);
     }
 
     #[test]
@@ -2227,14 +2203,12 @@ mod tests {
         app.song.order.push(pat2);
         app.song.order.push(pat3);
 
-        // Channel 0: position jump to order 2
         let pat_idx = app.song.order[0];
         {
             let cell = app.song.patterns[pat_idx].get_mut(0, 0);
             cell.effect = Some(EFFECT_POSITION_JUMP);
             cell.effect_value = Some(2);
         }
-        // Channel 1: pattern break to row 4
         {
             let cell = app.song.patterns[pat_idx].get_mut(0, 1);
             cell.effect = Some(EFFECT_PATTERN_BREAK);
@@ -2242,49 +2216,37 @@ mod tests {
         }
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        app.advance_playback();
-        assert_eq!(app.playback_order, 2);
-        assert_eq!(app.playback_row, 4);
+        app.process_tick();
+        assert_eq!(app.engine.order, 2);
+        assert_eq!(app.engine.row, 4);
     }
 
     #[test]
     fn test_pattern_break_wraps_order() {
         let mut app = make_app();
-        // Single pattern in order
         let pat_idx = app.song.order[0];
         let cell = app.song.patterns[pat_idx].get_mut(0, 0);
         cell.effect = Some(EFFECT_PATTERN_BREAK);
         cell.effect_value = Some(0);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        app.advance_playback();
-        // Should wrap back to order 0
-        assert_eq!(app.playback_order, 0);
-        assert_eq!(app.playback_row, 0);
-        assert_eq!(app.playback_generation, 1);
+        app.process_tick();
+        assert_eq!(app.engine.order, 0);
+        assert_eq!(app.engine.row, 0);
+        assert_eq!(app.engine.generation, 1);
     }
 
     #[test]
     fn test_position_jump_clamps_to_max() {
         let mut app = make_app();
-        // Jump to order 99, but we only have 1 entry
         let pat_idx = app.song.order[0];
         let cell = app.song.patterns[pat_idx].get_mut(0, 0);
         cell.effect = Some(EFFECT_POSITION_JUMP);
         cell.effect_value = Some(99);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        app.advance_playback();
-        assert_eq!(app.playback_order, 0); // clamped to max
+        app.process_tick();
+        assert_eq!(app.engine.order, 0); // clamped to max
     }
 
     #[test]
@@ -2378,11 +2340,11 @@ mod tests {
         app.song.patterns[pattern_idx].data.truncate(4);
 
         app.play();
-        app.playback_row = 3; // last row
+        app.engine.row = 3; // last row
 
         // Advance past end -> should wrap
-        app.advance_playback();
-        assert_eq!(app.playback_row, 0);
+        app.process_tick();
+        assert_eq!(app.engine.row, 0);
     }
 
     #[test]
@@ -2390,19 +2352,14 @@ mod tests {
         let mut app = make_app();
         let pat_idx = app.song.order[0];
 
-        // Set CC effect: C (controller=01, value=40)
         let cell = app.song.patterns[pat_idx].get_mut(0, 0);
         cell.effect = Some(EFFECT_MIDI_CC);
         cell.instrument = Some(1);
         cell.effect_value = Some(0x40);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        // advance_playback processes the CC on tick 0
-        app.advance_playback();
-        // If we got here without panicking, the CC was sent (we can't easily check MIDI output)
+        // process_tick dispatches MidiCC event to MIDI output
+        app.process_tick();
     }
 
     #[test]
@@ -2415,10 +2372,7 @@ mod tests {
         cell.effect_value = Some(5);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        app.advance_playback();
+        app.process_tick();
     }
 
     #[test]
@@ -2426,7 +2380,6 @@ mod tests {
         let mut app = make_app();
         let pat_idx = app.song.order[0];
 
-        // Place note C-4 with arpeggio 037 (minor chord)
         let cell = app.song.patterns[pat_idx].get_mut(0, 0);
         cell.note = Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 });
         cell.volume = Some(100);
@@ -2434,17 +2387,12 @@ mod tests {
         cell.effect_value = Some(0x37);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-        app.playback_tick = 0;
+        // Tick 0: triggers note
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48)); // C-4
 
-        // Tick 0: advance_playback triggers note and sets up arpeggio state
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].note, Some(48)); // C-4
-
-        // Tick 1: process_effects_tick should send pitch bend for +3
-        app.playback_tick = 1;
-        app.process_effects_tick();
+        // Tick 1: arpeggio pitch bend
+        app.process_tick();
     }
 
     #[test]
@@ -2456,20 +2404,16 @@ mod tests {
         cell.note = Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_PORTA_UP);
-        cell.effect_value = Some(0x10); // 1 semitone per tick
+        cell.effect_value = Some(0x10);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-        app.playback_tick = 0;
-
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].pitch_offset, 0.0);
+        // Tick 0: note on
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].pitch_offset, 0.0);
 
         // Tick 1: pitch should increase
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert!(app.channel_states[0].pitch_offset > 0.0);
+        app.process_tick();
+        assert!(app.engine.channel_states[0].pitch_offset > 0.0);
     }
 
     #[test]
@@ -2484,12 +2428,9 @@ mod tests {
         cell.effect_value = Some(0x10);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
-
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert!(app.channel_states[0].pitch_offset < 0.0);
+        app.process_tick(); // tick 0: note on
+        app.process_tick(); // tick 1: effects
+        assert!(app.engine.channel_states[0].pitch_offset < 0.0);
     }
 
     #[test]
@@ -2512,22 +2453,21 @@ mod tests {
         }
 
         app.play();
-        app.playback_tick = 0;
+        // Row 0, tick 0: triggers C-4
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48));
 
-        // Row 0: triggers C-4
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].note, Some(48)); // C-4
+        // Advance through remaining ticks of row 0 (ticks 1-5)
+        for _ in 1..app.song.speed { app.process_tick(); }
 
-        // Row 1: sets target to E-4 (52) but keeps C-4 playing
-        app.playback_tick = 0;
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].note, Some(48)); // still C-4
-        assert_eq!(app.channel_states[0].porta_target, Some(52));
+        // Row 1, tick 0: sets target to E-4 but keeps C-4 playing
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48));
+        assert_eq!(app.engine.channel_states[0].porta_target, Some(52));
 
         // Tick 1: pitch should start sliding up
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert!(app.channel_states[0].pitch_offset > 0.0);
+        app.process_tick();
+        assert!(app.engine.channel_states[0].pitch_offset > 0.0);
     }
 
     #[test]
@@ -2539,16 +2479,12 @@ mod tests {
         cell.note = Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_VIBRATO);
-        cell.effect_value = Some(0x42); // speed=4, depth=2
+        cell.effect_value = Some(0x42);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
-
-        // Tick 1: vibrato should modulate
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert!(app.channel_states[0].vibrato_phase > 0.0);
+        app.process_tick(); // tick 0: note on
+        app.process_tick(); // tick 1: vibrato
+        assert!(app.engine.channel_states[0].vibrato_phase > 0.0);
     }
 
     #[test]
@@ -2560,16 +2496,14 @@ mod tests {
         cell.note = Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_VOLUME_SLIDE);
-        cell.effect_value = Some(0x02); // slide down by 2
+        cell.effect_value = Some(0x02);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].volume, 100);
+        app.process_tick(); // tick 0
+        assert_eq!(app.engine.channel_states[0].volume, 100);
 
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].volume, 98);
+        app.process_tick(); // tick 1: slide
+        assert_eq!(app.engine.channel_states[0].volume, 98);
     }
 
     #[test]
@@ -2581,15 +2515,12 @@ mod tests {
         cell.note = Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_VOLUME_SLIDE);
-        cell.effect_value = Some(0x30); // slide up by 3
+        cell.effect_value = Some(0x30);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
-
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].volume, 103);
+        app.process_tick(); // tick 0
+        app.process_tick(); // tick 1: slide up
+        assert_eq!(app.engine.channel_states[0].volume, 103);
     }
 
     #[test]
@@ -2601,15 +2532,12 @@ mod tests {
         cell.note = Some(Note::On { value: crate::tracker::NoteValue::C, octave: 4 });
         cell.volume = Some(5);
         cell.effect = Some(EFFECT_VOLUME_SLIDE);
-        cell.effect_value = Some(0x0F); // slide down by 15
+        cell.effect_value = Some(0x0F);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
-
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].volume, 0); // clamped, not wrapped
+        app.process_tick(); // tick 0
+        app.process_tick(); // tick 1: slide down
+        assert_eq!(app.engine.channel_states[0].volume, 0);
     }
 
     #[test]
@@ -2622,8 +2550,7 @@ mod tests {
         cell.effect_value = Some(3);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
+        app.process_tick();
         assert_eq!(app.song.speed, 3);
     }
 
@@ -2637,8 +2564,7 @@ mod tests {
         cell.effect_value = Some(0x80);
 
         app.play();
-        app.playback_tick = 0;
-        app.advance_playback();
+        app.process_tick();
         assert_eq!(app.song.bpm, 0x80);
     }
 
@@ -2651,14 +2577,14 @@ mod tests {
 
         // Tick 0
         app.process_tick();
-        assert_eq!(app.playback_tick, 1);
+        assert_eq!(app.engine.tick, 1);
 
         // Ticks 1-5
         for _ in 0..5 {
             app.process_tick();
         }
         // After tick 5, should reset to 0
-        assert_eq!(app.playback_tick, 0);
+        assert_eq!(app.engine.tick, 0);
     }
 
     #[test]
@@ -2674,27 +2600,23 @@ mod tests {
         cell.effect_value = Some(3);
 
         app.play();
-        app.playback_tick = 0;
 
         // Tick 0: note should be deferred, not triggered
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].note, None); // not triggered yet
-        assert!(app.channel_states[0].delayed_note.is_some());
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, None);
+        assert!(app.engine.channel_states[0].delayed_note.is_some());
 
         // Tick 1: still waiting
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].note, None);
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, None);
 
         // Tick 2: still waiting
-        app.playback_tick = 2;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].note, None);
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, None);
 
         // Tick 3: should trigger
-        app.playback_tick = 3;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].note, Some(48));
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48));
     }
 
     #[test]
@@ -2718,26 +2640,25 @@ mod tests {
 
         app.play();
 
-        // Row 0: trigger the note
-        app.playback_tick = 0;
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].note, Some(48));
+        // Row 0, tick 0: trigger the note
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48));
 
-        // Row 1 tick 0: note-off should be deferred
-        app.playback_tick = 0;
-        app.advance_playback();
-        assert_eq!(app.channel_states[0].note, Some(48)); // still active
-        assert!(app.channel_states[0].delayed_note.is_some());
+        // Advance through remaining ticks of row 0 (ticks 1-5)
+        for _ in 1..app.song.speed { app.process_tick(); }
+
+        // Row 1, tick 0: note-off should be deferred
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48)); // still active
+        assert!(app.engine.channel_states[0].delayed_note.is_some());
 
         // Tick 1: waiting
-        app.playback_tick = 1;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].note, Some(48));
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, Some(48));
 
         // Tick 2: note-off triggers
-        app.playback_tick = 2;
-        app.process_effects_tick();
-        assert_eq!(app.channel_states[0].note, None);
+        app.process_tick();
+        assert_eq!(app.engine.channel_states[0].note, None);
     }
 
     #[test]
@@ -2802,12 +2723,9 @@ mod tests {
         cell.effect_value = Some(99);
 
         app.play();
-        app.playback_row = 0;
-        app.playback_order = 0;
-
-        app.advance_playback();
-        assert_eq!(app.playback_order, 1);
-        assert_eq!(app.playback_row, 15); // clamped to max row
+        app.process_tick();
+        assert_eq!(app.engine.order, 1);
+        assert_eq!(app.engine.row, 15); // clamped to max row
     }
 
     #[test]
@@ -3243,7 +3161,7 @@ mod tests {
     #[test]
     fn test_channel_rename() {
         let mut app = make_app();
-        assert_eq!(app.channel_names[0], "");
+        assert_eq!(app.channels[0].name, "");
         // Enter opens track config (name field focused)
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::TrackConfig);
@@ -3256,7 +3174,7 @@ mod tests {
         assert_eq!(app.rename_buf, "Kick");
         // Esc confirms and closes
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.channel_names[0], "Kick");
+        assert_eq!(app.channels[0].name, "Kick");
         assert_eq!(app.mode, Mode::Normal);
     }
 
@@ -3269,7 +3187,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         assert_eq!(app.rename_buf, "A");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.channel_names[0], "A");
+        assert_eq!(app.channels[0].name, "A");
     }
 
     #[test]
@@ -3569,41 +3487,41 @@ mod tests {
     #[test]
     fn test_track_config_toggle_filter() {
         let mut app = make_app();
-        app.channel_types[0] = ChannelType::Synth;
+        app.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
         // Navigate to filter enabled (field 3 for Synth: Name, Type, Inst, Filter)
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Instrument
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 3=Filter
         assert_eq!(app.ch_fx_field, 3);
-        assert!(!app.channel_effects_params[0].filter_enabled);
+        assert!(!app.channels[0].effects_params.filter_enabled);
         // Toggle with Right arrow
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.channel_effects_params[0].filter_enabled);
+        assert!(app.channels[0].effects_params.filter_enabled);
         // Toggle back
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(!app.channel_effects_params[0].filter_enabled);
+        assert!(!app.channels[0].effects_params.filter_enabled);
     }
 
     #[test]
     fn test_track_config_adjust_cutoff() {
         let mut app = make_app();
-        app.channel_types[0] = ChannelType::Synth;
+        app.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
         // Navigate to cutoff (field 4 for Synth: Name, Type, Inst, Filter, Cutoff)
         for _ in 0..4 { app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); }
         assert_eq!(app.ch_fx_field, 4);
-        let initial = app.channel_effects_params[0].filter_cutoff;
+        let initial = app.channels[0].effects_params.filter_cutoff;
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(app.channel_effects_params[0].filter_cutoff > initial);
+        assert!(app.channels[0].effects_params.filter_cutoff > initial);
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert!((app.channel_effects_params[0].filter_cutoff - initial).abs() < 0.01);
+        assert!((app.channels[0].effects_params.filter_cutoff - initial).abs() < 0.01);
     }
 
     #[test]
     fn test_track_config_navigate_all_fields() {
         let mut app = make_app();
-        app.channel_types[0] = ChannelType::Synth;
+        app.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
         // 20 fields total (name, type, instrument, filter x3, distortion x2, chorus x4, delay x4, reverb x4)
         for i in 0..20 {
@@ -3620,37 +3538,37 @@ mod tests {
         // Navigate to Type (field 1)
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.ch_fx_field, 1);
-        assert_eq!(app.channel_types[0], ChannelType::Midi);
+        assert_eq!(app.channels[0].channel_type, ChannelType::Midi);
         // Right arrow cycles type
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.channel_types[0], ChannelType::Synth);
+        assert_eq!(app.channels[0].channel_type, ChannelType::Synth);
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.channel_types[0], ChannelType::Sample);
+        assert_eq!(app.channels[0].channel_type, ChannelType::Sample);
     }
 
     #[test]
     fn test_track_config_instrument_select() {
         let mut app = make_app();
-        app.channel_types[0] = ChannelType::Synth;
+        app.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
         // Navigate to Instrument field (field 2)
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Instrument
         assert_eq!(app.ch_fx_field, 2);
-        assert_eq!(app.channel_instruments[0], None);
+        assert_eq!(app.channels[0].default_instrument, None);
         // Right sets to 00
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.channel_instruments[0], Some(0));
+        assert_eq!(app.channels[0].default_instrument, Some(0));
         // Right again increments
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.channel_instruments[0], Some(1));
+        assert_eq!(app.channels[0].default_instrument, Some(1));
     }
 
     #[test]
     fn test_synth_track_auto_fills_instrument() {
         let mut app = make_app();
-        app.channel_types[0] = ChannelType::Synth;
-        app.channel_instruments[0] = Some(5);
+        app.channels[0].channel_type = ChannelType::Synth;
+        app.channels[0].default_instrument = Some(5);
         app.mode = Mode::Insert;
         // Enter a note (z = C in current octave)
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
@@ -3668,22 +3586,22 @@ mod tests {
             vec!["wav".to_string(), "aiff".to_string()],
         );
         assert_eq!(app.mode, Mode::FileBrowser);
-        assert_eq!(app.file_browser_action, FileBrowserAction::LoadSample(0));
-        assert_eq!(app.file_browser_filter, vec!["wav", "aiff"]);
-        assert_eq!(app.file_browser_cursor, 0);
+        assert_eq!(app.file_browser.action, FileBrowserAction::LoadSample(0));
+        assert_eq!(app.file_browser.filter, vec!["wav", "aiff"]);
+        assert_eq!(app.file_browser.cursor, 0);
     }
 
     #[test]
     fn test_file_browser_navigate() {
         let mut app = make_app();
         // Use temp dir which should exist
-        app.file_browser_dir = std::env::temp_dir();
+        app.file_browser.dir = std::env::temp_dir();
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
         // Navigate down
-        let initial = app.file_browser_cursor;
+        let initial = app.file_browser.cursor;
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        if !app.file_browser_entries.is_empty() {
-            assert!(app.file_browser_cursor >= initial);
+        if !app.file_browser.entries.is_empty() {
+            assert!(app.file_browser.cursor >= initial);
         }
         // Esc closes
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -3697,22 +3615,22 @@ mod tests {
         let sub = dir.join("subdir");
         let _ = std::fs::create_dir_all(&sub);
 
-        app.file_browser_dir = dir.clone();
+        app.file_browser.dir = dir.clone();
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
 
         // Find the subdir entry
-        let subdir_idx = app.file_browser_entries.iter().position(|e| e.name == "subdir" && e.is_dir);
+        let subdir_idx = app.file_browser.entries.iter().position(|e| e.name == "subdir" && e.is_dir);
         if let Some(idx) = subdir_idx {
-            app.file_browser_cursor = idx;
+            app.file_browser.cursor = idx;
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             // Should have navigated into subdir
-            assert_eq!(app.file_browser_dir, sub);
+            assert_eq!(app.file_browser.dir, sub);
             assert_eq!(app.mode, Mode::FileBrowser);
         }
 
         // Backspace goes up
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        assert_eq!(app.file_browser_dir, dir);
+        assert_eq!(app.file_browser.dir, dir);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3727,14 +3645,14 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"text").unwrap();
         std::fs::write(dir.join("beat.aiff"), b"fake").unwrap();
 
-        app.file_browser_dir = dir.clone();
+        app.file_browser.dir = dir.clone();
         app.open_file_browser(
             FileBrowserAction::LoadSample(0),
             vec!["wav".to_string(), "aiff".to_string()],
         );
 
         // Should only show wav and aiff files (not txt)
-        let names: Vec<&str> = app.file_browser_entries.iter()
+        let names: Vec<&str> = app.file_browser.entries.iter()
             .filter(|e| !e.is_dir)
             .map(|e| e.name.as_str())
             .collect();
@@ -3765,16 +3683,16 @@ mod tests {
         }
         writer.finalize().unwrap();
 
-        app.file_browser_dir = dir.clone();
+        app.file_browser.dir = dir.clone();
         app.open_file_browser(
             FileBrowserAction::LoadSample(5),
             vec!["wav".to_string()],
         );
 
         // Find the wav file and select it
-        let wav_idx = app.file_browser_entries.iter().position(|e| e.name == "kick.wav");
+        let wav_idx = app.file_browser.entries.iter().position(|e| e.name == "kick.wav");
         assert!(wav_idx.is_some(), "WAV file should appear in browser");
-        app.file_browser_cursor = wav_idx.unwrap();
+        app.file_browser.cursor = wav_idx.unwrap();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         // Should have loaded the sample
@@ -3793,12 +3711,12 @@ mod tests {
         let _ = std::fs::create_dir_all(dir.join("aaa_dir"));
         std::fs::write(dir.join("aaa_file.wav"), b"x").unwrap();
 
-        app.file_browser_dir = dir.clone();
+        app.file_browser.dir = dir.clone();
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
 
         // Directories should come before files
-        if let Some(dir_idx) = app.file_browser_entries.iter().position(|e| e.name == "aaa_dir") {
-            if let Some(file_idx) = app.file_browser_entries.iter().position(|e| e.name == "aaa_file.wav") {
+        if let Some(dir_idx) = app.file_browser.entries.iter().position(|e| e.name == "aaa_dir") {
+            if let Some(file_idx) = app.file_browser.entries.iter().position(|e| e.name == "aaa_file.wav") {
                 assert!(dir_idx < file_idx, "Directories should sort before files");
             }
         }
@@ -4040,7 +3958,7 @@ mod tests {
         let mut app = make_app();
         // Set instrument 0 with custom pitch bend range of 12 semitones
         app.instruments[0].pitch_bend_range = Some(12.0);
-        app.channel_states[0].active_instrument = Some(0);
+        app.engine.channel_states[0].active_instrument = Some(0);
 
         let pb = app.channel_pitch_bend_per_semitone(0);
         let expected = (PITCH_BEND_CENTER as f64) / 12.0;

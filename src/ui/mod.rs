@@ -517,7 +517,7 @@ fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
 fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
     let ch = app.cursor_channel;
-    let ch_type = app.channel_types.get(ch).copied().unwrap_or(crate::app::ChannelType::Midi);
+    let ch_type = app.channels.get(ch).map(|c| c.channel_type).unwrap_or(crate::app::ChannelType::Midi);
     let is_synth = ch_type == crate::app::ChannelType::Synth;
     let has_fx = ch_type != crate::app::ChannelType::Midi;
 
@@ -530,8 +530,8 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let popup_area = centered_rect(60, popup_h, area);
     f.render_widget(Clear, popup_area);
 
-    let params = app.channel_effects_params.get(ch)
-        .cloned()
+    let params = app.channels.get(ch)
+        .map(|c| c.effects_params.clone())
         .unwrap_or_default();
     let field = app.ch_fx_field;
     // Effects fields start at offset 3 for Synth and Sample, 2 for Midi
@@ -574,7 +574,7 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     ];
 
     if is_synth {
-        let inst_val = app.channel_instruments.get(ch).copied().flatten();
+        let inst_val = app.channels.get(ch).and_then(|c| c.default_instrument);
         let inst_display = match inst_val {
             Some(i) => {
                 let inst = &app.instruments[i as usize];
@@ -678,7 +678,7 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
     let popup_area = centered_rect(70, popup_h, area);
     f.render_widget(Clear, popup_area);
 
-    let dir_display = app.file_browser_dir.to_string_lossy().to_string();
+    let dir_display = app.file_browser.dir.to_string_lossy().to_string();
     let title = format!(" {} ", dir_display);
 
     let block = Block::default()
@@ -691,8 +691,8 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(block, popup_area);
 
     let visible_rows = inner.height as usize;
-    let num_entries = app.file_browser_entries.len();
-    let cursor = app.file_browser_cursor;
+    let num_entries = app.file_browser.entries.len();
+    let cursor = app.file_browser.cursor;
 
     // Calculate scroll offset to keep cursor visible
     let scroll = if cursor >= visible_rows {
@@ -709,7 +709,7 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
             Style::default().fg(theme.status_hint),
         )));
     } else {
-        for (i, entry) in app.file_browser_entries.iter().enumerate().skip(scroll).take(visible_rows) {
+        for (i, entry) in app.file_browser.entries.iter().enumerate().skip(scroll).take(visible_rows) {
             let is_selected = i == cursor;
             let marker = if is_selected { "> " } else { "  " };
 
@@ -817,7 +817,7 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     write_str(buf, inner.x, header_y, inner, header_label, header_style);
     for ch in 0..num_channels {
         let col_x = inner.x + label_w + ch as u16 * ch_col_w;
-        let name = app.channel_names.get(ch).filter(|n| !n.is_empty());
+        let name = app.channels.get(ch).map(|c| &c.name).filter(|n| !n.is_empty());
         let label = match name {
             Some(n) => format!("{:>4} ", &n[..n.len().min(4)]),
             None => format!(" Ch{} ", ch + 1),
@@ -873,7 +873,7 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
         let pat_idx = app.song.order[ord_idx];
         let is_cursor = ord_idx == app.matrix_cursor;
-        let is_playing = app.playing && ord_idx == app.playback_order;
+        let is_playing = app.playing && ord_idx == app.engine.order;
 
         // Row label: " 0: [00] x01 |"
         let repeat = app.song.order_repeats.get(ord_idx).copied().unwrap_or(1);

@@ -39,10 +39,36 @@ struct Cli {
     /// Number of times to loop in headless mode (default: 1, 0 = infinite)
     #[arg(long, default_value = "1")]
     loops: u32,
+
+    /// Render a song to an audio file offline (no real-time playback).
+    /// Requires --output to specify the destination file.
+    #[arg(long)]
+    render: bool,
+
+    /// Output file path for --render (format detected from extension: .wav or .flac)
+    #[arg(long, short)]
+    output: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.render {
+        if cli.file.is_none() {
+            eprintln!("Error: --render requires a song file");
+            std::process::exit(1);
+        }
+        if cli.output.is_none() {
+            eprintln!("Error: --render requires --output <path.wav|path.flac>");
+            std::process::exit(1);
+        }
+        let result = run_render(cli.file, cli.sf2, cli.samples, cli.sample_dir, cli.output.unwrap());
+        if let Err(e) = result {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     if cli.play {
         if cli.file.is_none() {
@@ -122,6 +148,54 @@ fn setup_app(
     Ok(app)
 }
 
+fn run_render(
+    file: Option<PathBuf>,
+    sf2_path: Option<PathBuf>,
+    samples: Vec<String>,
+    sample_dir: Option<PathBuf>,
+    output: PathBuf,
+) -> Result<()> {
+    let app = setup_app(sf2_path, samples, sample_dir, file)?;
+
+    let ext = output.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let title = &app.song.title;
+    let bpm = app.song.bpm;
+    let order_len = app.song.order.len();
+    eprintln!(
+        "Rendering: \"{}\" ({} BPM, {} patterns in order) -> {}",
+        title, bpm, order_len, output.display()
+    );
+
+    let instruments = app.export_instruments();
+    let sample_rate = app.export_sample_rate();
+    let channel_fx = app.channel_effects_params_slice();
+
+    match ext.as_str() {
+        "wav" => {
+            rtrack::sample::export::render_to_wav(
+                &output, &app.song, &app.sample_bank, &instruments,
+                &channel_fx, &app.send_bus_params, sample_rate,
+            )?;
+        }
+        "flac" => {
+            rtrack::sample::export::render_to_flac(
+                &output, &app.song, &app.sample_bank, &instruments,
+                &channel_fx, &app.send_bus_params, sample_rate,
+            )?;
+        }
+        _ => {
+            anyhow::bail!("Unsupported output format \".{}\". Use .wav or .flac", ext);
+        }
+    }
+
+    eprintln!("Done.");
+    Ok(())
+}
+
 fn run_headless(
     file: Option<PathBuf>,
     sf2_path: Option<PathBuf>,
@@ -149,7 +223,7 @@ fn run_headless(
     loop {
         app.tick_playback();
 
-        if loops > 0 && app.playback_generation >= loops {
+        if loops > 0 && app.engine.generation >= loops {
             break;
         }
 

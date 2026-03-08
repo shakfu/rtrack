@@ -4,6 +4,41 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Changed (Architecture)
+
+- Extracted deterministic `TrackerEngine` (`src/engine/mod.rs`) from duplicated playback logic
+  - Single source of truth for tick-based playback: row advancement, order navigation, repeat counts, pattern break/position jump, speed/tempo changes, tempo automation, swing timing, and all continuous effects (arpeggio, portamento, vibrato, volume slide, note delay)
+  - Engine emits typed `TrackerEvent`s (NoteOn, NoteOff, PitchBend, VolumeChange, MidiCC, ProgramChange, SpeedChanged, TempoChanged, RowAdvanced, GenerationAdvanced); consumers translate events to their domain
+  - `App::engine` field replaces 7 individual playback state fields (`playback_row`, `playback_order`, `playback_generation`, `playback_tick`, `channel_states`, `playback_repeat_count`, `playback_speed`)
+  - `app/playback.rs`: rewritten to drive `TrackerEngine` and dispatch events to MIDI/audio
+  - `sample/export.rs`: `render_song()` reduced from ~400 lines to ~90 lines by replacing manual row/tick/effect loop with engine iteration; `ExportChannelState` struct deleted
+  - `midi_file.rs`: `export_midi()` rewritten to run engine once, collect per-channel MIDI events, and write as format-1 tracks; `ExportMidiChannelState` struct deleted
+  - Bug fixes and new effects now propagate automatically to live playback, WAV/FLAC export, and MIDI export
+  - 17 engine unit tests covering tick advancement, note on/off, all effects, order repeats, generation wrap, muted channels, and swing timing
+
+### Added (Offline Render)
+
+- `--render` CLI flag with `-o`/`--output` for offline rendering to WAV or FLAC:
+  - `rtrack --render song.rtrk -o out.wav` renders to WAV
+  - `rtrack --render song.rtrk -o out.flac` renders to FLAC
+  - Reuses the existing `sample::export` offline render pipeline (synth + samples + per-channel effects + send buses)
+  - No real-time sleeping, no audio device required -- purely computational
+  - Format detected from output file extension; unsupported extensions produce a clear error
+- Extracted `App::export_instruments()` and `App::export_sample_rate()` helpers, deduplicating instrument-gathering code across WAV/FLAC/render export paths
+
+### Changed (Playback)
+
+- Space now starts playback from the current order position and cursor row instead of always restarting from order 0
+- Ctrl+Space starts playback from the beginning (order 0, row 0) for when you want to hear the full song
+- 3 new tests: play from edit order, play from start, Ctrl+Space keybinding
+- Test count increased from 301 to 304 (292 unit + 12 integration)
+
+### Added (Code Quality)
+
+- `src/constants.rs`: centralized module for shared constants (MIDI protocol values, music theory, effect commands, tracker limits), eliminating magic numbers across the codebase
+- `FileBrowserState` struct: extracted 6 file browser fields from App into a self-contained struct with `new()`, `refresh()`, `open()` methods
+- `ChannelConfig` struct: consolidated 8 parallel channel Vecs (`muted_channels`, `channel_names`, `channel_types`, `channel_instruments`, `channel_volumes`, `channel_pans`, `channel_effects_params`, `midi_channel_map`) into `Vec<ChannelConfig>`
+
 ### Added (Timing, Groove & Auto-save)
 
 - Auto-save: periodically saves to `.{filename}.autosave` every 60 seconds when the song has unsaved changes
