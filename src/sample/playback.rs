@@ -1,5 +1,6 @@
 use super::{Sample, SampleBank};
 use crate::audio::envelope::Envelope;
+use crate::constants::{MIDI_MAX_VALUE, SEMITONES_PER_OCTAVE};
 
 /// Type alias for backward compatibility (previously a separate struct)
 pub type SampleEnvelope = Envelope;
@@ -61,10 +62,10 @@ impl SamplePlaybackEngine {
         //   pitch_ratio = 2^((note - base_note) / 12)
         //   rate_ratio  = sample.sample_rate / output_rate
         //   effective_rate = pitch_ratio * rate_ratio
-        let pitch_ratio = 2.0_f64.powf((note as f64 - sample.base_note as f64) / 12.0);
+        let pitch_ratio = 2.0_f64.powf((note as f64 - sample.base_note as f64) / SEMITONES_PER_OCTAVE as f64);
         let rate_ratio = sample.sample_rate / output_rate;
         let rate = pitch_ratio * rate_ratio;
-        let vel = velocity as f32 / 127.0;
+        let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
 
         // Evict quietest voice if at capacity
         if self.voices.len() >= self.max_voices {
@@ -125,7 +126,7 @@ impl SamplePlaybackEngine {
             if voice.active && voice.channel == channel {
                 if let Some(sample) = bank.get(voice.sample_index) {
                     let effective_note = voice.note as f64 + semitones;
-                    let pitch_ratio = 2.0_f64.powf((effective_note - sample.base_note as f64) / 12.0);
+                    let pitch_ratio = 2.0_f64.powf((effective_note - sample.base_note as f64) / SEMITONES_PER_OCTAVE as f64);
                     let rate_ratio = sample.sample_rate / output_rate;
                     voice.rate = pitch_ratio * rate_ratio;
                 }
@@ -135,7 +136,7 @@ impl SamplePlaybackEngine {
 
     /// Set volume (velocity 0-127) for all active voices on a channel.
     pub fn set_channel_volume(&mut self, channel: u8, velocity: u8) {
-        let vel = velocity as f32 / 127.0;
+        let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         for voice in &mut self.voices {
             if voice.active && voice.channel == channel {
                 voice.velocity = vel;

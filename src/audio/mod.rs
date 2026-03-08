@@ -15,6 +15,7 @@ use rtrb::{Producer, RingBuffer};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
 use crate::audio::envelope::Envelope;
+use crate::constants::{MIDI_MAX_VALUE, SEMITONES_PER_OCTAVE};
 use crate::sample::playback::{SamplePlaybackEngine, SampleVoice};
 use crate::sample::SampleBank;
 
@@ -515,10 +516,10 @@ fn process_command(
                 let base_note = sample.base_note;
                 let sr = sample.sample_rate;
                 let trim_start = sample.trim_start;
-                let pitch_ratio = 2.0_f64.powf((note as f64 - base_note as f64) / 12.0);
+                let pitch_ratio = 2.0_f64.powf((note as f64 - base_note as f64) / SEMITONES_PER_OCTAVE as f64);
                 let rate_ratio = sr / sample_rate;
                 let rate = pitch_ratio * rate_ratio;
-                let vel = velocity as f32 / 127.0;
+                let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
 
                 sample_engine.note_off(channel, note);
 

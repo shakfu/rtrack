@@ -4,6 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::constants::SEMITONES_PER_OCTAVE;
+
 use crate::app::{App, SampleField};
 
 /// Draw the sample editor popup
@@ -210,8 +212,8 @@ fn render_waveform(sample: &crate::sample::Sample, width: usize, height: usize) 
 
 fn note_name(note: u8) -> String {
     let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    let octave = note / 12;
-    let name = names[(note % 12) as usize];
+    let octave = note / SEMITONES_PER_OCTAVE;
+    let name = names[(note % SEMITONES_PER_OCTAVE) as usize];
     format!("{}{}", name, octave)
 }
 

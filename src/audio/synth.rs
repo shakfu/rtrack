@@ -7,6 +7,7 @@ use fundsp::prelude32::*;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::envelope::{EnvStage, Envelope};
+use crate::constants::{MIDI_MAX_VALUE, SEMITONES_PER_OCTAVE};
 
 const MAX_VOICES: usize = 32;
 const VOICE_GAIN: f32 = 0.25;
@@ -397,7 +398,7 @@ fn patch_params(patch: Patch) -> PatchParams {
 
 /// Convert MIDI note number to frequency in Hz
 fn midi_to_freq(note: f32) -> f32 {
-    440.0 * 2.0_f32.powf((note - 69.0) / 12.0)
+    440.0 * 2.0_f32.powf((note - 69.0) / SEMITONES_PER_OCTAVE as f32)
 }
 
 /// State-variable filter state
@@ -555,7 +556,7 @@ impl Voice {
 
         let sr = self.sample_rate;
         let freq = if self.pitch_offset != 0.0 {
-            self.frequency * 2.0_f32.powf(self.pitch_offset / 12.0)
+            self.frequency * 2.0_f32.powf(self.pitch_offset / SEMITONES_PER_OCTAVE as f32)
         } else {
             self.frequency
         };
@@ -770,7 +771,7 @@ impl BuiltinSynth {
         self.note_off_all_channel(channel);
 
         let patch = Patch::from_program(self.programs[(channel & 0x0F) as usize]);
-        let vel = velocity as f32 / 127.0;
+        let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         let voice = Voice::new(channel, note, vel, patch, self.sample_rate);
 
         self.push_voice(voice);
@@ -781,7 +782,7 @@ impl BuiltinSynth {
         self.note_off_all_channel(channel);
 
         let patch = Patch::from_program(params.waveform);
-        let vel = velocity as f32 / 127.0;
+        let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         let custom_params = PatchParams {
             env: EnvParams {
                 attack: params.attack,
@@ -868,7 +869,7 @@ impl BuiltinSynth {
     /// Set volume (velocity 0-127) for all active voices on a channel.
     /// Used by offline export to apply volume slide effects.
     pub fn set_channel_volume(&mut self, channel: u8, velocity: u8) {
-        let vel = velocity as f32 / 127.0;
+        let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         for voice in &mut self.voices {
             if voice.active && voice.channel == channel {
                 voice.velocity = vel;

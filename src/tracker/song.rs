@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::constants::MIDI_CLOCKS_PER_BEAT;
+
 use super::Pattern;
 use crate::audio::synth::SynthParams;
 
@@ -217,7 +219,7 @@ impl Song {
 
     /// Seconds per single tick (sub-row). Classic tracker: tick rate = BPM * 24 / 60.
     pub fn seconds_per_tick(&self) -> f64 {
-        let ticks_per_second = (self.bpm as f64 * 24.0) / 60.0;
+        let ticks_per_second = (self.bpm as f64 * MIDI_CLOCKS_PER_BEAT) / 60.0;
         1.0 / ticks_per_second
     }
 

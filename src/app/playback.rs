@@ -1,15 +1,10 @@
 use std::time::Instant;
 
+use crate::constants::*;
 use crate::midi::MidiInputEvent;
 use crate::tracker::{Note, NoteValue};
 
-use super::{
-    App, ChannelState, ChannelType, ClockMode, Mode,
-    EFFECT_ARPEGGIO, EFFECT_MIDI_CC, EFFECT_NOTE_DELAY, EFFECT_PATTERN_BREAK,
-    EFFECT_PORTA_DOWN, EFFECT_PORTA_UP, EFFECT_POSITION_JUMP, EFFECT_PROGRAM_CHANGE,
-    EFFECT_SET_SPEED, EFFECT_TONE_PORTA, EFFECT_VIBRATO, EFFECT_VOLUME_SLIDE,
-    PITCH_BEND_CENTER,
-};
+use super::{App, ChannelState, ChannelType, ClockMode, Mode};
 
 impl App {
     // -- Playback --
@@ -101,16 +96,16 @@ impl App {
         if self.link.is_enabled() {
             let beat = self.link.beat_at_time_now();
             // 24 ticks per beat (standard tracker convention)
-            let link_ticks = beat * 24.0;
-            let last_ticks = self.last_link_beat * 24.0;
+            let link_ticks = beat * MIDI_CLOCKS_PER_BEAT;
+            let last_ticks = self.last_link_beat * MIDI_CLOCKS_PER_BEAT;
             let delta_ticks = link_ticks - last_ticks;
             if delta_ticks > 0.0 {
                 let spt = self.song.swing_seconds_per_tick(self.playback_row);
                 let ticks_per_second = 1.0 / spt;
                 // Convert Link tick delta to our tracker ticks
-                let tracker_ticks = delta_ticks / (self.song.bpm as f64 * 24.0 / 60.0) * ticks_per_second;
+                let tracker_ticks = delta_ticks / (self.song.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
                 self.tick_accumulator += tracker_ticks * spt;
-                self.playback_elapsed += delta_ticks / (self.song.bpm as f64 * 24.0 / 60.0);
+                self.playback_elapsed += delta_ticks / (self.song.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0);
             }
             self.last_link_beat = beat;
 
@@ -131,7 +126,7 @@ impl App {
             // Send MIDI clock: 24 ppqn (pulses per quarter note)
             if self.midi.clock_enabled {
                 self.clock_tick_accumulator += elapsed;
-                let clock_interval = 60.0 / (self.song.bpm as f64 * 24.0);
+                let clock_interval = 60.0 / (self.song.bpm as f64 * MIDI_CLOCKS_PER_BEAT);
                 while self.clock_tick_accumulator >= clock_interval {
                     self.clock_tick_accumulator -= clock_interval;
                     let _ = self.midi.send_clock();
@@ -267,13 +262,13 @@ impl App {
                             // Defer note trigger to the specified tick
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
                             // Apply per-channel volume
-                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, 127.0) as u8;
+                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, MIDI_MAX_VALUE as f32) as u8;
                             self.channel_states[ch].delayed_note = Some((midi_note, scaled_vel, false));
                             self.channel_states[ch].delay_tick = param;
                         } else {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
                             // Apply per-channel volume
-                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, 127.0) as u8;
+                            let scaled_vel = (vel as f32 * self.channel_volumes.get(ch).copied().unwrap_or(1.0)).round().clamp(0.0, MIDI_MAX_VALUE as f32) as u8;
                             // Reset pitch bend on new note
                             self.channel_states[ch].pitch_offset = 0.0;
                             self.channel_states[ch].vibrato_phase = 0.0;
@@ -448,20 +443,20 @@ impl App {
                         _ => y as f64,
                     };
                     let bend = (offset * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 Some(EFFECT_PORTA_UP) => {
                     // Slide pitch up by param units per tick (param in 16ths of a semitone)
                     self.channel_states[ch].pitch_offset += param as f64 / 16.0;
                     let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 Some(EFFECT_PORTA_DOWN) => {
                     self.channel_states[ch].pitch_offset -= param as f64 / 16.0;
                     let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 Some(EFFECT_TONE_PORTA) => {
@@ -475,7 +470,7 @@ impl App {
                             self.channel_states[ch].pitch_offset -= speed.min(current - target_f);
                         }
                         let bend = (self.channel_states[ch].pitch_offset * pb_per_semi) as i32;
-                        let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                        let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                         self.send_pitch_bend(midi_ch, value);
                     }
                 }
@@ -490,14 +485,14 @@ impl App {
                     let offset = sine * depth / 16.0; // depth in 16ths of a semitone
                     let total = self.channel_states[ch].pitch_offset + offset;
                     let bend = (total * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, 0x3FFF) as u16;
+                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 Some(EFFECT_VOLUME_SLIDE) => {
                     let up = (param >> 4) as i16;
                     let down = (param & 0x0F) as i16;
                     let delta = up - down;
-                    let new_vol = (self.channel_states[ch].volume as i16 + delta).clamp(0, 127) as u8;
+                    let new_vol = (self.channel_states[ch].volume as i16 + delta).clamp(0, MIDI_MAX_VALUE as i16) as u8;
                     self.channel_states[ch].volume = new_vol;
                     // Send volume as CC 7
                     self.send_cc(midi_ch, 7, new_vol);
@@ -601,8 +596,8 @@ impl App {
                     return;
                 }
 
-                let octave = note / 12;
-                let note_index = note % 12;
+                let octave = note / SEMITONES_PER_OCTAVE;
+                let note_index = note % SEMITONES_PER_OCTAVE;
                 if let Some(note_val) = NoteValue::from_index(note_index) {
                     let tracker_note = Note::On { value: note_val, octave };
                     self.push_undo();

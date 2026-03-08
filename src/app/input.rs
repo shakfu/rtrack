@@ -2,14 +2,12 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use crate::constants::*;
 use crate::tracker::Note;
 use crate::tracker::NoteValue;
 use crate::ui::pattern_editor::SubColumn;
 
-use super::{
-    App, ChannelType, Mode, SampleField, SettingsField,
-    CHANNELS_PER_PAGE, MAX_CHANNELS, MAX_INSTRUMENTS,
-};
+use super::{App, ChannelType, Mode, SampleField, SettingsField};
 
 impl App {
     // -- Song settings dialog --
@@ -285,7 +283,7 @@ impl App {
         if let Some(ref mut sample) = bank.samples.get_mut(slot).and_then(|s| s.as_mut()) {
             match self.sample_editor_field {
                 SampleField::BaseNote => {
-                    sample.base_note = (sample.base_note as i64 + delta).clamp(0, 127) as u8;
+                    sample.base_note = (sample.base_note as i64 + delta).clamp(0, MIDI_MAX_NOTE as i64) as u8;
                 }
                 SampleField::TrimStart => {
                     sample.trim_start = (sample.trim_start as i64 + delta * 100)
@@ -1405,7 +1403,7 @@ impl App {
         // Preview the note
         if let Some(midi_note) = note.to_midi_note() {
             let midi_ch = self.midi_channel_for(ch);
-            self.preview_note_with_instrument(midi_ch, midi_note, 0x7F, current_inst);
+            self.preview_note_with_instrument(midi_ch, midi_note, MIDI_DEFAULT_VELOCITY, current_inst);
         }
 
         // Write to pattern
@@ -1702,10 +1700,11 @@ impl App {
 /// Transpose a single cell's note by the given number of semitones, clamping to valid MIDI range.
 fn transpose_cell_note(cell: &mut crate::tracker::Cell, semitones: i8) {
     if let Some(Note::On { ref value, ref octave }) = cell.note {
-        let midi = (*octave as i16) * 12 + value.to_index() as i16 + semitones as i16;
-        if midi >= 0 && midi <= 127 {
-            let new_octave = (midi / 12) as u8;
-            let new_note_idx = (midi % 12) as u8;
+        let semi = SEMITONES_PER_OCTAVE as i16;
+        let midi = (*octave as i16) * semi + value.to_index() as i16 + semitones as i16;
+        if midi >= 0 && midi <= MIDI_MAX_NOTE as i16 {
+            let new_octave = (midi / semi) as u8;
+            let new_note_idx = (midi % semi) as u8;
             if let Some(nv) = NoteValue::from_index(new_note_idx) {
                 cell.note = Some(Note::On { value: nv, octave: new_octave });
             }

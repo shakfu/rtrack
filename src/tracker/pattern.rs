@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::constants::{MIDI_MAX_NOTE, SEMITONES_PER_OCTAVE};
+
 /// A musical note pitch (C, C#, D, ... B)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoteValue {
@@ -85,8 +87,8 @@ impl Note {
     pub fn to_midi_note(&self) -> Option<u8> {
         match self {
             Note::On { value, octave } => {
-                let midi = (*octave as u16) * 12 + value.to_index() as u16;
-                if midi <= 127 {
+                let midi = (*octave as u16) * SEMITONES_PER_OCTAVE as u16 + value.to_index() as u16;
+                if midi <= MIDI_MAX_NOTE as u16 {
                     Some(midi as u8)
                 } else {
                     None

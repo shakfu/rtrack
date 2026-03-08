@@ -8,20 +8,8 @@ use super::SampleBank;
 use crate::audio::channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::{self, EffectsChain};
 use crate::audio::synth::{BuiltinSynth, SynthParams};
+use crate::constants::*;
 use crate::tracker::{Note, Song};
-
-// Effect command constants (mirroring app constants)
-const EFFECT_ARPEGGIO: u8 = 0x0;
-const EFFECT_PORTA_UP: u8 = 0x1;
-const EFFECT_PORTA_DOWN: u8 = 0x2;
-const EFFECT_TONE_PORTA: u8 = 0x3;
-const EFFECT_VIBRATO: u8 = 0x4;
-const EFFECT_VOLUME_SLIDE: u8 = 0x5;
-const EFFECT_NOTE_DELAY: u8 = 0x6;
-const EFFECT_POSITION_JUMP: u8 = 0xB;
-const EFFECT_PATTERN_BREAK: u8 = 0xD;
-const EFFECT_PROGRAM_CHANGE: u8 = 0xE;
-const EFFECT_SET_SPEED: u8 = 0xF;
 
 /// Per-channel state for offline effect processing
 #[derive(Clone)]
@@ -41,7 +29,7 @@ impl Default for ExportChannelState {
     fn default() -> Self {
         Self {
             note: None,
-            volume: 0x7F,
+            volume: MIDI_DEFAULT_VELOCITY,
             effect: None,
             effect_param: 0,
             pitch_offset: 0.0,
@@ -263,7 +251,7 @@ fn render_song(
             }
 
             // Recalculate frames_per_tick with swing
-            let base_tps = (current_bpm as f64 * 24.0) / 60.0;
+            let base_tps = (current_bpm as f64 * MIDI_CLOCKS_PER_BEAT) / 60.0;
             let base_spt = 1.0 / base_tps;
             let swing_spt = if song.swing == 50 {
                 base_spt
@@ -378,7 +366,7 @@ fn render_song(
                                 let up = (param >> 4) as i16;
                                 let down = (param & 0x0F) as i16;
                                 let delta = up - down;
-                                let new_vol = (ch_states[ch].volume as i16 + delta).clamp(0, 127) as u8;
+                                let new_vol = (ch_states[ch].volume as i16 + delta).clamp(0, MIDI_MAX_VALUE as i16) as u8;
                                 ch_states[ch].volume = new_vol;
                             }
                             _ => {}

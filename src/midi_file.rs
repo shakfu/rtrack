@@ -7,6 +7,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
+use crate::constants::*;
 use crate::tracker::{Note, NoteValue, Pattern, Song};
 
 /// Events collected during MIDI import
@@ -20,12 +21,10 @@ enum ImportEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants (MIDI-file-specific; shared ones come from crate::constants)
 // ---------------------------------------------------------------------------
 
 const TICKS_PER_BEAT: u16 = 480;
-const DEFAULT_ROWS_PER_PATTERN: usize = 64;
-const DEFAULT_VELOCITY: u8 = 0x7F;
 
 // ---------------------------------------------------------------------------
 // Variable-length quantity helpers
@@ -93,12 +92,6 @@ fn write_track_event(track: &mut Vec<u8>, delta: u32, event_bytes: &[u8]) {
 // Export
 // ---------------------------------------------------------------------------
 
-/// Pitch bend range in semitones (standard GM default).
-const PITCH_BEND_RANGE: f64 = 2.0;
-/// MIDI pitch bend center value (14-bit).
-const PITCH_BEND_CENTER: i32 = 0x2000;
-/// Pitch bend units per semitone.
-const PITCH_BEND_PER_SEMITONE: f64 = (0x2000 as f64) / PITCH_BEND_RANGE;
 
 /// Per-channel state for sub-tick effect export.
 struct ExportMidiChannelState {
@@ -113,7 +106,7 @@ impl Default for ExportMidiChannelState {
     fn default() -> Self {
         Self {
             note: None,
-            volume: DEFAULT_VELOCITY,
+            volume: MIDI_DEFAULT_VELOCITY,
             pitch_offset: 0.0,
             porta_target: None,
             vibrato_phase: 0.0,
@@ -123,7 +116,7 @@ impl Default for ExportMidiChannelState {
 
 /// Emit a MIDI pitch bend event.
 fn write_pitch_bend(track: &mut Vec<u8>, delta: u32, midi_ch: u8, value: u16) {
-    let clamped = value.min(0x3FFF);
+    let clamped = value.min(PITCH_BEND_MAX);
     write_track_event(track, delta, &[0xE0 | midi_ch, (clamped & 0x7F) as u8, ((clamped >> 7) & 0x7F) as u8]);
 }
 
@@ -135,7 +128,7 @@ fn write_cc(track: &mut Vec<u8>, delta: u32, midi_ch: u8, controller: u8, value:
 /// Compute pitch bend value from a semitone offset.
 fn pitch_bend_from_offset(offset: f64) -> u16 {
     let bend = (PITCH_BEND_CENTER as f64 + offset * PITCH_BEND_PER_SEMITONE) as i32;
-    bend.clamp(0, 0x3FFF) as u16
+    bend.clamp(0, PITCH_BEND_MAX as i32) as u16
 }
 
 /// Export a `Song` to a standard MIDI file (format 1).
@@ -234,7 +227,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                                     write_pitch_bend(&mut trk, accumulated_delta, midi_ch, PITCH_BEND_CENTER as u16);
                                     accumulated_delta = 0;
 
-                                    let velocity = cell.volume.unwrap_or(DEFAULT_VELOCITY).min(0x7F);
+                                    let velocity = cell.volume.unwrap_or(MIDI_DEFAULT_VELOCITY).min(0x7F);
                                     write_track_event(&mut trk, accumulated_delta, &[0x90 | midi_ch, midi_note, velocity]);
                                     accumulated_delta = 0;
                                     active_note = Some(midi_note);
@@ -341,7 +334,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                                 // Volume slide
                                 let up = (param >> 4) as i16;
                                 let down = (param & 0x0F) as i16;
-                                let new_vol = (state.volume as i16 + up - down).clamp(0, 127) as u8;
+                                let new_vol = (state.volume as i16 + up - down).clamp(0, MIDI_MAX_VALUE as i16) as u8;
                                 state.volume = new_vol;
                                 write_cc(&mut trk, accumulated_delta, midi_ch, 7, new_vol);
                                 accumulated_delta = 0;
@@ -610,8 +603,8 @@ pub fn import_midi(path: &Path) -> Result<Song> {
 
             match event {
                 ImportEvent::NoteOn { note: midi_note, velocity: vel, .. } => {
-                    let octave = midi_note / 12;
-                    let note_idx = midi_note % 12;
+                    let octave = midi_note / SEMITONES_PER_OCTAVE;
+                    let note_idx = midi_note % SEMITONES_PER_OCTAVE;
                     if let Some(nv) = NoteValue::from_index(note_idx) {
                         cell.note = Some(Note::On {
                             value: nv,
