@@ -2,7 +2,37 @@
 
 All notable changes to rtrack will be documented in this file.
 
-## [Unreleased]
+## [0.1.1]
+
+### Added (Recent Files)
+
+- Recent files list (`:recent` command): quickly re-open the last 3 songs
+  - Persisted to `~/.config/rtrack/recent.json` (or `$XDG_CONFIG_HOME`)
+  - Updated automatically on save and load
+  - Popup shows filename + parent directory, navigate with Up/Down, Enter to open
+  - Deduplicates by canonical path, limits to 3 entries
+- 6 new tests: push ordering, deduplication, truncation, command/popup/navigation
+- Test count: 358 (346 unit + 12 integration)
+
+### Added (MIDI Learn & Aftertouch)
+
+- MIDI learn: map any CC controller to a channel effects parameter
+  - In Track Config, press `L` on a continuous effects parameter (cutoff, resonance, drive, etc.) to arm learn mode
+  - Move a CC knob/fader on your MIDI controller to bind it
+  - Press `U` to remove a mapping
+  - CC labels (e.g. `CC1`) shown in yellow next to mapped parameters
+  - One CC can control multiple parameters; same parameter on different channels can use different CCs
+  - Mapped CCs modulate parameters in real-time; unmapped CCs pass through as MIDI thru
+- MIDI aftertouch support: channel pressure (mono) and polyphonic key pressure
+  - Both aftertouch types modulate filter cutoff on the cursor channel when filter is enabled
+  - Exponential mapping: pressure 0 = 20 Hz, pressure 127 = 20 kHz
+  - Ignored when filter is disabled (no-op, no crash)
+- Sample selector in track config: Left/Right cycles through loaded sample bank slots with audition preview
+  - Shows slot number, name, and duration (e.g. `02 kick (1.2s)`)
+  - Falls back to file browser when no samples are loaded
+  - Preview plays C at current octave on each selection change
+- 16 new tests: MIDI learn bind/apply/replace/unlearn, CC range mapping, multi-param same CC, aftertouch modulation (channel/poly/disabled), sample selector cycling, sample bank loaded_slots
+- Test count: 352 (340 unit + 12 integration)
 
 ### Added (MIDI Recording)
 

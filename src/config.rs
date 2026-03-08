@@ -50,6 +50,55 @@ fn config_path() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".config").join("rtrack").join("config.toml"))
 }
 
+const MAX_RECENT_FILES: usize = 3;
+
+/// Return the config directory: `$XDG_CONFIG_HOME/rtrack/` or `~/.config/rtrack/`.
+pub fn config_dir() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("rtrack"));
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".config").join("rtrack"))
+}
+
+/// Load recent file paths from `<config_dir>/recent.json`.
+pub fn load_recent_files() -> Vec<PathBuf> {
+    let Some(dir) = config_dir() else {
+        return Vec::new();
+    };
+    let path = dir.join("recent.json");
+    match std::fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str::<Vec<PathBuf>>(&data).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Save recent file paths to `<config_dir>/recent.json`.
+/// Deduplicates, limits to MAX_RECENT_FILES, and skips on any I/O error.
+pub fn save_recent_files(files: &[PathBuf]) {
+    let Some(dir) = config_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("recent.json");
+    if let Ok(json) = serde_json::to_string(files) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Add a path to the front of the recent files list, dedup and trim to MAX_RECENT_FILES.
+pub fn push_recent_file(recent: &mut Vec<PathBuf>, path: &std::path::Path) {
+    // Canonicalize for consistent dedup
+    let canonical = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf());
+    recent.retain(|p| {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) != canonical
+    });
+    recent.insert(0, canonical);
+    recent.truncate(MAX_RECENT_FILES);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +153,41 @@ future_field = "some_value"
         // We can't assert the exact values since the test env might have a config,
         // but at minimum it should not panic
         let _ = config;
+    }
+
+    #[test]
+    fn test_push_recent_file_adds_to_front() {
+        let mut recent = Vec::new();
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/a.rtrk"));
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/b.rtrk"));
+        // Most recent should be first
+        assert_eq!(recent.len(), 2);
+        assert!(recent[0].to_string_lossy().contains("b.rtrk"));
+        assert!(recent[1].to_string_lossy().contains("a.rtrk"));
+    }
+
+    #[test]
+    fn test_push_recent_file_deduplicates() {
+        let mut recent = Vec::new();
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/a.rtrk"));
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/b.rtrk"));
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/a.rtrk"));
+        // Should not have duplicates, a should be at front
+        assert_eq!(recent.len(), 2);
+        assert!(recent[0].to_string_lossy().contains("a.rtrk"));
+    }
+
+    #[test]
+    fn test_push_recent_file_truncates() {
+        let mut recent = Vec::new();
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/a.rtrk"));
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/b.rtrk"));
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/c.rtrk"));
+        push_recent_file(&mut recent, &PathBuf::from("/tmp/d.rtrk"));
+        // Should be limited to MAX_RECENT_FILES (3)
+        assert_eq!(recent.len(), MAX_RECENT_FILES);
+        assert!(recent[0].to_string_lossy().contains("d.rtrk"));
+        // a.rtrk should have been dropped
+        assert!(!recent.iter().any(|p| p.to_string_lossy().contains("a.rtrk")));
     }
 }

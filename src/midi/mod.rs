@@ -12,6 +12,8 @@ const MIDI_NOTE_ON: u8 = 0x90;
 const MIDI_NOTE_OFF: u8 = 0x80;
 const MIDI_CC: u8 = 0xB0;
 const MIDI_PROGRAM_CHANGE: u8 = 0xC0;
+const MIDI_CHANNEL_PRESSURE: u8 = 0xD0;
+const MIDI_POLY_PRESSURE: u8 = 0xA0;
 const MIDI_PITCH_BEND: u8 = 0xE0;
 const MIDI_CLOCK: u8 = 0xF8;
 const MIDI_START: u8 = 0xFA;
@@ -243,6 +245,10 @@ pub enum MidiInputEvent {
     CC { channel: u8, controller: u8, value: u8 },
     PitchBend { channel: u8, value: u16 },
     ProgramChange { channel: u8, program: u8 },
+    /// Channel pressure (mono aftertouch): 0-127
+    ChannelPressure { channel: u8, pressure: u8 },
+    /// Polyphonic key pressure (poly aftertouch): per-note 0-127
+    PolyPressure { channel: u8, note: u8, pressure: u8 },
     Clock,
     Start,
     Stop,
@@ -387,6 +393,12 @@ fn parse_midi_input(message: &[u8], tx: &mpsc::Sender<MidiInputEvent>) {
         }
         MIDI_PROGRAM_CHANGE => {
             let _ = tx.send(MidiInputEvent::ProgramChange { channel: ch, program: message[1] });
+        }
+        MIDI_CHANNEL_PRESSURE => {
+            let _ = tx.send(MidiInputEvent::ChannelPressure { channel: ch, pressure: message[1] });
+        }
+        MIDI_POLY_PRESSURE if message.len() >= 3 => {
+            let _ = tx.send(MidiInputEvent::PolyPressure { channel: ch, note: message[1], pressure: message[2] });
         }
         MIDI_PITCH_BEND if message.len() >= 3 => {
             let value = ((message[2] as u16 & 0x7F) << 7) | (message[1] as u16 & 0x7F);
@@ -555,6 +567,28 @@ mod tests {
 
         parse_midi_input(&[0xFB], &tx);
         assert!(matches!(rx.try_recv().unwrap(), MidiInputEvent::Continue));
+    }
+
+    #[test]
+    fn test_parse_midi_channel_pressure() {
+        let (tx, rx) = mpsc::channel();
+        // Channel 2, pressure 100
+        parse_midi_input(&[0xD2, 100], &tx);
+        match rx.try_recv().unwrap() {
+            MidiInputEvent::ChannelPressure { channel: 2, pressure: 100 } => {}
+            other => panic!("Expected ChannelPressure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_midi_poly_pressure() {
+        let (tx, rx) = mpsc::channel();
+        // Channel 1, note 60, pressure 80
+        parse_midi_input(&[0xA1, 60, 80], &tx);
+        match rx.try_recv().unwrap() {
+            MidiInputEvent::PolyPressure { channel: 1, note: 60, pressure: 80 } => {}
+            other => panic!("Expected PolyPressure, got {:?}", other),
+        }
     }
 
     #[test]

@@ -378,9 +378,35 @@ impl App {
                 }
             }
             MidiInputEvent::CC { channel: _, controller, value } => {
-                // Forward CC to output (MIDI thru)
-                let midi_ch = self.midi_channel_for(self.cursor_channel);
-                self.send_cc(midi_ch, controller, value);
+                // MIDI learn: if waiting for a CC, bind it
+                if let Some((ch, param)) = self.midi_learn_pending.take() {
+                    // Remove any existing mapping for this CC or this (ch, param)
+                    self.midi_cc_mappings.retain(|m| m.cc != controller && !(m.channel == ch && m.param == param));
+                    self.midi_cc_mappings.push(super::MidiCcMapping { cc: controller, channel: ch, param });
+                    self.status_message = Some(format!("Mapped CC{} -> {} (ch {})", controller, param.name(), ch + 1));
+                    return;
+                }
+
+                // Apply any learned CC mappings
+                let mut applied = false;
+                for mapping in &self.midi_cc_mappings {
+                    if mapping.cc == controller {
+                        let ch = mapping.channel;
+                        if ch < self.channels.len() {
+                            mapping.param.apply(&mut self.channels[ch].effects_params, value);
+                            if let Some(ref mut audio) = self.audio {
+                                audio.set_channel_effects(ch as u8, &self.channels[ch].effects_params);
+                            }
+                            applied = true;
+                        }
+                    }
+                }
+
+                if !applied {
+                    // Forward CC to output (MIDI thru)
+                    let midi_ch = self.midi_channel_for(self.cursor_channel);
+                    self.send_cc(midi_ch, controller, value);
+                }
             }
             MidiInputEvent::PitchBend { channel: _, value } => {
                 // Forward pitch bend to output (MIDI thru)
@@ -391,6 +417,12 @@ impl App {
                 // Forward program change to output (MIDI thru)
                 let midi_ch = self.midi_channel_for(self.cursor_channel);
                 self.send_program_change(midi_ch, program);
+            }
+            MidiInputEvent::ChannelPressure { channel: _, pressure } => {
+                self.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            }
+            MidiInputEvent::PolyPressure { channel: _, note: _, pressure } => {
+                self.apply_aftertouch_to_filter(self.cursor_channel, pressure);
             }
             MidiInputEvent::Clock => {
                 self.handle_external_clock();
@@ -404,6 +436,24 @@ impl App {
             MidiInputEvent::Continue => {
                 self.handle_external_continue();
             }
+        }
+    }
+
+    /// Map aftertouch pressure (0-127) to filter cutoff and push to audio engine.
+    /// Pressure 0 resets to the channel's configured cutoff; 127 maps to 20kHz.
+    fn apply_aftertouch_to_filter(&mut self, ch: usize, pressure: u8) {
+        if ch >= self.channels.len() {
+            return;
+        }
+        let params = &mut self.channels[ch].effects_params;
+        if !params.filter_enabled {
+            return;
+        }
+        // Exponential mapping: 20 Hz * (1000 ^ (pressure/127)) -> 20..20000 Hz
+        let t = pressure as f32 / 127.0;
+        params.filter_cutoff = 20.0 * (1000.0_f32).powf(t);
+        if let Some(ref mut audio) = self.audio {
+            audio.set_channel_effects(ch as u8, params);
         }
     }
 }

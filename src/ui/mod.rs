@@ -74,6 +74,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::QuitConfirm => draw_quit_confirm(f, app, &theme),
         Mode::TrackConfig => draw_track_config(f, app, &theme),
         Mode::FileBrowser => draw_file_browser(f, app, &theme),
+        Mode::RecentFiles => draw_recent_files(f, app, &theme),
         _ => {}
     }
 }
@@ -218,6 +219,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Mode::TrackConfig => Span::styled(" TRACK ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
         Mode::PatternMatrix => Span::styled(" MATRIX ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::FileBrowser => Span::styled(" FILES ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
+        Mode::RecentFiles => Span::styled(" RECENT ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
         Mode::Command => Span::from(""), // handled above, never reached
     };
 
@@ -574,6 +576,18 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         }
     };
 
+    // Build a lookup for CC mappings on this channel
+    let cc_label = |fx_rel: usize| -> Span<'static> {
+        if let Some(param) = crate::app::LearnableParam::from_fx_field(fx_rel) {
+            for m in &app.midi_cc_mappings {
+                if m.channel == ch && m.param == param {
+                    return Span::styled(format!(" CC{}", m.cc), Style::default().fg(Color::Yellow));
+                }
+            }
+        }
+        Span::raw("")
+    };
+
     let name_display = if field == 0 {
         format!("{}_", app.rename_buf)
     } else {
@@ -642,49 +656,61 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
             on_off(params.filter_enabled, fx_off),
             Span::styled("  Cutoff: ", style_for(fx_off + 1)),
             Span::styled(format!("{:.0}", params.filter_cutoff), style_for(fx_off + 1)),
+            cc_label(1),
             Span::styled("  Res: ", style_for(fx_off + 2)),
             Span::styled(format!("{:.2}", params.filter_resonance), style_for(fx_off + 2)),
+            cc_label(2),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Distortion: ", style_for(fx_off + 3)),
             on_off(params.distortion_enabled, fx_off + 3),
             Span::styled("  Drive: ", style_for(fx_off + 4)),
             Span::styled(format!("{:.1}", params.distortion_drive), style_for(fx_off + 4)),
+            cc_label(4),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Chorus:     ", style_for(fx_off + 5)),
             on_off(params.chorus_enabled, fx_off + 5),
             Span::styled("  Rate: ", style_for(fx_off + 6)),
             Span::styled(format!("{:.1}", params.chorus_rate), style_for(fx_off + 6)),
+            cc_label(6),
             Span::styled("  Depth: ", style_for(fx_off + 7)),
             Span::styled(format!("{:.1}", params.chorus_depth), style_for(fx_off + 7)),
+            cc_label(7),
             Span::styled("  Mix: ", style_for(fx_off + 8)),
             Span::styled(format!("{:.2}", params.chorus_mix), style_for(fx_off + 8)),
+            cc_label(8),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Delay:      ", style_for(fx_off + 9)),
             on_off(params.delay_enabled, fx_off + 9),
             Span::styled("  Time: ", style_for(fx_off + 10)),
             Span::styled(format!("{:.0}ms", params.delay_time), style_for(fx_off + 10)),
+            cc_label(10),
             Span::styled("  Fdbk: ", style_for(fx_off + 11)),
             Span::styled(format!("{:.2}", params.delay_feedback), style_for(fx_off + 11)),
+            cc_label(11),
             Span::styled("  Mix: ", style_for(fx_off + 12)),
             Span::styled(format!("{:.2}", params.delay_mix), style_for(fx_off + 12)),
+            cc_label(12),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Reverb:     ", style_for(fx_off + 13)),
             on_off(params.reverb_enabled, fx_off + 13),
             Span::styled("  Size: ", style_for(fx_off + 14)),
             Span::styled(format!("{:.2}", params.reverb_size), style_for(fx_off + 14)),
+            cc_label(14),
             Span::styled("  Damp: ", style_for(fx_off + 15)),
             Span::styled(format!("{:.2}", params.reverb_damp), style_for(fx_off + 15)),
+            cc_label(15),
             Span::styled("  Mix: ", style_for(fx_off + 16)),
             Span::styled(format!("{:.2}", params.reverb_mix), style_for(fx_off + 16)),
+            cc_label(16),
         ]));
     }
 
     let hint = if has_fx {
-        " Tab:next  Left/Right:adjust  Enter/Esc:close "
+        " Tab:next  L/R:adjust  L:learn  U:unlearn  Esc:close "
     } else {
         " Tab:next  Left/Right:cycle  Enter/Esc:close "
     };
@@ -763,6 +789,60 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
             lines.push(Line::from(vec![
                 Span::styled(marker, marker_style),
                 Span::styled(format!("{}{}", entry.name, icon), name_style),
+            ]));
+        }
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_recent_files(f: &mut Frame, app: &App, theme: &Theme) {
+    let area = f.area();
+    let count = app.recent_files.len();
+    let popup_h = (count as u16 + 2).max(4).min(area.height.saturating_sub(4));
+    let popup_area = centered_rect(60, popup_h, area);
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Recent Files ")
+        .title_bottom(" Enter:open  Esc:cancel ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.popup_border));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let mut lines = Vec::new();
+    if count == 0 {
+        lines.push(Line::from(Span::styled(
+            "  (no recent files)",
+            Style::default().fg(theme.status_hint),
+        )));
+    } else {
+        for (i, path) in app.recent_files.iter().enumerate() {
+            let is_selected = i == app.dialogs.recent_cursor;
+            let display = path.file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or_else(|| path.to_str().unwrap_or("?"));
+            let dir_display = path.parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            let marker = if is_selected { "> " } else { "  " };
+            let style = if is_selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.popup_text)
+            };
+            let dim = Style::default().fg(theme.status_hint);
+            let marker_style = if is_selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.status_hint)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(display.to_string(), style),
+                Span::styled(format!("  {}", dir_display), dim),
             ]));
         }
     }

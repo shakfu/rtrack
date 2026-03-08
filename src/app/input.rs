@@ -539,6 +539,29 @@ impl App {
                     if self.rename_buf.len() < crate::ui::pattern_editor::MAX_CHANNEL_NAME {
                         self.rename_buf.push(c);
                     }
+                } else if c == 'l' || c == 'L' {
+                    // MIDI learn: bind next CC to the current parameter
+                    let fx_off = self.track_config_fx_offset();
+                    if self.ch_fx_field >= fx_off {
+                        let rel = self.ch_fx_field - fx_off;
+                        if let Some(param) = super::LearnableParam::from_fx_field(rel) {
+                            self.midi_learn_pending = Some((ch, param));
+                            self.status_message = Some(format!("Move a CC to map -> {} (ch {})", param.name(), ch + 1));
+                        }
+                    }
+                } else if c == 'u' || c == 'U' {
+                    // Unmap: remove mapping for the current parameter
+                    let fx_off = self.track_config_fx_offset();
+                    if self.ch_fx_field >= fx_off {
+                        let rel = self.ch_fx_field - fx_off;
+                        if let Some(param) = super::LearnableParam::from_fx_field(rel) {
+                            let before = self.midi_cc_mappings.len();
+                            self.midi_cc_mappings.retain(|m| !(m.channel == ch && m.param == param));
+                            if self.midi_cc_mappings.len() < before {
+                                self.status_message = Some(format!("Unmapped {} (ch {})", param.name(), ch + 1));
+                            }
+                        }
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -881,6 +904,32 @@ impl App {
         }
     }
 
+    fn handle_recent_files_key(&mut self, key: KeyEvent) {
+        let count = self.recent_files.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.dialogs.recent_cursor > 0 {
+                    self.dialogs.recent_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if count > 0 && self.dialogs.recent_cursor + 1 < count {
+                    self.dialogs.recent_cursor += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(path) = self.recent_files.get(self.dialogs.recent_cursor).cloned() {
+                    self.mode = Mode::Normal;
+                    self.load_file(path);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // -- Command mode --
 
     fn handle_command_key(&mut self, key: KeyEvent) {
@@ -975,6 +1024,15 @@ impl App {
                     super::FileBrowserAction::OpenSong,
                     vec!["rtrk".to_string()],
                 );
+            }
+            "recent" => {
+                if self.recent_files.is_empty() {
+                    self.mode = Mode::Normal;
+                    self.status_message = Some("No recent files".to_string());
+                } else {
+                    self.dialogs.recent_cursor = 0;
+                    self.mode = Mode::RecentFiles;
+                }
             }
             _ => {
                 self.mode = self.prev_mode;
@@ -1105,6 +1163,7 @@ impl App {
             Mode::PatternMatrix => self.handle_pattern_matrix_key(key),
             Mode::Command => self.handle_command_key(key),
             Mode::FileBrowser => self.handle_file_browser_key(key),
+            Mode::RecentFiles => self.handle_recent_files_key(key),
         }
     }
 

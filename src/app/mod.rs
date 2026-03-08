@@ -70,6 +70,7 @@ pub struct DialogState {
     pub midi_port_cursor: usize,
     pub help_scroll: usize,
     pub file_browser: FileBrowserState,
+    pub recent_cursor: usize,
 }
 
 impl DialogState {
@@ -88,6 +89,7 @@ impl DialogState {
             midi_port_cursor: 0,
             help_scroll: 0,
             file_browser: FileBrowserState::new(),
+            recent_cursor: 0,
         }
     }
 }
@@ -149,6 +151,108 @@ impl ChannelType {
     }
 }
 
+/// A channel effects parameter that can be targeted by MIDI learn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearnableParam {
+    FilterCutoff,
+    FilterResonance,
+    DistortionDrive,
+    ChorusRate,
+    ChorusDepth,
+    ChorusMix,
+    DelayTime,
+    DelayFeedback,
+    DelayMix,
+    ReverbSize,
+    ReverbDamp,
+    ReverbMix,
+}
+
+impl LearnableParam {
+    /// Map a MIDI CC value (0-127) to the parameter's native range.
+    pub fn map_cc(self, value: u8) -> f32 {
+        let t = value as f32 / 127.0;
+        match self {
+            Self::FilterCutoff => 20.0 * (1000.0_f32).powf(t), // 20..20000 Hz (exp)
+            Self::FilterResonance => t,                          // 0..1
+            Self::DistortionDrive => 1.0 + t * 19.0,            // 1..20
+            Self::ChorusRate => 0.1 + t * 9.9,                  // 0.1..10
+            Self::ChorusDepth => 0.5 + t * 19.5,                // 0.5..20
+            Self::ChorusMix => t,                                // 0..1
+            Self::DelayTime => 1.0 + t * 1999.0,                // 1..2000 ms
+            Self::DelayFeedback => t * 0.95,                     // 0..0.95
+            Self::DelayMix => t,                                 // 0..1
+            Self::ReverbSize => t,                               // 0..1
+            Self::ReverbDamp => t,                               // 0..1
+            Self::ReverbMix => t,                                // 0..1
+        }
+    }
+
+    /// Apply a CC value to the given effects params.
+    pub fn apply(self, params: &mut crate::audio::channel_effects::ChannelEffectsParams, value: u8) {
+        let v = self.map_cc(value);
+        match self {
+            Self::FilterCutoff => params.filter_cutoff = v,
+            Self::FilterResonance => params.filter_resonance = v,
+            Self::DistortionDrive => params.distortion_drive = v,
+            Self::ChorusRate => params.chorus_rate = v,
+            Self::ChorusDepth => params.chorus_depth = v,
+            Self::ChorusMix => params.chorus_mix = v,
+            Self::DelayTime => params.delay_time = v,
+            Self::DelayFeedback => params.delay_feedback = v,
+            Self::DelayMix => params.delay_mix = v,
+            Self::ReverbSize => params.reverb_size = v,
+            Self::ReverbDamp => params.reverb_damp = v,
+            Self::ReverbMix => params.reverb_mix = v,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FilterCutoff => "Filter Cutoff",
+            Self::FilterResonance => "Filter Resonance",
+            Self::DistortionDrive => "Distortion Drive",
+            Self::ChorusRate => "Chorus Rate",
+            Self::ChorusDepth => "Chorus Depth",
+            Self::ChorusMix => "Chorus Mix",
+            Self::DelayTime => "Delay Time",
+            Self::DelayFeedback => "Delay Feedback",
+            Self::DelayMix => "Delay Mix",
+            Self::ReverbSize => "Reverb Size",
+            Self::ReverbDamp => "Reverb Damp",
+            Self::ReverbMix => "Reverb Mix",
+        }
+    }
+
+    /// Try to convert a track config field index (relative to fx_off) to a learnable param.
+    /// Only continuous parameters are learnable, not toggle fields.
+    pub fn from_fx_field(offset: usize) -> Option<Self> {
+        match offset {
+            1 => Some(Self::FilterCutoff),
+            2 => Some(Self::FilterResonance),
+            4 => Some(Self::DistortionDrive),
+            6 => Some(Self::ChorusRate),
+            7 => Some(Self::ChorusDepth),
+            8 => Some(Self::ChorusMix),
+            10 => Some(Self::DelayTime),
+            11 => Some(Self::DelayFeedback),
+            12 => Some(Self::DelayMix),
+            14 => Some(Self::ReverbSize),
+            15 => Some(Self::ReverbDamp),
+            16 => Some(Self::ReverbMix),
+            _ => None,
+        }
+    }
+}
+
+/// A single MIDI CC -> parameter mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiCcMapping {
+    pub cc: u8,
+    pub channel: usize,
+    pub param: LearnableParam,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockMode {
     /// rtrack is the clock master (internal timing)
@@ -172,6 +276,7 @@ pub enum Mode {
     PatternMatrix,
     Command,
     FileBrowser,
+    RecentFiles,
 }
 
 /// What action to perform when a file is selected in the file browser.
@@ -552,6 +657,19 @@ pub struct App {
     pub channels: Vec<ChannelConfig>,
     /// Send/return bus parameters
     pub send_bus_params: Vec<crate::audio::effects::SendBusParams>,
+
+    // -----------------------------------------------------------------------
+    // MIDI Learn
+    // -----------------------------------------------------------------------
+    /// Active CC -> parameter mappings
+    pub midi_cc_mappings: Vec<MidiCcMapping>,
+    /// When Some, the next incoming CC will be mapped to this (channel, param)
+    pub midi_learn_pending: Option<(usize, LearnableParam)>,
+
+    // -----------------------------------------------------------------------
+    // Recent Files
+    // -----------------------------------------------------------------------
+    pub recent_files: Vec<PathBuf>,
 }
 
 impl App {
@@ -611,6 +729,9 @@ impl App {
             dialogs: DialogState::new(),
             channels: Self::default_channel_configs(4),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
+            midi_cc_mappings: Vec::new(),
+            midi_learn_pending: None,
+            recent_files: crate::config::load_recent_files(),
         }
     }
 
@@ -1167,6 +1288,9 @@ impl App {
                 self.status_message = Some(format!("Saved: {}", path.display()));
                 // Clean up autosave file
                 let _ = std::fs::remove_file(autosave_path_for(&path));
+                // Update recent files
+                crate::config::push_recent_file(&mut self.recent_files, &path);
+                crate::config::save_recent_files(&self.recent_files);
             }
             Err(e) => {
                 self.status_message = Some(format!("Save failed: {}", e));
@@ -1322,6 +1446,9 @@ impl App {
 
                 self.file_path = Some(path.clone());
                 self.dirty = false;
+                // Update recent files
+                crate::config::push_recent_file(&mut self.recent_files, &path);
+                crate::config::save_recent_files(&self.recent_files);
                 if sample_errors.is_empty() {
                     self.status_message = Some(format!("Loaded: {}", path.display()));
                 } else {
@@ -1603,6 +1730,7 @@ mod tests {
                 synth_editor_field: SynthField::Waveform,
                 help_scroll: 0,
                 file_browser: FileBrowserState { dir: PathBuf::from("/tmp"), entries: Vec::new(), cursor: 0, action: FileBrowserAction::OpenSong, filter: Vec::new(), scroll: 0 },
+                recent_cursor: 0,
             },
             dirty: false,
             follow_playback: true,
@@ -1612,6 +1740,9 @@ mod tests {
             command_buf: String::new(),
             channels: App::default_channel_configs(4),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
+            midi_cc_mappings: Vec::new(),
+            midi_learn_pending: None,
+            recent_files: Vec::new(),
         }
     }
 
@@ -2885,6 +3016,215 @@ mod tests {
         app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
 
         assert!(app.dirty);
+    }
+
+    #[test]
+    fn test_aftertouch_modulates_filter_cutoff() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].effects_params.filter_enabled = true;
+        app.channels[0].effects_params.filter_cutoff = 1000.0;
+
+        // Channel pressure at max should set cutoff to ~20kHz
+        app.handle_midi_input(MidiInputEvent::ChannelPressure { channel: 0, pressure: 127 });
+        assert!((app.channels[0].effects_params.filter_cutoff - 20000.0).abs() < 1.0);
+
+        // Channel pressure at 0 should set cutoff to 20 Hz
+        app.handle_midi_input(MidiInputEvent::ChannelPressure { channel: 0, pressure: 0 });
+        assert!((app.channels[0].effects_params.filter_cutoff - 20.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_aftertouch_ignored_when_filter_disabled() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].effects_params.filter_enabled = false;
+        app.channels[0].effects_params.filter_cutoff = 1000.0;
+
+        app.handle_midi_input(MidiInputEvent::ChannelPressure { channel: 0, pressure: 127 });
+        // Filter cutoff should be unchanged
+        assert!((app.channels[0].effects_params.filter_cutoff - 1000.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_poly_pressure_modulates_filter() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].effects_params.filter_enabled = true;
+
+        // Poly pressure should also modulate filter
+        app.handle_midi_input(MidiInputEvent::PolyPressure { channel: 0, note: 60, pressure: 64 });
+        // Midpoint: 20 * 1000^(64/127) ~= 632 Hz
+        let cutoff = app.channels[0].effects_params.filter_cutoff;
+        assert!(cutoff > 500.0 && cutoff < 800.0, "Expected ~632 Hz, got {}", cutoff);
+    }
+
+    #[test]
+    fn test_midi_learn_binds_cc_to_param() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Synth;
+        app.channels[0].effects_params.filter_enabled = true;
+
+        // Arm learn for filter cutoff on channel 0
+        app.midi_learn_pending = Some((0, LearnableParam::FilterCutoff));
+
+        // Send a CC -- should bind CC7 to filter cutoff
+        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 7, value: 64 });
+
+        // Learn pending should be consumed
+        assert!(app.midi_learn_pending.is_none());
+        assert_eq!(app.midi_cc_mappings.len(), 1);
+        assert_eq!(app.midi_cc_mappings[0].cc, 7);
+        assert_eq!(app.midi_cc_mappings[0].channel, 0);
+        assert_eq!(app.midi_cc_mappings[0].param, LearnableParam::FilterCutoff);
+    }
+
+    #[test]
+    fn test_midi_learn_cc_applies_to_param() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].effects_params.filter_enabled = true;
+        app.channels[0].effects_params.filter_cutoff = 1000.0;
+
+        // Set up a mapping: CC1 -> filter cutoff ch0
+        app.midi_cc_mappings.push(MidiCcMapping {
+            cc: 1,
+            channel: 0,
+            param: LearnableParam::FilterCutoff,
+        });
+
+        // Send CC1 at max value -> should set cutoff to ~20000
+        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 1, value: 127 });
+        assert!((app.channels[0].effects_params.filter_cutoff - 20000.0).abs() < 1.0);
+
+        // Send CC1 at zero -> cutoff to 20 Hz
+        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 1, value: 0 });
+        assert!((app.channels[0].effects_params.filter_cutoff - 20.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_midi_learn_unmapped_cc_thru() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        // No mappings, CC should just pass through (no crash, no effect on params)
+        let cutoff_before = app.channels[0].effects_params.filter_cutoff;
+        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 74, value: 100 });
+        assert_eq!(app.channels[0].effects_params.filter_cutoff, cutoff_before);
+    }
+
+    #[test]
+    fn test_midi_learn_replaces_existing_mapping() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].effects_params.filter_enabled = true;
+
+        // Map CC1 -> filter cutoff
+        app.midi_cc_mappings.push(MidiCcMapping {
+            cc: 1,
+            channel: 0,
+            param: LearnableParam::FilterCutoff,
+        });
+
+        // Now learn again: CC2 -> filter cutoff (same param, should replace)
+        app.midi_learn_pending = Some((0, LearnableParam::FilterCutoff));
+        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 2, value: 64 });
+
+        assert_eq!(app.midi_cc_mappings.len(), 1);
+        assert_eq!(app.midi_cc_mappings[0].cc, 2);
+    }
+
+    #[test]
+    fn test_midi_learn_from_track_config() {
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Synth;
+        app.channels[0].effects_params.filter_enabled = true;
+
+        // Open track config, navigate to filter cutoff (fx_off=3, cutoff is field 4 = fx_off+1)
+        run_command(&mut app, "fx");
+        // Tab to field 4 (Name=0, Type=1, Inst=2, Filter=3, Cutoff=4)
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        assert_eq!(app.ch_fx_field, 4);
+
+        // Press 'l' to arm learn
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert!(app.midi_learn_pending.is_some());
+        let (ch, param) = app.midi_learn_pending.unwrap();
+        assert_eq!(ch, 0);
+        assert_eq!(param, LearnableParam::FilterCutoff);
+    }
+
+    #[test]
+    fn test_midi_unlearn_from_track_config() {
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Synth;
+
+        // Add a mapping
+        app.midi_cc_mappings.push(MidiCcMapping {
+            cc: 1,
+            channel: 0,
+            param: LearnableParam::FilterCutoff,
+        });
+        assert_eq!(app.midi_cc_mappings.len(), 1);
+
+        // Open track config, navigate to cutoff field
+        run_command(&mut app, "fx");
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+
+        // Press 'u' to unlearn
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert!(app.midi_cc_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_learnable_param_map_cc_ranges() {
+        // Filter cutoff: exponential 20..20000
+        assert!((LearnableParam::FilterCutoff.map_cc(0) - 20.0).abs() < 0.1);
+        assert!((LearnableParam::FilterCutoff.map_cc(127) - 20000.0).abs() < 1.0);
+
+        // Linear 0..1 params
+        assert!((LearnableParam::ReverbMix.map_cc(0)).abs() < 0.001);
+        assert!((LearnableParam::ReverbMix.map_cc(127) - 1.0).abs() < 0.001);
+
+        // Delay feedback: 0..0.95
+        assert!((LearnableParam::DelayFeedback.map_cc(127) - 0.95).abs() < 0.01);
+
+        // Distortion drive: 1..20
+        assert!((LearnableParam::DistortionDrive.map_cc(0) - 1.0).abs() < 0.01);
+        assert!((LearnableParam::DistortionDrive.map_cc(127) - 20.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_midi_learn_multiple_params_same_cc() {
+        use crate::midi::MidiInputEvent;
+
+        let mut app = make_app();
+        app.channels[0].effects_params.filter_enabled = true;
+        app.channels[0].effects_params.chorus_enabled = true;
+
+        // Map CC1 to both filter cutoff and chorus rate (different params, same CC)
+        app.midi_cc_mappings.push(MidiCcMapping {
+            cc: 1, channel: 0, param: LearnableParam::FilterCutoff,
+        });
+        app.midi_cc_mappings.push(MidiCcMapping {
+            cc: 1, channel: 0, param: LearnableParam::ChorusRate,
+        });
+
+        // Send CC1 at 127 -- both should update
+        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 1, value: 127 });
+        assert!((app.channels[0].effects_params.filter_cutoff - 20000.0).abs() < 1.0);
+        assert!((app.channels[0].effects_params.chorus_rate - 10.0).abs() < 0.1);
     }
 
     #[test]
@@ -4332,5 +4672,55 @@ mod tests {
 
         let slots = bank.loaded_slots();
         assert_eq!(slots, vec![3, 7]);
+    }
+
+    #[test]
+    fn test_recent_command_opens_popup() {
+        let mut app = make_app();
+        app.recent_files = vec![PathBuf::from("/tmp/a.rtrk"), PathBuf::from("/tmp/b.rtrk")];
+        run_command(&mut app, "recent");
+        assert_eq!(app.mode, Mode::RecentFiles);
+        assert_eq!(app.dialogs.recent_cursor, 0);
+    }
+
+    #[test]
+    fn test_recent_command_empty_shows_message() {
+        let mut app = make_app();
+        app.recent_files = Vec::new();
+        run_command(&mut app, "recent");
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status_message.as_ref().unwrap().contains("No recent"));
+    }
+
+    #[test]
+    fn test_recent_files_navigate() {
+        let mut app = make_app();
+        app.recent_files = vec![
+            PathBuf::from("/tmp/a.rtrk"),
+            PathBuf::from("/tmp/b.rtrk"),
+            PathBuf::from("/tmp/c.rtrk"),
+        ];
+        run_command(&mut app, "recent");
+        assert_eq!(app.dialogs.recent_cursor, 0);
+
+        // Down arrow
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.dialogs.recent_cursor, 1);
+
+        // Down again
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.dialogs.recent_cursor, 2);
+
+        // Down at end -- stays at 2
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.dialogs.recent_cursor, 2);
+
+        // Up
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.dialogs.recent_cursor, 1);
+
+        // Esc closes
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
     }
 }

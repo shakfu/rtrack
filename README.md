@@ -190,7 +190,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 ### Per-Channel Effects
 
-Each Synth/Sample track can have its own effects chain, configured via Track Config (Enter):
+Each Synth/Sample track can have its own effects chain, configured via Track Config (Enter). All continuous parameters support MIDI learn (`L` to bind a CC, `U` to unbind):
 
 | Effect | Parameters |
 |--------|-----------|
@@ -232,6 +232,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - Virtual input port `RTRACK_MIDI_IN` -- play notes from external controllers
 - Step recording: notes from MIDI input are written to the pattern in Insert mode (with velocity and instrument auto-fill)
 - Punch-in recording (Ctrl+R): arm recording, then play -- incoming MIDI notes are written at the playback position in real time
+- Aftertouch: channel pressure and polyphonic key pressure modulate filter cutoff (exponential 20 Hz - 20 kHz)
+- MIDI learn: map any CC to a channel effects parameter (filter cutoff, drive, chorus rate, etc.) via Track Config
 - MIDI port selection (F2) for switching to hardware ports
 - MIDI clock output (Ctrl+M) at 24 ppqn with start/stop messages
 - External MIDI clock input: slave to incoming MIDI clock when clock mode is set to External
@@ -248,6 +250,7 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - Atomic save -- writes to temp file then renames, preventing corruption on crash
 - Auto-save to temp file every 60 seconds when unsaved changes exist
 - Dirty flag -- `[*]` in header when unsaved changes exist, quit confirmation prompt
+- Recent files list (`:recent`) -- quickly re-open the last 3 songs, persisted across sessions
 - Import from standard MIDI files (`.mid`) with CC and program change preservation
 - Export to MIDI (Ctrl+E)
 - Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
@@ -370,15 +373,18 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 | `:em` / `:exportmidi` | Export MIDI |
 | `:load` | Open file browser to load a sample |
 | `:open` | Open file browser to load a song |
+| `:recent` | Open recent files list (last 3 songs) |
 
 ### Track Config (Enter on channel)
 
 | Key | Action |
 |---------|--------|
 | Up / Down / Tab | Navigate fields |
-| Left / Right | Adjust value (type, instrument, effect params) |
+| Left / Right | Adjust value (type, instrument, effect params, sample select) |
 | Type chars | Edit channel name (when on name field) |
-| Enter | Open file browser (on Load field for Sample tracks) |
+| L | MIDI learn: bind next incoming CC to current parameter |
+| U | Remove MIDI learn mapping for current parameter |
+| Enter | Open file browser (on Sample field for Sample tracks) |
 | Enter / Esc | Save and close |
 
 ### Instrument List (F7)
@@ -456,7 +462,7 @@ CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed
 ```sh
 make build            # compile
 make run              # compile and run
-make test             # run all tests (336 tests)
+make test             # run all tests (358 tests)
 make test-unit        # unit tests only
 make test-integration # integration tests only
 make fmt              # format code
