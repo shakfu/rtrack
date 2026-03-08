@@ -36,13 +36,11 @@ impl App {
         self.playing = true;
         self.engine.reset(&self.song, self.edit_order, self.cursor_row);
         self.sync_engine_channel_info();
-        self.last_tick = Some(Instant::now());
-        self.tick_accumulator = 0.0;
-        self.clock_tick_accumulator = 0.0;
-        self.playback_elapsed = 0.0;
+        self.timing.reset();
+        self.timing.last_tick = Some(Instant::now());
         // Capture initial Link beat position for beat-timeline mode
         if self.link.is_enabled() {
-            self.last_link_beat = self.link.beat_at_time_now();
+            self.timing.last_link_beat = self.link.beat_at_time_now();
             self.link.request_play();
         }
         let _ = self.midi.send_start();
@@ -50,7 +48,7 @@ impl App {
 
     pub fn stop(&mut self) {
         self.playing = false;
-        self.last_tick = None;
+        self.timing.last_tick = None;
         // Reset pitch bends to center before killing notes
         for ch in 0..self.engine.channel_states.len() {
             let midi_ch = self.midi_channel_for(ch);
@@ -107,49 +105,49 @@ impl App {
             let beat = self.link.beat_at_time_now();
             // 24 ticks per beat (standard tracker convention)
             let link_ticks = beat * MIDI_CLOCKS_PER_BEAT;
-            let last_ticks = self.last_link_beat * MIDI_CLOCKS_PER_BEAT;
+            let last_ticks = self.timing.last_link_beat * MIDI_CLOCKS_PER_BEAT;
             let delta_ticks = link_ticks - last_ticks;
             if delta_ticks > 0.0 {
                 let spt = self.engine.seconds_per_tick(&self.song);
                 let ticks_per_second = 1.0 / spt;
                 // Convert Link tick delta to our tracker ticks
                 let tracker_ticks = delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
-                self.tick_accumulator += tracker_ticks * spt;
-                self.playback_elapsed += delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0);
+                self.timing.tick_accumulator += tracker_ticks * spt;
+                self.timing.playback_elapsed += delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0);
             }
-            self.last_link_beat = beat;
+            self.timing.last_link_beat = beat;
 
             let spt = self.engine.seconds_per_tick(&self.song);
-            while self.tick_accumulator >= spt {
-                self.tick_accumulator -= spt;
+            while self.timing.tick_accumulator >= spt {
+                self.timing.tick_accumulator -= spt;
                 self.process_tick();
             }
             return;
         }
 
         let now = Instant::now();
-        if let Some(last) = self.last_tick {
+        if let Some(last) = self.timing.last_tick {
             let elapsed = now.duration_since(last).as_secs_f64();
-            self.tick_accumulator += elapsed;
-            self.playback_elapsed += elapsed;
+            self.timing.tick_accumulator += elapsed;
+            self.timing.playback_elapsed += elapsed;
 
             // Send MIDI clock: 24 ppqn (pulses per quarter note)
             if self.midi.clock_enabled {
-                self.clock_tick_accumulator += elapsed;
+                self.timing.clock_tick_accumulator += elapsed;
                 let clock_interval = 60.0 / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT);
-                while self.clock_tick_accumulator >= clock_interval {
-                    self.clock_tick_accumulator -= clock_interval;
+                while self.timing.clock_tick_accumulator >= clock_interval {
+                    self.timing.clock_tick_accumulator -= clock_interval;
                     let _ = self.midi.send_clock();
                 }
             }
 
             let spt = self.engine.seconds_per_tick(&self.song);
-            while self.tick_accumulator >= spt {
-                self.tick_accumulator -= spt;
+            while self.timing.tick_accumulator >= spt {
+                self.timing.tick_accumulator -= spt;
                 self.process_tick();
             }
         }
-        self.last_tick = Some(now);
+        self.timing.last_tick = Some(now);
     }
 
     /// Process a single sub-tick by delegating to the engine and dispatching events.
@@ -216,7 +214,7 @@ impl App {
     pub fn toggle_clock_mode(&mut self) {
         self.clock_mode = match self.clock_mode {
             ClockMode::Internal => {
-                self.ext_clock_count = 0;
+                self.timing.ext_clock_count = 0;
                 ClockMode::ExternalMidi
             }
             ClockMode::ExternalMidi => ClockMode::Internal,
@@ -230,18 +228,18 @@ impl App {
             return;
         }
 
-        self.ext_clock_count += 1;
+        self.timing.ext_clock_count += 1;
 
         // 24 MIDI clock ticks = 1 beat. speed tracker ticks = 1 row.
         // clocks_per_tracker_tick = 24 / speed
         let clocks_per_tick = (24u32 / self.engine.speed as u32).max(1);
-        if self.ext_clock_count >= clocks_per_tick {
-            self.ext_clock_count = 0;
+        if self.timing.ext_clock_count >= clocks_per_tick {
+            self.timing.ext_clock_count = 0;
             self.process_tick();
 
             // Update elapsed time based on BPM (estimated)
             let spt = self.engine.seconds_per_tick(&self.song);
-            self.playback_elapsed += spt;
+            self.timing.playback_elapsed += spt;
         }
     }
 
@@ -253,8 +251,8 @@ impl App {
         self.playing = true;
         self.engine.reset(&self.song, 0, 0);
         self.sync_engine_channel_info();
-        self.ext_clock_count = 0;
-        self.playback_elapsed = 0.0;
+        self.timing.ext_clock_count = 0;
+        self.timing.playback_elapsed = 0.0;
     }
 
     /// Handle external MIDI Stop message (0xFC)
@@ -276,7 +274,7 @@ impl App {
             return;
         }
         self.playing = true;
-        self.ext_clock_count = 0;
+        self.timing.ext_clock_count = 0;
     }
 
     // -- MIDI input handling --

@@ -4,6 +4,26 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed sample track note preview using synth instead of sample engine during insert mode. Loading a sample via the file browser now auto-sets the channel's `default_instrument`, so `try_enter_note()` routes preview through the sample engine instead of falling through to the default synth.
+
+### Added (Configuration)
+
+- User configuration file at `~/.config/rtrack/config.toml` (XDG-compliant):
+  - `sf2` -- default SoundFont file path (overridden by `--sf2` CLI flag)
+  - `sample_dir` -- default sample directory (overridden by `--sample-dir` CLI flag)
+  - Missing or malformed config files silently fall back to defaults
+  - 6 tests covering full/partial/empty/invalid config parsing and unknown field tolerance
+
+### Changed (App State Organization)
+
+- Extracted 3 inner structs from `App` to reduce cognitive load:
+  - `PlaybackTiming` (6 fields): last_tick, tick_accumulator, clock_tick_accumulator, playback_elapsed, ext_clock_count, last_link_beat
+  - `DialogState` (13 fields): settings, instrument list, sample/synth editor, MIDI port selector, help scroll, file browser
+  - `EditHistory` (5 fields): undo/redo stacks, clipboard, block clipboard, block anchor
+- Access patterns: `self.timing.*`, `self.dialogs.*`, `self.history.*`
+
 ### Changed (Architecture)
 
 - Extracted deterministic `TrackerEngine` (`src/engine/mod.rs`) from duplicated playback logic
@@ -31,7 +51,7 @@ All notable changes to rtrack will be documented in this file.
 - Space now starts playback from the current order position and cursor row instead of always restarting from order 0
 - Ctrl+Space starts playback from the beginning (order 0, row 0) for when you want to hear the full song
 - 3 new tests: play from edit order, play from start, Ctrl+Space keybinding
-- Test count increased from 301 to 304 (292 unit + 12 integration)
+- Test count increased from 301 to 328 (316 unit + 12 integration)
 
 ### Added (Code Quality)
 

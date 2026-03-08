@@ -13,7 +13,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
     let area = centered_rect(70, 30, f.area());
     f.render_widget(Clear, area);
 
-    let slot = app.sample_editor_slot;
+    let slot = app.dialogs.sample_editor_slot;
     let title = format!(" Sample Editor - Slot {:02X} ", slot);
 
     let block = Block::default()
@@ -64,7 +64,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
         ];
 
         for (field, label, value) in &fields {
-            let is_active = *field == app.sample_editor_field;
+            let is_active = *field == app.dialogs.sample_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
@@ -91,14 +91,14 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
         )));
 
         let slice_fields: Vec<(SampleField, &str, String)> = vec![
-            (SampleField::SliceCount, "Slices", format!("{}", app.sample_slice_count)),
-            (SampleField::SliceSensitivity, "Sensitivity", format!("{:.0}%", app.sample_slice_sensitivity * 100.0)),
+            (SampleField::SliceCount, "Slices", format!("{}", app.dialogs.sample_slice_count)),
+            (SampleField::SliceSensitivity, "Sensitivity", format!("{:.0}%", app.dialogs.sample_slice_sensitivity * 100.0)),
             (SampleField::SliceEqual, "[Equal]", "Enter to slice".to_string()),
             (SampleField::SliceTransient, "[Transient]", "Enter to slice".to_string()),
         ];
 
         for (field, label, value) in &slice_fields {
-            let is_active = *field == app.sample_editor_field;
+            let is_active = *field == app.dialogs.sample_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)

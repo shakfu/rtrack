@@ -23,6 +23,96 @@ const MAX_UNDO_HISTORY: usize = 100;
 /// Preview note auto-off timeout in milliseconds
 const PREVIEW_NOTE_TIMEOUT_MS: u64 = 250;
 
+/// Timing accumulators for playback (internal to the playback loop).
+pub(crate) struct PlaybackTiming {
+    pub last_tick: Option<Instant>,
+    pub tick_accumulator: f64,
+    pub clock_tick_accumulator: f64,
+    pub playback_elapsed: f64,
+    pub ext_clock_count: u32,
+    pub last_link_beat: f64,
+}
+
+impl PlaybackTiming {
+    fn new() -> Self {
+        Self {
+            last_tick: None,
+            tick_accumulator: 0.0,
+            clock_tick_accumulator: 0.0,
+            playback_elapsed: 0.0,
+            ext_clock_count: 0,
+            last_link_beat: 0.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.last_tick = None;
+        self.tick_accumulator = 0.0;
+        self.clock_tick_accumulator = 0.0;
+        self.playback_elapsed = 0.0;
+        self.ext_clock_count = 0;
+        self.last_link_beat = 0.0;
+    }
+}
+
+/// Dialog and popup state for all modal UIs.
+pub struct DialogState {
+    pub settings_field: SettingsField,
+    pub settings_edit_buf: String,
+    pub instrument_cursor: usize,
+    pub sample_editor_slot: usize,
+    pub sample_editor_field: SampleField,
+    pub sample_slice_count: usize,
+    pub sample_slice_sensitivity: f32,
+    pub synth_editor_slot: usize,
+    pub synth_editor_field: SynthField,
+    pub midi_port_list: Vec<String>,
+    pub midi_port_cursor: usize,
+    pub help_scroll: usize,
+    pub file_browser: FileBrowserState,
+}
+
+impl DialogState {
+    fn new() -> Self {
+        Self {
+            settings_field: SettingsField::Title,
+            settings_edit_buf: String::new(),
+            instrument_cursor: 0,
+            sample_editor_slot: 0,
+            sample_editor_field: SampleField::BaseNote,
+            sample_slice_count: 8,
+            sample_slice_sensitivity: 0.5,
+            synth_editor_slot: 0,
+            synth_editor_field: SynthField::Waveform,
+            midi_port_list: Vec::new(),
+            midi_port_cursor: 0,
+            help_scroll: 0,
+            file_browser: FileBrowserState::new(),
+        }
+    }
+}
+
+/// Undo/redo and clipboard state.
+pub struct EditHistory {
+    pub undo_stack: VecDeque<Song>,
+    pub redo_stack: Vec<Song>,
+    pub clipboard: Option<Vec<crate::tracker::Cell>>,
+    pub block_clipboard: Option<Vec<Vec<crate::tracker::Cell>>>,
+    pub block_anchor: Option<(usize, usize)>,
+}
+
+impl EditHistory {
+    fn new() -> Self {
+        Self {
+            undo_stack: VecDeque::new(),
+            redo_stack: Vec::new(),
+            clipboard: None,
+            block_clipboard: None,
+            block_anchor: None,
+        }
+    }
+}
+
 /// Re-export ChannelState from the engine module.
 pub use crate::engine::ChannelState;
 
@@ -413,36 +503,18 @@ pub struct App {
     pub playing: bool,
     /// The deterministic playback engine (owns row/order/generation/tick/channel_states).
     pub engine: crate::engine::TrackerEngine,
-    pub(crate) last_tick: Option<Instant>,
-    pub(crate) tick_accumulator: f64,
-    /// MIDI clock tick accumulator
-    pub(crate) clock_tick_accumulator: f64,
-    /// Elapsed playback time in seconds
-    pub playback_elapsed: f64,
+    /// Timing accumulators (internal to playback loop)
+    pub(crate) timing: PlaybackTiming,
     /// External MIDI clock mode
     pub clock_mode: ClockMode,
-    /// Count of received external MIDI clock ticks (0xF8)
-    pub(crate) ext_clock_count: u32,
-    /// Last Link beat position (for beat-timeline-driven playback)
-    pub(crate) last_link_beat: f64,
 
     // -----------------------------------------------------------------------
     // Editor State
-    // Fields: dirty, clipboard, block_anchor, block_clipboard,
-    //         undo_stack, redo_stack, rename_buf
     // -----------------------------------------------------------------------
     /// Dirty flag: set when song is modified, cleared on save/load
     pub dirty: bool,
-    /// Single-row clipboard
-    pub clipboard: Option<Vec<crate::tracker::Cell>>,
-    /// Block selection: anchor point (row, channel) when selection is active
-    pub block_anchor: Option<(usize, usize)>,
-    /// Block clipboard: 2D grid of cells (rows x channels)
-    pub block_clipboard: Option<Vec<Vec<crate::tracker::Cell>>>,
-    /// Undo stack
-    pub(crate) undo_stack: VecDeque<Song>,
-    /// Redo stack
-    pub(crate) redo_stack: Vec<Song>,
+    /// Undo/redo and clipboard state
+    pub history: EditHistory,
     /// Channel rename edit buffer
     pub rename_buf: String,
     /// Channel effects editor: currently focused field index
@@ -454,25 +526,8 @@ pub struct App {
 
     // -----------------------------------------------------------------------
     // Dialog State
-    // Fields: settings_field, settings_edit_buf, instrument_cursor,
-    //         sample_editor_slot, sample_editor_field, synth_editor_slot,
-    //         synth_editor_field, midi_port_list, midi_port_cursor, help_scroll
     // -----------------------------------------------------------------------
-    pub settings_field: SettingsField,
-    pub settings_edit_buf: String,
-    pub instrument_cursor: usize,
-    pub sample_editor_slot: usize,
-    pub sample_editor_field: SampleField,
-    pub sample_slice_count: usize,
-    pub sample_slice_sensitivity: f32,
-    pub synth_editor_slot: usize,
-    pub synth_editor_field: SynthField,
-    pub midi_port_list: Vec<String>,
-    pub midi_port_cursor: usize,
-    pub help_scroll: usize,
-
-    // File browser state
-    pub file_browser: FileBrowserState,
+    pub dialogs: DialogState,
 
     // -----------------------------------------------------------------------
     // Other state (file, audio, instruments, channels)
@@ -528,50 +583,29 @@ impl App {
             current_octave: 4,
             playing: false,
             engine,
-            last_tick: None,
-            tick_accumulator: 0.0,
+            timing: PlaybackTiming::new(),
             edit_step: 1,
             file_path: None,
             status_message: None,
             last_autosave: Instant::now(),
-            undo_stack: VecDeque::new(),
-            redo_stack: Vec::new(),
-            clipboard: None,
+            history: EditHistory::new(),
             edit_order: 0,
             solo_channel: None,
-            midi_port_list: Vec::new(),
-            midi_port_cursor: 0,
             prev_mode: Mode::Normal,
-            settings_field: SettingsField::Title,
-            settings_edit_buf: String::new(),
             instruments: (0..MAX_INSTRUMENTS).map(|_| Instrument::default()).collect(),
-            instrument_cursor: 0,
             theme_index: 0,
-            clock_tick_accumulator: 0.0,
-            playback_elapsed: 0.0,
+            clock_mode: ClockMode::Internal,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
-            sample_editor_slot: 0,
-            sample_editor_field: SampleField::BaseNote,
-            sample_slice_count: 8,
-            sample_slice_sensitivity: 0.5,
-            synth_editor_slot: 0,
-            synth_editor_field: SynthField::Waveform,
             track_page: 0,
             preview_note: None,
-            clock_mode: ClockMode::Internal,
-            ext_clock_count: 0,
-            last_link_beat: 0.0,
-            help_scroll: 0,
-            file_browser: FileBrowserState::new(),
             dirty: false,
-            block_anchor: None,
-            block_clipboard: None,
             follow_playback: true,
             rename_buf: String::new(),
             ch_fx_field: 0,
             matrix_cursor: 0,
             command_buf: String::new(),
+            dialogs: DialogState::new(),
             channels: Self::default_channel_configs(4),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES).map(|_| crate::audio::effects::SendBusParams::default()).collect(),
         }
@@ -690,9 +724,9 @@ impl App {
 
     /// Open the synth editor for the current instrument
     pub fn open_synth_editor(&mut self) {
-        let slot = self.instrument_cursor;
-        self.synth_editor_slot = slot;
-        self.synth_editor_field = SynthField::Waveform;
+        let slot = self.dialogs.instrument_cursor;
+        self.dialogs.synth_editor_slot = slot;
+        self.dialogs.synth_editor_field = SynthField::Waveform;
         // Initialize synth params from defaults if not already set
         if self.instruments[slot].synth_params.is_none() {
             let program = self.instruments[slot].midi_program.unwrap_or(0);
@@ -704,8 +738,8 @@ impl App {
 
     /// Open the sample editor for the current instrument
     pub fn open_sample_editor(&mut self) {
-        self.sample_editor_slot = self.instrument_cursor;
-        self.sample_editor_field = SampleField::BaseNote;
+        self.dialogs.sample_editor_slot = self.dialogs.instrument_cursor;
+        self.dialogs.sample_editor_field = SampleField::BaseNote;
         self.prev_mode = self.mode;
         self.mode = Mode::SampleEditor;
     }
@@ -713,13 +747,13 @@ impl App {
     /// Open the file browser with a specific action and extension filter.
     pub fn open_file_browser(&mut self, action: FileBrowserAction, extensions: Vec<String>) {
         self.prev_mode = self.mode;
-        self.file_browser.open(action, extensions);
+        self.dialogs.file_browser.open(action, extensions);
         self.mode = Mode::FileBrowser;
     }
 
     /// Handle file selection from the file browser.
     pub fn on_file_selected(&mut self, path: PathBuf) {
-        match self.file_browser.action {
+        match self.dialogs.file_browser.action {
             FileBrowserAction::LoadSample(slot) => {
                 let mut bank = (*self.sample_bank).clone();
                 match bank.load(slot, &path) {
@@ -733,6 +767,13 @@ impl App {
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("sample")
                                     .to_string();
+                            }
+                        }
+                        // Wire the channel's default instrument so note
+                        // preview routes through the sample engine
+                        if let Some(ch) = self.channels.get_mut(slot) {
+                            if ch.default_instrument.is_none() {
+                                ch.default_instrument = Some(slot as u8);
                             }
                         }
                         self.sample_bank = Arc::new(bank);
@@ -755,17 +796,17 @@ impl App {
     /// Slice the sample in the current editor slot and place results into consecutive slots.
     /// Returns the number of slices created, or an error message.
     pub fn slice_sample(&mut self, use_transients: bool) -> Result<usize, String> {
-        let slot = self.sample_editor_slot;
+        let slot = self.dialogs.sample_editor_slot;
         let sample = match self.sample_bank.get(slot) {
             Some(s) => s.clone(),
             None => return Err("No sample loaded in this slot".to_string()),
         };
 
         let slices = if use_transients {
-            let points = crate::sample::detect_transients(&sample, self.sample_slice_sensitivity);
+            let points = crate::sample::detect_transients(&sample, self.dialogs.sample_slice_sensitivity);
             crate::sample::slice_at_points(&sample, &points)
         } else {
-            crate::sample::slice_equal(&sample, self.sample_slice_count)
+            crate::sample::slice_equal(&sample, self.dialogs.sample_slice_count)
         };
 
         if slices.is_empty() {
@@ -967,8 +1008,8 @@ impl App {
             ports.extend(hw_ports);
         }
 
-        self.midi_port_list = ports;
-        self.midi_port_cursor = 0;
+        self.dialogs.midi_port_list = ports;
+        self.dialogs.midi_port_cursor = 0;
         self.prev_mode = self.mode;
         self.mode = Mode::MidiPortSelect;
     }
@@ -978,28 +1019,28 @@ impl App {
     }
 
     pub(crate) fn select_midi_port(&mut self) {
-        if self.midi_port_cursor >= self.midi_port_list.len() {
+        if self.dialogs.midi_port_cursor >= self.dialogs.midi_port_list.len() {
             return;
         }
 
-        let _selected = &self.midi_port_list[self.midi_port_cursor];
+        let _selected = &self.dialogs.midi_port_list[self.dialogs.midi_port_cursor];
 
         // Index 0 on unix is the virtual port
         #[cfg(unix)]
         {
-            if self.midi_port_cursor == 0 {
+            if self.dialogs.midi_port_cursor == 0 {
                 let _ = self.midi.create_virtual_port();
                 self.close_port_selector();
                 return;
             }
             // Hardware ports start at index 1 in our list, but index 0 in midir
-            let hw_index = self.midi_port_cursor - 1;
+            let hw_index = self.dialogs.midi_port_cursor - 1;
             let _ = self.midi.connect(hw_index);
         }
 
         #[cfg(not(unix))]
         {
-            let _ = self.midi.connect(self.midi_port_cursor);
+            let _ = self.midi.connect(self.dialogs.midi_port_cursor);
         }
 
         self.close_port_selector();
@@ -1231,8 +1272,8 @@ impl App {
                 self.cursor_sub = SubColumn::Note;
                 self.edit_order = 0;
                 self.track_page = 0;
-                self.undo_stack.clear();
-                self.redo_stack.clear();
+                self.history.undo_stack.clear();
+                self.history.redo_stack.clear();
 
                 // Restore instruments
                 for entry in &song_file.instruments {
@@ -1297,25 +1338,25 @@ impl App {
     // -- Undo/Redo --
 
     pub fn push_undo(&mut self) {
-        self.undo_stack.push_back(self.song.clone());
-        self.redo_stack.clear();
-        if self.undo_stack.len() > MAX_UNDO_HISTORY {
-            self.undo_stack.pop_front();
+        self.history.undo_stack.push_back(self.song.clone());
+        self.history.redo_stack.clear();
+        if self.history.undo_stack.len() > MAX_UNDO_HISTORY {
+            self.history.undo_stack.pop_front();
         }
         self.dirty = true;
     }
 
     pub fn undo(&mut self) {
-        if let Some(prev) = self.undo_stack.pop_back() {
-            self.redo_stack.push(self.song.clone());
+        if let Some(prev) = self.history.undo_stack.pop_back() {
+            self.history.redo_stack.push(self.song.clone());
             self.song = prev;
             self.status_message = Some("Undo".to_string());
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(next) = self.redo_stack.pop() {
-            self.undo_stack.push_back(self.song.clone());
+        if let Some(next) = self.history.redo_stack.pop() {
+            self.history.undo_stack.push_back(self.song.clone());
             self.song = next;
             self.status_message = Some("Redo".to_string());
         }
@@ -1329,12 +1370,12 @@ impl App {
         let row: Vec<crate::tracker::Cell> = (0..pattern.channels)
             .map(|ch| *pattern.get(self.cursor_row, ch))
             .collect();
-        self.clipboard = Some(row);
+        self.history.clipboard = Some(row);
         self.status_message = Some(format!("Copied row {:02X}", self.cursor_row));
     }
 
     pub fn paste_row(&mut self) {
-        if let Some(ref row) = self.clipboard.clone() {
+        if let Some(ref row) = self.history.clipboard.clone() {
             self.push_undo();
             let pattern_idx = self.song.order[self.current_order_position()];
             let pattern = &mut self.song.patterns[pattern_idx];
@@ -1528,45 +1569,38 @@ mod tests {
             current_octave: 4,
             playing: false,
             engine,
-            last_tick: None,
-            tick_accumulator: 0.0,
+            timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
-            ext_clock_count: 0,
-            last_link_beat: 0.0,
             edit_step: 1,
             file_path: None,
             status_message: None,
             last_autosave: Instant::now(),
-            undo_stack: VecDeque::new(),
-            redo_stack: Vec::new(),
-            clipboard: None,
+            history: EditHistory::new(),
             edit_order: 0,
             solo_channel: None,
-            midi_port_list: Vec::new(),
-            midi_port_cursor: 0,
             prev_mode: Mode::Normal,
-            settings_field: SettingsField::Title,
-            settings_edit_buf: String::new(),
             instruments: (0..MAX_INSTRUMENTS).map(|_| Instrument::default()).collect(),
-            instrument_cursor: 0,
             theme_index: 0,
-            clock_tick_accumulator: 0.0,
-            playback_elapsed: 0.0,
             audio: None,
             sample_bank: Arc::new(SampleBank::new()),
-            sample_editor_slot: 0,
-            sample_editor_field: SampleField::BaseNote,
-            sample_slice_count: 8,
-            sample_slice_sensitivity: 0.5,
-            synth_editor_slot: 0,
-            synth_editor_field: SynthField::Waveform,
             track_page: 0,
             preview_note: None,
-            help_scroll: 0,
-            file_browser: FileBrowserState { dir: PathBuf::from("/tmp"), entries: Vec::new(), cursor: 0, action: FileBrowserAction::OpenSong, filter: Vec::new(), scroll: 0 },
+            dialogs: DialogState {
+                midi_port_list: Vec::new(),
+                midi_port_cursor: 0,
+                settings_field: SettingsField::Title,
+                settings_edit_buf: String::new(),
+                instrument_cursor: 0,
+                sample_editor_slot: 0,
+                sample_editor_field: SampleField::BaseNote,
+                sample_slice_count: 8,
+                sample_slice_sensitivity: 0.5,
+                synth_editor_slot: 0,
+                synth_editor_field: SynthField::Waveform,
+                help_scroll: 0,
+                file_browser: FileBrowserState { dir: PathBuf::from("/tmp"), entries: Vec::new(), cursor: 0, action: FileBrowserAction::OpenSong, filter: Vec::new(), scroll: 0 },
+            },
             dirty: false,
-            block_anchor: None,
-            block_clipboard: None,
             follow_playback: true,
             rename_buf: String::new(),
             ch_fx_field: 0,
@@ -1847,28 +1881,28 @@ mod tests {
     #[test]
     fn test_port_select_navigation() {
         let mut app = make_app();
-        app.midi_port_list = vec![
+        app.dialogs.midi_port_list = vec![
             "Port A".to_string(),
             "Port B".to_string(),
             "Port C".to_string(),
         ];
-        app.midi_port_cursor = 0;
+        app.dialogs.midi_port_cursor = 0;
         app.mode = Mode::MidiPortSelect;
 
         // Down
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.midi_port_cursor, 1);
+        assert_eq!(app.dialogs.midi_port_cursor, 1);
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.midi_port_cursor, 2);
+        assert_eq!(app.dialogs.midi_port_cursor, 2);
 
         // Can't go past end
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.midi_port_cursor, 2);
+        assert_eq!(app.dialogs.midi_port_cursor, 2);
 
         // Up
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.midi_port_cursor, 1);
+        assert_eq!(app.dialogs.midi_port_cursor, 1);
     }
 
     #[test]
@@ -1911,11 +1945,11 @@ mod tests {
         app.song.title = "Edit 1".to_string();
 
         app.undo();
-        assert!(!app.redo_stack.is_empty());
+        assert!(!app.history.redo_stack.is_empty());
 
         // New edit should clear redo
         app.push_undo();
-        assert!(app.redo_stack.is_empty());
+        assert!(app.history.redo_stack.is_empty());
     }
 
     #[test]
@@ -1929,7 +1963,7 @@ mod tests {
 
         // Copy
         app.copy_row();
-        assert!(app.clipboard.is_some());
+        assert!(app.history.clipboard.is_some());
 
         // Move and paste
         app.cursor_row = 5;
@@ -1956,7 +1990,7 @@ mod tests {
         assert!(cell.note.is_none());
 
         // Clipboard should have the data
-        assert!(app.clipboard.is_some());
+        assert!(app.history.clipboard.is_some());
     }
 
     #[test]
@@ -2733,7 +2767,7 @@ mod tests {
         let mut app = make_app();
         app.open_song_settings();
         assert_eq!(app.mode, Mode::SongSettings);
-        assert_eq!(app.settings_field, SettingsField::Title);
+        assert_eq!(app.dialogs.settings_field, SettingsField::Title);
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::Normal);
@@ -2743,7 +2777,7 @@ mod tests {
     fn test_song_settings_edit_title() {
         let mut app = make_app();
         app.open_song_settings();
-        app.settings_edit_buf = "New Title".to_string();
+        app.dialogs.settings_edit_buf = "New Title".to_string();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.song.title, "New Title");
     }
@@ -2752,8 +2786,8 @@ mod tests {
     fn test_song_settings_edit_bpm() {
         let mut app = make_app();
         app.open_song_settings();
-        app.settings_field = SettingsField::Bpm;
-        app.settings_edit_buf = "140".to_string();
+        app.dialogs.settings_field = SettingsField::Bpm;
+        app.dialogs.settings_edit_buf = "140".to_string();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.song.bpm, 140);
     }
@@ -2762,8 +2796,8 @@ mod tests {
     fn test_song_settings_edit_channels() {
         let mut app = make_app();
         app.open_song_settings();
-        app.settings_field = SettingsField::Channels;
-        app.settings_edit_buf = "8".to_string();
+        app.dialogs.settings_field = SettingsField::Channels;
+        app.dialogs.settings_edit_buf = "8".to_string();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.song.channels, 8);
     }
@@ -2772,15 +2806,15 @@ mod tests {
     fn test_song_settings_clamps_bpm() {
         let mut app = make_app();
         app.open_song_settings();
-        app.settings_field = SettingsField::Bpm;
+        app.dialogs.settings_field = SettingsField::Bpm;
 
         // Too low
-        app.settings_edit_buf = "10".to_string();
+        app.dialogs.settings_edit_buf = "10".to_string();
         app.settings_apply_field();
         assert_eq!(app.song.bpm, 32);
 
         // Too high
-        app.settings_edit_buf = "500".to_string();
+        app.dialogs.settings_edit_buf = "500".to_string();
         app.settings_apply_field();
         assert_eq!(app.song.bpm, 300);
     }
@@ -2799,19 +2833,19 @@ mod tests {
     fn test_instrument_list_navigation() {
         let mut app = make_app();
         app.open_instrument_list();
-        assert_eq!(app.instrument_cursor, 0);
+        assert_eq!(app.dialogs.instrument_cursor, 0);
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.instrument_cursor, 1);
+        assert_eq!(app.dialogs.instrument_cursor, 1);
 
         app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert_eq!(app.instrument_cursor, 17);
+        assert_eq!(app.dialogs.instrument_cursor, 17);
 
         app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
-        assert_eq!(app.instrument_cursor, 1);
+        assert_eq!(app.dialogs.instrument_cursor, 1);
 
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.instrument_cursor, 0);
+        assert_eq!(app.dialogs.instrument_cursor, 0);
     }
 
     #[test]
@@ -2917,7 +2951,7 @@ mod tests {
         assert!(app.instruments[0].synth_params.is_some());
         // Navigate fields
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.synth_editor_field, SynthField::Attack);
+        assert_eq!(app.dialogs.synth_editor_field, SynthField::Attack);
         // Adjust value
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         let attack = app.instruments[0].synth_params.as_ref().unwrap().attack;
@@ -3057,13 +3091,13 @@ mod tests {
     #[test]
     fn test_block_select_toggle() {
         let mut app = make_app();
-        assert!(app.block_anchor.is_none());
+        assert!(app.history.block_anchor.is_none());
         // Ctrl+B toggles block selection
         app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-        assert_eq!(app.block_anchor, Some((0, 0)));
+        assert_eq!(app.history.block_anchor, Some((0, 0)));
         // Toggle off
         app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-        assert!(app.block_anchor.is_none());
+        assert!(app.history.block_anchor.is_none());
     }
 
     #[test]
@@ -3086,8 +3120,8 @@ mod tests {
         app.cursor_channel = 1;
         // Copy block
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(app.block_clipboard.is_some());
-        let clip = app.block_clipboard.as_ref().unwrap();
+        assert!(app.history.block_clipboard.is_some());
+        let clip = app.history.block_clipboard.as_ref().unwrap();
         assert_eq!(clip.len(), 2); // 2 rows
         assert_eq!(clip[0].len(), 2); // 2 channels
         // Paste at (4,0)
@@ -3116,7 +3150,7 @@ mod tests {
         let cell = app.song.patterns[pattern_idx].get(0, 0);
         assert!(cell.note.is_none());
         // Block anchor should be cleared
-        assert!(app.block_anchor.is_none());
+        assert!(app.history.block_anchor.is_none());
     }
 
     #[test]
@@ -3204,7 +3238,7 @@ mod tests {
             ..Default::default()
         });
         // Select block from (0,0) to (4,0)
-        app.block_anchor = Some((0, 0));
+        app.history.block_anchor = Some((0, 0));
         app.cursor_row = 4;
         app.cursor_channel = 0;
         // Interpolate
@@ -3230,7 +3264,7 @@ mod tests {
             effect: Some(5), effect_value: Some(80),
             ..Default::default()
         });
-        app.block_anchor = Some((0, 0));
+        app.history.block_anchor = Some((0, 0));
         app.cursor_row = 2;
         app.cursor_channel = 0;
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
@@ -3579,6 +3613,21 @@ mod tests {
     }
 
     #[test]
+    fn test_sample_track_auto_fills_instrument() {
+        let mut app = make_app();
+        app.channels[0].channel_type = ChannelType::Sample;
+        app.channels[0].default_instrument = Some(3);
+        app.mode = Mode::Insert;
+        // Enter a note (z = C in current octave)
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        let pattern_idx = app.song.order[0];
+        let cell = app.song.patterns[pattern_idx].get(0, 0);
+        assert!(cell.note.is_some());
+        // Sample tracks should auto-fill instrument just like Synth tracks
+        assert_eq!(cell.instrument, Some(3));
+    }
+
+    #[test]
     fn test_file_browser_open() {
         let mut app = make_app();
         app.open_file_browser(
@@ -3586,22 +3635,22 @@ mod tests {
             vec!["wav".to_string(), "aiff".to_string()],
         );
         assert_eq!(app.mode, Mode::FileBrowser);
-        assert_eq!(app.file_browser.action, FileBrowserAction::LoadSample(0));
-        assert_eq!(app.file_browser.filter, vec!["wav", "aiff"]);
-        assert_eq!(app.file_browser.cursor, 0);
+        assert_eq!(app.dialogs.file_browser.action, FileBrowserAction::LoadSample(0));
+        assert_eq!(app.dialogs.file_browser.filter, vec!["wav", "aiff"]);
+        assert_eq!(app.dialogs.file_browser.cursor, 0);
     }
 
     #[test]
     fn test_file_browser_navigate() {
         let mut app = make_app();
         // Use temp dir which should exist
-        app.file_browser.dir = std::env::temp_dir();
+        app.dialogs.file_browser.dir = std::env::temp_dir();
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
         // Navigate down
-        let initial = app.file_browser.cursor;
+        let initial = app.dialogs.file_browser.cursor;
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        if !app.file_browser.entries.is_empty() {
-            assert!(app.file_browser.cursor >= initial);
+        if !app.dialogs.file_browser.entries.is_empty() {
+            assert!(app.dialogs.file_browser.cursor >= initial);
         }
         // Esc closes
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -3615,22 +3664,22 @@ mod tests {
         let sub = dir.join("subdir");
         let _ = std::fs::create_dir_all(&sub);
 
-        app.file_browser.dir = dir.clone();
+        app.dialogs.file_browser.dir = dir.clone();
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
 
         // Find the subdir entry
-        let subdir_idx = app.file_browser.entries.iter().position(|e| e.name == "subdir" && e.is_dir);
+        let subdir_idx = app.dialogs.file_browser.entries.iter().position(|e| e.name == "subdir" && e.is_dir);
         if let Some(idx) = subdir_idx {
-            app.file_browser.cursor = idx;
+            app.dialogs.file_browser.cursor = idx;
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             // Should have navigated into subdir
-            assert_eq!(app.file_browser.dir, sub);
+            assert_eq!(app.dialogs.file_browser.dir, sub);
             assert_eq!(app.mode, Mode::FileBrowser);
         }
 
         // Backspace goes up
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        assert_eq!(app.file_browser.dir, dir);
+        assert_eq!(app.dialogs.file_browser.dir, dir);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3645,14 +3694,14 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"text").unwrap();
         std::fs::write(dir.join("beat.aiff"), b"fake").unwrap();
 
-        app.file_browser.dir = dir.clone();
+        app.dialogs.file_browser.dir = dir.clone();
         app.open_file_browser(
             FileBrowserAction::LoadSample(0),
             vec!["wav".to_string(), "aiff".to_string()],
         );
 
         // Should only show wav and aiff files (not txt)
-        let names: Vec<&str> = app.file_browser.entries.iter()
+        let names: Vec<&str> = app.dialogs.file_browser.entries.iter()
             .filter(|e| !e.is_dir)
             .map(|e| e.name.as_str())
             .collect();
@@ -3666,6 +3715,10 @@ mod tests {
     #[test]
     fn test_file_browser_select_file_loads_sample() {
         let mut app = make_app();
+        // Ensure we have enough channels for slot 5
+        while app.channels.len() <= 5 {
+            app.channels.push(ChannelConfig::new(app.channels.len() as u8));
+        }
         let dir = std::env::temp_dir().join("rtrack_fb_load_test");
         let _ = std::fs::create_dir_all(&dir);
 
@@ -3683,22 +3736,24 @@ mod tests {
         }
         writer.finalize().unwrap();
 
-        app.file_browser.dir = dir.clone();
+        app.dialogs.file_browser.dir = dir.clone();
         app.open_file_browser(
             FileBrowserAction::LoadSample(5),
             vec!["wav".to_string()],
         );
 
         // Find the wav file and select it
-        let wav_idx = app.file_browser.entries.iter().position(|e| e.name == "kick.wav");
+        let wav_idx = app.dialogs.file_browser.entries.iter().position(|e| e.name == "kick.wav");
         assert!(wav_idx.is_some(), "WAV file should appear in browser");
-        app.file_browser.cursor = wav_idx.unwrap();
+        app.dialogs.file_browser.cursor = wav_idx.unwrap();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         // Should have loaded the sample
         assert!(app.sample_bank.get(5).is_some());
         assert_eq!(app.sample_bank.get(5).unwrap().name, "kick");
         assert_eq!(app.instruments[5].sample_index, Some(5));
+        // Loading a sample should auto-set default_instrument so preview routes correctly
+        assert_eq!(app.channels[5].default_instrument, Some(5));
         assert_ne!(app.mode, Mode::FileBrowser);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3711,12 +3766,12 @@ mod tests {
         let _ = std::fs::create_dir_all(dir.join("aaa_dir"));
         std::fs::write(dir.join("aaa_file.wav"), b"x").unwrap();
 
-        app.file_browser.dir = dir.clone();
+        app.dialogs.file_browser.dir = dir.clone();
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
 
         // Directories should come before files
-        if let Some(dir_idx) = app.file_browser.entries.iter().position(|e| e.name == "aaa_dir") {
-            if let Some(file_idx) = app.file_browser.entries.iter().position(|e| e.name == "aaa_file.wav") {
+        if let Some(dir_idx) = app.dialogs.file_browser.entries.iter().position(|e| e.name == "aaa_dir") {
+            if let Some(file_idx) = app.dialogs.file_browser.entries.iter().position(|e| e.name == "aaa_file.wav") {
                 assert!(dir_idx < file_idx, "Directories should sort before files");
             }
         }
@@ -3743,8 +3798,8 @@ mod tests {
         let mut bank = (*app.sample_bank).clone();
         bank.samples[0] = Some(sample);
         app.sample_bank = Arc::new(bank);
-        app.sample_editor_slot = 0;
-        app.sample_slice_count = 4;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_slice_count = 4;
 
         let result = app.slice_sample(false);
         assert!(result.is_ok());
@@ -3767,7 +3822,7 @@ mod tests {
     #[test]
     fn test_slice_sample_no_sample() {
         let mut app = make_app();
-        app.sample_editor_slot = 5;
+        app.dialogs.sample_editor_slot = 5;
         let result = app.slice_sample(false);
         assert!(result.is_err());
     }
@@ -3791,8 +3846,8 @@ mod tests {
         let mut bank = (*app.sample_bank).clone();
         bank.samples[0] = Some(sample);
         app.sample_bank = Arc::new(bank);
-        app.sample_editor_slot = 0;
-        app.sample_slice_sensitivity = 0.5;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_slice_sensitivity = 0.5;
 
         let result = app.slice_sample(true);
         assert!(result.is_ok());
@@ -3863,13 +3918,13 @@ mod tests {
     fn test_highlight_settings() {
         let mut app = make_app();
         app.open_song_settings();
-        app.settings_field = SettingsField::HighlightBeat;
-        app.settings_edit_buf = "3".to_string();
+        app.dialogs.settings_field = SettingsField::HighlightBeat;
+        app.dialogs.settings_edit_buf = "3".to_string();
         app.settings_apply_field();
         assert_eq!(app.song.highlight_beat, 3);
 
-        app.settings_field = SettingsField::HighlightBar;
-        app.settings_edit_buf = "12".to_string();
+        app.dialogs.settings_field = SettingsField::HighlightBar;
+        app.dialogs.settings_edit_buf = "12".to_string();
         app.settings_apply_field();
         assert_eq!(app.song.highlight_bar, 12);
     }
@@ -3905,13 +3960,13 @@ mod tests {
     fn test_swing_settings() {
         let mut app = make_app();
         app.open_song_settings();
-        app.settings_field = SettingsField::Swing;
-        app.settings_edit_buf = "67".to_string();
+        app.dialogs.settings_field = SettingsField::Swing;
+        app.dialogs.settings_edit_buf = "67".to_string();
         app.settings_apply_field();
         assert_eq!(app.song.swing, 67);
 
         // Clamp to 100
-        app.settings_edit_buf = "150".to_string();
+        app.dialogs.settings_edit_buf = "150".to_string();
         app.settings_apply_field();
         assert_eq!(app.song.swing, 100);
     }

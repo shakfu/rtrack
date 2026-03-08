@@ -52,6 +52,11 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config = rtrack::config::load_config();
+
+    // CLI args take precedence over config file
+    let sf2 = cli.sf2.or(config.sf2);
+    let sample_dir = cli.sample_dir.or(config.sample_dir);
 
     if cli.render {
         if cli.file.is_none() {
@@ -62,7 +67,7 @@ fn main() -> Result<()> {
             eprintln!("Error: --render requires --output <path.wav|path.flac>");
             std::process::exit(1);
         }
-        let result = run_render(cli.file, cli.sf2, cli.samples, cli.sample_dir, cli.output.unwrap());
+        let result = run_render(cli.file, sf2.clone(), cli.samples, sample_dir.clone(), cli.output.unwrap());
         if let Err(e) = result {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -75,7 +80,7 @@ fn main() -> Result<()> {
             eprintln!("Error: --play requires a song file");
             std::process::exit(1);
         }
-        let result = run_headless(cli.file, cli.sf2, cli.samples, cli.sample_dir, cli.loops);
+        let result = run_headless(cli.file, sf2.clone(), cli.samples, sample_dir.clone(), cli.loops);
         if let Err(e) = result {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -90,7 +95,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, cli.file, cli.sf2, cli.samples, cli.sample_dir);
+    let result = run_app(&mut terminal, cli.file, sf2, cli.samples, sample_dir);
 
     // Restore terminal
     disable_raw_mode()?;

@@ -15,8 +15,8 @@ impl App {
     pub(crate) fn open_song_settings(&mut self) {
         self.prev_mode = self.mode;
         self.mode = Mode::SongSettings;
-        self.settings_field = SettingsField::Title;
-        self.settings_edit_buf = self.song.title.clone();
+        self.dialogs.settings_field = SettingsField::Title;
+        self.dialogs.settings_edit_buf = self.song.title.clone();
     }
 
     fn close_song_settings(&mut self) {
@@ -24,8 +24,8 @@ impl App {
     }
 
     fn settings_select_field(&mut self, field: SettingsField) {
-        self.settings_field = field;
-        self.settings_edit_buf = match field {
+        self.dialogs.settings_field = field;
+        self.dialogs.settings_edit_buf = match field {
             SettingsField::Title => self.song.title.clone(),
             SettingsField::Bpm => self.song.bpm.to_string(),
             SettingsField::Speed => self.song.speed.to_string(),
@@ -38,15 +38,15 @@ impl App {
     }
 
     pub(crate) fn settings_apply_field(&mut self) {
-        match self.settings_field {
+        match self.dialogs.settings_field {
             SettingsField::Title => {
-                if !self.settings_edit_buf.is_empty() {
+                if !self.dialogs.settings_edit_buf.is_empty() {
                     self.push_undo();
-                    self.song.title = self.settings_edit_buf.clone();
+                    self.song.title = self.dialogs.settings_edit_buf.clone();
                 }
             }
             SettingsField::Bpm => {
-                if let Ok(v) = self.settings_edit_buf.parse::<u16>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u16>() {
                     let v = v.clamp(32, 300);
                     self.push_undo();
                     self.song.bpm = v;
@@ -56,14 +56,14 @@ impl App {
                 }
             }
             SettingsField::Speed => {
-                if let Ok(v) = self.settings_edit_buf.parse::<u8>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u8>() {
                     let v = v.clamp(1, 31);
                     self.push_undo();
                     self.song.speed = v;
                 }
             }
             SettingsField::Channels => {
-                if let Ok(v) = self.settings_edit_buf.parse::<usize>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, MAX_CHANNELS);
                     if v != self.song.channels {
                         self.push_undo();
@@ -88,7 +88,7 @@ impl App {
                 }
             }
             SettingsField::Rows => {
-                if let Ok(v) = self.settings_edit_buf.parse::<usize>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, 256);
                     if v != self.song.rows_per_pattern {
                         self.push_undo();
@@ -97,21 +97,21 @@ impl App {
                 }
             }
             SettingsField::HighlightBeat => {
-                if let Ok(v) = self.settings_edit_buf.parse::<usize>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, 64);
                     self.push_undo();
                     self.song.highlight_beat = v;
                 }
             }
             SettingsField::HighlightBar => {
-                if let Ok(v) = self.settings_edit_buf.parse::<usize>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, 256);
                     self.push_undo();
                     self.song.highlight_bar = v;
                 }
             }
             SettingsField::Swing => {
-                if let Ok(v) = self.settings_edit_buf.parse::<u8>() {
+                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u8>() {
                     let v = v.clamp(0, 100);
                     self.push_undo();
                     self.song.swing = v;
@@ -128,12 +128,12 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Down => {
                 self.settings_apply_field();
-                let next = self.settings_field.next();
+                let next = self.dialogs.settings_field.next();
                 self.settings_select_field(next);
             }
             KeyCode::BackTab | KeyCode::Up => {
                 self.settings_apply_field();
-                let prev = self.settings_field.prev();
+                let prev = self.dialogs.settings_field.prev();
                 self.settings_select_field(prev);
             }
             KeyCode::Enter => {
@@ -141,10 +141,10 @@ impl App {
                 self.close_song_settings();
             }
             KeyCode::Char(c) => {
-                self.settings_edit_buf.push(c);
+                self.dialogs.settings_edit_buf.push(c);
             }
             KeyCode::Backspace => {
-                self.settings_edit_buf.pop();
+                self.dialogs.settings_edit_buf.pop();
             }
             _ => {}
         }
@@ -165,20 +165,20 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::F(7) => self.close_instrument_list(),
             KeyCode::Up => {
-                if self.instrument_cursor > 0 {
-                    self.instrument_cursor -= 1;
+                if self.dialogs.instrument_cursor > 0 {
+                    self.dialogs.instrument_cursor -= 1;
                 }
             }
             KeyCode::Down => {
-                if self.instrument_cursor < MAX_INSTRUMENTS - 1 {
-                    self.instrument_cursor += 1;
+                if self.dialogs.instrument_cursor < MAX_INSTRUMENTS - 1 {
+                    self.dialogs.instrument_cursor += 1;
                 }
             }
             KeyCode::PageUp => {
-                self.instrument_cursor = self.instrument_cursor.saturating_sub(16);
+                self.dialogs.instrument_cursor = self.dialogs.instrument_cursor.saturating_sub(16);
             }
             KeyCode::PageDown => {
-                self.instrument_cursor = (self.instrument_cursor + 16).min(MAX_INSTRUMENTS - 1);
+                self.dialogs.instrument_cursor = (self.dialogs.instrument_cursor + 16).min(MAX_INSTRUMENTS - 1);
             }
             KeyCode::Enter => {
                 // Open sample editor for current instrument
@@ -189,11 +189,11 @@ impl App {
                 self.open_synth_editor();
             }
             KeyCode::Char(c) => {
-                self.instruments[self.instrument_cursor].name.push(c);
+                self.instruments[self.dialogs.instrument_cursor].name.push(c);
                 self.dirty = true;
             }
             KeyCode::Backspace => {
-                self.instruments[self.instrument_cursor].name.pop();
+                self.instruments[self.dialogs.instrument_cursor].name.pop();
                 self.dirty = true;
             }
             _ => {}
@@ -201,21 +201,21 @@ impl App {
     }
 
     fn handle_sample_editor_key(&mut self, key: KeyEvent) {
-        let slot = self.sample_editor_slot;
+        let slot = self.dialogs.sample_editor_slot;
         match key.code {
             KeyCode::Esc => {
                 self.mode = self.prev_mode;
                 self.dirty = true;
             }
             KeyCode::Tab => {
-                self.sample_editor_field = self.sample_editor_field.next();
+                self.dialogs.sample_editor_field = self.dialogs.sample_editor_field.next();
             }
             KeyCode::BackTab => {
-                self.sample_editor_field = self.sample_editor_field.prev();
+                self.dialogs.sample_editor_field = self.dialogs.sample_editor_field.prev();
             }
             KeyCode::Enter => {
                 // Execute slice actions on Enter
-                match self.sample_editor_field {
+                match self.dialogs.sample_editor_field {
                     SampleField::SliceEqual => {
                         match self.slice_sample(false) {
                             Ok(n) => self.status_message = Some(format!("Sliced into {} equal segments", n)),
@@ -249,15 +249,15 @@ impl App {
 
     fn adjust_sample_field(&mut self, slot: usize, delta: i64) {
         // Handle slice parameter fields (no sample mutation needed)
-        match self.sample_editor_field {
+        match self.dialogs.sample_editor_field {
             SampleField::SliceCount => {
-                self.sample_slice_count = (self.sample_slice_count as i64 + delta)
+                self.dialogs.sample_slice_count = (self.dialogs.sample_slice_count as i64 + delta)
                     .clamp(2, 64) as usize;
                 return;
             }
             SampleField::SliceSensitivity => {
                 let step = delta as f32 * 0.05;
-                self.sample_slice_sensitivity = (self.sample_slice_sensitivity + step)
+                self.dialogs.sample_slice_sensitivity = (self.dialogs.sample_slice_sensitivity + step)
                     .clamp(0.0, 1.0);
                 return;
             }
@@ -280,7 +280,7 @@ impl App {
 
         let mut bank = (*self.sample_bank).clone();
         if let Some(ref mut sample) = bank.samples.get_mut(slot).and_then(|s| s.as_mut()) {
-            match self.sample_editor_field {
+            match self.dialogs.sample_editor_field {
                 SampleField::BaseNote => {
                     sample.base_note = (sample.base_note as i64 + delta).clamp(0, MIDI_MAX_NOTE as i64) as u8;
                 }
@@ -327,7 +327,7 @@ impl App {
     // -- Synth editor --
 
     fn handle_synth_editor_key(&mut self, key: KeyEvent) {
-        let slot = self.synth_editor_slot;
+        let slot = self.dialogs.synth_editor_slot;
         match key.code {
             KeyCode::Esc => {
                 self.mode = self.prev_mode;
@@ -335,10 +335,10 @@ impl App {
                 self.status_message = Some(format!("Synth params saved for instrument {:02X}", slot));
             }
             KeyCode::Tab => {
-                self.synth_editor_field = self.synth_editor_field.next();
+                self.dialogs.synth_editor_field = self.dialogs.synth_editor_field.next();
             }
             KeyCode::BackTab => {
-                self.synth_editor_field = self.synth_editor_field.prev();
+                self.dialogs.synth_editor_field = self.dialogs.synth_editor_field.prev();
             }
             KeyCode::Up => {
                 self.adjust_synth_field(slot, 1);
@@ -368,7 +368,7 @@ impl App {
         use crate::audio::synth::Patch;
 
         if let Some(ref mut params) = self.instruments[slot].synth_params {
-            match self.synth_editor_field {
+            match self.dialogs.synth_editor_field {
                 SynthField::Waveform => {
                     let max = Patch::count() as i32;
                     params.waveform = ((params.waveform as i32 + delta).rem_euclid(max)) as u8;
@@ -804,48 +804,48 @@ impl App {
     // -- File browser --
 
     fn handle_file_browser_key(&mut self, key: KeyEvent) {
-        let num_entries = self.file_browser.entries.len();
+        let num_entries = self.dialogs.file_browser.entries.len();
         match key.code {
             KeyCode::Esc => {
                 self.mode = self.prev_mode;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.file_browser.cursor > 0 {
-                    self.file_browser.cursor -= 1;
+                if self.dialogs.file_browser.cursor > 0 {
+                    self.dialogs.file_browser.cursor -= 1;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.file_browser.cursor + 1 < num_entries {
-                    self.file_browser.cursor += 1;
+                if self.dialogs.file_browser.cursor + 1 < num_entries {
+                    self.dialogs.file_browser.cursor += 1;
                 }
             }
             KeyCode::PageUp => {
-                self.file_browser.cursor = self.file_browser.cursor.saturating_sub(10);
+                self.dialogs.file_browser.cursor = self.dialogs.file_browser.cursor.saturating_sub(10);
             }
             KeyCode::PageDown => {
-                self.file_browser.cursor = (self.file_browser.cursor + 10).min(num_entries.saturating_sub(1));
+                self.dialogs.file_browser.cursor = (self.dialogs.file_browser.cursor + 10).min(num_entries.saturating_sub(1));
             }
             KeyCode::Home => {
-                self.file_browser.cursor = 0;
+                self.dialogs.file_browser.cursor = 0;
             }
             KeyCode::End => {
                 if num_entries > 0 {
-                    self.file_browser.cursor = num_entries - 1;
+                    self.dialogs.file_browser.cursor = num_entries - 1;
                 }
             }
             KeyCode::Backspace => {
                 // Go up one directory
-                if let Some(parent) = self.file_browser.dir.parent() {
-                    self.file_browser.dir = parent.to_path_buf();
-                    self.file_browser.refresh();
+                if let Some(parent) = self.dialogs.file_browser.dir.parent() {
+                    self.dialogs.file_browser.dir = parent.to_path_buf();
+                    self.dialogs.file_browser.refresh();
                 }
             }
             KeyCode::Enter => {
-                if let Some(entry) = self.file_browser.entries.get(self.file_browser.cursor).cloned() {
-                    let path = self.file_browser.dir.join(&entry.name);
+                if let Some(entry) = self.dialogs.file_browser.entries.get(self.dialogs.file_browser.cursor).cloned() {
+                    let path = self.dialogs.file_browser.dir.join(&entry.name);
                     if entry.is_dir {
-                        self.file_browser.dir = path;
-                        self.file_browser.refresh();
+                        self.dialogs.file_browser.dir = path;
+                        self.dialogs.file_browser.refresh();
                     } else {
                         // File selected -- perform the action
                         self.mode = self.prev_mode;
@@ -967,7 +967,7 @@ impl App {
         self.push_undo();
         let pattern_idx = self.song.order[self.current_order_position()];
 
-        if let Some((anchor_row, anchor_ch)) = self.block_anchor {
+        if let Some((anchor_row, anchor_ch)) = self.history.block_anchor {
             let (r0, r1) = if anchor_row <= self.cursor_row {
                 (anchor_row, self.cursor_row)
             } else {
@@ -1094,7 +1094,7 @@ impl App {
                 KeyCode::Char('f') => { self.toggle_follow(); return true; }
                 KeyCode::Char('i') => { self.interpolate_block(); return true; }
                 KeyCode::Char('c') => {
-                    if self.block_anchor.is_some() {
+                    if self.history.block_anchor.is_some() {
                         self.copy_block();
                     } else {
                         self.copy_row();
@@ -1102,7 +1102,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('v') => {
-                    if self.block_clipboard.is_some() {
+                    if self.history.block_clipboard.is_some() {
                         self.paste_block();
                     } else {
                         self.paste_row();
@@ -1110,7 +1110,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('x') => {
-                    if self.block_anchor.is_some() {
+                    if self.history.block_anchor.is_some() {
                         self.cut_block();
                     } else {
                         self.cut_row();
@@ -1298,7 +1298,7 @@ impl App {
     fn open_help(&mut self) {
         self.prev_mode = self.mode;
         self.mode = Mode::Help;
-        self.help_scroll = 0;
+        self.dialogs.help_scroll = 0;
     }
 
     fn close_help(&mut self) {
@@ -1309,19 +1309,19 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q') => self.close_help(),
             KeyCode::Up | KeyCode::Char('k') => {
-                self.help_scroll = self.help_scroll.saturating_sub(1);
+                self.dialogs.help_scroll = self.dialogs.help_scroll.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.help_scroll += 1;
+                self.dialogs.help_scroll += 1;
             }
             KeyCode::PageUp => {
-                self.help_scroll = self.help_scroll.saturating_sub(10);
+                self.dialogs.help_scroll = self.dialogs.help_scroll.saturating_sub(10);
             }
             KeyCode::PageDown => {
-                self.help_scroll += 10;
+                self.dialogs.help_scroll += 10;
             }
             KeyCode::Home => {
-                self.help_scroll = 0;
+                self.dialogs.help_scroll = 0;
             }
             _ => {}
         }
@@ -1331,13 +1331,13 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::F(2) => self.close_port_selector(),
             KeyCode::Up => {
-                if self.midi_port_cursor > 0 {
-                    self.midi_port_cursor -= 1;
+                if self.dialogs.midi_port_cursor > 0 {
+                    self.dialogs.midi_port_cursor -= 1;
                 }
             }
             KeyCode::Down => {
-                if self.midi_port_cursor + 1 < self.midi_port_list.len() {
-                    self.midi_port_cursor += 1;
+                if self.dialogs.midi_port_cursor + 1 < self.dialogs.midi_port_list.len() {
+                    self.dialogs.midi_port_cursor += 1;
                 }
             }
             KeyCode::Enter => self.select_midi_port(),
@@ -1390,10 +1390,11 @@ impl App {
 
         self.push_undo();
 
-        // Determine instrument: use track default if set (Synth tracks), else cell's existing value
+        // Determine instrument: use track default if set (Synth/Sample tracks), else cell's existing value
         let pattern_idx = self.song.order[self.current_order_position()];
         let ch = self.cursor_channel;
-        let track_inst = if self.channels.get(ch).map(|c| c.channel_type) == Some(ChannelType::Synth) {
+        let ch_type = self.channels.get(ch).map(|c| c.channel_type);
+        let track_inst = if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
             self.channels.get(ch).and_then(|c| c.default_instrument)
         } else {
             None
@@ -1561,18 +1562,18 @@ impl App {
 
     /// Toggle block selection anchor at the current cursor position
     pub fn toggle_block_select(&mut self) {
-        if self.block_anchor.is_some() {
-            self.block_anchor = None;
+        if self.history.block_anchor.is_some() {
+            self.history.block_anchor = None;
             self.status_message = Some("Block selection cleared".to_string());
         } else {
-            self.block_anchor = Some((self.cursor_row, self.cursor_channel));
+            self.history.block_anchor = Some((self.cursor_row, self.cursor_channel));
             self.status_message = Some("Block selection started".to_string());
         }
     }
 
     /// Get the block selection bounds: (row_start, row_end, ch_start, ch_end) inclusive
     pub fn block_bounds(&self) -> Option<(usize, usize, usize, usize)> {
-        self.block_anchor.map(|(anchor_row, anchor_ch)| {
+        self.history.block_anchor.map(|(anchor_row, anchor_ch)| {
             let (r0, r1) = if anchor_row <= self.cursor_row {
                 (anchor_row, self.cursor_row)
             } else {
@@ -1600,7 +1601,7 @@ impl App {
                 }
                 block.push(row);
             }
-            self.block_clipboard = Some(block);
+            self.history.block_clipboard = Some(block);
             let rows = r1 - r0 + 1;
             let cols = c1 - c0 + 1;
             self.status_message = Some(format!("Copied block {}x{}", rows, cols));
@@ -1619,7 +1620,7 @@ impl App {
                     pattern.set_cell(r, c, crate::tracker::Cell::default());
                 }
             }
-            self.block_anchor = None;
+            self.history.block_anchor = None;
             self.status_message = Some("Cut block".to_string());
         }
     }
@@ -1676,7 +1677,7 @@ impl App {
 
     /// Paste block clipboard at cursor position
     fn paste_block(&mut self) {
-        if let Some(ref block) = self.block_clipboard.clone() {
+        if let Some(ref block) = self.history.block_clipboard.clone() {
             self.push_undo();
             let pattern_idx = self.song.order[self.current_order_position()];
             let pattern = &mut self.song.patterns[pattern_idx];

@@ -12,7 +12,7 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
     let area = centered_rect(60, 24, f.area());
     f.render_widget(Clear, area);
 
-    let slot = app.synth_editor_slot;
+    let slot = app.dialogs.synth_editor_slot;
     let inst_name = if app.instruments[slot].name.is_empty() {
         "---"
     } else {
@@ -57,7 +57,7 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
 
         lines.push(Line::from(""));
         for (field, label, value) in &fields {
-            let is_active = *field == app.synth_editor_field;
+            let is_active = *field == app.dialogs.synth_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)

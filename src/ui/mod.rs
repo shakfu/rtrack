@@ -117,9 +117,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ),
         Span::raw(if app.is_playing() { " \u{25B6}" } else { " \u{25A0}" }),
     ];
-    let mins = (app.playback_elapsed / 60.0) as u32;
-    let secs = (app.playback_elapsed % 60.0) as u32;
-    let centis = ((app.playback_elapsed.fract()) * 100.0) as u32;
+    let mins = (app.timing.playback_elapsed / 60.0) as u32;
+    let secs = (app.timing.playback_elapsed % 60.0) as u32;
+    let centis = ((app.timing.playback_elapsed.fract()) * 100.0) as u32;
     left_spans.push(Span::styled(
         format!(" {:02}:{:02}:{:02}", mins, secs, centis),
         Style::default().fg(theme.header_bpm),
@@ -319,7 +319,7 @@ fn draw_help(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(Clear, popup_area);
 
     // Apply scroll offset
-    let scroll = app.help_scroll;
+    let scroll = app.dialogs.help_scroll;
     let max_scroll = total_lines.saturating_sub(content_height as usize);
     let offset = scroll.min(max_scroll);
     let visible_lines: Vec<Line> = all_lines.into_iter().skip(offset).take(content_height as usize).collect();
@@ -392,9 +392,9 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
     ];
 
     let lines: Vec<Line> = fields.iter().map(|(field, label)| {
-        let is_active = *field == app.settings_field;
+        let is_active = *field == app.dialogs.settings_field;
         let display_val = if is_active {
-            format!("{}_", app.settings_edit_buf)
+            format!("{}_", app.dialogs.settings_edit_buf)
         } else {
             match field {
                 SettingsField::Title => app.song.title.clone(),
@@ -437,8 +437,8 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(Clear, popup_area);
 
     let visible = (popup_area.height.saturating_sub(2)) as usize;
-    let start = if app.instrument_cursor > visible / 2 {
-        app.instrument_cursor - visible / 2
+    let start = if app.dialogs.instrument_cursor > visible / 2 {
+        app.dialogs.instrument_cursor - visible / 2
     } else {
         0
     };
@@ -467,7 +467,7 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
                 || inst.sample_index.is_some()
                 || inst.midi_program.is_some()
                 || !inst.name.is_empty();
-            let style = if i == app.instrument_cursor {
+            let style = if i == app.dialogs.instrument_cursor {
                 Style::default().fg(theme.popup_highlight_fg).bg(theme.popup_highlight_bg).add_modifier(Modifier::BOLD)
             } else if has_data {
                 Style::default().fg(theme.popup_text)
@@ -678,7 +678,7 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
     let popup_area = centered_rect(70, popup_h, area);
     f.render_widget(Clear, popup_area);
 
-    let dir_display = app.file_browser.dir.to_string_lossy().to_string();
+    let dir_display = app.dialogs.file_browser.dir.to_string_lossy().to_string();
     let title = format!(" {} ", dir_display);
 
     let block = Block::default()
@@ -691,8 +691,8 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(block, popup_area);
 
     let visible_rows = inner.height as usize;
-    let num_entries = app.file_browser.entries.len();
-    let cursor = app.file_browser.cursor;
+    let num_entries = app.dialogs.file_browser.entries.len();
+    let cursor = app.dialogs.file_browser.cursor;
 
     // Calculate scroll offset to keep cursor visible
     let scroll = if cursor >= visible_rows {
@@ -709,7 +709,7 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
             Style::default().fg(theme.status_hint),
         )));
     } else {
-        for (i, entry) in app.file_browser.entries.iter().enumerate().skip(scroll).take(visible_rows) {
+        for (i, entry) in app.dialogs.file_browser.entries.iter().enumerate().skip(scroll).take(visible_rows) {
             let is_selected = i == cursor;
             let marker = if is_selected { "> " } else { "  " };
 
@@ -746,18 +746,18 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
 
 fn draw_port_selector(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
-    let popup_height = (app.midi_port_list.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let popup_height = (app.dialogs.midi_port_list.len() as u16 + 2).min(area.height.saturating_sub(4));
     let popup_area = centered_rect(50, popup_height, area);
 
     // Clear the area behind the popup
     f.render_widget(Clear, popup_area);
 
     let items: Vec<ListItem> = app
-        .midi_port_list
+        .dialogs.midi_port_list
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let style = if i == app.midi_port_cursor {
+            let style = if i == app.dialogs.midi_port_cursor {
                 Style::default()
                     .fg(theme.popup_highlight_fg)
                     .bg(theme.popup_highlight_bg)
