@@ -30,6 +30,7 @@ pub struct GridColors {
     pub bg_cursor_cell: Color32,
     pub bg_beat: Color32,
     pub bg_bar: Color32,
+    pub bg_block: Color32,
 
     pub fg_row_num: Color32,
     pub fg_row_bar: Color32,
@@ -55,6 +56,7 @@ impl GridColors {
             bg_cursor_cell: Color32::from_rgb(60, 60, 100),
             bg_beat: Color32::from_rgb(28, 28, 38),
             bg_bar: Color32::from_rgb(32, 32, 44),
+            bg_block: Color32::from_rgba_premultiplied(80, 120, 200, 60),
 
             fg_row_num: Color32::from_rgb(100, 100, 120),
             fg_row_bar: Color32::from_rgb(160, 160, 200),
@@ -80,6 +82,7 @@ impl GridColors {
             bg_cursor_cell: Color32::from_rgb(180, 195, 230),
             bg_beat: Color32::from_rgb(235, 235, 242),
             bg_bar: Color32::from_rgb(225, 225, 235),
+            bg_block: Color32::from_rgba_premultiplied(80, 120, 200, 40),
 
             fg_row_num: Color32::from_rgb(140, 140, 160),
             fg_row_bar: Color32::from_rgb(60, 60, 100),

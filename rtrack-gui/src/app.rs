@@ -28,9 +28,28 @@ pub struct RtrackApp {
 
     // Clipboard
     pub clipboard: Option<Cell>,
+    pub block_clipboard: Option<Vec<Vec<Cell>>>,
+
+    // Block selection
+    pub block_start: Option<(usize, usize)>,
+    pub block_end: Option<(usize, usize)>,
 
     // Dialogs
     pub show_song_settings: bool,
+    pub show_quit_confirm: bool,
+    pub show_track_config: Option<usize>,
+
+    // Instrument dialogs
+    pub show_instrument_list: bool,
+    pub selected_instrument: Option<usize>,
+    pub show_synth_editor: Option<usize>,
+    pub show_sample_editor: Option<usize>,
+    pub slice_count: usize,
+    pub slice_sensitivity: f32,
+
+    // Pattern matrix
+    pub show_pattern_matrix: bool,
+    pub matrix_cursor: usize,
 
     // Theme
     pub theme: Theme,
@@ -66,7 +85,20 @@ impl RtrackApp {
             status_message: None,
             history: EditHistory::new(100),
             clipboard: None,
+            block_clipboard: None,
+            block_start: None,
+            block_end: None,
             show_song_settings: false,
+            show_quit_confirm: false,
+            show_track_config: None,
+            show_instrument_list: false,
+            selected_instrument: None,
+            show_synth_editor: None,
+            show_sample_editor: None,
+            slice_count: 8,
+            slice_sensitivity: 0.5,
+            show_pattern_matrix: false,
+            matrix_cursor: 0,
             theme: Theme::Dark,
             grid_colors: GridColors::dark(),
         }
@@ -109,6 +141,14 @@ impl eframe::App for RtrackApp {
         // Process keyboard input
         self.process_keys(ctx);
 
+        // Intercept window close when dirty
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.core.dirty
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_quit_confirm = true;
+        }
+
         // Menu bar
         self.draw_menu_bar(ctx);
 
@@ -124,77 +164,96 @@ impl eframe::App for RtrackApp {
                     ui.label(msg.as_str());
                 } else {
                     let hint = match self.mode {
-                        Mode::Normal => "i:Insert  Space:Play  Arrows:Move  Tab:Channel  +/-:Octave",
-                        Mode::Insert => "Esc:Normal  Piano:z-m/q-u  =:NoteOff  Del:Clear",
+                        Mode::Normal => "i:Insert  Space:Play  Arrows:Move  Tab:Channel  +/-:Octave  Ins:AddRow  BS:DelRow  Shift+Up/Dn:Transpose",
+                        Mode::Insert => "Esc:Normal  Piano:z-m/q-u  =:NoteOff  Del:Clear  Shift+Up/Dn:Transpose",
                     };
                     ui.label(egui::RichText::new(hint).color(egui::Color32::from_rgb(120, 120, 140)));
                 }
             });
         });
 
-        // Order list & channels sidebar
-        self.draw_sidebar(ctx);
-
         // Dialogs
         self.draw_dialogs(ctx);
 
-        // Pattern grid
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let order_pos = self.current_order_position();
-            let pattern_idx = self.core.song.order[order_pos];
-            let pattern = &self.core.song.patterns[pattern_idx];
+        if self.show_instrument_list {
+            // Instrument editor: sidebar panel + central panel
+            egui::SidePanel::left("instrument_sidebar")
+                .exact_width(230.0)
+                .show(ctx, |ui| {
+                    self.draw_instrument_sidebar(ui);
+                });
+            egui::CentralPanel::default().show(ctx, |ui| {
+                self.draw_instrument_panel_view(ui);
+            });
+        } else if self.show_pattern_matrix {
+            // Pattern matrix (full-screen, replaces sidebar + grid)
+            egui::CentralPanel::default().show(ctx, |ui| {
+                self.draw_pattern_matrix(ui);
+            });
+        } else {
+            // Order list & channels sidebar
+            self.draw_sidebar(ctx);
 
-            let muted: Vec<bool> = self
-                .core
-                .channels
-                .iter()
-                .map(|c| c.muted)
-                .collect();
-            let names: Vec<String> = self
-                .core
-                .channels
-                .iter()
-                .map(|c| c.name.clone())
-                .collect();
+            // Pattern grid
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let order_pos = self.current_order_position();
+                let pattern_idx = self.core.song.order[order_pos];
+                let pattern = &self.core.song.patterns[pattern_idx];
 
-            let params = GridParams {
-                cursor_row: self.cursor_row,
-                cursor_channel: self.cursor_channel,
-                cursor_sub: self.cursor_sub,
-                mode: self.mode,
-                playing: self.core.playing,
-                playback_row: self.core.engine.row,
-                playback_order: self.core.engine.order,
-                edit_order: self.edit_order,
-                highlight_beat: self.core.song.highlight_beat,
-                highlight_bar: self.core.song.highlight_bar,
-                first_visible_channel: 0,
-                visible_channel_count: self.core.song.channels,
-                muted_channels: muted,
-                solo_channel: self.core.solo_channel,
-                channel_names: names,
-                colors: self.grid_colors,
-            };
+                let muted: Vec<bool> = self
+                    .core
+                    .channels
+                    .iter()
+                    .map(|c| c.muted)
+                    .collect();
+                let names: Vec<String> = self
+                    .core
+                    .channels
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect();
 
-            let actions = grid::draw_grid(ui, pattern, &params);
-            for action in actions {
-                match action {
-                    GridAction::SetCursor { row, channel, sub } => {
-                        self.cursor_row = row;
-                        self.cursor_channel = channel;
-                        self.cursor_sub = sub;
-                    }
-                    GridAction::Scroll { rows } => {
-                        let max_row = pattern.rows.saturating_sub(1);
-                        let new_row = if rows > 0 {
-                            self.cursor_row.saturating_add(rows as usize).min(max_row)
-                        } else {
-                            self.cursor_row.saturating_sub(rows.unsigned_abs() as usize)
-                        };
-                        self.cursor_row = new_row;
+                let params = GridParams {
+                    cursor_row: self.cursor_row,
+                    cursor_channel: self.cursor_channel,
+                    cursor_sub: self.cursor_sub,
+                    mode: self.mode,
+                    playing: self.core.playing,
+                    playback_row: self.core.engine.row,
+                    playback_order: self.core.engine.order,
+                    edit_order: self.edit_order,
+                    highlight_beat: self.core.song.highlight_beat,
+                    highlight_bar: self.core.song.highlight_bar,
+                    first_visible_channel: 0,
+                    visible_channel_count: self.core.song.channels,
+                    muted_channels: muted,
+                    solo_channel: self.core.solo_channel,
+                    channel_names: names,
+                    block_start: self.block_start,
+                    block_end: self.block_end,
+                    colors: self.grid_colors,
+                };
+
+                let actions = grid::draw_grid(ui, pattern, &params);
+                for action in actions {
+                    match action {
+                        GridAction::SetCursor { row, channel, sub } => {
+                            self.cursor_row = row;
+                            self.cursor_channel = channel;
+                            self.cursor_sub = sub;
+                        }
+                        GridAction::Scroll { rows } => {
+                            let max_row = pattern.rows.saturating_sub(1);
+                            let new_row = if rows > 0 {
+                                self.cursor_row.saturating_add(rows as usize).min(max_row)
+                            } else {
+                                self.cursor_row.saturating_sub(rows.unsigned_abs() as usize)
+                            };
+                            self.cursor_row = new_row;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
     }
 }

@@ -56,7 +56,7 @@ impl RtrackApp {
                 let new_pat_idx = self.core.song.patterns.len();
                 let rows = self.core.song.patterns[0].rows;
                 let channels = self.core.song.channels;
-                self.core.song.patterns.push(rtrack_core::tracker::Pattern::new(channels, rows));
+                self.core.song.patterns.push(rtrack_core::tracker::Pattern::new(rows, channels));
                 self.core.song.order.push(new_pat_idx);
                 self.core.song.sync_order_repeats();
             }
@@ -75,8 +75,19 @@ impl RtrackApp {
                 let cloned = self.core.song.patterns[src_pat_idx].clone();
                 let new_pat_idx = self.core.song.patterns.len();
                 self.core.song.patterns.push(cloned);
-                self.core.song.order.push(new_pat_idx);
+                self.core.song.order.insert(self.edit_order + 1, new_pat_idx);
                 self.core.song.sync_order_repeats();
+                self.edit_order += 1;
+                self.cursor_row = 0;
+                self.core.dirty = true;
+            }
+            if ui.button("^").on_hover_text("Insert order entry at current position").clicked() {
+                let pat = self.core.song.order[self.edit_order];
+                self.core.song.order.insert(self.edit_order + 1, pat);
+                self.core.song.sync_order_repeats();
+                self.edit_order += 1;
+                self.cursor_row = 0;
+                self.core.dirty = true;
             }
         });
     }

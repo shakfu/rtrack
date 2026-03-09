@@ -65,8 +65,37 @@ impl RtrackApp {
 
                     ui.separator();
 
+                    if ui.button("Export WAV").clicked() {
+                        ui.close_menu();
+                        match self.core.export_wav_to_default() {
+                            Ok(msg) => self.status_message = Some(msg),
+                            Err(msg) => self.status_message = Some(msg),
+                        }
+                    }
+                    if ui.button("Export FLAC").clicked() {
+                        ui.close_menu();
+                        match self.core.export_flac_to_default() {
+                            Ok(msg) => self.status_message = Some(msg),
+                            Err(msg) => self.status_message = Some(msg),
+                        }
+                    }
+                    if ui.button("Export MIDI").clicked() {
+                        ui.close_menu();
+                        match self.core.export_midi_to_default() {
+                            Ok(msg) => self.status_message = Some(msg),
+                            Err(msg) => self.status_message = Some(msg),
+                        }
+                    }
+
+                    ui.separator();
+
                     if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        ui.close_menu();
+                        if self.core.dirty {
+                            self.show_quit_confirm = true;
+                        } else {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 });
 
@@ -144,6 +173,23 @@ impl RtrackApp {
                     Theme::Light => "Switch to Dark",
                 };
                 ui.menu_button("View", |ui| {
+                    if ui.button("Instruments  (F7)").clicked() {
+                        self.show_instrument_list = !self.show_instrument_list;
+                        ui.close_menu();
+                    }
+                    let matrix_label = if self.show_pattern_matrix {
+                        "Close Pattern Matrix  (Ctrl+P)"
+                    } else {
+                        "Pattern Matrix  (Ctrl+P)"
+                    };
+                    if ui.button(matrix_label).clicked() {
+                        self.show_pattern_matrix = !self.show_pattern_matrix;
+                        if self.show_pattern_matrix {
+                            self.matrix_cursor = self.edit_order;
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button(theme_label).clicked() {
                         let new_theme = self.theme.toggle();
                         self.set_theme(ctx, new_theme);

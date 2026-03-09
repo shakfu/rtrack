@@ -46,6 +46,8 @@ pub struct GridParams {
     pub muted_channels: Vec<bool>,
     pub solo_channel: Option<usize>,
     pub channel_names: Vec<String>,
+    pub block_start: Option<(usize, usize)>,
+    pub block_end: Option<(usize, usize)>,
     pub colors: GridColors,
 }
 
@@ -159,6 +161,18 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             c.fg_separator,
         );
 
+        // Block selection range
+        let block_range = match (params.block_start, params.block_end) {
+            (Some((r1, c1)), Some((r2, c2))) => {
+                let min_r = r1.min(r2);
+                let max_r = r1.max(r2);
+                let min_c = c1.min(c2);
+                let max_c = c1.max(c2);
+                Some((min_r, max_r, min_c, max_c))
+            }
+            _ => None,
+        };
+
         // Channels
         for ch_idx in first_ch..last_ch {
             let ch_offset = ch_idx - first_ch;
@@ -167,6 +181,17 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
                 + ch_offset as f32
                     * (channel_width_chars() + SEPARATOR_CHARS) as f32
                     * CHAR_WIDTH;
+
+            // Block highlight overlay for this cell
+            if let Some((min_r, max_r, min_c, max_c)) = block_range {
+                if row_idx >= min_r && row_idx <= max_r && ch_idx >= min_c && ch_idx <= max_c {
+                    let block_rect = Rect::from_min_size(
+                        Pos2::new(base_x, y),
+                        egui::vec2(channel_width_chars() as f32 * CHAR_WIDTH, ROW_HEIGHT),
+                    );
+                    painter.rect_filled(block_rect, 0.0, c.bg_block);
+                }
+            }
 
             // Channel separator (except first)
             if ch_offset > 0 {

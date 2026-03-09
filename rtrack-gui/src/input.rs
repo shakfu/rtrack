@@ -24,10 +24,17 @@ impl RtrackApp {
                 }
             }
             if input.key_pressed(Key::Escape) {
-                actions.push(Action::SetMode(Mode::Normal));
+                if self.show_pattern_matrix {
+                    actions.push(Action::TogglePatternMatrix);
+                } else {
+                    actions.push(Action::SetMode(Mode::Normal));
+                }
             }
             if input.key_pressed(Key::F1) {
                 // Help (not implemented yet)
+            }
+            if input.key_pressed(Key::F7) {
+                actions.push(Action::ToggleInstrumentList);
             }
             if ctrl && input.key_pressed(Key::S) {
                 actions.push(Action::Save);
@@ -49,6 +56,40 @@ impl RtrackApp {
                 actions.push(Action::Paste);
             }
 
+            // Additional Ctrl+ shortcuts
+            if ctrl && input.key_pressed(Key::F) {
+                actions.push(Action::ToggleFollow);
+            }
+            if ctrl && input.key_pressed(Key::R) {
+                actions.push(Action::ToggleRecording);
+            }
+            if ctrl && input.key_pressed(Key::E) {
+                actions.push(Action::ExportMidi);
+            }
+            if ctrl && input.key_pressed(Key::W) {
+                actions.push(Action::ExportWav);
+            }
+            if ctrl && input.key_pressed(Key::L) {
+                actions.push(Action::ExportFlac);
+            }
+            if ctrl && input.key_pressed(Key::M) {
+                actions.push(Action::ToggleMidiClock);
+            }
+            if ctrl && input.key_pressed(Key::B) {
+                actions.push(Action::ToggleBlockSelect);
+            }
+            if ctrl && input.key_pressed(Key::I) {
+                actions.push(Action::BlockInterpolate);
+            }
+
+            // Transpose (Shift+Up/Down, both modes)
+            if shift && !ctrl && input.key_pressed(Key::ArrowUp) {
+                actions.push(Action::TransposeUp);
+            }
+            if shift && !ctrl && input.key_pressed(Key::ArrowDown) {
+                actions.push(Action::TransposeDown);
+            }
+
             // Octave
             if input.key_pressed(Key::Minus) {
                 actions.push(Action::OctaveDown);
@@ -57,16 +98,77 @@ impl RtrackApp {
                 actions.push(Action::OctaveUp);
             }
 
+            // Pattern matrix keys (when matrix is open)
+            if self.show_pattern_matrix {
+                if input.key_pressed(Key::ArrowUp) && !shift {
+                    actions.push(Action::MatrixUp);
+                }
+                if input.key_pressed(Key::ArrowDown) && !shift {
+                    actions.push(Action::MatrixDown);
+                }
+                if input.key_pressed(Key::Home) {
+                    actions.push(Action::MatrixHome);
+                }
+                if input.key_pressed(Key::End) {
+                    actions.push(Action::MatrixEnd);
+                }
+                if input.key_pressed(Key::PageUp) {
+                    actions.push(Action::MatrixPageUp);
+                }
+                if input.key_pressed(Key::PageDown) {
+                    actions.push(Action::MatrixPageDown);
+                }
+                if input.key_pressed(Key::Enter) {
+                    actions.push(Action::MatrixSelect);
+                }
+                if input.key_pressed(Key::Insert) {
+                    actions.push(Action::MatrixInsert);
+                }
+                if input.key_pressed(Key::Delete) || input.key_pressed(Key::Backspace) {
+                    actions.push(Action::MatrixDelete);
+                }
+                if input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::Minus) {
+                    actions.push(Action::MatrixPrevPattern);
+                }
+                if input.key_pressed(Key::ArrowRight) || (input.key_pressed(Key::Plus) || (shift && input.key_pressed(Key::Equals))) {
+                    actions.push(Action::MatrixNextPattern);
+                }
+                if ctrl && input.key_pressed(Key::N) {
+                    actions.push(Action::MatrixNewPattern);
+                }
+                if ctrl && input.key_pressed(Key::D) {
+                    actions.push(Action::MatrixClonePattern);
+                }
+                if input.key_pressed(Key::OpenBracket) {
+                    actions.push(Action::MatrixDecRepeat);
+                }
+                if input.key_pressed(Key::CloseBracket) {
+                    actions.push(Action::MatrixIncRepeat);
+                }
+                // Skip normal/insert mode processing
+            } else {
+
+            // Ctrl+N / Ctrl+D (pattern ops, outside matrix)
+            if ctrl && input.key_pressed(Key::N) {
+                actions.push(Action::NewPattern);
+            }
+            if ctrl && input.key_pressed(Key::D) {
+                actions.push(Action::ClonePattern);
+            }
+            if ctrl && input.key_pressed(Key::P) {
+                actions.push(Action::TogglePatternMatrix);
+            }
+
             match self.mode {
                 Mode::Normal => {
                     if input.key_pressed(Key::I) && !ctrl {
                         actions.push(Action::SetMode(Mode::Insert));
                     }
                     // Navigation
-                    if input.key_pressed(Key::ArrowUp) {
+                    if input.key_pressed(Key::ArrowUp) && !shift {
                         actions.push(Action::CursorUp(1));
                     }
-                    if input.key_pressed(Key::ArrowDown) {
+                    if input.key_pressed(Key::ArrowDown) && !shift {
                         actions.push(Action::CursorDown(1));
                     }
                     if input.key_pressed(Key::ArrowLeft) {
@@ -82,6 +184,13 @@ impl RtrackApp {
                         } else {
                             actions.push(Action::CursorRight);
                         }
+                    }
+                    // Row insert/delete (Normal mode only)
+                    if input.key_pressed(Key::Insert) {
+                        actions.push(Action::InsertRow);
+                    }
+                    if input.key_pressed(Key::Backspace) {
+                        actions.push(Action::DeleteRow);
                     }
                     if input.key_pressed(Key::PageUp) {
                         actions.push(Action::CursorUp(16));
@@ -102,13 +211,16 @@ impl RtrackApp {
                             actions.push(Action::NextChannel);
                         }
                     }
+                    if input.key_pressed(Key::Enter) {
+                        actions.push(Action::OpenTrackConfig);
+                    }
                 }
                 Mode::Insert => {
                     // Navigation
-                    if input.key_pressed(Key::ArrowUp) {
+                    if input.key_pressed(Key::ArrowUp) && !shift {
                         actions.push(Action::CursorUp(1));
                     }
-                    if input.key_pressed(Key::ArrowDown) {
+                    if input.key_pressed(Key::ArrowDown) && !shift {
                         actions.push(Action::CursorDown(1));
                     }
                     if input.key_pressed(Key::ArrowLeft) {
@@ -155,6 +267,7 @@ impl RtrackApp {
                     }
                 }
             }
+            } // end else (not pattern matrix)
         });
 
         for action in actions {
@@ -173,7 +286,15 @@ impl RtrackApp {
                 self.core.play(0, 0);
             }
             Action::SetMode(mode) => {
-                if mode == Mode::Normal && self.show_song_settings {
+                if mode == Mode::Normal && self.show_synth_editor.is_some() {
+                    self.show_synth_editor = None;
+                } else if mode == Mode::Normal && self.show_sample_editor.is_some() {
+                    self.show_sample_editor = None;
+                } else if mode == Mode::Normal && self.show_instrument_list {
+                    self.show_instrument_list = false;
+                } else if mode == Mode::Normal && self.show_track_config.is_some() {
+                    self.show_track_config = None;
+                } else if mode == Mode::Normal && self.show_song_settings {
                     self.show_song_settings = false;
                 } else {
                     self.mode = mode;
@@ -191,10 +312,16 @@ impl RtrackApp {
             }
             Action::CursorUp(n) => {
                 self.cursor_row = self.cursor_row.saturating_sub(n);
+                if self.block_start.is_some() {
+                    self.block_end = Some((self.cursor_row, self.cursor_channel));
+                }
             }
             Action::CursorDown(n) => {
                 let max_row = self.current_pattern_rows().saturating_sub(1);
                 self.cursor_row = (self.cursor_row + n).min(max_row);
+                if self.block_start.is_some() {
+                    self.block_end = Some((self.cursor_row, self.cursor_channel));
+                }
             }
             Action::CursorLeft => {
                 self.cursor_sub = self.cursor_sub.prev();
@@ -217,12 +344,18 @@ impl RtrackApp {
             }
             Action::NextChannel => {
                 self.cursor_channel = (self.cursor_channel + 1) % self.core.song.channels;
+                if self.block_start.is_some() {
+                    self.block_end = Some((self.cursor_row, self.cursor_channel));
+                }
             }
             Action::PrevChannel => {
                 if self.cursor_channel == 0 {
                     self.cursor_channel = self.core.song.channels - 1;
                 } else {
                     self.cursor_channel -= 1;
+                }
+                if self.block_start.is_some() {
+                    self.block_end = Some((self.cursor_row, self.cursor_channel));
                 }
             }
             Action::NextOrder => {
@@ -275,29 +408,121 @@ impl RtrackApp {
                 }
             }
             Action::Copy => {
-                let pattern_idx = self.core.song.order[self.edit_order];
-                let cell = *self.core.song.patterns[pattern_idx]
-                    .get(self.cursor_row, self.cursor_channel);
-                self.clipboard = Some(cell);
-                self.status_message = Some("Copied".to_string());
+                if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
+                    // Block copy
+                    let pattern_idx = self.core.song.order[self.edit_order];
+                    let min_r = r1.min(r2);
+                    let max_r = r1.max(r2);
+                    let min_c = c1.min(c2);
+                    let max_c = c1.max(c2);
+                    let mut block = Vec::new();
+                    for row in min_r..=max_r {
+                        let mut row_cells = Vec::new();
+                        for ch in min_c..=max_c {
+                            row_cells.push(*self.core.song.patterns[pattern_idx].get(row, ch));
+                        }
+                        block.push(row_cells);
+                    }
+                    let rows = block.len();
+                    let chs = block.first().map_or(0, |r| r.len());
+                    self.block_clipboard = Some(block);
+                    self.status_message = Some(format!("Block copied ({}x{})", rows, chs));
+                } else {
+                    // Single cell copy
+                    let pattern_idx = self.core.song.order[self.edit_order];
+                    let cell = *self.core.song.patterns[pattern_idx]
+                        .get(self.cursor_row, self.cursor_channel);
+                    self.clipboard = Some(cell);
+                    self.status_message = Some("Copied".to_string());
+                }
             }
             Action::Cut => {
-                let pattern_idx = self.core.song.order[self.edit_order];
-                let old_cell = *self.core.song.patterns[pattern_idx]
-                    .get(self.cursor_row, self.cursor_channel);
-                self.clipboard = Some(old_cell);
+                if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
+                    // Block cut
+                    let pattern_idx = self.core.song.order[self.edit_order];
+                    let min_r = r1.min(r2);
+                    let max_r = r1.max(r2);
+                    let min_c = c1.min(c2);
+                    let max_c = c1.max(c2);
+                    let mut block = Vec::new();
+                    let mut edits = Vec::new();
+                    for row in min_r..=max_r {
+                        let mut row_cells = Vec::new();
+                        for ch in min_c..=max_c {
+                            let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
+                            row_cells.push(old_cell);
+                            let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
+                            *cell = Cell::default();
+                            edits.push(CellEdit {
+                                pattern_idx,
+                                row,
+                                channel: ch,
+                                old_cell,
+                                new_cell: Cell::default(),
+                            });
+                        }
+                        block.push(row_cells);
+                    }
+                    let rows = block.len();
+                    let chs = block.first().map_or(0, |r| r.len());
+                    self.block_clipboard = Some(block);
+                    self.history.push(edits);
+                    self.core.dirty = true;
+                    self.block_start = None;
+                    self.block_end = None;
+                    self.status_message = Some(format!("Block cut ({}x{})", rows, chs));
+                } else {
+                    // Single cell cut
+                    let pattern_idx = self.core.song.order[self.edit_order];
+                    let old_cell = *self.core.song.patterns[pattern_idx]
+                        .get(self.cursor_row, self.cursor_channel);
+                    self.clipboard = Some(old_cell);
 
-                let cell = self.core.song.patterns[pattern_idx]
-                    .get_mut(self.cursor_row, self.cursor_channel);
-                *cell = Cell::default();
-                let new_cell = *cell;
+                    let cell = self.core.song.patterns[pattern_idx]
+                        .get_mut(self.cursor_row, self.cursor_channel);
+                    *cell = Cell::default();
+                    let new_cell = *cell;
 
-                self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
-                self.core.dirty = true;
-                self.status_message = Some("Cut".to_string());
+                    self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
+                    self.core.dirty = true;
+                    self.status_message = Some("Cut".to_string());
+                }
             }
             Action::Paste => {
-                if let Some(clip) = self.clipboard {
+                if let Some(ref block) = self.block_clipboard.clone() {
+                    // Block paste
+                    let pattern_idx = self.core.song.order[self.edit_order];
+                    let pattern = &self.core.song.patterns[pattern_idx];
+                    let max_rows = pattern.rows;
+                    let max_chs = pattern.channels;
+                    let mut edits = Vec::new();
+                    for (dr, row_cells) in block.iter().enumerate() {
+                        let row = self.cursor_row + dr;
+                        if row >= max_rows {
+                            break;
+                        }
+                        for (dc, clip_cell) in row_cells.iter().enumerate() {
+                            let ch = self.cursor_channel + dc;
+                            if ch >= max_chs {
+                                break;
+                            }
+                            let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
+                            let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
+                            *cell = *clip_cell;
+                            edits.push(CellEdit {
+                                pattern_idx,
+                                row,
+                                channel: ch,
+                                old_cell,
+                                new_cell: *clip_cell,
+                            });
+                        }
+                    }
+                    self.history.push(edits);
+                    self.core.dirty = true;
+                    self.status_message = Some("Block pasted".to_string());
+                } else if let Some(clip) = self.clipboard {
+                    // Single cell paste
                     let pattern_idx = self.core.song.order[self.edit_order];
                     let old_cell = *self.core.song.patterns[pattern_idx]
                         .get(self.cursor_row, self.cursor_channel);
@@ -314,6 +539,308 @@ impl RtrackApp {
                     let max_row = self.current_pattern_rows().saturating_sub(1);
                     self.cursor_row = (self.cursor_row + step).min(max_row);
                     self.status_message = Some("Pasted".to_string());
+                }
+            }
+            Action::InsertRow => {
+                let pattern_idx = self.core.song.order[self.edit_order];
+                let pattern = &mut self.core.song.patterns[pattern_idx];
+                if pattern.rows < 256 {
+                    let channels = pattern.channels;
+                    pattern.data.insert(self.cursor_row, vec![Cell::default(); channels]);
+                    pattern.rows += 1;
+                    self.core.dirty = true;
+                }
+            }
+            Action::DeleteRow => {
+                let pattern_idx = self.core.song.order[self.edit_order];
+                let pattern = &mut self.core.song.patterns[pattern_idx];
+                if pattern.rows > 1 {
+                    pattern.data.remove(self.cursor_row);
+                    pattern.rows -= 1;
+                    if self.cursor_row >= pattern.rows {
+                        self.cursor_row = pattern.rows - 1;
+                    }
+                    self.core.dirty = true;
+                }
+            }
+            Action::TransposeUp => {
+                let pattern_idx = self.core.song.order[self.edit_order];
+                let cell = self.core.song.patterns[pattern_idx]
+                    .get_mut(self.cursor_row, self.cursor_channel);
+                if let Some(Note::On { ref mut value, ref mut octave }) = cell.note {
+                    let midi = (*octave as i16) * 12 + value.to_index() as i16 + 1;
+                    if midi <= MIDI_MAX_NOTE as i16 {
+                        let new_octave = (midi / 12) as u8;
+                        let new_semi = (midi % 12) as u8;
+                        if let Some(nv) = NoteValue::from_index(new_semi) {
+                            *value = nv;
+                            *octave = new_octave;
+                            self.core.dirty = true;
+                        }
+                    }
+                }
+            }
+            Action::TransposeDown => {
+                let pattern_idx = self.core.song.order[self.edit_order];
+                let cell = self.core.song.patterns[pattern_idx]
+                    .get_mut(self.cursor_row, self.cursor_channel);
+                if let Some(Note::On { ref mut value, ref mut octave }) = cell.note {
+                    let midi = (*octave as i16) * 12 + value.to_index() as i16 - 1;
+                    if midi >= 0 {
+                        let new_octave = (midi / 12) as u8;
+                        let new_semi = (midi % 12) as u8;
+                        if let Some(nv) = NoteValue::from_index(new_semi) {
+                            *value = nv;
+                            *octave = new_octave;
+                            self.core.dirty = true;
+                        }
+                    }
+                }
+            }
+            Action::OpenTrackConfig => {
+                self.show_track_config = Some(self.cursor_channel);
+            }
+            Action::NewPattern => {
+                let idx = self.core.song.add_pattern();
+                self.core.song.order.insert(self.edit_order + 1, idx);
+                self.core.song.sync_order_repeats();
+                self.edit_order += 1;
+                self.cursor_row = 0;
+                self.core.dirty = true;
+                self.status_message = Some(format!("New pattern {:02X}", idx));
+            }
+            Action::ClonePattern => {
+                let src_idx = self.core.song.order[self.edit_order];
+                let cloned = self.core.song.patterns[src_idx].clone();
+                let new_idx = self.core.song.patterns.len();
+                self.core.song.patterns.push(cloned);
+                self.core.song.order.insert(self.edit_order + 1, new_idx);
+                self.core.song.sync_order_repeats();
+                self.edit_order += 1;
+                self.cursor_row = 0;
+                self.core.dirty = true;
+                self.status_message = Some(format!("Cloned {:02X} -> {:02X}", src_idx, new_idx));
+            }
+            Action::TogglePatternMatrix => {
+                self.show_pattern_matrix = !self.show_pattern_matrix;
+                if self.show_pattern_matrix {
+                    self.matrix_cursor = self.edit_order;
+                }
+            }
+            Action::MatrixUp => {
+                self.matrix_cursor = self.matrix_cursor.saturating_sub(1);
+            }
+            Action::MatrixDown => {
+                let max = self.core.song.order.len().saturating_sub(1);
+                self.matrix_cursor = (self.matrix_cursor + 1).min(max);
+            }
+            Action::MatrixHome => {
+                self.matrix_cursor = 0;
+            }
+            Action::MatrixEnd => {
+                self.matrix_cursor = self.core.song.order.len().saturating_sub(1);
+            }
+            Action::MatrixPageUp => {
+                self.matrix_cursor = self.matrix_cursor.saturating_sub(8);
+            }
+            Action::MatrixPageDown => {
+                let max = self.core.song.order.len().saturating_sub(1);
+                self.matrix_cursor = (self.matrix_cursor + 8).min(max);
+            }
+            Action::MatrixSelect => {
+                self.edit_order = self.matrix_cursor;
+                self.cursor_row = 0;
+                self.show_pattern_matrix = false;
+            }
+            Action::MatrixInsert => {
+                let pat = self.core.song.order[self.matrix_cursor];
+                self.core.song.order.insert(self.matrix_cursor + 1, pat);
+                self.core.song.sync_order_repeats();
+                self.matrix_cursor += 1;
+                self.core.dirty = true;
+            }
+            Action::MatrixDelete => {
+                if self.core.song.order.len() > 1 {
+                    self.core.song.order.remove(self.matrix_cursor);
+                    self.core.song.sync_order_repeats();
+                    if self.matrix_cursor >= self.core.song.order.len() {
+                        self.matrix_cursor = self.core.song.order.len() - 1;
+                    }
+                    if self.edit_order >= self.core.song.order.len() {
+                        self.edit_order = self.core.song.order.len() - 1;
+                    }
+                    self.core.dirty = true;
+                }
+            }
+            Action::MatrixPrevPattern => {
+                let cur = self.core.song.order[self.matrix_cursor];
+                if cur > 0 {
+                    self.core.song.order[self.matrix_cursor] = cur - 1;
+                    self.core.dirty = true;
+                }
+            }
+            Action::MatrixNextPattern => {
+                let cur = self.core.song.order[self.matrix_cursor];
+                if cur + 1 < self.core.song.patterns.len() {
+                    self.core.song.order[self.matrix_cursor] = cur + 1;
+                    self.core.dirty = true;
+                }
+            }
+            Action::MatrixNewPattern => {
+                let idx = self.core.song.add_pattern();
+                self.core.song.order.insert(self.matrix_cursor + 1, idx);
+                self.core.song.sync_order_repeats();
+                self.matrix_cursor += 1;
+                self.core.dirty = true;
+                self.status_message = Some(format!("New pattern {:02X}", idx));
+            }
+            Action::MatrixClonePattern => {
+                let src_idx = self.core.song.order[self.matrix_cursor];
+                let cloned = self.core.song.patterns[src_idx].clone();
+                let new_idx = self.core.song.patterns.len();
+                self.core.song.patterns.push(cloned);
+                self.core.song.order.insert(self.matrix_cursor + 1, new_idx);
+                self.core.song.sync_order_repeats();
+                self.matrix_cursor += 1;
+                self.core.dirty = true;
+                self.status_message = Some(format!("Cloned {:02X} -> {:02X}", src_idx, new_idx));
+            }
+            Action::MatrixDecRepeat => {
+                self.core.song.sync_order_repeats();
+                let cur = self.core.song.order_repeats[self.matrix_cursor];
+                if cur > 0 {
+                    self.core.song.order_repeats[self.matrix_cursor] = cur - 1;
+                    self.core.dirty = true;
+                }
+            }
+            Action::MatrixIncRepeat => {
+                self.core.song.sync_order_repeats();
+                let cur = self.core.song.order_repeats[self.matrix_cursor];
+                if cur < 99 {
+                    self.core.song.order_repeats[self.matrix_cursor] = cur + 1;
+                    self.core.dirty = true;
+                }
+            }
+            Action::ToggleFollow => {
+                self.follow_playback = !self.follow_playback;
+                let state = if self.follow_playback { "on" } else { "off" };
+                self.status_message = Some(format!("Follow {}", state));
+            }
+            Action::ToggleRecording => {
+                self.core.recording = !self.core.recording;
+                let state = if self.core.recording { "on" } else { "off" };
+                self.status_message = Some(format!("Recording {}", state));
+            }
+            Action::ExportMidi => {
+                match self.core.export_midi_to_default() {
+                    Ok(msg) => self.status_message = Some(msg),
+                    Err(msg) => self.status_message = Some(msg),
+                }
+            }
+            Action::ExportWav => {
+                match self.core.export_wav_to_default() {
+                    Ok(msg) => self.status_message = Some(msg),
+                    Err(msg) => self.status_message = Some(msg),
+                }
+            }
+            Action::ExportFlac => {
+                match self.core.export_flac_to_default() {
+                    Ok(msg) => self.status_message = Some(msg),
+                    Err(msg) => self.status_message = Some(msg),
+                }
+            }
+            Action::ToggleMidiClock => {
+                let msg = self.core.toggle_midi_clock();
+                self.status_message = Some(msg);
+            }
+            Action::ToggleInstrumentList => {
+                self.show_instrument_list = !self.show_instrument_list;
+            }
+            Action::ToggleBlockSelect => {
+                if self.block_start.is_some() {
+                    self.block_start = None;
+                    self.block_end = None;
+                    self.status_message = Some("Block cleared".to_string());
+                } else {
+                    self.block_start = Some((self.cursor_row, self.cursor_channel));
+                    self.block_end = Some((self.cursor_row, self.cursor_channel));
+                    self.status_message = Some("Block select started".to_string());
+                }
+            }
+            Action::BlockInterpolate => {
+                if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
+                    let pattern_idx = self.core.song.order[self.edit_order];
+                    let min_r = r1.min(r2);
+                    let max_r = r1.max(r2);
+                    let min_c = c1.min(c2);
+                    let max_c = c1.max(c2);
+                    let span = max_r - min_r;
+                    if span < 2 {
+                        self.status_message = Some("Need at least 3 rows to interpolate".to_string());
+                        return;
+                    }
+                    let mut edits = Vec::new();
+                    for ch in min_c..=max_c {
+                        let first = *self.core.song.patterns[pattern_idx].get(min_r, ch);
+                        let last = *self.core.song.patterns[pattern_idx].get(max_r, ch);
+
+                        // Interpolate volume
+                        if let (Some(v0), Some(v1)) = (first.volume, last.volume) {
+                            for row in min_r..=max_r {
+                                let t = (row - min_r) as f64 / span as f64;
+                                let v = v0 as f64 + (v1 as f64 - v0 as f64) * t;
+                                let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
+                                let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
+                                cell.volume = Some(v.round() as u8);
+                                edits.push(CellEdit {
+                                    pattern_idx,
+                                    row,
+                                    channel: ch,
+                                    old_cell,
+                                    new_cell: *cell,
+                                });
+                            }
+                        }
+
+                        // Interpolate effect_value
+                        if let (Some(e0), Some(e1)) = (first.effect_value, last.effect_value) {
+                            // Only interpolate if effect command matches at both ends
+                            if first.effect == last.effect && first.effect.is_some() {
+                                for row in min_r..=max_r {
+                                    let t = (row - min_r) as f64 / span as f64;
+                                    let e = e0 as f64 + (e1 as f64 - e0 as f64) * t;
+                                    let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
+                                    let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
+                                    cell.effect = first.effect;
+                                    cell.effect_value = Some(e.round() as u8);
+                                    // Check if we already have an edit for this cell from volume interpolation
+                                    let existing = edits.iter_mut().find(|ed: &&mut CellEdit| {
+                                        ed.pattern_idx == pattern_idx && ed.row == row && ed.channel == ch
+                                    });
+                                    if let Some(existing) = existing {
+                                        existing.new_cell = *cell;
+                                    } else {
+                                        edits.push(CellEdit {
+                                            pattern_idx,
+                                            row,
+                                            channel: ch,
+                                            old_cell,
+                                            new_cell: *cell,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if edits.is_empty() {
+                        self.status_message = Some("Nothing to interpolate".to_string());
+                    } else {
+                        self.history.push(edits);
+                        self.core.dirty = true;
+                        self.status_message = Some("Interpolated".to_string());
+                    }
+                } else {
+                    self.status_message = Some("No block selected".to_string());
                 }
             }
         }
@@ -513,4 +1040,37 @@ enum Action {
     Copy,
     Cut,
     Paste,
+    InsertRow,
+    DeleteRow,
+    TransposeUp,
+    TransposeDown,
+    OpenTrackConfig,
+    NewPattern,
+    ClonePattern,
+    TogglePatternMatrix,
+    // Pattern matrix actions
+    MatrixUp,
+    MatrixDown,
+    MatrixHome,
+    MatrixEnd,
+    MatrixPageUp,
+    MatrixPageDown,
+    MatrixSelect,
+    MatrixInsert,
+    MatrixDelete,
+    MatrixPrevPattern,
+    MatrixNextPattern,
+    MatrixDecRepeat,
+    MatrixIncRepeat,
+    MatrixNewPattern,
+    MatrixClonePattern,
+    ToggleFollow,
+    ToggleRecording,
+    ExportMidi,
+    ExportWav,
+    ExportFlac,
+    ToggleMidiClock,
+    ToggleInstrumentList,
+    ToggleBlockSelect,
+    BlockInterpolate,
 }
