@@ -11,7 +11,7 @@ mod transport;
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1130.0, 680.0])
+            .with_inner_size([1200.0, 700.0])
             .with_title("rtrack"),
         ..Default::default()
     };
