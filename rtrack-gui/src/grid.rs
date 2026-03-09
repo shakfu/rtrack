@@ -1,7 +1,7 @@
-use egui::{Color32, FontId, Pos2, Rect, Ui};
+use egui::{FontId, Pos2, Rect, Ui};
 use rtrack_core::tracker::Pattern;
 
-use crate::state::{Mode, SubColumn};
+use crate::state::{GridColors, Mode, SubColumn};
 
 #[derive(Debug)]
 pub enum GridAction {
@@ -25,29 +25,6 @@ const GAP_CHARS: usize = 1;
 const ROW_NUM_CHARS: usize = 3;
 const SEPARATOR_CHARS: usize = 3;
 
-// Colors
-const BG_NORMAL: Color32 = Color32::from_rgb(24, 24, 32);
-const BG_CURSOR_ROW: Color32 = Color32::from_rgb(40, 40, 60);
-const BG_PLAYBACK_ROW: Color32 = Color32::from_rgb(60, 40, 30);
-const BG_CURSOR_CELL: Color32 = Color32::from_rgb(60, 60, 100);
-const BG_BEAT: Color32 = Color32::from_rgb(28, 28, 38);
-const BG_BAR: Color32 = Color32::from_rgb(32, 32, 44);
-
-const FG_ROW_NUM: Color32 = Color32::from_rgb(100, 100, 120);
-const FG_ROW_BAR: Color32 = Color32::from_rgb(160, 160, 200);
-const FG_NOTE_SET: Color32 = Color32::from_rgb(180, 220, 255);
-const FG_NOTE_EMPTY: Color32 = Color32::from_rgb(60, 60, 80);
-const FG_INST_SET: Color32 = Color32::from_rgb(255, 200, 100);
-const FG_INST_EMPTY: Color32 = Color32::from_rgb(60, 60, 80);
-const FG_VOL_SET: Color32 = Color32::from_rgb(100, 255, 100);
-const FG_VOL_EMPTY: Color32 = Color32::from_rgb(60, 60, 80);
-const FG_FX_SET: Color32 = Color32::from_rgb(255, 150, 150);
-const FG_FX_EMPTY: Color32 = Color32::from_rgb(60, 60, 80);
-const FG_SEPARATOR: Color32 = Color32::from_rgb(50, 50, 70);
-const FG_MUTED: Color32 = Color32::from_rgb(50, 50, 60);
-
-const FG_HEADER: Color32 = Color32::from_rgb(140, 140, 180);
-
 fn channel_width_chars() -> usize {
     NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS + VOL_CHARS + GAP_CHARS + FX_CHARS
 }
@@ -69,6 +46,7 @@ pub struct GridParams {
     pub muted_channels: Vec<bool>,
     pub solo_channel: Option<usize>,
     pub channel_names: Vec<String>,
+    pub colors: GridColors,
 }
 
 pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<GridAction> {
@@ -77,9 +55,10 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
     let (response, painter) =
         ui.allocate_painter(available, egui::Sense::click());
     let rect = response.rect;
+    let c = &params.colors;
 
     // Fill background
-    painter.rect_filled(rect, 0.0, BG_NORMAL);
+    painter.rect_filled(rect, 0.0, c.bg_normal);
 
     // Calculate layout
     let first_ch = params.first_visible_channel;
@@ -108,7 +87,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             egui::Align2::LEFT_TOP,
             &header,
             font.clone(),
-            FG_HEADER,
+            c.fg_header,
         );
     }
 
@@ -142,15 +121,15 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
 
         // Row background
         let row_bg = if is_playback_row {
-            BG_PLAYBACK_ROW
+            c.bg_playback_row
         } else if is_cursor_row {
-            BG_CURSOR_ROW
+            c.bg_cursor_row
         } else if is_bar {
-            BG_BAR
+            c.bg_bar
         } else if is_beat {
-            BG_BEAT
+            c.bg_beat
         } else {
-            BG_NORMAL
+            c.bg_normal
         };
 
         let row_rect = Rect::from_min_size(
@@ -161,7 +140,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
 
         // Row number
         let row_text = format!("{:02X}", row_idx);
-        let row_fg = if is_bar { FG_ROW_BAR } else { FG_ROW_NUM };
+        let row_fg = if is_bar { c.fg_row_bar } else { c.fg_row_num };
         painter.text(
             Pos2::new(rect.left() + CHAR_WIDTH * 0.5, y + 2.0),
             egui::Align2::LEFT_TOP,
@@ -177,7 +156,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             egui::Align2::LEFT_TOP,
             " | ",
             font.clone(),
-            FG_SEPARATOR,
+            c.fg_separator,
         );
 
         // Channels
@@ -197,7 +176,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
                     egui::Align2::LEFT_TOP,
                     " | ",
                     font.clone(),
-                    FG_SEPARATOR,
+                    c.fg_separator,
                 );
             }
 
@@ -214,10 +193,10 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             let vol_text = cell.display_volume();
             let fx_text = cell.display_effect();
 
-            let note_fg = if is_muted { FG_MUTED } else if cell.note.is_some() { FG_NOTE_SET } else { FG_NOTE_EMPTY };
-            let inst_fg = if is_muted { FG_MUTED } else if cell.instrument.is_some() { FG_INST_SET } else { FG_INST_EMPTY };
-            let vol_fg = if is_muted { FG_MUTED } else if cell.volume.is_some() { FG_VOL_SET } else { FG_VOL_EMPTY };
-            let fx_fg = if is_muted { FG_MUTED } else if cell.effect.is_some() || cell.effect_value.is_some() { FG_FX_SET } else { FG_FX_EMPTY };
+            let note_fg = if is_muted { c.fg_muted } else if cell.note.is_some() { c.fg_note_set } else { c.fg_note_empty };
+            let inst_fg = if is_muted { c.fg_muted } else if cell.instrument.is_some() { c.fg_inst_set } else { c.fg_inst_empty };
+            let vol_fg = if is_muted { c.fg_muted } else if cell.volume.is_some() { c.fg_vol_set } else { c.fg_vol_empty };
+            let fx_fg = if is_muted { c.fg_muted } else if cell.effect.is_some() || cell.effect_value.is_some() { c.fg_fx_set } else { c.fg_fx_empty };
 
             // Positions
             let mut x = base_x;
@@ -233,7 +212,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
                         Pos2::new(px - 1.0, y),
                         egui::vec2(chars as f32 * CHAR_WIDTH + 2.0, ROW_HEIGHT),
                     );
-                    p.rect_filled(highlight, 0.0, BG_CURSOR_CELL);
+                    p.rect_filled(highlight, 0.0, c.bg_cursor_cell);
                 }
             };
 

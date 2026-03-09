@@ -3,7 +3,7 @@ use rtrack_core::tracker::Cell;
 
 use crate::grid::{self, GridAction, GridParams};
 use crate::history::EditHistory;
-use crate::state::{Mode, SubColumn};
+use crate::state::{GridColors, Mode, SubColumn, Theme};
 
 pub struct RtrackApp {
     pub core: TrackerCore,
@@ -31,10 +31,14 @@ pub struct RtrackApp {
 
     // Dialogs
     pub show_song_settings: bool,
+
+    // Theme
+    pub theme: Theme,
+    pub grid_colors: GridColors,
 }
 
 impl RtrackApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut core = TrackerCore::with_song_size(8, 64);
 
         // Try to start audio engine
@@ -46,6 +50,8 @@ impl RtrackApp {
                 eprintln!("Audio warning: {}", e);
             }
         }
+
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
 
         Self {
             core,
@@ -61,6 +67,17 @@ impl RtrackApp {
             history: EditHistory::new(100),
             clipboard: None,
             show_song_settings: false,
+            theme: Theme::Dark,
+            grid_colors: GridColors::dark(),
+        }
+    }
+
+    pub fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
+        self.theme = theme;
+        self.grid_colors = GridColors::for_theme(theme);
+        match theme {
+            Theme::Dark => ctx.set_theme(egui::Theme::Dark),
+            Theme::Light => ctx.set_theme(egui::Theme::Light),
         }
     }
 
@@ -156,6 +173,7 @@ impl eframe::App for RtrackApp {
                 muted_channels: muted,
                 solo_channel: self.core.solo_channel,
                 channel_names: names,
+                colors: self.grid_colors,
             };
 
             let actions = grid::draw_grid(ui, pattern, &params);

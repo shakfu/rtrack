@@ -2,7 +2,7 @@ use rtrack_core::TrackerCore;
 use rtrack_core::tracker::Cell;
 
 use crate::app::RtrackApp;
-use crate::state::SubColumn;
+use crate::state::{SubColumn, Theme};
 
 impl RtrackApp {
     pub fn draw_menu_bar(&mut self, ctx: &egui::Context) {
@@ -135,6 +135,18 @@ impl RtrackApp {
                     ui.separator();
                     if ui.button("Song Settings").clicked() {
                         self.show_song_settings = !self.show_song_settings;
+                        ui.close_menu();
+                    }
+                });
+
+                let theme_label = match self.theme {
+                    Theme::Dark => "Switch to Light",
+                    Theme::Light => "Switch to Dark",
+                };
+                ui.menu_button("View", |ui| {
+                    if ui.button(theme_label).clicked() {
+                        let new_theme = self.theme.toggle();
+                        self.set_theme(ctx, new_theme);
                         ui.close_menu();
                     }
                 });
