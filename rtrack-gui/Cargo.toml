@@ -1,0 +1,12 @@
+[package]
+name = "rtrack-gui"
+version = "0.1.1"
+edition = "2021"
+description = "GUI frontend for rtrack music tracker"
+
+[[bin]]
+name = "rtrack-gui"
+path = "src/main.rs"
+
+[dependencies]
+rtrack-core = { path = "../rtrack-core" }

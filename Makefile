@@ -1,25 +1,25 @@
 .PHONY: build run test test-unit test-integration fmt clippy lint clean
 
 build:
-	cargo build
+	cargo build --workspace
 
 run:
-	cargo run
+	cargo run -p rtrack-tui
 
 test:
-	cargo test
+	cargo test --workspace
 
 test-unit:
-	cargo test --lib
+	cargo test --workspace --lib
 
 test-integration:
-	cargo test --test integration
+	cargo test -p rtrack-tui --test integration
 
 fmt:
-	cargo fmt
+	cargo fmt --all
 
 clippy:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 lint: fmt clippy
 

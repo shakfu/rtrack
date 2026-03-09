@@ -1,28 +1,9 @@
-[package]
-name = "rtrack"
-version = "0.1.1"
-edition = "2021"
-description = "A TUI music tracker built with ratatui"
+[workspace]
+members = ["rtrack-core", "rtrack-tui", "rtrack-gui"]
+default-members = ["rtrack-tui"]
+resolver = "2"
 
-[dependencies]
-ratatui = "0.29"
-crossterm = "0.28"
-midir = "0.10"
-rusty_link = "0.4"
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-rustysynth = "1"
-cpal = "0.15"
-clap = { version = "4", features = ["derive"] }
-fundsp = "0.23"
-dasp = { version = "0.11", features = ["signal", "slice"] }
-hound = "3.5"
-flacenc = "0.5"
-rtrb = "0.3"
-toml = "0.8"
-
-# Optimize audio callback code in the rtrack crate itself.
+# Optimize audio callback code in all workspace crates.
 # Without this, loops and math in the real-time audio callback run at
 # opt-level 0, risking buffer underruns and audible glitches.
 [profile.dev]
@@ -32,5 +13,3 @@ opt-level = 1
 # per-sample processing that is unusably slow without optimization.
 [profile.dev.package."*"]
 opt-level = 2
-
-[dev-dependencies]

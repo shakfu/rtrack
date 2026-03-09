@@ -1,0 +1,25 @@
+[package]
+name = "rtrack-tui"
+version = "0.1.1"
+edition = "2021"
+description = "TUI frontend for rtrack music tracker"
+
+[[bin]]
+name = "rtrack"
+path = "src/main.rs"
+
+[lib]
+name = "rtrack_tui"
+path = "src/lib.rs"
+
+[dependencies]
+rtrack-core = { path = "../rtrack-core" }
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+hound = "3.5"

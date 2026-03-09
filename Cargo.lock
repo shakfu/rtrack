@@ -1495,25 +1495,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtrack"
+name = "rtrack-core"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "clap",
  "cpal",
- "crossterm",
  "dasp",
  "flacenc",
  "fundsp",
  "hound",
  "midir",
- "ratatui",
  "rtrb",
  "rusty_link",
  "rustysynth",
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "rtrack-gui"
+version = "0.1.1"
+dependencies = [
+ "rtrack-core",
+]
+
+[[package]]
+name = "rtrack-tui"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "hound",
+ "ratatui",
+ "rtrack-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

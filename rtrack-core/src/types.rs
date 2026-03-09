@@ -1,0 +1,274 @@
+//! Shared types used by TrackerCore and both frontends.
+
+use std::path::PathBuf;
+use std::time::Instant;
+
+use crate::audio::channel_effects::ChannelEffectsParams;
+
+/// Auto-save interval in seconds
+pub const AUTOSAVE_INTERVAL_SECS: u64 = 60;
+
+/// Timing accumulators for playback (internal to the playback loop).
+pub struct PlaybackTiming {
+    pub last_tick: Option<Instant>,
+    pub tick_accumulator: f64,
+    pub clock_tick_accumulator: f64,
+    pub playback_elapsed: f64,
+    pub ext_clock_count: u32,
+    pub last_link_beat: f64,
+}
+
+impl PlaybackTiming {
+    pub fn new() -> Self {
+        Self {
+            last_tick: None,
+            tick_accumulator: 0.0,
+            clock_tick_accumulator: 0.0,
+            playback_elapsed: 0.0,
+            ext_clock_count: 0,
+            last_link_beat: 0.0,
+        }
+    }
+}
+
+impl Default for PlaybackTiming {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlaybackTiming {
+    pub fn reset(&mut self) {
+        self.last_tick = None;
+        self.tick_accumulator = 0.0;
+        self.clock_tick_accumulator = 0.0;
+        self.playback_elapsed = 0.0;
+        self.ext_clock_count = 0;
+        self.last_link_beat = 0.0;
+    }
+}
+
+/// Re-export ChannelState from the engine module.
+pub use crate::engine::ChannelState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelType {
+    Midi,
+    Synth,
+    Sample,
+}
+
+impl ChannelType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Midi => "[MID]",
+            Self::Synth => "[SYN]",
+            Self::Sample => "[SMP]",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Midi => Self::Synth,
+            Self::Synth => Self::Sample,
+            Self::Sample => Self::Midi,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Midi => Self::Sample,
+            Self::Synth => Self::Midi,
+            Self::Sample => Self::Synth,
+        }
+    }
+}
+
+/// A channel effects parameter that can be targeted by MIDI learn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearnableParam {
+    FilterCutoff,
+    FilterResonance,
+    DistortionDrive,
+    ChorusRate,
+    ChorusDepth,
+    ChorusMix,
+    DelayTime,
+    DelayFeedback,
+    DelayMix,
+    ReverbSize,
+    ReverbDamp,
+    ReverbMix,
+}
+
+impl LearnableParam {
+    /// Map a MIDI CC value (0-127) to the parameter's native range.
+    pub fn map_cc(self, value: u8) -> f32 {
+        let t = value as f32 / 127.0;
+        match self {
+            Self::FilterCutoff => 20.0 * (1000.0_f32).powf(t), // 20..20000 Hz (exp)
+            Self::FilterResonance => t,                          // 0..1
+            Self::DistortionDrive => 1.0 + t * 19.0,            // 1..20
+            Self::ChorusRate => 0.1 + t * 9.9,                  // 0.1..10
+            Self::ChorusDepth => 0.5 + t * 19.5,                // 0.5..20
+            Self::ChorusMix => t,                                // 0..1
+            Self::DelayTime => 1.0 + t * 1999.0,                // 1..2000 ms
+            Self::DelayFeedback => t * 0.95,                     // 0..0.95
+            Self::DelayMix => t,                                 // 0..1
+            Self::ReverbSize => t,                               // 0..1
+            Self::ReverbDamp => t,                               // 0..1
+            Self::ReverbMix => t,                                // 0..1
+        }
+    }
+
+    /// Apply a CC value to the given effects params.
+    pub fn apply(self, params: &mut ChannelEffectsParams, value: u8) {
+        let v = self.map_cc(value);
+        match self {
+            Self::FilterCutoff => params.filter_cutoff = v,
+            Self::FilterResonance => params.filter_resonance = v,
+            Self::DistortionDrive => params.distortion_drive = v,
+            Self::ChorusRate => params.chorus_rate = v,
+            Self::ChorusDepth => params.chorus_depth = v,
+            Self::ChorusMix => params.chorus_mix = v,
+            Self::DelayTime => params.delay_time = v,
+            Self::DelayFeedback => params.delay_feedback = v,
+            Self::DelayMix => params.delay_mix = v,
+            Self::ReverbSize => params.reverb_size = v,
+            Self::ReverbDamp => params.reverb_damp = v,
+            Self::ReverbMix => params.reverb_mix = v,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FilterCutoff => "Filter Cutoff",
+            Self::FilterResonance => "Filter Resonance",
+            Self::DistortionDrive => "Distortion Drive",
+            Self::ChorusRate => "Chorus Rate",
+            Self::ChorusDepth => "Chorus Depth",
+            Self::ChorusMix => "Chorus Mix",
+            Self::DelayTime => "Delay Time",
+            Self::DelayFeedback => "Delay Feedback",
+            Self::DelayMix => "Delay Mix",
+            Self::ReverbSize => "Reverb Size",
+            Self::ReverbDamp => "Reverb Damp",
+            Self::ReverbMix => "Reverb Mix",
+        }
+    }
+
+    /// Try to convert a track config field index (relative to fx_off) to a learnable param.
+    pub fn from_fx_field(offset: usize) -> Option<Self> {
+        match offset {
+            1 => Some(Self::FilterCutoff),
+            2 => Some(Self::FilterResonance),
+            4 => Some(Self::DistortionDrive),
+            6 => Some(Self::ChorusRate),
+            7 => Some(Self::ChorusDepth),
+            8 => Some(Self::ChorusMix),
+            10 => Some(Self::DelayTime),
+            11 => Some(Self::DelayFeedback),
+            12 => Some(Self::DelayMix),
+            14 => Some(Self::ReverbSize),
+            15 => Some(Self::ReverbDamp),
+            16 => Some(Self::ReverbMix),
+            _ => None,
+        }
+    }
+}
+
+/// A single MIDI CC -> parameter mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiCcMapping {
+    pub cc: u8,
+    pub channel: usize,
+    pub param: LearnableParam,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockMode {
+    /// rtrack is the clock master (internal timing)
+    Internal,
+    /// rtrack slaves to external MIDI clock
+    ExternalMidi,
+}
+
+/// Per-channel configuration (audio routing, effects, naming).
+pub struct ChannelConfig {
+    pub muted: bool,
+    pub name: String,
+    pub channel_type: ChannelType,
+    /// Default instrument for this track (Synth tracks auto-fill on note entry)
+    pub default_instrument: Option<u8>,
+    pub volume: f32,
+    pub pan: f32,
+    pub effects_params: ChannelEffectsParams,
+    /// MIDI channel this tracker channel maps to (0-15)
+    pub midi_channel: u8,
+}
+
+impl ChannelConfig {
+    pub fn new(midi_channel: u8) -> Self {
+        Self {
+            muted: false,
+            name: String::new(),
+            channel_type: ChannelType::Midi,
+            default_instrument: None,
+            volume: 1.0,
+            pan: 0.0,
+            effects_params: ChannelEffectsParams::default(),
+            midi_channel,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Instrument {
+    pub name: String,
+    pub midi_program: Option<u8>,
+    pub sample_index: Option<usize>,
+    pub synth_params: Option<crate::audio::synth::SynthParams>,
+    /// Pitch bend range in semitones (None = use default of 2)
+    pub pitch_bend_range: Option<f64>,
+}
+
+/// Compute the auto-save path for a given song file path.
+pub fn autosave_path_for(path: &std::path::Path) -> PathBuf {
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let name = path.file_name().and_then(|f| f.to_str()).unwrap_or("song");
+    dir.join(format!(".{}.autosave", name))
+}
+
+/// Make a path relative to a base directory. Falls back to absolute if no common prefix.
+pub fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String {
+    let base_abs = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let target_abs = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+
+    if let Ok(rel) = target_abs.strip_prefix(&base_abs) {
+        return rel.to_string_lossy().to_string();
+    }
+
+    target.to_string_lossy().to_string()
+}
+
+/// Resolve a (possibly relative) path against a base directory.
+/// Rejects path traversal (`..` components) and absolute paths to prevent
+/// a malicious .rtrk file from referencing files outside the song directory.
+pub fn resolve_relative(base: &std::path::Path, rel: &str) -> PathBuf {
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() {
+        return base.join(
+            p.file_name().unwrap_or_default(),
+        );
+    }
+    let sanitized: PathBuf = p
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::ParentDir))
+        .collect();
+    base.join(sanitized)
+}
+
+/// Create default channel configs for N channels.
+pub fn default_channel_configs(n: usize) -> Vec<ChannelConfig> {
+    (0..n).map(|i| ChannelConfig::new(i as u8)).collect()
+}

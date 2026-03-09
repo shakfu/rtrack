@@ -2,6 +2,35 @@
 
 All notable changes to rtrack will be documented in this file.
 
+## [Unreleased]
+
+### Changed (Workspace Restructuring)
+
+- Restructured from a single crate into a Cargo workspace with three crates:
+  - `rtrack-core/`: headless library containing engine, audio, MIDI, samples, data model, and all non-UI logic
+  - `rtrack-tui/`: TUI frontend binary (`rtrack`) + library wrapping `TrackerCore`
+  - `rtrack-gui/`: GUI frontend skeleton (not yet implemented)
+- Extracted `TrackerCore` into `rtrack-core/src/core.rs` as the main headless API for frontends
+- Extracted shared types into `rtrack-core/src/types.rs`: `ChannelConfig`, `ChannelType`, `Instrument`, `ClockMode`, `PlaybackTiming`, `LearnableParam`, `MidiCcMapping`, utility functions
+- Pushed recording logic (`record_note_at`, `record_note_off_at`, `handle_midi_cc`) from TUI's `handle_midi_input` into `TrackerCore`, so alternative frontends don't need to reimplement it
+- Removed ~20 trivial delegation methods from `App` that just forwarded to `self.core.xxx()`; callers now use `app.core.xxx()` directly
+- Methods that add TUI-specific logic (status_message, cursor updates) remain on `App`
+- Makefile updated for workspace: `cargo build --workspace`, `cargo run -p rtrack-tui`, `cargo test --workspace`
+
+### Fixed (Clippy Cleanup)
+
+- Resolved all clippy warnings across the workspace (previously ~35 warnings):
+  - Added `Default` implementations for `TrackerCore`, `MidiEngine`, `MidiInputEngine`, `SampleBank`, `PlaybackTiming`, `Instrument`, `FilterType`
+  - Added `Sample::is_empty()` method (required by `len_without_is_empty` lint)
+  - Replaced `map_or(false, ...)` with `is_some_and()` and `map_or(true, ...)` with `is_none_or()`
+  - Replaced manual `div_ceil` with `usize::div_ceil()`
+  - Replaced `% 2 == 0` with `.is_multiple_of(2)`
+  - Removed unnecessary type casts, identity maps, and redundant `ref` patterns
+  - Fixed operator precedence in fundsp DSP expressions
+  - Merged identical if-else branches in pattern editor and pattern matrix
+  - Used iterator patterns instead of index-based loop variables in tests
+  - Replaced `.get(0)` with `.first()`
+
 ## [0.1.1]
 
 ### Added (Recent Files)
