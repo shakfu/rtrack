@@ -1,0 +1,182 @@
+use rtrack_core::TrackerCore;
+use rtrack_core::tracker::Cell;
+
+use crate::grid::{self, GridAction, GridParams};
+use crate::history::EditHistory;
+use crate::state::{Mode, SubColumn};
+
+pub struct RtrackApp {
+    pub core: TrackerCore,
+
+    // Cursor
+    pub cursor_row: usize,
+    pub cursor_channel: usize,
+    pub cursor_sub: SubColumn,
+    pub current_octave: u8,
+    pub edit_step: usize,
+    pub edit_order: usize,
+    pub follow_playback: bool,
+
+    // Mode
+    pub mode: Mode,
+
+    // Status
+    pub status_message: Option<String>,
+
+    // Undo/Redo
+    pub history: EditHistory,
+
+    // Clipboard
+    pub clipboard: Option<Cell>,
+
+    // Dialogs
+    pub show_song_settings: bool,
+}
+
+impl RtrackApp {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let mut core = TrackerCore::with_song_size(8, 64);
+
+        // Try to start audio engine
+        match rtrack_core::audio::AudioEngine::new(None) {
+            Ok(engine) => {
+                core.audio = Some(engine);
+            }
+            Err(e) => {
+                eprintln!("Audio warning: {}", e);
+            }
+        }
+
+        Self {
+            core,
+            cursor_row: 0,
+            cursor_channel: 0,
+            cursor_sub: SubColumn::Note,
+            current_octave: 4,
+            edit_step: 1,
+            edit_order: 0,
+            follow_playback: true,
+            mode: Mode::Normal,
+            status_message: None,
+            history: EditHistory::new(100),
+            clipboard: None,
+            show_song_settings: false,
+        }
+    }
+
+    fn current_order_position(&self) -> usize {
+        if self.core.playing {
+            self.core.engine.order
+        } else {
+            self.edit_order
+        }
+    }
+}
+
+impl eframe::App for RtrackApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Tick playback
+        self.core.sync_link();
+        if self.core.is_playing() {
+            if self.core.tick_playback() {
+                // Follow playback cursor
+                if self.follow_playback && self.core.engine.tick == 1 {
+                    self.cursor_row = self.core.engine.row;
+                    self.edit_order = self.core.engine.order;
+                }
+            }
+            ctx.request_repaint();
+        }
+        self.core.expire_preview_note();
+
+        // Process keyboard input
+        self.process_keys(ctx);
+
+        // Menu bar
+        self.draw_menu_bar(ctx);
+
+        // Transport bar
+        egui::TopBottomPanel::top("transport").show(ctx, |ui| {
+            self.draw_transport(ui);
+        });
+
+        // Status bar
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(ref msg) = self.status_message {
+                    ui.label(msg.as_str());
+                } else {
+                    let hint = match self.mode {
+                        Mode::Normal => "i:Insert  Space:Play  Arrows:Move  Tab:Channel  +/-:Octave",
+                        Mode::Insert => "Esc:Normal  Piano:z-m/q-u  =:NoteOff  Del:Clear",
+                    };
+                    ui.label(egui::RichText::new(hint).color(egui::Color32::from_rgb(120, 120, 140)));
+                }
+            });
+        });
+
+        // Order list & channels sidebar
+        self.draw_sidebar(ctx);
+
+        // Dialogs
+        self.draw_dialogs(ctx);
+
+        // Pattern grid
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let order_pos = self.current_order_position();
+            let pattern_idx = self.core.song.order[order_pos];
+            let pattern = &self.core.song.patterns[pattern_idx];
+
+            let muted: Vec<bool> = self
+                .core
+                .channels
+                .iter()
+                .map(|c| c.muted)
+                .collect();
+            let names: Vec<String> = self
+                .core
+                .channels
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
+
+            let params = GridParams {
+                cursor_row: self.cursor_row,
+                cursor_channel: self.cursor_channel,
+                cursor_sub: self.cursor_sub,
+                mode: self.mode,
+                playing: self.core.playing,
+                playback_row: self.core.engine.row,
+                playback_order: self.core.engine.order,
+                edit_order: self.edit_order,
+                highlight_beat: self.core.song.highlight_beat,
+                highlight_bar: self.core.song.highlight_bar,
+                first_visible_channel: 0,
+                visible_channel_count: self.core.song.channels,
+                muted_channels: muted,
+                solo_channel: self.core.solo_channel,
+                channel_names: names,
+            };
+
+            let actions = grid::draw_grid(ui, pattern, &params);
+            for action in actions {
+                match action {
+                    GridAction::SetCursor { row, channel, sub } => {
+                        self.cursor_row = row;
+                        self.cursor_channel = channel;
+                        self.cursor_sub = sub;
+                    }
+                    GridAction::Scroll { rows } => {
+                        let max_row = pattern.rows.saturating_sub(1);
+                        let new_row = if rows > 0 {
+                            self.cursor_row.saturating_add(rows as usize).min(max_row)
+                        } else {
+                            self.cursor_row.saturating_sub(rows.unsigned_abs() as usize)
+                        };
+                        self.cursor_row = new_row;
+                    }
+                }
+            }
+        });
+    }
+}

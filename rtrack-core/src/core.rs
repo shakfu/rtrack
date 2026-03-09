@@ -59,8 +59,13 @@ pub struct TrackerCore {
 }
 
 impl TrackerCore {
-    /// Create a new headless tracker core with default state.
+    /// Create a new headless tracker core with default state (4 channels, 64 rows).
     pub fn new() -> Self {
+        Self::with_song_size(4, 64)
+    }
+
+    /// Create a new headless tracker core with the given number of channels and rows per pattern.
+    pub fn with_song_size(channels: usize, rows: usize) -> Self {
         let mut midi = MidiEngine::new();
         if midi.create_virtual_port().is_err() {
             let _ = midi.connect_first_available();
@@ -69,7 +74,7 @@ impl TrackerCore {
         let mut midi_input = MidiInputEngine::new();
         let _ = midi_input.create_virtual_port();
 
-        let song = Song::new(4, 64);
+        let song = Song::new(channels, rows);
         let link = LinkEngine::new(song.bpm as f64);
         let engine = TrackerEngine::new(&song, true);
 
@@ -85,7 +90,7 @@ impl TrackerCore {
             recording: false,
             timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
-            channels: default_channel_configs(4),
+            channels: default_channel_configs(channels),
             instruments: (0..MAX_INSTRUMENTS).map(|_| Instrument::default()).collect(),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES)
                 .map(|_| crate::audio::effects::SendBusParams::default())

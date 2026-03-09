@@ -1,19 +1,29 @@
 # rtrack
 
-A terminal-based music tracker written in Rust. Compose music using classic tracker-style pattern editing, hear it immediately through the built-in synthesizer, and export to MIDI or WAV.
+A music tracker written in Rust with both TUI and GUI frontends. Compose music using classic tracker-style pattern editing, hear it immediately through the built-in synthesizer, and export to MIDI or WAV.
 
 rtrack makes sound out of the box -- no external synth, DAW, or SoundFont required. Connect to external gear via MIDI, sync with Ableton Link, or load your own samples.
 
 ## Quick Start
 
+### TUI (Terminal)
+
 ```sh
-cargo run                                # launch with built-in synth
+cargo run                                # launch TUI with built-in synth
 cargo run -- song.rtrk                   # open a saved song (restores instruments + samples)
 cargo run -- recording.mid               # import a MIDI file
 cargo run -- --sample-dir samples/       # load a directory of samples
 ```
 
 Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back from the current position (or **Ctrl+Space** to play from the beginning). Press **F1** for the full help screen.
+
+### GUI
+
+```sh
+cargo run -p rtrack-gui                  # launch GUI frontend
+```
+
+The GUI provides the same tracker core with a graphical interface: menu bar with native file dialogs, clickable pattern grid, order list sidebar with channel mute/solo, interactive transport controls (drag to adjust BPM, speed, octave), undo/redo, clipboard, and a song settings dialog.
 
 ### Offline Render
 
@@ -30,7 +40,7 @@ cargo run -- --render --sf2 gm.sf2 song.rtrk -o out.wav   # with SoundFont
 Play a song from the command line without launching the TUI:
 
 ```sh
-cargo run -- --play examples/multi-pattern.rtrk          # play once and exit
+cargo run -- --play examples/multi-pattern.rtrk           # play once and exit
 cargo run -- --play --loops 3 song.rtrk                   # play 3 times
 cargo run -- --play --loops 0 song.rtrk                   # loop forever (Ctrl+C to stop)
 cargo run -- --play --sf2 gm.sf2 --sample-dir drums/ song.rtrk  # with audio options
@@ -460,9 +470,9 @@ CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed
 ## Build
 
 ```sh
-make build            # compile
-make run              # compile and run
-make test             # run all tests (358 tests)
+make build            # compile all crates
+make run              # compile and run TUI
+make test             # run all tests (358 tests across workspace)
 make test-unit        # unit tests only
 make test-integration # integration tests only
 make fmt              # format code
@@ -470,43 +480,56 @@ make clippy           # lint with clippy
 make lint             # fmt + clippy
 ```
 
+To run the GUI frontend:
+
+```sh
+cargo run -p rtrack-gui
+```
+
 ## Architecture
 
+rtrack is a Cargo workspace with three crates sharing a headless core:
+
 ```text
-src/
-  main.rs               Entry point, event loop, clap CLI
-  config.rs             User config (~/.config/rtrack/config.toml)
-  constants.rs          Shared constants (MIDI protocol, music theory, effect commands)
-  engine/
-    mod.rs              Deterministic TrackerEngine (tick-based playback, effects, events)
-  app/
-    mod.rs              App state, undo/redo, file I/O, song management
-    input.rs            Keyboard/mouse input handling, mode dispatch
-    playback.rs         Playback driver, MIDI input/recording, Link sync
-  midi_file.rs          MIDI file (.mid) export and import
-  audio/
-    mod.rs              Unified audio engine (SF2 + synth + samples + effects, cpal)
-    synth.rs            Built-in subtractive synth (30 patches, PolyBLEP + SVF + FM + sub-osc + ADSR)
-    channel_effects.rs  Per-channel effects (distortion, filter, chorus, delay, reverb)
-    envelope.rs         Shared ADSR envelope (used by synth + sample voices)
-    effects.rs          Master stereo delay effect (fundsp)
-  sample/
-    mod.rs              Sample loading (WAV/AIFF), slicing (equal-segment, transient detection)
-    playback.rs         Sample voice manager, pitch-shifted rendering
-    export.rs           Offline song render to WAV
-  tracker/
-    pattern.rs          Pattern grid, Cell, Note (serde)
-    song.rs             Song, SongFile, order list, instrument/sample refs, tempo map
-  link/
-    mod.rs              Ableton Link (rusty_link)
-  midi/
-    mod.rs              MIDI output + input (midir)
-  ui/
-    mod.rs              Header, status bar, popups
-    pattern_editor.rs   Pattern grid renderer
-    sample_editor.rs    Sample editor (waveform, trim, loop)
-    synth_editor.rs     Synth editor (waveform, ADSR, filter, FM, sub-osc)
-    theme.rs            Color themes (dark, light, monokai)
+rtrack-core/                Headless library (engine, audio, MIDI, data model)
+  src/
+    core.rs                 TrackerCore: main API for frontends
+    types.rs                Shared types (ChannelConfig, Instrument, ClockMode, etc.)
+    constants.rs            Shared constants (MIDI protocol, music theory, effect commands)
+    config.rs               User config (~/.config/rtrack/config.toml)
+    engine/mod.rs           Deterministic TrackerEngine (tick-based playback, effects, events)
+    tracker/                Pattern, Song, Cell, Note (serde)
+    audio/                  Unified audio engine (SF2 + synth + samples + effects, cpal)
+      synth.rs              Built-in subtractive synth (30 patches, PolyBLEP + SVF + FM)
+      channel_effects.rs    Per-channel effects (distortion, filter, chorus, delay, reverb)
+      envelope.rs           Shared ADSR envelope
+      effects.rs            Master stereo delay (fundsp)
+    sample/                 Sample loading (WAV/AIFF), slicing, playback, offline export
+    midi/mod.rs             MIDI output + input (midir)
+    midi_file.rs            MIDI file (.mid) export and import
+    link/mod.rs             Ableton Link (rusty_link)
+
+rtrack-tui/                 TUI frontend binary (default: `cargo run`)
+  src/
+    main.rs                 Entry point, crossterm event loop, clap CLI
+    app/mod.rs              App state, undo/redo, file I/O (wraps TrackerCore)
+    app/input.rs            Keyboard/mouse input handling, mode dispatch
+    app/playback.rs         Playback driver, MIDI input/recording, Link sync
+    tui/                    ratatui rendering (pattern editor, sample/synth editors, theme)
+  tests/integration.rs      12 integration tests
+
+rtrack-gui/                 GUI frontend binary (`cargo run -p rtrack-gui`)
+  src/
+    main.rs                 eframe entry point
+    app.rs                  RtrackApp (wraps TrackerCore), eframe::App impl
+    grid.rs                 Pattern grid (custom Painter rendering, mouse interaction)
+    input.rs                Keyboard handling (piano mapping, navigation, undo/redo)
+    transport.rs            Transport bar (DragValue BPM/speed/octave, play/stop/rec)
+    menu.rs                 Menu bar (File/Edit with native file dialogs via rfd)
+    sidebar.rs              Order list + channel mute/solo panel
+    history.rs              Undo/redo edit history
+    dialogs.rs              Song settings dialog
+    state.rs                Mode, SubColumn enums
 ```
 
 ## License

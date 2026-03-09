@@ -4,12 +4,26 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added (GUI Frontend - rtrack-gui)
+
+- Built egui/eframe GUI frontend as alternative to TUI, sharing TrackerCore
+  - Menu bar: File (New, Open, Save/Ctrl+S, Save As, Quit) and Edit (Undo, Redo, Copy, Cut, Paste) with native file dialogs via rfd
+  - Pattern grid: custom Painter-based monospace text rendering with per-cell coloring, beat/bar highlighting, cursor tracking
+  - Mouse interaction: click-to-position cursor in grid (row, channel, sub-column hit testing), scroll wheel navigation
+  - Order list sidebar: clickable order entries with active highlight, append button, channel list with mute/solo toggles
+  - Interactive transport: DragValue widgets for BPM/Speed/Octave/Edit Step, styled Play/Stop button, Follow mode checkbox, pattern info display
+  - Undo/redo: dual-stack edit history (100 levels) tracking cell edits across note entry, hex entry, clear, and note-off
+  - Clipboard: cut/copy/paste single cells (Ctrl+X/C/V)
+  - Song settings dialog: editable title, BPM, speed, beat/bar highlights, swing; read-only channel/pattern/order info
+  - Full keyboard input: piano mapping (z-m/q-u), hex digit entry, modal Normal/Insert modes
+  - Dependencies: eframe 0.31, egui 0.31, rfd 0.15
+
 ### Changed (Workspace Restructuring)
 
 - Restructured from a single crate into a Cargo workspace with three crates:
   - `rtrack-core/`: headless library containing engine, audio, MIDI, samples, data model, and all non-UI logic
   - `rtrack-tui/`: TUI frontend binary (`rtrack`) + library wrapping `TrackerCore`
-  - `rtrack-gui/`: GUI frontend skeleton (not yet implemented)
+  - `rtrack-gui/`: GUI frontend (egui/eframe)
 - Extracted `TrackerCore` into `rtrack-core/src/core.rs` as the main headless API for frontends
 - Extracted shared types into `rtrack-core/src/types.rs`: `ChannelConfig`, `ChannelType`, `Instrument`, `ClockMode`, `PlaybackTiming`, `LearnableParam`, `MidiCcMapping`, utility functions
 - Pushed recording logic (`record_note_at`, `record_note_off_at`, `handle_midi_cc`) from TUI's `handle_midi_input` into `TrackerCore`, so alternative frontends don't need to reimplement it
