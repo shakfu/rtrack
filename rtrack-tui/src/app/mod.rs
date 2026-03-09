@@ -631,9 +631,13 @@ impl App {
     // -- File I/O --
 
     pub fn save(&mut self) {
-        match self.core.save(&mut self.recent_files) {
+        match self.core.save() {
             Ok(msg) => {
                 self.last_autosave = Instant::now();
+                if let Some(path) = self.core.file_path.clone() {
+                    rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                    rtrack_core::config::save_recent_files(&self.recent_files);
+                }
                 self.status_message = Some(msg);
             }
             Err(msg) => {
@@ -650,7 +654,7 @@ impl App {
 
 
     pub fn load_file(&mut self, path: PathBuf) {
-        match self.core.load_file(&path, &mut self.recent_files) {
+        match self.core.load_file(&path) {
             Ok(msg) => {
                 self.cursor_row = 0;
                 self.cursor_channel = 0;
@@ -659,6 +663,8 @@ impl App {
                 self.track_page = 0;
                 self.history.undo_stack.clear();
                 self.history.redo_stack.clear();
+                rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(msg);
             }
             Err(msg) => {

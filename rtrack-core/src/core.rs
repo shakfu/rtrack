@@ -946,8 +946,8 @@ impl TrackerCore {
         }
     }
 
-    /// Save the song. Returns Ok(path) or Err(message).
-    pub fn save(&mut self, recent_files: &mut Vec<PathBuf>) -> Result<String, String> {
+    /// Save the song. Returns Ok(message) or Err(message).
+    pub fn save(&mut self) -> Result<String, String> {
         let path = self.file_path.clone().unwrap_or_else(|| {
             let name = self.song.title.replace(' ', "_").to_lowercase();
             PathBuf::from(format!("{}.rtrk", name))
@@ -958,8 +958,6 @@ impl TrackerCore {
                 self.file_path = Some(path.clone());
                 self.dirty = false;
                 let _ = std::fs::remove_file(autosave_path_for(&path));
-                crate::config::push_recent_file(recent_files, &path);
-                crate::config::save_recent_files(recent_files);
                 Ok(format!("Saved: {}", path.display()))
             }
             Err(e) => Err(format!("Save failed: {}", e)),
@@ -1004,9 +1002,9 @@ impl TrackerCore {
         let _ = std::fs::remove_file(autosave);
     }
 
-    /// Load a song file. Returns the loaded SongFile and restores core state.
+    /// Load a song file. Restores core state (song, instruments, samples).
     /// The caller is responsible for resetting UI state (cursor, history, etc.).
-    pub fn load_file(&mut self, path: &std::path::Path, recent_files: &mut Vec<PathBuf>) -> Result<String, String> {
+    pub fn load_file(&mut self, path: &std::path::Path) -> Result<String, String> {
         match SongFile::load(path) {
             Ok(song_file) => {
                 let song = song_file.song;
@@ -1059,8 +1057,6 @@ impl TrackerCore {
 
                 self.file_path = Some(path.to_path_buf());
                 self.dirty = false;
-                crate::config::push_recent_file(recent_files, path);
-                crate::config::save_recent_files(recent_files);
                 if sample_errors.is_empty() {
                     Ok(format!("Loaded: {}", path.display()))
                 } else {
