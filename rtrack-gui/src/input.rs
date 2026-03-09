@@ -1,5 +1,6 @@
 use egui::Key;
 use rtrack_core::constants::*;
+use rtrack_core::midi::MidiInputEvent;
 use rtrack_core::tracker::{Cell, Note, NoteValue};
 use rtrack_core::ChannelType;
 
@@ -24,17 +25,30 @@ impl RtrackApp {
                 }
             }
             if input.key_pressed(Key::Escape) {
-                if self.show_pattern_matrix {
+                if self.show_midi_ports {
+                    self.show_midi_ports = false;
+                } else if self.show_help {
+                    self.show_help = false;
+                } else if self.show_pattern_matrix {
                     actions.push(Action::TogglePatternMatrix);
                 } else {
                     actions.push(Action::SetMode(Mode::Normal));
                 }
             }
             if input.key_pressed(Key::F1) {
-                // Help (not implemented yet)
+                actions.push(Action::ToggleHelp);
+            }
+            if input.key_pressed(Key::F2) {
+                actions.push(Action::ToggleMidiPorts);
+            }
+            if input.key_pressed(Key::F3) {
+                actions.push(Action::ToggleLink);
             }
             if input.key_pressed(Key::F7) {
                 actions.push(Action::ToggleInstrumentList);
+            }
+            if input.key_pressed(Key::F8) {
+                actions.push(Action::CycleTheme);
             }
             if ctrl && input.key_pressed(Key::S) {
                 actions.push(Action::Save);
@@ -271,7 +285,13 @@ impl RtrackApp {
         });
 
         for action in actions {
-            self.execute_action(action);
+            match action {
+                Action::CycleTheme => {
+                    let new_theme = self.theme.toggle();
+                    self.set_theme(ctx, new_theme);
+                }
+                other => self.execute_action(other),
+            }
         }
     }
 
@@ -286,10 +306,8 @@ impl RtrackApp {
                 self.core.play(0, 0);
             }
             Action::SetMode(mode) => {
-                if mode == Mode::Normal && self.show_synth_editor.is_some() {
-                    self.show_synth_editor = None;
-                } else if mode == Mode::Normal && self.show_sample_editor.is_some() {
-                    self.show_sample_editor = None;
+                if mode == Mode::Normal && self.show_help {
+                    self.show_help = false;
                 } else if mode == Mode::Normal && self.show_instrument_list {
                     self.show_instrument_list = false;
                 } else if mode == Mode::Normal && self.show_track_config.is_some() {
@@ -564,38 +582,10 @@ impl RtrackApp {
                 }
             }
             Action::TransposeUp => {
-                let pattern_idx = self.core.song.order[self.edit_order];
-                let cell = self.core.song.patterns[pattern_idx]
-                    .get_mut(self.cursor_row, self.cursor_channel);
-                if let Some(Note::On { ref mut value, ref mut octave }) = cell.note {
-                    let midi = (*octave as i16) * 12 + value.to_index() as i16 + 1;
-                    if midi <= MIDI_MAX_NOTE as i16 {
-                        let new_octave = (midi / 12) as u8;
-                        let new_semi = (midi % 12) as u8;
-                        if let Some(nv) = NoteValue::from_index(new_semi) {
-                            *value = nv;
-                            *octave = new_octave;
-                            self.core.dirty = true;
-                        }
-                    }
-                }
+                self.transpose_notes(1);
             }
             Action::TransposeDown => {
-                let pattern_idx = self.core.song.order[self.edit_order];
-                let cell = self.core.song.patterns[pattern_idx]
-                    .get_mut(self.cursor_row, self.cursor_channel);
-                if let Some(Note::On { ref mut value, ref mut octave }) = cell.note {
-                    let midi = (*octave as i16) * 12 + value.to_index() as i16 - 1;
-                    if midi >= 0 {
-                        let new_octave = (midi / 12) as u8;
-                        let new_semi = (midi % 12) as u8;
-                        if let Some(nv) = NoteValue::from_index(new_semi) {
-                            *value = nv;
-                            *octave = new_octave;
-                            self.core.dirty = true;
-                        }
-                    }
-                }
+                self.transpose_notes(-1);
             }
             Action::OpenTrackConfig => {
                 self.show_track_config = Some(self.cursor_channel);
@@ -756,6 +746,30 @@ impl RtrackApp {
             Action::ToggleInstrumentList => {
                 self.show_instrument_list = !self.show_instrument_list;
             }
+            Action::ToggleHelp => {
+                self.show_help = !self.show_help;
+            }
+            Action::ToggleLink => {
+                self.core.toggle_link();
+                let msg = if self.core.link.is_enabled() {
+                    "Link enabled"
+                } else {
+                    "Link disabled"
+                };
+                self.status_message = Some(msg.to_string());
+            }
+            Action::ToggleMidiPorts => {
+                if self.show_midi_ports {
+                    self.show_midi_ports = false;
+                } else {
+                    self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
+                        .unwrap_or_default();
+                    self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
+                        .unwrap_or_default();
+                    self.show_midi_ports = true;
+                }
+            }
+            Action::CycleTheme => unreachable!(),
             Action::ToggleBlockSelect => {
                 if self.block_start.is_some() {
                     self.block_start = None;
@@ -1012,6 +1026,115 @@ impl RtrackApp {
         let pattern_idx = self.core.song.order[self.edit_order];
         self.core.song.patterns[pattern_idx].rows
     }
+
+    fn transpose_notes(&mut self, semitones: i8) {
+        let pattern_idx = self.core.song.order[self.edit_order];
+
+        if let (Some(start), Some(end)) = (self.block_start, self.block_end) {
+            let r0 = start.0.min(end.0);
+            let r1 = start.0.max(end.0);
+            let c0 = start.1.min(end.1);
+            let c1 = start.1.max(end.1);
+            let pattern = &mut self.core.song.patterns[pattern_idx];
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    transpose_cell_note(pattern.get_mut(r, c), semitones);
+                }
+            }
+            self.core.dirty = true;
+            self.status_message = Some(format!("Transposed block by {} semitone(s)", semitones));
+        } else {
+            let cell = self.core.song.patterns[pattern_idx]
+                .get_mut(self.cursor_row, self.cursor_channel);
+            transpose_cell_note(cell, semitones);
+            self.core.dirty = true;
+        }
+    }
+
+    pub fn poll_midi_input(&mut self) {
+        while let Some(event) = self.core.midi_input.poll() {
+            self.handle_midi_input(event);
+        }
+    }
+
+    fn handle_midi_input(&mut self, event: MidiInputEvent) {
+        match event {
+            MidiInputEvent::NoteOn { channel: _, note, velocity } => {
+                let ch = self.cursor_channel;
+                let midi_ch = self.core.midi_channel_for(ch);
+
+                // Punch-in recording: playing + recording + Insert mode
+                if self.core.playing && self.core.recording && self.mode == Mode::Insert {
+                    let order = self.core.engine.order;
+                    let row = self.core.engine.row;
+                    self.core.record_note_at(order, row, ch, note, velocity);
+                    self.core.preview_note(midi_ch, note, velocity);
+                    return;
+                }
+
+                // Step recording: Insert mode + stopped
+                if self.mode == Mode::Insert && !self.core.playing {
+                    self.core.preview_note(midi_ch, note, velocity);
+                    let order = self.current_order_position();
+                    let row = self.cursor_row;
+                    if self.core.record_note_at(order, row, ch, note, velocity) {
+                        let step = self.edit_step;
+                        let max_row = self.current_pattern_rows().saturating_sub(1);
+                        self.cursor_row = (self.cursor_row + step).min(max_row);
+                    }
+                    return;
+                }
+
+                // Preview only
+                self.core.preview_note(midi_ch, note, velocity);
+            }
+            MidiInputEvent::NoteOff { channel: _, note } => {
+                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
+                self.core.send_note_off(midi_ch, note);
+
+                if self.core.playing && self.core.recording && self.mode == Mode::Insert {
+                    self.core.record_note_off_at(
+                        self.core.engine.order,
+                        self.core.engine.row,
+                        self.cursor_channel,
+                    );
+                }
+            }
+            MidiInputEvent::CC { channel: _, controller, value } => {
+                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
+                if let Some(msg) = self.core.handle_midi_cc(controller, value, midi_ch) {
+                    self.status_message = Some(msg);
+                }
+            }
+            MidiInputEvent::PitchBend { channel: _, value } => {
+                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
+                self.core.send_pitch_bend(midi_ch, value);
+            }
+            MidiInputEvent::ProgramChange { channel: _, program } => {
+                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
+                self.core.send_program_change(midi_ch, program);
+            }
+            MidiInputEvent::ChannelPressure { channel: _, pressure } => {
+                self.core.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            }
+            MidiInputEvent::PolyPressure { channel: _, note: _, pressure } => {
+                self.core.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            }
+            MidiInputEvent::Clock => {
+                self.core.handle_external_clock();
+            }
+            MidiInputEvent::Start => {
+                self.core.handle_external_start();
+            }
+            MidiInputEvent::Stop => {
+                self.core.handle_external_stop();
+            }
+            MidiInputEvent::Continue => {
+                self.core.handle_external_continue();
+            }
+        }
+    }
+
 }
 
 enum Action {
@@ -1073,4 +1196,22 @@ enum Action {
     ToggleInstrumentList,
     ToggleBlockSelect,
     BlockInterpolate,
+    ToggleHelp,
+    ToggleLink,
+    ToggleMidiPorts,
+    CycleTheme,
+}
+
+fn transpose_cell_note(cell: &mut Cell, semitones: i8) {
+    if let Some(Note::On { ref value, ref octave }) = cell.note {
+        let semi = SEMITONES_PER_OCTAVE as i16;
+        let midi = (*octave as i16) * semi + value.to_index() as i16 + semitones as i16;
+        if midi >= 0 && midi <= MIDI_MAX_NOTE as i16 {
+            let new_octave = (midi / semi) as u8;
+            let new_note_idx = (midi % semi) as u8;
+            if let Some(nv) = NoteValue::from_index(new_note_idx) {
+                cell.note = Some(Note::On { value: nv, octave: new_octave });
+            }
+        }
+    }
 }

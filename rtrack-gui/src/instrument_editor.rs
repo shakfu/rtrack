@@ -448,37 +448,54 @@ impl RtrackApp {
     // ------------------------------------------------------------------
 
     fn draw_sample_params(&mut self, ui: &mut egui::Ui, idx: usize) {
-        if ui.button("Load Sample...").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Audio", &["wav", "aif", "aiff"])
-                .pick_file()
-            {
-                let slot = self.core.instruments[idx].sample_index.unwrap_or(idx);
+        ui.horizontal(|ui| {
+            if ui.button("Load Sample...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Audio", &["wav", "aif", "aiff"])
+                    .pick_file()
+                {
+                    let slot = self.core.instruments[idx].sample_index.unwrap_or(idx);
 
-                let mut bank = (*self.core.sample_bank).clone();
-                match bank.load(slot, &path) {
-                    Ok(()) => {
-                        self.core.sample_bank = Arc::new(bank);
-                        self.core.instruments[idx].sample_index = Some(slot);
-                        if let Some(ref mut audio) = self.core.audio {
-                            audio.set_sample_bank(self.core.sample_bank.clone());
+                    let mut bank = (*self.core.sample_bank).clone();
+                    match bank.load(slot, &path) {
+                        Ok(()) => {
+                            self.core.sample_bank = Arc::new(bank);
+                            self.core.instruments[idx].sample_index = Some(slot);
+                            if let Some(ref mut audio) = self.core.audio {
+                                audio.set_sample_bank(self.core.sample_bank.clone());
+                            }
+                            self.core.dirty = true;
+                            self.status_message =
+                                Some(format!("Loaded sample into slot {:02X}", slot));
                         }
-                        self.core.dirty = true;
-                        self.status_message =
-                            Some(format!("Loaded sample into slot {:02X}", slot));
-                    }
-                    Err(e) => {
-                        self.status_message = Some(format!("Failed to load sample: {}", e));
+                        Err(e) => {
+                            self.status_message = Some(format!("Failed to load sample: {}", e));
+                        }
                     }
                 }
             }
-        }
+            if ui.button("Load Directory...").clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    match self.core.load_sample_directory(&dir) {
+                        Ok(msg) => {
+                            self.status_message = Some(msg);
+                        }
+                        Err(msg) => {
+                            self.status_message = Some(msg);
+                        }
+                    }
+                }
+            }
+        });
 
         ui.separator();
 
         let sample_slot = self.core.instruments[idx].sample_index;
         if let Some(slot) = sample_slot {
             // Extract sample data before entering closures to avoid borrow conflicts
+            let waveform_peaks: Vec<f32> = self.core.sample_bank.get(slot).map(|s| {
+                downsample_peaks(&s.data, 512)
+            }).unwrap_or_default();
             let sample_info = self.core.sample_bank.get(slot).map(|s| {
                 (
                     s.source_path.clone(),
@@ -516,6 +533,61 @@ impl RtrackApp {
                         ui.label("");
                         ui.end_row();
                     });
+
+                // Waveform preview
+                if !waveform_peaks.is_empty() {
+                    ui.add_space(4.0);
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 80.0),
+                        egui::Sense::hover(),
+                    );
+                    let painter = ui.painter_at(rect);
+                    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(20, 20, 30));
+
+                    let mid_y = rect.center().y;
+                    let half_h = rect.height() / 2.0;
+                    let w = rect.width();
+                    let n = waveform_peaks.len() as f32;
+
+                    for (i, &peak) in waveform_peaks.iter().enumerate() {
+                        let x = rect.left() + (i as f32 / n) * w;
+                        let h = peak * half_h;
+                        painter.line_segment(
+                            [egui::pos2(x, mid_y - h), egui::pos2(x, mid_y + h)],
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 180, 255)),
+                        );
+                    }
+
+                    // Draw trim markers
+                    if init_trim_start > 0 {
+                        let trim_x = rect.left() + (init_trim_start as f32 / sample_len as f32) * w;
+                        painter.line_segment(
+                            [egui::pos2(trim_x, rect.top()), egui::pos2(trim_x, rect.bottom())],
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 60)),
+                        );
+                    }
+                    if init_trim_end > 0 && init_trim_end < sample_len {
+                        let trim_x = rect.left() + (init_trim_end as f32 / sample_len as f32) * w;
+                        painter.line_segment(
+                            [egui::pos2(trim_x, rect.top()), egui::pos2(trim_x, rect.bottom())],
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 60)),
+                        );
+                    }
+
+                    // Draw loop markers
+                    if init_loop_enabled {
+                        let ls = rect.left() + (init_loop_start as f32 / sample_len as f32) * w;
+                        let le = rect.left() + (init_loop_end as f32 / sample_len as f32) * w;
+                        painter.line_segment(
+                            [egui::pos2(ls, rect.top()), egui::pos2(ls, rect.bottom())],
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 255, 100)),
+                        );
+                        painter.line_segment(
+                            [egui::pos2(le, rect.top()), egui::pos2(le, rect.bottom())],
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 255, 100)),
+                        );
+                    }
+                }
 
                 ui.add_space(8.0);
 
@@ -749,9 +821,27 @@ impl RtrackApp {
             num, start_slot
         ));
     }
+}
 
-    // Keep the old methods as no-ops since we no longer use separate windows
-    pub fn draw_instrument_list(&mut self, _ctx: &egui::Context) {}
-    pub fn draw_synth_editor(&mut self, _ctx: &egui::Context) {}
-    pub fn draw_sample_editor(&mut self, _ctx: &egui::Context) {}
+/// Downsample stereo audio data to peak values for waveform display.
+fn downsample_peaks(data: &[[f32; 2]], num_bins: usize) -> Vec<f32> {
+    if data.is_empty() || num_bins == 0 {
+        return Vec::new();
+    }
+    let bin_size = (data.len() as f32 / num_bins as f32).max(1.0);
+    let mut peaks = Vec::with_capacity(num_bins);
+    for i in 0..num_bins {
+        let start = (i as f32 * bin_size) as usize;
+        let end = ((i + 1) as f32 * bin_size) as usize;
+        let end = end.min(data.len());
+        let mut max_val: f32 = 0.0;
+        for frame in &data[start..end] {
+            let mono = (frame[0].abs() + frame[1].abs()) * 0.5;
+            if mono > max_val {
+                max_val = mono;
+            }
+        }
+        peaks.push(max_val);
+    }
+    peaks
 }

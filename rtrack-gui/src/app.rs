@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+use std::time::Instant;
+
 use rtrack_core::TrackerCore;
 use rtrack_core::tracker::Cell;
 
@@ -38,12 +41,14 @@ pub struct RtrackApp {
     pub show_song_settings: bool,
     pub show_quit_confirm: bool,
     pub show_track_config: Option<usize>,
+    pub show_help: bool,
+    pub show_midi_ports: bool,
+    pub midi_port_list: Vec<String>,
+    pub midi_input_port_list: Vec<String>,
 
     // Instrument dialogs
     pub show_instrument_list: bool,
     pub selected_instrument: Option<usize>,
-    pub show_synth_editor: Option<usize>,
-    pub show_sample_editor: Option<usize>,
     pub slice_count: usize,
     pub slice_sensitivity: f32,
 
@@ -51,9 +56,15 @@ pub struct RtrackApp {
     pub show_pattern_matrix: bool,
     pub matrix_cursor: usize,
 
+    // Recent files
+    pub recent_files: Vec<PathBuf>,
+
     // Theme
     pub theme: Theme,
     pub grid_colors: GridColors,
+
+    // Auto-save
+    pub last_autosave: Instant,
 }
 
 impl RtrackApp {
@@ -91,16 +102,20 @@ impl RtrackApp {
             show_song_settings: false,
             show_quit_confirm: false,
             show_track_config: None,
+            show_help: false,
+            show_midi_ports: false,
+            midi_port_list: Vec::new(),
+            midi_input_port_list: Vec::new(),
             show_instrument_list: false,
             selected_instrument: None,
-            show_synth_editor: None,
-            show_sample_editor: None,
             slice_count: 8,
             slice_sensitivity: 0.5,
             show_pattern_matrix: false,
             matrix_cursor: 0,
+            recent_files: rtrack_core::config::load_recent_files(),
             theme: Theme::Dark,
             grid_colors: GridColors::dark(),
+            last_autosave: Instant::now(),
         }
     }
 
@@ -108,12 +123,12 @@ impl RtrackApp {
         self.theme = theme;
         self.grid_colors = GridColors::for_theme(theme);
         match theme {
-            Theme::Dark => ctx.set_theme(egui::Theme::Dark),
+            Theme::Dark | Theme::Monokai => ctx.set_theme(egui::Theme::Dark),
             Theme::Light => ctx.set_theme(egui::Theme::Light),
         }
     }
 
-    fn current_order_position(&self) -> usize {
+    pub(crate) fn current_order_position(&self) -> usize {
         if self.core.playing {
             self.core.engine.order
         } else {
@@ -137,6 +152,14 @@ impl eframe::App for RtrackApp {
             ctx.request_repaint();
         }
         self.core.expire_preview_note();
+
+        // Poll MIDI input
+        self.poll_midi_input();
+
+        // Auto-save
+        if let Some(err) = self.core.auto_save(&mut self.last_autosave) {
+            self.status_message = Some(err);
+        }
 
         // Process keyboard input
         self.process_keys(ctx);

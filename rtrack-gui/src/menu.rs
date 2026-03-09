@@ -2,7 +2,7 @@ use rtrack_core::TrackerCore;
 use rtrack_core::tracker::Cell;
 
 use crate::app::RtrackApp;
-use crate::state::{SubColumn, Theme};
+use crate::state::SubColumn;
 
 impl RtrackApp {
     pub fn draw_menu_bar(&mut self, ctx: &egui::Context) {
@@ -38,6 +38,8 @@ impl RtrackApp {
                                     self.reset_cursor_state();
                                     self.history.clear();
                                     self.clipboard = None;
+                                    rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                                    rtrack_core::config::save_recent_files(&self.recent_files);
                                     self.status_message = Some(msg);
                                 }
                                 Err(msg) => {
@@ -61,6 +63,48 @@ impl RtrackApp {
                             self.core.file_path = Some(path);
                             self.do_save();
                         }
+                    }
+
+                    if ui.button("Load SF2...").clicked() {
+                        ui.close_menu();
+                        self.draw_load_sf2();
+                    }
+
+                    if ui.button("Load Sample Dir...").clicked() {
+                        ui.close_menu();
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            match self.core.load_sample_directory(&dir) {
+                                Ok(msg) => self.status_message = Some(msg),
+                                Err(msg) => self.status_message = Some(msg),
+                            }
+                        }
+                    }
+
+                    if !self.recent_files.is_empty() {
+                        ui.separator();
+                        ui.menu_button("Recent Files", |ui| {
+                            let files: Vec<_> = self.recent_files.clone();
+                            for path in &files {
+                                let label = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("?");
+                                if ui.button(label).clicked() {
+                                    match self.core.load_file(path) {
+                                        Ok(msg) => {
+                                            self.reset_cursor_state();
+                                            self.history.clear();
+                                            self.clipboard = None;
+                                            self.status_message = Some(msg);
+                                        }
+                                        Err(msg) => {
+                                            self.status_message = Some(msg);
+                                        }
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                     }
 
                     ui.separator();
@@ -168,10 +212,6 @@ impl RtrackApp {
                     }
                 });
 
-                let theme_label = match self.theme {
-                    Theme::Dark => "Switch to Light",
-                    Theme::Light => "Switch to Dark",
-                };
                 ui.menu_button("View", |ui| {
                     if ui.button("Instruments  (F7)").clicked() {
                         self.show_instrument_list = !self.show_instrument_list;
@@ -189,7 +229,20 @@ impl RtrackApp {
                         }
                         ui.close_menu();
                     }
+                    if ui.button("Help  (F1)").clicked() {
+                        self.show_help = !self.show_help;
+                        ui.close_menu();
+                    }
+                    if ui.button("MIDI Ports  (F2)").clicked() {
+                        self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
+                            .unwrap_or_default();
+                        self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
+                            .unwrap_or_default();
+                        self.show_midi_ports = true;
+                        ui.close_menu();
+                    }
                     ui.separator();
+                    let theme_label = format!("Theme: {} (F8)", self.theme.label());
                     if ui.button(theme_label).clicked() {
                         let new_theme = self.theme.toggle();
                         self.set_theme(ctx, new_theme);
@@ -203,6 +256,10 @@ impl RtrackApp {
     pub fn do_save(&mut self) {
         match self.core.save() {
             Ok(msg) => {
+                if let Some(ref path) = self.core.file_path {
+                    rtrack_core::config::push_recent_file(&mut self.recent_files, path);
+                    rtrack_core::config::save_recent_files(&self.recent_files);
+                }
                 self.status_message = Some(msg);
             }
             Err(msg) => {

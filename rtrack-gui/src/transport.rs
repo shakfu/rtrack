@@ -8,6 +8,8 @@ const STOP_COLOR: Color32 = Color32::from_rgb(200, 200, 200);
 const RECORD_COLOR: Color32 = Color32::from_rgb(255, 80, 80);
 const MODE_NORMAL_COLOR: Color32 = Color32::from_rgb(100, 180, 255);
 const MODE_INSERT_COLOR: Color32 = Color32::from_rgb(255, 100, 100);
+const LINK_COLOR: Color32 = Color32::from_rgb(100, 220, 160);
+const LINK_DIM_COLOR: Color32 = Color32::from_rgb(80, 140, 100);
 
 impl RtrackApp {
     pub fn draw_transport(&mut self, ui: &mut Ui) {
@@ -29,7 +31,7 @@ impl RtrackApp {
 
             ui.separator();
 
-            // Play/Stop button -- larger and more prominent
+            // Play/Stop button
             let play_btn = egui::Button::new(
                 RichText::new(if self.core.playing {
                     "[ Stop ]"
@@ -61,7 +63,7 @@ impl RtrackApp {
 
             ui.separator();
 
-            // BPM -- interactive drag value
+            // BPM
             let prev_bpm = self.core.song.bpm;
             ui.add(
                 DragValue::new(&mut self.core.song.bpm)
@@ -72,7 +74,7 @@ impl RtrackApp {
                 self.core.link.set_tempo(self.core.song.bpm as f64);
             }
 
-            // Speed -- interactive drag value
+            // Speed
             ui.add(
                 DragValue::new(&mut self.core.song.speed)
                     .range(1..=31)
@@ -121,14 +123,30 @@ impl RtrackApp {
                 );
             }
 
+            // Playback time
+            let elapsed = self.core.timing.playback_elapsed;
+            let mins = (elapsed / 60.0) as u32;
+            let secs = (elapsed % 60.0) as u32;
+            let time_color = if self.core.playing {
+                Color32::from_rgb(200, 200, 200)
+            } else {
+                Color32::from_rgb(100, 100, 120)
+            };
+            ui.label(
+                RichText::new(format!("{}:{:02}", mins, secs))
+                    .monospace()
+                    .size(13.0)
+                    .color(time_color),
+            );
+
             ui.separator();
 
-            // Octave -- interactive drag value
+            // Octave
             let mut oct = self.current_octave as i32;
             ui.add(DragValue::new(&mut oct).range(0..=9).prefix("Oct:"));
             self.current_octave = oct as u8;
 
-            // Edit step -- interactive drag value
+            // Edit step
             let mut step = self.edit_step as i32;
             ui.add(DragValue::new(&mut step).range(0..=16).prefix("Step:"));
             self.edit_step = step as usize;
@@ -166,6 +184,41 @@ impl RtrackApp {
                         .size(12.0)
                         .color(Color32::from_rgb(180, 180, 100)),
                 );
+            }
+
+            // Link status
+            if self.core.link.is_enabled() {
+                let peers = self.core.link.num_peers();
+                let (link_text, color) = if peers > 0 {
+                    (format!("LINK:{}", peers), LINK_COLOR)
+                } else {
+                    ("LINK".to_string(), LINK_DIM_COLOR)
+                };
+                if ui.add(
+                    egui::Button::new(
+                        RichText::new(link_text)
+                            .monospace()
+                            .size(12.0)
+                            .color(color),
+                    )
+                    .frame(false),
+                ).clicked() {
+                    self.core.toggle_link();
+                    self.status_message = Some("Link disabled".to_string());
+                }
+            } else {
+                if ui.add(
+                    egui::Button::new(
+                        RichText::new("LINK")
+                            .monospace()
+                            .size(12.0)
+                            .color(Color32::from_rgb(80, 80, 100)),
+                    )
+                    .frame(false),
+                ).clicked() {
+                    self.core.toggle_link();
+                    self.status_message = Some("Link enabled".to_string());
+                }
             }
         });
     }

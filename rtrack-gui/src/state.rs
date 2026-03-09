@@ -10,13 +10,23 @@ pub enum Mode {
 pub enum Theme {
     Dark,
     Light,
+    Monokai,
 }
 
 impl Theme {
     pub fn toggle(self) -> Self {
         match self {
             Theme::Dark => Theme::Light,
-            Theme::Light => Theme::Dark,
+            Theme::Light => Theme::Monokai,
+            Theme::Monokai => Theme::Dark,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+            Theme::Monokai => "Monokai",
         }
     }
 }
@@ -100,10 +110,37 @@ impl GridColors {
         }
     }
 
+    pub fn monokai() -> Self {
+        Self {
+            bg_normal: Color32::from_rgb(39, 40, 34),
+            bg_cursor_row: Color32::from_rgb(55, 56, 48),
+            bg_playback_row: Color32::from_rgb(70, 50, 35),
+            bg_cursor_cell: Color32::from_rgb(73, 72, 62),
+            bg_beat: Color32::from_rgb(43, 44, 37),
+            bg_bar: Color32::from_rgb(49, 50, 42),
+            bg_block: Color32::from_rgba_premultiplied(102, 217, 239, 50),
+
+            fg_row_num: Color32::from_rgb(117, 113, 94),
+            fg_row_bar: Color32::from_rgb(150, 146, 128),
+            fg_note_set: Color32::from_rgb(102, 217, 239),   // cyan
+            fg_note_empty: Color32::from_rgb(60, 60, 54),
+            fg_inst_set: Color32::from_rgb(230, 219, 116),    // yellow
+            fg_inst_empty: Color32::from_rgb(60, 60, 54),
+            fg_vol_set: Color32::from_rgb(166, 226, 46),      // green
+            fg_vol_empty: Color32::from_rgb(60, 60, 54),
+            fg_fx_set: Color32::from_rgb(249, 38, 114),       // pink/red
+            fg_fx_empty: Color32::from_rgb(60, 60, 54),
+            fg_separator: Color32::from_rgb(60, 60, 54),
+            fg_muted: Color32::from_rgb(55, 55, 48),
+            fg_header: Color32::from_rgb(248, 248, 242),
+        }
+    }
+
     pub fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Dark => Self::dark(),
             Theme::Light => Self::light(),
+            Theme::Monokai => Self::monokai(),
         }
     }
 }
