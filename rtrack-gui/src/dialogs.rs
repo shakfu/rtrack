@@ -146,6 +146,7 @@ impl RtrackApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("Quit without saving").clicked() {
+                        self.core.dirty = false;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("Cancel").clicked() {

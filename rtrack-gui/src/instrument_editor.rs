@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use rtrack_core::audio::synth::{FilterType, Patch, SynthParams};
 use rtrack_core::constants::MAX_INSTRUMENTS;
-use rtrack_core::sample::Sample;
 use rtrack_core::Instrument;
 
 use crate::app::RtrackApp;
@@ -687,22 +686,6 @@ impl RtrackApp {
                     self.core.dirty = true;
                 }
 
-                // Slicing section
-                ui.separator();
-                ui.heading("Slicing");
-                ui.horizontal(|ui| {
-                    ui.label("Slices:");
-                    ui.add(egui::DragValue::new(&mut self.slice_count).range(2..=64));
-                    if ui.button("Slice Equal").clicked() {
-                        self.do_equal_slice(idx, slot);
-                    }
-                    ui.separator();
-                    ui.label("Sensitivity:");
-                    ui.add(egui::Slider::new(&mut self.slice_sensitivity, 0.0..=1.0));
-                    if ui.button("Slice Transients").clicked() {
-                        self.do_transient_slice(idx, slot);
-                    }
-                });
             } else {
                 ui.label("No sample loaded. Click 'Load Sample' above.");
             }
@@ -746,33 +729,48 @@ impl RtrackApp {
         None
     }
 
-    fn do_equal_slice(&mut self, inst_idx: usize, slot: usize) {
+    pub(crate) fn do_equal_slice(&mut self, _inst_idx: usize, slot: usize) {
         let num_slices = self.slice_count;
-        let slices = {
+        let (base_name, data_len) = {
             let sample = match self.core.sample_bank.get(slot) {
                 Some(s) => s,
                 None => return,
             };
-            rtrack_core::sample::slice_equal(sample, num_slices)
+            (strip_slice_suffix(&sample.name).to_string(), sample.data.len())
         };
-
-        if slices.is_empty() {
-            self.status_message = Some("No slices produced".to_string());
+        if data_len == 0 || num_slices == 0 {
+            self.status_message = Some("Cannot slice: empty sample".to_string());
+            return;
+        }
+        let slice_len = data_len / num_slices;
+        if slice_len == 0 {
+            self.status_message = Some("Slices too small".to_string());
             return;
         }
 
-        self.insert_slices(inst_idx, slot, slices);
+        // Always slice the full data range (non-destructive)
+        let mut points = Vec::with_capacity(num_slices + 1);
+        for i in 0..num_slices {
+            points.push(i * slice_len);
+        }
+        points.push(data_len);
+
+        self.apply_trim_slices(slot, &base_name, &points);
     }
 
-    fn do_transient_slice(&mut self, inst_idx: usize, slot: usize) {
+    pub(crate) fn do_transient_slice(&mut self, _inst_idx: usize, slot: usize) {
         let sensitivity = self.slice_sensitivity;
-        let (points, sample_clone) = {
+        let (base_name, data_len, points) = {
             let sample = match self.core.sample_bank.get(slot) {
                 Some(s) => s,
                 None => return,
             };
-            let pts = rtrack_core::sample::detect_transients(sample, sensitivity);
-            (pts, sample.clone())
+            // Always detect transients over the full data range (non-destructive)
+            let pts = rtrack_core::sample::detect_transients_range(
+                sample, sensitivity, 0, sample.data.len(),
+            );
+            let base = strip_slice_suffix(&sample.name);
+            (base.to_string(), sample.data.len(), pts)
         };
 
         if points.is_empty() {
@@ -780,34 +778,54 @@ impl RtrackApp {
             return;
         }
 
-        let slices = rtrack_core::sample::slice_at_points(&sample_clone, &points);
-        if slices.is_empty() {
+        // Build boundary list: detected points + end of full data
+        let mut boundaries = points;
+        boundaries.push(data_len);
+
+        self.apply_trim_slices(slot, &base_name, &boundaries);
+    }
+
+    /// Apply slices using trim bounds on the full sample data (no data copying).
+    /// `boundaries` contains N+1 frame positions: [slice0_start, slice1_start, ..., last_slice_end].
+    fn apply_trim_slices(
+        &mut self,
+        start_slot: usize,
+        base_name: &str,
+        boundaries: &[usize],
+    ) {
+        if boundaries.len() < 2 {
             self.status_message = Some("No slices produced".to_string());
             return;
         }
-
-        self.insert_slices(inst_idx, slot, slices);
-    }
-
-    fn insert_slices(&mut self, _inst_idx: usize, start_slot: usize, slices: Vec<Sample>) {
+        let num_slices = boundaries.len() - 1;
         let mut bank = (*self.core.sample_bank).clone();
-        let num = slices.len();
         let max_slot = bank.samples.len();
 
-        for (i, slice) in slices.into_iter().enumerate() {
+        // Get the full sample data from the source slot
+        let full_sample = match bank.samples[start_slot].clone() {
+            Some(s) => s,
+            None => return,
+        };
+
+        for i in 0..num_slices {
             let target_slot = start_slot + i;
             if target_slot >= max_slot {
                 break;
             }
-            let slice_name = slice.name.clone();
-            bank.samples[target_slot] = Some(slice);
+            let slice_name = format!("{}_S{:02}", base_name, i);
+
+            // Each slot gets the full sample data with trim bounds for its slice
+            let mut slot_sample = full_sample.clone();
+            slot_sample.name = slice_name.clone();
+            slot_sample.trim_start = boundaries[i];
+            slot_sample.trim_end = boundaries[i + 1];
+            slot_sample.loop_enabled = false;
+            bank.samples[target_slot] = Some(slot_sample);
 
             if target_slot < self.core.instruments.len() {
                 let inst = &mut self.core.instruments[target_slot];
-                if inst.name.is_empty() || target_slot != start_slot {
-                    inst.name = slice_name;
-                    inst.sample_index = Some(target_slot);
-                }
+                inst.name = slice_name;
+                inst.sample_index = Some(target_slot);
             }
         }
 
@@ -818,9 +836,26 @@ impl RtrackApp {
         self.core.dirty = true;
         self.status_message = Some(format!(
             "Created {} slices starting at slot {:02X}",
-            num, start_slot
+            num_slices, start_slot
         ));
     }
+}
+
+/// Strip existing _Sxx slice suffixes from a sample name to get the base name.
+/// e.g., "amen_S00_S01" -> "amen", "amen_S03" -> "amen", "amen" -> "amen"
+fn strip_slice_suffix(name: &str) -> &str {
+    let mut s = name;
+    while s.len() >= 4 {
+        let tail = &s[s.len() - 4..];
+        if tail.starts_with("_S")
+            && tail[2..].chars().all(|c| c.is_ascii_digit())
+        {
+            s = &s[..s.len() - 4];
+        } else {
+            break;
+        }
+    }
+    s
 }
 
 /// Downsample stereo audio data to peak values for waveform display.

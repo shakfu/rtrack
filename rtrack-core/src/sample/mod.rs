@@ -473,10 +473,19 @@ pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
 
 /// Detect transient onsets in a sample using energy envelope derivative.
 /// `sensitivity` ranges from 0.0 (fewer slices) to 1.0 (more slices).
-/// Returns frame indices of detected transients (always includes frame 0).
+/// Returns frame indices of detected transients (always includes the start frame).
+/// Uses the sample's trim region as the detection range.
 pub fn detect_transients(sample: &Sample, sensitivity: f32) -> Vec<usize> {
-    let start = sample.trim_start;
-    let end = sample.end();
+    detect_transients_range(sample, sensitivity, sample.trim_start, sample.end())
+}
+
+/// Like `detect_transients`, but with an explicit frame range.
+pub fn detect_transients_range(
+    sample: &Sample,
+    sensitivity: f32,
+    start: usize,
+    end: usize,
+) -> Vec<usize> {
     if end <= start {
         return vec![0];
     }

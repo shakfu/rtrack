@@ -30,6 +30,20 @@ pub enum VisTab {
     Samples,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SliceMode {
+    Equal,
+    Transient,
+}
+
+/// Action to apply slices (consumed by app).
+pub struct SliceAction {
+    pub slot: usize,
+    pub mode: SliceMode,
+    pub count: usize,
+    pub sensitivity: f32,
+}
+
 /// State for the spectrum analyzer, level meters, and sample viewer.
 pub struct VisualizationState {
     // Tab
@@ -50,6 +64,18 @@ pub struct VisualizationState {
     /// Set when a slot button is clicked (consumed by app to trigger preview).
     pub preview_slot: Option<usize>,
     cached_voice_snapshots: Vec<VoiceSnapshot>,
+
+    // Slicing controls
+    pub slice_mode: SliceMode,
+    pub slice_count: usize,
+    pub slice_sensitivity: f32,
+    preview_slice_points: Vec<usize>,
+    /// Set when parameters change (consumed by app to commit slices).
+    pub pending_slice_action: Option<SliceAction>,
+    /// The base slot slicing operates on (first slot of the sample, not the viewed slot).
+    slice_source_slot: Option<usize>,
+    // Change tracking for auto-apply (mode, count, sensitivity_bits -- NOT slot)
+    last_applied: Option<(SliceMode, usize, u32)>,
 }
 
 impl VisualizationState {
@@ -73,6 +99,13 @@ impl VisualizationState {
             selected_sample_slot: None,
             preview_slot: None,
             cached_voice_snapshots: Vec::new(),
+            slice_mode: SliceMode::Equal,
+            slice_count: 8,
+            slice_sensitivity: 0.5,
+            preview_slice_points: Vec::new(),
+            pending_slice_action: None,
+            slice_source_slot: None,
+            last_applied: None,
         }
     }
 
@@ -241,7 +274,7 @@ impl VisualizationState {
         });
     }
 
-    fn draw_samples_tab(&self, ui: &mut Ui, sample_bank: &Arc<SampleBank>) {
+    fn draw_samples_tab(&mut self, ui: &mut Ui, sample_bank: &Arc<SampleBank>) {
         let slot = match self.selected_sample_slot {
             Some(s) => s,
             None => {
@@ -294,7 +327,7 @@ impl VisualizationState {
             .map(|v| (v.position, v.sample_index == slot))
             .collect();
 
-        // Collect slice boundaries from related slots for drawing dividers
+        // Collect committed slice boundaries from related slots
         let slice_boundaries: Vec<(usize, usize)> = if related_slots.len() > 1 {
             related_slots
                 .iter()
@@ -306,12 +339,107 @@ impl VisualizationState {
             Vec::new()
         };
 
+        // Slicing controls row
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.slice_mode, SliceMode::Equal, "Equal");
+            ui.selectable_value(&mut self.slice_mode, SliceMode::Transient, "Transient");
+            ui.separator();
+            match self.slice_mode {
+                SliceMode::Equal => {
+                    ui.label("Slices:");
+                    ui.add(egui::DragValue::new(&mut self.slice_count).range(2..=64));
+                }
+                SliceMode::Transient => {
+                    ui.label("Sensitivity:");
+                    ui.add(
+                        egui::Slider::new(&mut self.slice_sensitivity, 0.01..=1.0)
+                            .max_decimals(2),
+                    );
+                }
+            }
+            let num = self.preview_slice_points.len() + 1;
+            ui.label(
+                egui::RichText::new(format!("({} slices)", num))
+                    .color(Color32::from_rgb(0, 220, 220)),
+            );
+        });
+
+        // Determine the source slot for slicing (first related slot, stable across clicks)
+        let source_slot = if let Some(ss) = self.slice_source_slot {
+            if related_slots.contains(&ss) {
+                ss
+            } else {
+                // Source slot no longer related (different sample), reset
+                let first = *related_slots.first().unwrap_or(&slot);
+                self.slice_source_slot = Some(first);
+                self.last_applied = None;
+                first
+            }
+        } else {
+            let first = *related_slots.first().unwrap_or(&slot);
+            self.slice_source_slot = Some(first);
+            first
+        };
+
+        // Use the source slot's sample for slicing (always has full data)
+        let source_sample = sample_bank.get(source_slot).unwrap_or(sample);
+        let full_len = source_sample.len();
+
+        // Compute preview slice positions over full data range
+        self.preview_slice_points.clear();
+        if full_len > 0 {
+            match self.slice_mode {
+                SliceMode::Equal => {
+                    for i in 1..self.slice_count {
+                        self.preview_slice_points
+                            .push((i * full_len) / self.slice_count);
+                    }
+                }
+                SliceMode::Transient => {
+                    let pts = rtrack_core::sample::detect_transients_range(
+                        source_sample,
+                        self.slice_sensitivity,
+                        0,
+                        full_len,
+                    );
+                    // Skip the first point (always 0)
+                    for &p in pts.iter().skip(1) {
+                        self.preview_slice_points.push(p);
+                    }
+                }
+            }
+        }
+
+        // Auto-apply: emit action when slice PARAMETERS change (not when view slot changes)
+        let current_key = (
+            self.slice_mode,
+            self.slice_count,
+            self.slice_sensitivity.to_bits(),
+        );
+        if self.last_applied != Some(current_key) {
+            self.last_applied = Some(current_key);
+            self.pending_slice_action = Some(SliceAction {
+                slot: source_slot,
+                mode: self.slice_mode,
+                count: self.slice_count,
+                sensitivity: self.slice_sensitivity,
+            });
+        }
+
+        // Waveform
         let avail = ui.available_size();
         let (response, painter) =
             ui.allocate_painter(Vec2::new(avail.x, avail.y), egui::Sense::hover());
         let rect = response.rect;
 
-        draw_sample_waveform(&painter, rect, sample, &voice_positions, &slice_boundaries);
+        draw_sample_waveform(
+            &painter,
+            rect,
+            sample,
+            &voice_positions,
+            &slice_boundaries,
+            &self.preview_slice_points,
+        );
     }
 }
 
@@ -410,13 +538,15 @@ fn draw_meter(painter: &Painter, rect: Rect, level: f32, peak: f32, label: &str)
 
 /// Draw a sample waveform with trim/loop markers and playback positions.
 /// `voice_positions` contains (position, is_selected_slot) tuples.
-/// `slice_boundaries` contains (trim_start, trim_end) for all related slots (for drawing dividers).
+/// `slice_boundaries` contains (trim_start, trim_end) for all related slots (committed dividers).
+/// `preview_slices` contains frame positions for live preview slice markers.
 fn draw_sample_waveform(
     painter: &Painter,
     rect: Rect,
     sample: &rtrack_core::sample::Sample,
     voice_positions: &[(f64, bool)],
     slice_boundaries: &[(usize, usize)],
+    preview_slices: &[usize],
 ) {
     painter.rect_filled(rect, 0.0, Color32::from_rgb(15, 15, 20));
 
@@ -535,6 +665,20 @@ fn draw_sample_waveform(
             [pos2(le, rect.top()), pos2(le, rect.bottom())],
             Stroke::new(1.0, loop_color),
         );
+    }
+
+    // Preview slice markers (live, from slicing controls)
+    if !preview_slices.is_empty() {
+        let preview_color = Color32::from_rgb(0, 220, 220);
+        for &p in preview_slices {
+            let x = rect.left() + (p as f32 / total_len as f32) * w;
+            if x >= rect.left() && x <= rect.right() {
+                painter.line_segment(
+                    [pos2(x, rect.top()), pos2(x, rect.bottom())],
+                    Stroke::new(1.0, preview_color),
+                );
+            }
+        }
     }
 
     // Playback position indicators

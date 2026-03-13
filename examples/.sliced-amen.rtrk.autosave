@@ -357,12 +357,12 @@
     },
     {
       "slot": 1,
-      "name": "amen_S00_S00_S01",
+      "name": "amen_S01",
       "sample_index": 1
     },
     {
       "slot": 2,
-      "name": "amen_S00_S00_S01_S01",
+      "name": "amen_S02",
       "sample_index": 2
     },
     {
@@ -372,12 +372,12 @@
     },
     {
       "slot": 4,
-      "name": "amen_S03_S01",
+      "name": "amen_S04",
       "sample_index": 4
     },
     {
       "slot": 5,
-      "name": "amen_S03_S02",
+      "name": "amen_S05",
       "sample_index": 5
     },
     {
@@ -387,127 +387,191 @@
     },
     {
       "slot": 7,
-      "name": "amen_S06_S01",
+      "name": "amen_S07",
       "sample_index": 7
     },
     {
       "slot": 8,
-      "name": "amen_S06_S02",
+      "name": "amen_S08",
       "sample_index": 8
     },
     {
       "slot": 9,
-      "name": "amen_S06_S03",
+      "name": "amen_S09",
       "sample_index": 9
+    },
+    {
+      "slot": 10,
+      "name": "amen_S10",
+      "sample_index": 10
+    },
+    {
+      "slot": 11,
+      "name": "amen_S11",
+      "sample_index": 11
+    },
+    {
+      "slot": 12,
+      "name": "amen_S12",
+      "sample_index": 12
+    },
+    {
+      "slot": 13,
+      "name": "amen_S13",
+      "sample_index": 13
     }
   ],
   "sample_refs": [
     {
       "slot": 0,
-      "name": "amen_S00_S00_S00_S00_S00_S00",
+      "name": "amen_S00",
       "path": "data/amen.wav",
       "base_note": 60,
       "trim_start": 0,
-      "trim_end": 0,
+      "trim_end": 15400,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 1,
-      "name": "amen_S00_S00_S01_S00",
+      "name": "amen_S01",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 15400,
+      "trim_end": 38390,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 2,
-      "name": "amen_S00_S00_S01_S01_S00",
+      "name": "amen_S02",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 38390,
+      "trim_end": 45320,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 3,
-      "name": "amen_S03_S00",
+      "name": "amen_S03",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 23,
-      "trim_end": 165,
+      "trim_start": 45320,
+      "trim_end": 61050,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 4,
-      "name": "amen_S03_S01",
+      "name": "amen_S04",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 61050,
+      "trim_end": 75790,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 5,
-      "name": "amen_S03_S02",
+      "name": "amen_S05",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 75790,
+      "trim_end": 98890,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 6,
-      "name": "amen_S06_S00",
+      "name": "amen_S06",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 98890,
+      "trim_end": 120960,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 7,
-      "name": "amen_S06_S01",
+      "name": "amen_S07",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 98890,
+      "trim_end": 120960,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 8,
-      "name": "amen_S06_S02",
+      "name": "amen_S08",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 98890,
+      "trim_end": 120960,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 9,
-      "name": "amen_S06_S03",
+      "name": "amen_S09",
       "path": "data/amen.wav",
       "base_note": 60,
-      "trim_start": 0,
-      "trim_end": 0,
+      "trim_start": 98890,
+      "trim_end": 120960,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 10,
+      "name": "amen_S10",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 75790,
+      "trim_end": 90750,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 11,
+      "name": "amen_S11",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 90750,
+      "trim_end": 98890,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 12,
+      "name": "amen_S12",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 98890,
+      "trim_end": 102410,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 13,
+      "name": "amen_S13",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 102410,
+      "trim_end": 120960,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0

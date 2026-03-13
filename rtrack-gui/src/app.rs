@@ -228,6 +228,23 @@ impl eframe::App for RtrackApp {
                     self.core.preview_note_with_instrument(0, 60, 100, Some(slot as u8));
                 }
             }
+
+            // Apply slicing action from visualization panel
+            if let Some(action) = self.vis.pending_slice_action.take() {
+                use crate::visualization::SliceMode;
+                self.slice_count = action.count;
+                self.slice_sensitivity = action.sensitivity;
+                let inst_idx = self
+                    .core
+                    .instruments
+                    .iter()
+                    .position(|i| i.sample_index == Some(action.slot))
+                    .unwrap_or(action.slot);
+                match action.mode {
+                    SliceMode::Equal => self.do_equal_slice(inst_idx, action.slot),
+                    SliceMode::Transient => self.do_transient_slice(inst_idx, action.slot),
+                }
+            }
         }
 
         if self.show_instrument_list {
