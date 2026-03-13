@@ -13,3 +13,4 @@ rtrack-core = { path = "../rtrack-core" }
 eframe = "0.31"
 egui = "0.31"
 rfd = "0.15"
+rustfft = "6"

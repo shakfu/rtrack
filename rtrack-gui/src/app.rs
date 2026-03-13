@@ -7,6 +7,7 @@ use rtrack_core::tracker::Cell;
 use crate::grid::{self, GridAction, GridParams};
 use crate::history::EditHistory;
 use crate::state::{GridColors, Mode, SubColumn, Theme};
+use crate::visualization::VisualizationState;
 
 pub struct RtrackApp {
     pub core: TrackerCore,
@@ -65,6 +66,10 @@ pub struct RtrackApp {
 
     // Auto-save
     pub last_autosave: Instant,
+
+    // Visualization
+    pub vis: VisualizationState,
+    pub show_visualization: bool,
 }
 
 impl RtrackApp {
@@ -116,6 +121,8 @@ impl RtrackApp {
             theme: Theme::Dark,
             grid_colors: GridColors::dark(),
             last_autosave: Instant::now(),
+            vis: VisualizationState::new(),
+            show_visualization: true,
         }
     }
 
@@ -155,6 +162,14 @@ impl eframe::App for RtrackApp {
 
         // Poll MIDI input
         self.poll_midi_input();
+
+        // Update visualization
+        self.vis.update(&mut self.core.audio);
+
+        // Request repaint for smooth visualization when audio is active
+        if self.show_visualization && self.core.audio.is_some() {
+            ctx.request_repaint();
+        }
 
         // Auto-save
         if let Some(err) = self.core.auto_save(&mut self.last_autosave) {
@@ -197,6 +212,23 @@ impl eframe::App for RtrackApp {
 
         // Dialogs
         self.draw_dialogs(ctx);
+
+        // Visualization panel (bottom)
+        if self.show_visualization {
+            let sample_bank = self.core.sample_bank.clone();
+            egui::TopBottomPanel::bottom("visualization")
+                .exact_height(140.0)
+                .show(ctx, |ui| {
+                    self.vis.draw(ui, &sample_bank);
+                });
+
+            // Preview sample slot on click (only when not playing)
+            if let Some(slot) = self.vis.preview_slot.take() {
+                if !self.core.playing {
+                    self.core.preview_note_with_instrument(0, 60, 100, Some(slot as u8));
+                }
+            }
+        }
 
         if self.show_instrument_list {
             // Instrument editor: sidebar panel + central panel

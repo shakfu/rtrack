@@ -1042,6 +1042,7 @@ impl TrackerCore {
                     match bank.load(entry.slot, &sample_path) {
                         Ok(()) => {
                             if let Some(ref mut sample) = bank.samples[entry.slot] {
+                                sample.name = entry.sample_ref.name.clone();
                                 sample.base_note = entry.sample_ref.base_note;
                                 sample.trim_start = entry.sample_ref.trim_start;
                                 sample.trim_end = entry.sample_ref.trim_end;

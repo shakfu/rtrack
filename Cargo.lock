@@ -3576,6 +3576,7 @@ dependencies = [
  "egui",
  "rfd",
  "rtrack-core",
+ "rustfft",
 ]
 
 [[package]]

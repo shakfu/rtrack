@@ -5,13 +5,13 @@ pub mod synth;
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
-use rtrb::{Producer, RingBuffer};
+use rtrb::{Consumer, Producer, RingBuffer};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
 use crate::audio::envelope::Envelope;
@@ -41,6 +41,21 @@ const MAX_CALLBACK_FRAMES: usize = 4096;
 /// Ring buffer capacity for audio commands. Must be large enough to hold all
 /// commands between audio callbacks (~5-10ms at typical buffer sizes).
 const COMMAND_QUEUE_CAPACITY: usize = 256;
+
+/// Ring buffer capacity for visualization samples (mono, L+R averaged).
+/// 8192 samples at 48kHz ~ 170ms, enough for several GUI frames.
+const VIS_BUFFER_CAPACITY: usize = 8192;
+
+/// Snapshot of a single active sample voice for UI visualization.
+#[derive(Clone, Debug)]
+pub struct VoiceSnapshot {
+    pub sample_index: usize,
+    pub position: f64,
+    pub channel: u8,
+    pub note: u8,
+    pub velocity: f32,
+    pub active: bool,
+}
 
 /// Commands sent from the UI thread to the audio thread via lock-free ring buffer.
 enum AudioCommand {
@@ -77,6 +92,12 @@ pub struct AudioEngine {
     effects_enabled: Arc<AtomicBool>,
     sample_rate: f64,
     _stream: Stream,
+
+    // Visualization data (read by UI thread)
+    peak_l: Arc<AtomicU32>,
+    peak_r: Arc<AtomicU32>,
+    vis_consumer: Consumer<f32>,
+    voice_snapshots: Arc<Mutex<Vec<VoiceSnapshot>>>,
 }
 
 impl AudioEngine {
@@ -146,6 +167,15 @@ impl AudioEngine {
         let effects_enabled = Arc::new(AtomicBool::new(true));
         let effects_flag = Arc::clone(&effects_enabled);
 
+        // Visualization: peak levels (f32 stored as u32 bits) + mono sample ring buffer
+        let peak_l = Arc::new(AtomicU32::new(0));
+        let peak_r = Arc::new(AtomicU32::new(0));
+        let peak_l_cb = Arc::clone(&peak_l);
+        let peak_r_cb = Arc::clone(&peak_r);
+        let (vis_producer, vis_consumer) = RingBuffer::new(VIS_BUFFER_CAPACITY);
+        let voice_snapshots: Arc<Mutex<Vec<VoiceSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
+        let voice_snapshots_cb = Arc::clone(&voice_snapshots);
+
         let stream_config: cpal::StreamConfig = config.into();
         let callback_has_sf2 = has_sf2;
         let callback_sr = sr_f64;
@@ -160,6 +190,7 @@ impl AudioEngine {
             let mut sample_bank = sample_bank;
             let mut send_buses = send_buses;
             let mut consumer = consumer;
+            let mut vis_producer = vis_producer;
             let mut scratch_left = vec![0.0f32; MAX_CALLBACK_FRAMES];
             let mut scratch_right = vec![0.0f32; MAX_CALLBACK_FRAMES];
             // Per-channel scratch buffers for channel effects
@@ -311,6 +342,40 @@ impl AudioEngine {
                                 data[base + ch] = 0.0;
                             }
                         }
+
+                        // Visualization: compute peak levels and push mono samples
+                        {
+                            let mut pl = 0.0f32;
+                            let mut pr = 0.0f32;
+                            for i in 0..frames {
+                                let l = left[i].abs();
+                                let r = right[i].abs();
+                                if l > pl { pl = l; }
+                                if r > pr { pr = r; }
+                                // Push mono (L+R average) to ring buffer, drop if full
+                                let mono = (left[i] + right[i]) * 0.5;
+                                let _ = vis_producer.push(mono);
+                            }
+                            peak_l_cb.store(pl.to_bits(), Ordering::Relaxed);
+                            peak_r_cb.store(pr.to_bits(), Ordering::Relaxed);
+                        }
+
+                        // Snapshot active sample voices for UI (non-blocking)
+                        if let Ok(mut snaps) = voice_snapshots_cb.try_lock() {
+                            snaps.clear();
+                            for v in &sample_engine.voices {
+                                if v.active {
+                                    snaps.push(VoiceSnapshot {
+                                        sample_index: v.sample_index,
+                                        position: v.position,
+                                        channel: v.channel,
+                                        note: v.note,
+                                        velocity: v.velocity,
+                                        active: v.active,
+                                    });
+                                }
+                            }
+                        }
                     },
                     |err| eprintln!("Audio stream error: {}", err),
                     None,
@@ -326,6 +391,10 @@ impl AudioEngine {
             effects_enabled,
             sample_rate: sr_f64,
             _stream: stream,
+            peak_l,
+            peak_r,
+            vis_consumer,
+            voice_snapshots,
         })
     }
 
@@ -434,6 +503,38 @@ impl AudioEngine {
 
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
+    }
+
+    /// Read peak levels (L, R) from the last audio callback. Values are 0.0..~1.0.
+    pub fn peak_levels(&self) -> (f32, f32) {
+        let l = f32::from_bits(self.peak_l.load(Ordering::Relaxed));
+        let r = f32::from_bits(self.peak_r.load(Ordering::Relaxed));
+        (l, r)
+    }
+
+    /// Get snapshots of currently active sample voices.
+    pub fn voice_snapshots(&self) -> Vec<VoiceSnapshot> {
+        self.voice_snapshots
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    /// Drain available visualization samples (mono) into the provided buffer.
+    /// Returns the number of samples read.
+    pub fn read_vis_samples(&mut self, buf: &mut Vec<f32>) -> usize {
+        let available = self.vis_consumer.slots();
+        let chunk = self.vis_consumer.read_chunk(available);
+        match chunk {
+            Ok(chunk) => {
+                let n = chunk.len();
+                buf.extend_from_slice(chunk.as_slices().0);
+                buf.extend_from_slice(chunk.as_slices().1);
+                chunk.commit_all();
+                n
+            }
+            Err(_) => 0,
+        }
     }
 }
 

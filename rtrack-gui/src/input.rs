@@ -44,6 +44,9 @@ impl RtrackApp {
             if input.key_pressed(Key::F3) {
                 actions.push(Action::ToggleLink);
             }
+            if input.key_pressed(Key::F4) {
+                actions.push(Action::ToggleVisualization);
+            }
             if input.key_pressed(Key::F7) {
                 actions.push(Action::ToggleInstrumentList);
             }
@@ -769,6 +772,9 @@ impl RtrackApp {
                     self.show_midi_ports = true;
                 }
             }
+            Action::ToggleVisualization => {
+                self.show_visualization = !self.show_visualization;
+            }
             Action::CycleTheme => unreachable!(),
             Action::ToggleBlockSelect => {
                 if self.block_start.is_some() {
@@ -1199,6 +1205,7 @@ enum Action {
     ToggleHelp,
     ToggleLink,
     ToggleMidiPorts,
+    ToggleVisualization,
     CycleTheme,
 }
 

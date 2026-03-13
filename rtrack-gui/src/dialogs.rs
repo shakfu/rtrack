@@ -596,6 +596,34 @@ impl RtrackApp {
                 });
 
                 ui.add_space(8.0);
+                ui.separator();
+
+                // Clock mode
+                ui.heading("Clock");
+                {
+                    use rtrack_core::ClockMode;
+                    let is_external = self.core.clock_mode == ClockMode::ExternalMidi;
+                    ui.horizontal(|ui| {
+                        ui.label("Source:");
+                        if ui.selectable_label(!is_external, "Internal").clicked() && is_external {
+                            self.core.toggle_clock_mode();
+                            self.status_message = Some("Clock: Internal".to_string());
+                        }
+                        if ui.selectable_label(is_external, "External MIDI").clicked() && !is_external {
+                            self.core.toggle_clock_mode();
+                            self.status_message = Some("Clock: External MIDI".to_string());
+                        }
+                    });
+
+                    // MIDI clock output toggle
+                    let mut clock_out = self.core.midi.clock_enabled;
+                    if ui.checkbox(&mut clock_out, "Send MIDI clock").changed() {
+                        let msg = self.core.toggle_midi_clock();
+                        self.status_message = Some(msg);
+                    }
+                }
+
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Refresh").clicked() {
                         self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()

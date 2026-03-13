@@ -1,10 +1,13 @@
-.PHONY: build run test test-unit test-integration fmt clippy lint clean
+.PHONY: build run gui test test-unit test-integration fmt clippy lint clean
 
 build:
 	cargo build --workspace
 
 run:
 	cargo run -p rtrack-tui
+
+gui:
+	cargo run -p rtrack-gui
 
 test:
 	cargo test --workspace

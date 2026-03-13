@@ -241,6 +241,15 @@ impl RtrackApp {
                         self.show_midi_ports = true;
                         ui.close_menu();
                     }
+                    let vis_label = if self.show_visualization {
+                        "Spectrum  (F4) [on]"
+                    } else {
+                        "Spectrum  (F4)"
+                    };
+                    if ui.button(vis_label).clicked() {
+                        self.show_visualization = !self.show_visualization;
+                        ui.close_menu();
+                    }
                     ui.separator();
                     let theme_label = format!("Theme: {} (F8)", self.theme.label());
                     if ui.button(theme_label).clicked() {

@@ -10,6 +10,8 @@ const MODE_NORMAL_COLOR: Color32 = Color32::from_rgb(100, 180, 255);
 const MODE_INSERT_COLOR: Color32 = Color32::from_rgb(255, 100, 100);
 const LINK_COLOR: Color32 = Color32::from_rgb(100, 220, 160);
 const LINK_DIM_COLOR: Color32 = Color32::from_rgb(80, 140, 100);
+const MIDI_CONNECTED_COLOR: Color32 = Color32::from_rgb(100, 200, 255);
+const MIDI_DIM_COLOR: Color32 = Color32::from_rgb(80, 80, 100);
 
 impl RtrackApp {
     pub fn draw_transport(&mut self, ui: &mut Ui) {
@@ -184,6 +186,66 @@ impl RtrackApp {
                         .size(12.0)
                         .color(Color32::from_rgb(180, 180, 100)),
                 );
+            }
+
+            // MIDI status indicator (clickable -- opens MIDI ports dialog)
+            {
+                let midi_out = self.core.midi.is_connected();
+                let midi_in = self.core.midi_input.is_connected();
+                let (midi_text, midi_color) = if midi_out && midi_in {
+                    ("MIDI:I/O", MIDI_CONNECTED_COLOR)
+                } else if midi_out {
+                    ("MIDI:OUT", MIDI_CONNECTED_COLOR)
+                } else if midi_in {
+                    ("MIDI:IN", MIDI_CONNECTED_COLOR)
+                } else {
+                    ("MIDI", MIDI_DIM_COLOR)
+                };
+                if ui.add(
+                    egui::Button::new(
+                        RichText::new(midi_text)
+                            .monospace()
+                            .size(12.0)
+                            .color(midi_color),
+                    )
+                    .frame(false),
+                ).clicked() {
+                    self.show_midi_ports = !self.show_midi_ports;
+                    if self.show_midi_ports {
+                        self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
+                            .unwrap_or_default();
+                        self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
+                            .unwrap_or_default();
+                    }
+                }
+            }
+
+            // Clock mode indicator
+            {
+                use rtrack_core::ClockMode;
+                let (clk_text, clk_color) = match self.core.clock_mode {
+                    ClockMode::Internal => ("INT", MIDI_DIM_COLOR),
+                    ClockMode::ExternalMidi => ("EXT", MIDI_CONNECTED_COLOR),
+                };
+                if ui.add(
+                    egui::Button::new(
+                        RichText::new(clk_text)
+                            .monospace()
+                            .size(12.0)
+                            .color(clk_color),
+                    )
+                    .frame(false)
+                ).on_hover_text(match self.core.clock_mode {
+                    ClockMode::Internal => "Clock: Internal (click to switch to External MIDI)",
+                    ClockMode::ExternalMidi => "Clock: External MIDI (click to switch to Internal)",
+                }).clicked() {
+                    self.core.toggle_clock_mode();
+                    let mode_name = match self.core.clock_mode {
+                        ClockMode::Internal => "Internal",
+                        ClockMode::ExternalMidi => "External MIDI",
+                    };
+                    self.status_message = Some(format!("Clock: {}", mode_name));
+                }
             }
 
             // Link status

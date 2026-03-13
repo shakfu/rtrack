@@ -9,6 +9,7 @@ mod pattern_matrix;
 mod sidebar;
 mod state;
 mod transport;
+mod visualization;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
