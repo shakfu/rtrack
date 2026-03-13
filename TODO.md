@@ -1,6 +1,24 @@
 # TODO
 
-## Low Priority (nice-to-have or high effort)
+## GUI - High Priority (editing workflow)
+
+- [ ] Synth parameter editor -- instrument list sidebar exists but no way to edit synth params (waveform, ADSR, filter cutoff/resonance)
+- [ ] Sample editor panel -- no way to edit trim points, loop start/end, base note; visualization shows waveforms but doesn't expose controls
+- [ ] Horizontal channel scrolling -- grid hard-codes all channels visible; >8 channels becomes unusably compressed
+
+## GUI - Medium Priority (workflow polish)
+
+- [ ] Keyboard shortcut help overlay -- quick-reference popup for discoverability
+- [ ] Timing/position display -- show MM:SS:CC elapsed time, pattern position (P: XX/XX), mode indicator in transport bar
+- [ ] Recording indicator -- visual feedback for record-armed state beyond the button
+
+## GUI - Lower Priority (nice to have)
+
+- [ ] Recent files in File menu
+- [ ] Drag-to-select pattern regions
+- [ ] Drag-and-drop sample loading
+
+## TUI - Low Priority (nice-to-have or high effort)
 
 - [ ] Header truncation handling on narrow terminals
 - [ ] Keybinding customization (config file with tracker presets)
