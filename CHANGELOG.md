@@ -7,14 +7,25 @@ All notable changes to rtrack will be documented in this file.
 ### Added (GUI Frontend - rtrack-gui)
 
 - Built egui/eframe GUI frontend as alternative to TUI, sharing TrackerCore
-  - Menu bar: File (New, Open, Save/Ctrl+S, Save As, Quit) and Edit (Undo, Redo, Copy, Cut, Paste) with native file dialogs via rfd
+  - Menu bar: File (New, Open, Save/Ctrl+S, Save As, Recent Files, Quit) and Edit (Undo, Redo, Copy, Cut, Paste) with native file dialogs via rfd
   - Pattern grid: custom Painter-based monospace text rendering with per-cell coloring, beat/bar highlighting, cursor tracking
   - Mouse interaction: click-to-position cursor in grid (row, channel, sub-column hit testing), scroll wheel navigation
+  - Drag-to-select: click and drag across the pattern grid to create block selections (rows x channels)
+  - Horizontal channel scrolling: grid auto-scrolls to keep cursor visible when channels exceed available width
+  - Drag-and-drop: drop WAV/AIFF files onto the window to load samples (targets selected instrument slot when editor is open, otherwise first empty slot); drop .rtrk files to open projects
+  - Real-time audio visualization: spectrum analyzer (FFT) and sample waveform viewer with voice position playheads
+  - Sample slicing: equal-segment and transient-detection slicing with live preview in the visualization panel, auto-applied on parameter change
+  - Instrument editor: sidebar list with synth parameter editor (patch selector, ADSR, filter, oscillator, FM), sample editor (load, trim, loop, base note, waveform preview), and MIDI program editor
   - Order list sidebar: clickable order entries with active highlight, append button, channel list with mute/solo toggles
-  - Interactive transport: DragValue widgets for BPM/Speed/Octave/Edit Step, styled Play/Stop button, Follow mode checkbox, pattern info display
+  - Interactive transport: DragValue widgets for BPM/Speed/Octave/Edit Step, styled Play/Stop button, Follow mode checkbox, pattern info display, elapsed time (MM:SS), recording indicator
   - Undo/redo: dual-stack edit history (100 levels) tracking cell edits across note entry, hex entry, clear, and note-off
-  - Clipboard: cut/copy/paste single cells (Ctrl+X/C/V)
+  - Clipboard: cut/copy/paste single cells and blocks (Ctrl+X/C/V)
   - Song settings dialog: editable title, BPM, speed, beat/bar highlights, swing; read-only channel/pattern/order info
+  - Help dialog (F1): keyboard shortcut quick-reference overlay
+  - Track config dialog: channel name, type, MIDI channel, instrument, volume, pan, per-channel effects with MIDI learn
+  - MIDI ports dialog: output/input port selection, virtual port creation, clock mode
+  - Pattern matrix: full-screen order list with pattern visualization
+  - Theme support: Dark, Light, Monokai (F8 to cycle)
   - Full keyboard input: piano mapping (z-m/q-u), hex digit entry, modal Normal/Insert modes
   - Dependencies: eframe 0.31, egui 0.31, rfd 0.15
 

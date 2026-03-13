@@ -23,7 +23,7 @@ Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout),
 cargo run -p rtrack-gui                  # launch GUI frontend
 ```
 
-The GUI provides the same tracker core with a graphical interface: menu bar with native file dialogs, clickable pattern grid, order list sidebar with channel mute/solo, interactive transport controls (drag to adjust BPM, speed, octave), undo/redo, clipboard, and a song settings dialog.
+The GUI provides the same tracker core with a graphical interface: menu bar with native file dialogs (including recent files), clickable pattern grid with drag-to-select block regions, horizontal channel scrolling, order list sidebar with channel mute/solo, interactive transport controls (drag to adjust BPM, speed, octave), real-time audio visualization (spectrum analyzer + sample waveform viewer with voice playheads), instrument editor (synth params, sample editor, slicing), undo/redo, clipboard, drag-and-drop sample loading, and multiple dialogs (song settings, track config, MIDI ports, help, pattern matrix).
 
 ### Offline Render
 
@@ -521,15 +521,17 @@ rtrack-tui/                 TUI frontend binary (default: `cargo run`)
 rtrack-gui/                 GUI frontend binary (`cargo run -p rtrack-gui`)
   src/
     main.rs                 eframe entry point
-    app.rs                  RtrackApp (wraps TrackerCore), eframe::App impl
-    grid.rs                 Pattern grid (custom Painter rendering, mouse interaction)
+    app.rs                  RtrackApp (wraps TrackerCore), eframe::App impl, drag-and-drop
+    grid.rs                 Pattern grid (custom Painter rendering, click/drag/scroll)
     input.rs                Keyboard handling (piano mapping, navigation, undo/redo)
-    transport.rs            Transport bar (DragValue BPM/speed/octave, play/stop/rec)
-    menu.rs                 Menu bar (File/Edit with native file dialogs via rfd)
+    transport.rs            Transport bar (DragValue BPM/speed/octave, play/stop/rec, timing)
+    menu.rs                 Menu bar (File/Edit with native file dialogs via rfd, recent files)
     sidebar.rs              Order list + channel mute/solo panel
+    instrument_editor.rs    Instrument list, synth params, sample editor, slicing
+    visualization.rs        Spectrum analyzer, waveform viewer, voice playheads, slice preview
     history.rs              Undo/redo edit history
-    dialogs.rs              Song settings dialog
-    state.rs                Mode, SubColumn enums
+    dialogs.rs              Song settings, track config, MIDI ports, help, quit confirm
+    state.rs                Mode, SubColumn, Theme, GridColors enums
 ```
 
 ## License

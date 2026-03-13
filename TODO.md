@@ -8,15 +8,15 @@
 
 ## GUI - Medium Priority (workflow polish)
 
-- [ ] Keyboard shortcut help overlay -- quick-reference popup for discoverability
-- [ ] Timing/position display -- show MM:SS:CC elapsed time, pattern position (P: XX/XX), mode indicator in transport bar
-- [ ] Recording indicator -- visual feedback for record-armed state beyond the button
+- [x] Keyboard shortcut help overlay -- implemented in dialogs.rs (F1 toggle)
+- [x] Timing/position display -- elapsed MM:SS in transport bar
+- [x] Recording indicator -- REC button in red when armed, gray when inactive
 
 ## GUI - Lower Priority (nice to have)
 
-- [ ] Recent files in File menu
-- [ ] Drag-to-select pattern regions
-- [ ] Drag-and-drop sample loading
+- [x] Recent files in File menu -- submenu under File
+- [x] Drag-to-select pattern regions
+- [x] Drag-and-drop sample loading
 
 ## TUI - Low Priority (nice-to-have or high effort)
 

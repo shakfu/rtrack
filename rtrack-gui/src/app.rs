@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rtrack_core::TrackerCore;
@@ -144,6 +145,92 @@ impl RtrackApp {
             self.edit_order
         }
     }
+
+    fn handle_dropped_files(&mut self, files: Vec<egui::DroppedFile>) {
+        let audio_exts = ["wav", "aif", "aiff"];
+        let rtrk_ext = "rtrk";
+        let mut loaded = 0usize;
+
+        for file in &files {
+            let path = match &file.path {
+                Some(p) => p.clone(),
+                None => continue,
+            };
+
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            if ext == rtrk_ext {
+                // Load as project file
+                match self.core.load_file(&path) {
+                    Ok(_msg) => {
+                        self.cursor_row = 0;
+                        self.cursor_channel = 0;
+                        self.edit_order = 0;
+                        self.first_visible_channel = 0;
+                        self.history = EditHistory::new(100);
+                        rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                        rtrack_core::config::save_recent_files(&self.recent_files);
+                        self.status_message =
+                            Some(format!("Loaded {}", path.display()));
+                    }
+                    Err(e) => {
+                        self.status_message =
+                            Some(format!("Error loading {}: {}", path.display(), e));
+                    }
+                }
+                return; // Only load one project file
+            }
+
+            if audio_exts.contains(&ext.as_str()) {
+                // If instrument editor is open with a selection, use that instrument's slot;
+                // otherwise find the first empty slot.
+                let slot = if self.show_instrument_list {
+                    self.selected_instrument
+                        .and_then(|idx| self.core.instruments.get(idx))
+                        .and_then(|inst| inst.sample_index)
+                        .unwrap_or_else(|| {
+                            self.selected_instrument.unwrap_or_else(|| {
+                                (0..self.core.sample_bank.samples.len())
+                                    .find(|&i| self.core.sample_bank.samples[i].is_none())
+                                    .unwrap_or(0)
+                            })
+                        })
+                } else {
+                    (0..self.core.sample_bank.samples.len())
+                        .find(|&i| self.core.sample_bank.samples[i].is_none())
+                        .unwrap_or(0)
+                };
+
+                let mut bank = (*self.core.sample_bank).clone();
+                match bank.load(slot, &path) {
+                    Ok(()) => {
+                        self.core.sample_bank = Arc::new(bank);
+                        if let Some(ref mut audio) = self.core.audio {
+                            audio.set_sample_bank(self.core.sample_bank.clone());
+                        }
+                        self.core.dirty = true;
+                        loaded += 1;
+                    }
+                    Err(e) => {
+                        self.status_message =
+                            Some(format!("Error loading {}: {}", path.display(), e));
+                    }
+                }
+            }
+        }
+
+        if loaded > 0 {
+            self.status_message = Some(format!(
+                "Loaded {} sample{}",
+                loaded,
+                if loaded == 1 { "" } else { "s" }
+            ));
+        }
+    }
 }
 
 impl eframe::App for RtrackApp {
@@ -176,6 +263,12 @@ impl eframe::App for RtrackApp {
         // Auto-save
         if let Some(err) = self.core.auto_save(&mut self.last_autosave) {
             self.status_message = Some(err);
+        }
+
+        // Handle dropped files (drag-and-drop sample loading)
+        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
+        if !dropped.is_empty() {
+            self.handle_dropped_files(dropped);
         }
 
         // Process keyboard input
@@ -340,6 +433,15 @@ impl eframe::App for RtrackApp {
                                 self.cursor_row.saturating_sub(rows.unsigned_abs() as usize)
                             };
                             self.cursor_row = new_row;
+                        }
+                        GridAction::DragStart { row, channel } => {
+                            self.cursor_row = row;
+                            self.cursor_channel = channel;
+                            self.block_start = Some((row, channel));
+                            self.block_end = Some((row, channel));
+                        }
+                        GridAction::DragUpdate { row, channel } => {
+                            self.block_end = Some((row, channel));
                         }
                     }
                 }

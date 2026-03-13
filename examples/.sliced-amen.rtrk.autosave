@@ -352,226 +352,770 @@
   "instruments": [
     {
       "slot": 0,
-      "name": "amen_S00",
+      "name": "cw_amen07_172_S00",
       "sample_index": 0
     },
     {
       "slot": 1,
-      "name": "amen_S01",
+      "name": "cw_amen07_172_S01",
       "sample_index": 1
     },
     {
       "slot": 2,
-      "name": "amen_S02",
+      "name": "cw_amen07_172_S02",
       "sample_index": 2
     },
     {
       "slot": 3,
-      "name": "amen_S03",
+      "name": "cw_amen07_172_S03",
       "sample_index": 3
     },
     {
       "slot": 4,
-      "name": "amen_S04",
+      "name": "cw_amen07_172_S04",
       "sample_index": 4
     },
     {
       "slot": 5,
-      "name": "amen_S05",
+      "name": "cw_amen07_172_S05",
       "sample_index": 5
     },
     {
       "slot": 6,
-      "name": "amen_S06",
+      "name": "cw_amen07_172_S06",
       "sample_index": 6
     },
     {
       "slot": 7,
-      "name": "amen_S07",
+      "name": "cw_amen07_172_S07",
       "sample_index": 7
     },
     {
       "slot": 8,
-      "name": "amen_S08",
+      "name": "cw_amen07_172_S08",
       "sample_index": 8
     },
     {
       "slot": 9,
-      "name": "amen_S09",
+      "name": "cw_amen07_172_S09",
       "sample_index": 9
     },
     {
       "slot": 10,
-      "name": "amen_S10",
+      "name": "cw_amen07_172_S10",
       "sample_index": 10
     },
     {
       "slot": 11,
-      "name": "amen_S11",
+      "name": "cw_amen07_172_S11",
       "sample_index": 11
     },
     {
       "slot": 12,
-      "name": "amen_S12",
+      "name": "cw_amen07_172_S12",
       "sample_index": 12
     },
     {
       "slot": 13,
-      "name": "amen_S13",
+      "name": "cw_amen07_172_S13",
       "sample_index": 13
+    },
+    {
+      "slot": 14,
+      "name": "cw_amen07_172_S14",
+      "sample_index": 14
+    },
+    {
+      "slot": 15,
+      "name": "cw_amen07_172_S15",
+      "sample_index": 15
+    },
+    {
+      "slot": 16,
+      "name": "cw_amen07_172_S16",
+      "sample_index": 16
+    },
+    {
+      "slot": 17,
+      "name": "cw_amen07_172_S17",
+      "sample_index": 17
+    },
+    {
+      "slot": 18,
+      "name": "cw_amen07_172_S18",
+      "sample_index": 18
+    },
+    {
+      "slot": 19,
+      "name": "cw_amen07_172_S19",
+      "sample_index": 19
+    },
+    {
+      "slot": 20,
+      "name": "cw_amen07_172_S20",
+      "sample_index": 20
+    },
+    {
+      "slot": 21,
+      "name": "cw_amen07_172_S21",
+      "sample_index": 21
+    },
+    {
+      "slot": 22,
+      "name": "cw_amen07_172_S22",
+      "sample_index": 22
+    },
+    {
+      "slot": 23,
+      "name": "cw_amen07_172_S23",
+      "sample_index": 23
+    },
+    {
+      "slot": 24,
+      "name": "cw_amen07_172_S24",
+      "sample_index": 24
+    },
+    {
+      "slot": 25,
+      "name": "cw_amen07_172_S25",
+      "sample_index": 25
+    },
+    {
+      "slot": 26,
+      "name": "cw_amen07_172_S26",
+      "sample_index": 26
+    },
+    {
+      "slot": 27,
+      "name": "cw_amen07_172_S27",
+      "sample_index": 27
+    },
+    {
+      "slot": 28,
+      "name": "cw_amen07_172_S28",
+      "sample_index": 28
+    },
+    {
+      "slot": 29,
+      "name": "cw_amen07_172_S29",
+      "sample_index": 29
+    },
+    {
+      "slot": 30,
+      "name": "cw_amen07_172_S30",
+      "sample_index": 30
+    },
+    {
+      "slot": 31,
+      "name": "cw_amen07_172_S31",
+      "sample_index": 31
+    },
+    {
+      "slot": 32,
+      "name": "cw_amen07_172_S32",
+      "sample_index": 32
+    },
+    {
+      "slot": 33,
+      "name": "cw_amen07_172_S33",
+      "sample_index": 33
+    },
+    {
+      "slot": 34,
+      "name": "cw_amen07_172_S34",
+      "sample_index": 34
+    },
+    {
+      "slot": 35,
+      "name": "cw_amen07_172_S35",
+      "sample_index": 35
+    },
+    {
+      "slot": 36,
+      "name": "cw_amen07_172_S36",
+      "sample_index": 36
+    },
+    {
+      "slot": 37,
+      "name": "cw_amen07_172_S37",
+      "sample_index": 37
+    },
+    {
+      "slot": 38,
+      "name": "cw_amen07_172_S38",
+      "sample_index": 38
+    },
+    {
+      "slot": 39,
+      "name": "cw_amen07_172_S39",
+      "sample_index": 39
+    },
+    {
+      "slot": 40,
+      "name": "cw_amen07_172_S40",
+      "sample_index": 40
+    },
+    {
+      "slot": 41,
+      "name": "cw_amen07_172_S41",
+      "sample_index": 41
+    },
+    {
+      "slot": 42,
+      "name": "cw_amen07_172_S42",
+      "sample_index": 42
+    },
+    {
+      "slot": 43,
+      "name": "cw_amen07_172_S43",
+      "sample_index": 43
+    },
+    {
+      "slot": 44,
+      "name": "cw_amen07_172_S44",
+      "sample_index": 44
+    },
+    {
+      "slot": 45,
+      "name": "cw_amen07_172_S45",
+      "sample_index": 45
+    },
+    {
+      "slot": 46,
+      "name": "cw_amen07_172_S46",
+      "sample_index": 46
+    },
+    {
+      "slot": 47,
+      "name": "cw_amen07_172_S47",
+      "sample_index": 47
     }
   ],
   "sample_refs": [
     {
       "slot": 0,
-      "name": "amen_S00",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S00",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
       "trim_start": 0,
-      "trim_end": 15400,
+      "trim_end": 15383,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 1,
-      "name": "amen_S01",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S01",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 15400,
-      "trim_end": 38390,
+      "trim_start": 15383,
+      "trim_end": 30766,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 2,
-      "name": "amen_S02",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S02",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 38390,
-      "trim_end": 45320,
+      "trim_start": 30766,
+      "trim_end": 46149,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 3,
-      "name": "amen_S03",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S03",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 45320,
-      "trim_end": 61050,
+      "trim_start": 46149,
+      "trim_end": 61532,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 4,
-      "name": "amen_S04",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S04",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 61050,
-      "trim_end": 75790,
+      "trim_start": 61532,
+      "trim_end": 76915,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 5,
-      "name": "amen_S05",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S05",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 75790,
-      "trim_end": 98890,
+      "trim_start": 76915,
+      "trim_end": 92298,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 6,
-      "name": "amen_S06",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S06",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 98890,
-      "trim_end": 120960,
+      "trim_start": 92298,
+      "trim_end": 107681,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 7,
-      "name": "amen_S07",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S07",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 98890,
-      "trim_end": 120960,
+      "trim_start": 107681,
+      "trim_end": 123069,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 8,
-      "name": "amen_S08",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S08",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 98890,
-      "trim_end": 120960,
+      "trim_start": 61600,
+      "trim_end": 79200,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 9,
-      "name": "amen_S09",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S09",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 98890,
-      "trim_end": 120960,
+      "trim_start": 79200,
+      "trim_end": 82500,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 10,
-      "name": "amen_S10",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S10",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 75790,
-      "trim_end": 90750,
+      "trim_start": 82500,
+      "trim_end": 92290,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 11,
-      "name": "amen_S11",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S11",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 90750,
-      "trim_end": 98890,
+      "trim_start": 92290,
+      "trim_end": 99880,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 12,
-      "name": "amen_S12",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S12",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 98890,
-      "trim_end": 102410,
+      "trim_start": 99880,
+      "trim_end": 102960,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0
     },
     {
       "slot": 13,
-      "name": "amen_S13",
-      "path": "data/amen.wav",
+      "name": "cw_amen07_172_S13",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
       "base_note": 60,
-      "trim_start": 102410,
-      "trim_end": 120960,
+      "trim_start": 102960,
+      "trim_end": 105600,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 14,
+      "name": "cw_amen07_172_S14",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 105600,
+      "trim_end": 115390,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 15,
+      "name": "cw_amen07_172_S15",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 16,
+      "name": "cw_amen07_172_S16",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 17,
+      "name": "cw_amen07_172_S17",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 18,
+      "name": "cw_amen07_172_S18",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 19,
+      "name": "cw_amen07_172_S19",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 20,
+      "name": "cw_amen07_172_S20",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107800,
+      "trim_end": 115390,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 21,
+      "name": "cw_amen07_172_S21",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 22,
+      "name": "cw_amen07_172_S22",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107690,
+      "trim_end": 115390,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 23,
+      "name": "cw_amen07_172_S23",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 24,
+      "name": "cw_amen07_172_S24",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107690,
+      "trim_end": 115390,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 25,
+      "name": "cw_amen07_172_S25",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 26,
+      "name": "cw_amen07_172_S26",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 104500,
+      "trim_end": 107690,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 27,
+      "name": "cw_amen07_172_S27",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107690,
+      "trim_end": 115390,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 28,
+      "name": "cw_amen07_172_S28",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115390,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 29,
+      "name": "cw_amen07_172_S29",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107690,
+      "trim_end": 115280,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 30,
+      "name": "cw_amen07_172_S30",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115280,
+      "trim_end": 118140,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 31,
+      "name": "cw_amen07_172_S31",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 118140,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 32,
+      "name": "cw_amen07_172_S32",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 99880,
+      "trim_end": 102190,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 33,
+      "name": "cw_amen07_172_S33",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 102190,
+      "trim_end": 104500,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 34,
+      "name": "cw_amen07_172_S34",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 104500,
+      "trim_end": 107030,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 35,
+      "name": "cw_amen07_172_S35",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107030,
+      "trim_end": 110770,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 36,
+      "name": "cw_amen07_172_S36",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 110770,
+      "trim_end": 115280,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 37,
+      "name": "cw_amen07_172_S37",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115280,
+      "trim_end": 117590,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 38,
+      "name": "cw_amen07_172_S38",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 117590,
+      "trim_end": 120780,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 39,
+      "name": "cw_amen07_172_S39",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 120780,
+      "trim_end": 123069,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 40,
+      "name": "cw_amen07_172_S40",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 102300,
+      "trim_end": 104830,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 41,
+      "name": "cw_amen07_172_S41",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 104830,
+      "trim_end": 107360,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 42,
+      "name": "cw_amen07_172_S42",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 107360,
+      "trim_end": 110110,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 43,
+      "name": "cw_amen07_172_S43",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 110110,
+      "trim_end": 112530,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 44,
+      "name": "cw_amen07_172_S44",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 112530,
+      "trim_end": 115280,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 45,
+      "name": "cw_amen07_172_S45",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 115280,
+      "trim_end": 117590,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 46,
+      "name": "cw_amen07_172_S46",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 117590,
+      "trim_end": 119900,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 47,
+      "name": "cw_amen07_172_S47",
+      "path": "/Users/sa/Music/samples/cw_amen07_172.wav",
+      "base_note": 60,
+      "trim_start": 119900,
+      "trim_end": 123069,
       "loop_enabled": false,
       "loop_start": 0,
       "loop_end": 0

@@ -13,6 +13,14 @@ pub enum GridAction {
     Scroll {
         rows: i32,
     },
+    DragStart {
+        row: usize,
+        channel: usize,
+    },
+    DragUpdate {
+        row: usize,
+        channel: usize,
+    },
 }
 
 const CHAR_WIDTH: f32 = 8.4;
@@ -63,7 +71,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
     let font = FontId::monospace(13.0);
     let available = ui.available_size();
     let (response, painter) =
-        ui.allocate_painter(available, egui::Sense::click());
+        ui.allocate_painter(available, egui::Sense::click_and_drag());
     let rect = response.rect;
     let c = &params.colors;
 
@@ -282,67 +290,80 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
         }
     }
 
-    // Click to set cursor
+    // Helper: convert pointer position to (row, channel, sub-column)
+    let hit_test = |pos: Pos2| -> Option<(usize, usize, SubColumn)> {
+        if pos.y < data_top {
+            return None;
+        }
+        let screen_row = ((pos.y - data_top) / ROW_HEIGHT) as usize;
+        let row_idx = start_row + screen_row;
+        if row_idx >= pattern.rows {
+            return None;
+        }
+
+        let channels_start_x =
+            rect.left() + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+        let channel_total_width =
+            (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+
+        let rel_x = pos.x - channels_start_x;
+        if rel_x < 0.0 {
+            return None;
+        }
+        let ch_offset = (rel_x / channel_total_width) as usize;
+        let ch_idx = first_ch + ch_offset;
+        if ch_idx >= last_ch {
+            return None;
+        }
+
+        let within_ch = rel_x - ch_offset as f32 * channel_total_width;
+        let note_end = NOTE_CHARS as f32 * CHAR_WIDTH;
+        let inst_start = (NOTE_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+        let inst_end = inst_start + INST_CHARS as f32 * CHAR_WIDTH;
+        let vol_start = inst_start + (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+        let vol_end = vol_start + VOL_CHARS as f32 * CHAR_WIDTH;
+        let fx_start = vol_start + (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+
+        let sub = if within_ch < note_end {
+            SubColumn::Note
+        } else if within_ch >= inst_start && within_ch < inst_end {
+            SubColumn::Instrument
+        } else if within_ch >= vol_start && within_ch < vol_end {
+            SubColumn::Volume
+        } else if within_ch >= fx_start {
+            SubColumn::Effect
+        } else if within_ch < inst_start {
+            SubColumn::Note
+        } else if within_ch < vol_start {
+            SubColumn::Instrument
+        } else {
+            SubColumn::Volume
+        };
+
+        Some((row_idx, ch_idx, sub))
+    };
+
+    // Click to set cursor (non-drag click)
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let click_y = pos.y;
-            let click_x = pos.x;
+            if let Some((row, channel, sub)) = hit_test(pos) {
+                actions.push(GridAction::SetCursor { row, channel, sub });
+            }
+        }
+    }
 
-            // Determine row
-            if click_y >= data_top {
-                let screen_row = ((click_y - data_top) / ROW_HEIGHT) as usize;
-                let row_idx = start_row + screen_row;
-                if row_idx < pattern.rows {
-                    // Determine channel and sub-column
-                    let channels_start_x =
-                        rect.left() + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-                    let channel_total_width =
-                        (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-
-                    let rel_x = click_x - channels_start_x;
-                    if rel_x >= 0.0 {
-                        let ch_offset = (rel_x / channel_total_width) as usize;
-                        let ch_idx = first_ch + ch_offset;
-
-                        if ch_idx < last_ch {
-                            // Determine sub-column within channel
-                            let within_ch = rel_x - ch_offset as f32 * channel_total_width;
-                            let note_end = NOTE_CHARS as f32 * CHAR_WIDTH;
-                            let inst_start = (NOTE_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
-                            let inst_end = inst_start + INST_CHARS as f32 * CHAR_WIDTH;
-                            let vol_start =
-                                inst_start + (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
-                            let vol_end = vol_start + VOL_CHARS as f32 * CHAR_WIDTH;
-                            let fx_start =
-                                vol_start + (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
-
-                            let sub = if within_ch < note_end {
-                                SubColumn::Note
-                            } else if within_ch >= inst_start && within_ch < inst_end {
-                                SubColumn::Instrument
-                            } else if within_ch >= vol_start && within_ch < vol_end {
-                                SubColumn::Volume
-                            } else if within_ch >= fx_start {
-                                SubColumn::Effect
-                            } else {
-                                // In a gap region, snap to nearest sub-column
-                                if within_ch < inst_start {
-                                    SubColumn::Note
-                                } else if within_ch < vol_start {
-                                    SubColumn::Instrument
-                                } else {
-                                    SubColumn::Volume
-                                }
-                            };
-
-                            actions.push(GridAction::SetCursor {
-                                row: row_idx,
-                                channel: ch_idx,
-                                sub,
-                            });
-                        }
-                    }
-                }
+    // Drag to select block
+    if response.drag_started() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some((row, channel, _sub)) = hit_test(pos) {
+                actions.push(GridAction::DragStart { row, channel });
+            }
+        }
+    }
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some((row, channel, _sub)) = hit_test(pos) {
+                actions.push(GridAction::DragUpdate { row, channel });
             }
         }
     }
