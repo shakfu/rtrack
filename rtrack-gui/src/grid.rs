@@ -29,6 +29,14 @@ fn channel_width_chars() -> usize {
     NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS + VOL_CHARS + GAP_CHARS + FX_CHARS
 }
 
+/// How many channels fit in the given pixel width.
+pub fn max_visible_channels(available_width: f32) -> usize {
+    let row_num_px = (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+    let ch_px = (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+    let count = ((available_width - row_num_px) / ch_px).floor() as usize;
+    count.max(1)
+}
+
 #[allow(dead_code)]
 pub struct GridParams {
     pub cursor_row: usize,

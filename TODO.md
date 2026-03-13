@@ -2,9 +2,9 @@
 
 ## GUI - High Priority (editing workflow)
 
-- [ ] Synth parameter editor -- instrument list sidebar exists but no way to edit synth params (waveform, ADSR, filter cutoff/resonance)
-- [ ] Sample editor panel -- no way to edit trim points, loop start/end, base note; visualization shows waveforms but doesn't expose controls
-- [ ] Horizontal channel scrolling -- grid hard-codes all channels visible; >8 channels becomes unusably compressed
+- [x] Synth parameter editor -- already implemented in instrument_editor.rs (patch selector, ADSR, filter, oscillator, FM)
+- [x] Sample editor panel -- already implemented in instrument_editor.rs (load, trim, loop, base note, waveform preview)
+- [x] Horizontal channel scrolling -- auto-scrolls to follow cursor, computes visible count from available width
 
 ## GUI - Medium Priority (workflow polish)
 

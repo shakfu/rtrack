@@ -20,6 +20,7 @@ pub struct RtrackApp {
     pub edit_step: usize,
     pub edit_order: usize,
     pub follow_playback: bool,
+    pub first_visible_channel: usize,
 
     // Mode
     pub mode: Mode,
@@ -97,6 +98,7 @@ impl RtrackApp {
             edit_step: 1,
             edit_order: 0,
             follow_playback: true,
+            first_visible_channel: 0,
             mode: Mode::Normal,
             status_message: None,
             history: EditHistory::new(100),
@@ -285,6 +287,22 @@ impl eframe::App for RtrackApp {
                     .map(|c| c.name.clone())
                     .collect();
 
+                // Compute how many channels fit in the available width
+                let visible_count = grid::max_visible_channels(ui.available_width())
+                    .min(self.core.song.channels);
+
+                // Auto-scroll to keep cursor visible
+                if self.cursor_channel < self.first_visible_channel {
+                    self.first_visible_channel = self.cursor_channel;
+                } else if self.cursor_channel >= self.first_visible_channel + visible_count {
+                    self.first_visible_channel = self.cursor_channel + 1 - visible_count;
+                }
+                // Clamp in case window was resized or channels removed
+                let max_first = self.core.song.channels.saturating_sub(visible_count);
+                if self.first_visible_channel > max_first {
+                    self.first_visible_channel = max_first;
+                }
+
                 let params = GridParams {
                     cursor_row: self.cursor_row,
                     cursor_channel: self.cursor_channel,
@@ -296,8 +314,8 @@ impl eframe::App for RtrackApp {
                     edit_order: self.edit_order,
                     highlight_beat: self.core.song.highlight_beat,
                     highlight_bar: self.core.song.highlight_bar,
-                    first_visible_channel: 0,
-                    visible_channel_count: self.core.song.channels,
+                    first_visible_channel: self.first_visible_channel,
+                    visible_channel_count: visible_count,
                     muted_channels: muted,
                     solo_channel: self.core.solo_channel,
                     channel_names: names,
