@@ -426,6 +426,11 @@ pub struct App {
     // Recent Files
     // -----------------------------------------------------------------------
     pub recent_files: Vec<PathBuf>,
+
+    // -----------------------------------------------------------------------
+    // Visualization
+    // -----------------------------------------------------------------------
+    pub vis: crate::tui::visualization::VisualizationState,
 }
 
 impl Default for App {
@@ -459,6 +464,7 @@ impl App {
             command_buf: String::new(),
             dialogs: DialogState::new(),
             recent_files: rtrack_core::config::load_recent_files(),
+            vis: crate::tui::visualization::VisualizationState::new(),
         }
     }
 
@@ -879,6 +885,7 @@ mod tests {
             matrix_cursor: 0,
             command_buf: String::new(),
             recent_files: Vec::new(),
+            vis: crate::tui::visualization::VisualizationState::new(),
         }
     }
 

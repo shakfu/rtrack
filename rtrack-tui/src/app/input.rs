@@ -1246,6 +1246,7 @@ impl App {
             KeyCode::F(1) => { self.open_help(); return true; }
             KeyCode::F(2) => { self.open_port_selector(); return true; }
             KeyCode::F(3) => { self.core.toggle_link(); return true; }
+            KeyCode::F(4) => { self.vis.panel = self.vis.panel.cycle(); return true; }
             KeyCode::F(6) => { self.open_song_settings(); return true; }
             KeyCode::F(7) => { self.open_instrument_list(); return true; }
             KeyCode::F(8) => { self.cycle_theme(); return true; }

@@ -284,6 +284,7 @@ fn run_app(
         }
 
         app.core.expire_preview_note();
+        app.vis.update(&mut app.core.audio);
         app.auto_save();
 
         if app.should_quit {

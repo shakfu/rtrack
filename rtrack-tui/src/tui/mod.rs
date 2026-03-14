@@ -2,6 +2,7 @@ pub mod pattern_editor;
 pub mod sample_editor;
 pub mod synth_editor;
 pub mod theme;
+pub mod visualization;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -34,13 +35,28 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     let theme = app.theme();
+
+    // Show visualization panel when audio is active
+    let has_vis = app.core.audio.is_some();
+    let vis_height = if has_vis { app.vis.panel.height() } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header
-            Constraint::Min(10),  // main area (order sidebar + pattern editor)
-            Constraint::Length(1), // status bar
-        ])
+        .constraints(if has_vis {
+            vec![
+                Constraint::Length(3),          // header
+                Constraint::Min(10),            // main area
+                Constraint::Length(vis_height),  // visualization
+                Constraint::Length(1),           // status bar
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),  // header
+                Constraint::Min(10),   // main area
+                Constraint::Length(0), // no visualization
+                Constraint::Length(1), // status bar
+            ]
+        })
         .split(f.area());
 
     draw_header(f, app, chunks[0], &theme);
@@ -62,7 +78,40 @@ pub fn draw(f: &mut Frame, app: &App) {
         pattern_editor::draw(f, app, main_chunks[1], &theme);
     }
 
-    draw_status_bar(f, app, chunks[2], &theme);
+    // Bottom panel
+    if has_vis && chunks[2].height > 0 {
+        use crate::tui::visualization::BottomPanel;
+        match app.vis.panel {
+            BottomPanel::HorizontalMeter => {
+                visualization::draw_horizontal_meter(f, &app.vis, chunks[2]);
+            }
+            BottomPanel::CompactMeter => {
+                visualization::draw_compact_meter(f, &app.vis, chunks[2]);
+            }
+            BottomPanel::MiniMeter => {
+                visualization::draw_mini_meter(f, &app.vis, chunks[2]);
+            }
+            BottomPanel::VerticalMeterSpectrum => {
+                visualization::draw_visualization(f, &app.vis, chunks[2]);
+            }
+            BottomPanel::SampleView => {
+                sample_editor::draw_sample_panel(f, app, chunks[2]);
+            }
+            BottomPanel::SeparatorMini => {
+                visualization::draw_separator_mini(f, &app.vis, chunks[2]);
+            }
+            BottomPanel::SeparatorOnly => {
+                visualization::draw_separator(f, chunks[2]);
+            }
+            BottomPanel::StatusBarMeter => {} // rendered inside status bar
+            BottomPanel::StatusBarMeterSep => {
+                visualization::draw_separator(f, chunks[2]);
+            }
+            BottomPanel::None => {}
+        }
+    }
+
+    draw_status_bar(f, app, chunks[3], &theme);
 
     match app.mode {
         Mode::MidiPortSelect => draw_port_selector(f, app, &theme),
@@ -237,16 +286,29 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Span::from("")
     };
 
-    let msg_span = if let Some(ref msg) = app.status_message {
-        Span::styled(format!(" {} ", msg), Style::default().fg(theme.status_text))
+    let mut spans = vec![mode_span, midi_status, audio_span, fx_span];
+
+    if let Some(ref msg) = app.status_message {
+        spans.push(Span::styled(format!(" {} ", msg), Style::default().fg(theme.status_text)));
+    } else if matches!(app.vis.panel, visualization::BottomPanel::StatusBarMeter | visualization::BottomPanel::StatusBarMeterSep) {
+        // Shortened hints + embedded mini meter
+        spans.push(Span::styled(
+            " [:]Cmd [F1]Help ",
+            Style::default().fg(theme.status_hint),
+        ));
+        // Calculate remaining width for meter
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        let remaining = (area.width as usize).saturating_sub(used);
+        let meter_spans = visualization::build_statusbar_meter_spans(&app.vis, remaining);
+        spans.extend(meter_spans);
     } else {
-        Span::styled(
+        spans.push(Span::styled(
             " [:]Cmd [F1]Help [Space]Play/Stop [Esc]Mode [Tab]Page [q]Quit ",
             Style::default().fg(theme.status_hint),
-        )
-    };
+        ));
+    }
 
-    let status = Paragraph::new(Line::from(vec![mode_span, midi_status, audio_span, fx_span, msg_span]));
+    let status = Paragraph::new(Line::from(spans));
     f.render_widget(status, area);
 }
 
@@ -262,6 +324,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![Span::styled("  F1           ", key_style), Span::styled("Toggle help", text_style)]),
         Line::from(vec![Span::styled("  F2           ", key_style), Span::styled("MIDI port selector", text_style)]),
         Line::from(vec![Span::styled("  F3           ", key_style), Span::styled("Toggle Ableton Link", text_style)]),
+        Line::from(vec![Span::styled("  F4           ", key_style), Span::styled("Cycle bottom panel (meter/spectrum/sample)", text_style)]),
         Line::from(vec![Span::styled("  Space        ", key_style), Span::styled("Play / Stop", text_style)]),
         Line::from(vec![Span::styled("  Esc          ", key_style), Span::styled("Toggle Normal / Insert mode", text_style)]),
         Line::from(vec![Span::styled("  Tab/S-Tab    ", key_style), Span::styled("Next / prev track (wraps)", text_style)]),

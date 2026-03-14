@@ -18,6 +18,15 @@
 - [x] Drag-to-select pattern regions
 - [x] Drag-and-drop sample loading
 
+## TUI - Recently Added
+
+- [x] Audio visualization panel -- level meters (L/R) + spectrum analyzer (32-bar Goertzel) in bottom panel
+- [x] Voice playhead markers -- red playhead indicators on sample editor waveform during playback
+- [x] Live slice boundary preview -- cyan markers on waveform when adjusting slice count/sensitivity fields
+- [x] Related slice boundaries -- yellow markers showing other slices from same source sample
+- [x] Loop markers -- green markers for loop start/end on waveform
+- [x] Waveform trim dimming -- regions outside trim range shown in dark gray
+
 ## TUI - Low Priority (nice-to-have or high effort)
 
 - [ ] Header truncation handling on narrow terminals
