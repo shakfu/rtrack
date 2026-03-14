@@ -15,55 +15,30 @@ const FFT_SIZE: usize = 1024;
 /// Which view the bottom panel displays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BottomPanel {
+    /// Mini meter embedded in status bar + separator line above.
     #[default]
-    HorizontalMeter,
-    /// Borderless single-line L/R meters side by side.
-    CompactMeter,
-    /// Half-block: L on upper half, R on lower half of each character cell.
-    MiniMeter,
-    VerticalMeterSpectrum,
-    SampleView,
-    /// Separator line with a small mini meter in the right corner.
-    SeparatorMini,
-    /// Mini meter embedded in the status bar (no panel row).
-    StatusBarMeter,
-    /// Same as StatusBarMeter but with a separator line above.
     StatusBarMeterSep,
-    /// Just a separator line, no meters.
-    SeparatorOnly,
-    /// No visualization panel at all.
-    None,
+    /// Vertical L/R meters + spectrum analyzer.
+    VerticalMeterSpectrum,
+    /// Sample waveform display.
+    SampleView,
 }
 
 impl BottomPanel {
     pub fn cycle(self) -> Self {
         match self {
-            Self::HorizontalMeter => Self::CompactMeter,
-            Self::CompactMeter => Self::MiniMeter,
-            Self::MiniMeter => Self::VerticalMeterSpectrum,
+            Self::StatusBarMeterSep => Self::VerticalMeterSpectrum,
             Self::VerticalMeterSpectrum => Self::SampleView,
-            Self::SampleView => Self::SeparatorMini,
-            Self::SeparatorMini => Self::StatusBarMeter,
-            Self::StatusBarMeter => Self::StatusBarMeterSep,
-            Self::StatusBarMeterSep => Self::SeparatorOnly,
-            Self::SeparatorOnly => Self::None,
-            Self::None => Self::HorizontalMeter,
+            Self::SampleView => Self::StatusBarMeterSep,
         }
     }
 
     /// Height in terminal rows for this panel variant.
     pub fn height(self) -> u16 {
         match self {
-            Self::HorizontalMeter => 2,
-            Self::CompactMeter => 1,
-            Self::MiniMeter => 1,
+            Self::StatusBarMeterSep => 1,
             Self::VerticalMeterSpectrum => 6,
             Self::SampleView => 7,
-            Self::SeparatorMini => 1,
-            Self::StatusBarMeter => 0,
-            Self::StatusBarMeterSep => 1,
-            Self::SeparatorOnly => 1,
-            Self::None => 0,
         }
     }
 }
@@ -285,76 +260,6 @@ pub fn draw_visualization(f: &mut Frame, vis: &VisualizationState, area: Rect) {
     f.render_widget(para, inner);
 }
 
-/// Draw a compact horizontal L/R meter (single line inside a top-border block).
-pub fn draw_horizontal_meter(f: &mut Frame, vis: &VisualizationState, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if inner.height < 1 || inner.width < 14 {
-        return;
-    }
-
-    // Layout: "L [bar] R [bar]" -- split width evenly between L and R
-    let gap = 1; // space between L and R sections
-    let label_width = 2; // "L " or "R "
-    let total_labels = label_width * 2 + gap; // "L " + "R " + gap
-    let total_bar = (inner.width as usize).saturating_sub(total_labels);
-    let bar_l_width = total_bar / 2;
-    let bar_r_width = total_bar - bar_l_width;
-
-    let meter_l_db = amp_to_db_normalized(vis.meter_l);
-    let meter_r_db = amp_to_db_normalized(vis.meter_r);
-    let peak_l_db = amp_to_db_normalized(vis.peak_hold_l);
-    let peak_r_db = amp_to_db_normalized(vis.peak_hold_r);
-
-    let mut spans = Vec::new();
-
-    for (label, level, peak, bar_width) in [
-        ("L ", meter_l_db, peak_l_db, bar_l_width),
-        ("R ", meter_r_db, peak_r_db, bar_r_width),
-    ] {
-        let filled = (level * bar_width as f32) as usize;
-        let peak_col = (peak * bar_width as f32) as usize;
-
-        spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
-
-        let mut bar = String::with_capacity(bar_width);
-        for col in 0..bar_width {
-            if col == peak_col && peak_col > filled {
-                bar.push('\u{2502}');
-            } else if col < filled {
-                bar.push('\u{2588}');
-            } else {
-                bar.push(' ');
-            }
-        }
-
-        // Split bar into colored segments: green | yellow | red
-        let green_end = (0.7 * bar_width as f32) as usize;
-        let yellow_end = (0.85 * bar_width as f32) as usize;
-
-        let green_part: String = bar.chars().take(green_end).collect();
-        let yellow_part: String = bar.chars().skip(green_end).take(yellow_end - green_end).collect();
-        let red_part: String = bar.chars().skip(yellow_end).collect();
-
-        spans.push(Span::styled(green_part, Style::default().fg(Color::Green)));
-        spans.push(Span::styled(yellow_part, Style::default().fg(Color::Yellow)));
-        spans.push(Span::styled(red_part, Style::default().fg(Color::Red)));
-
-        // Add gap between L and R (not after R)
-        if label == "L " {
-            spans.push(Span::raw(" "));
-        }
-    }
-
-    let line = Line::from(spans);
-    let para = Paragraph::new(vec![line]);
-    f.render_widget(para, inner);
-}
-
 /// Convert linear amplitude to a 0.0-1.0 dB-normalized value (60 dB range).
 fn amp_to_db_normalized(amp: f32) -> f32 {
     let db = (20.0 * (amp + 1e-10).log10()).max(-60.0);
@@ -437,172 +342,4 @@ pub fn build_statusbar_meter_spans(vis: &VisualizationState, avail_width: usize)
     }
 
     spans
-}
-
-/// Separator line with a small half-block mini meter in the right corner (height 1).
-pub fn draw_separator_mini(f: &mut Frame, vis: &VisualizationState, area: Rect) {
-    if area.height < 1 || area.width < 10 {
-        return;
-    }
-
-    let meter_width: u16 = 20.min(area.width / 3); // meter takes up to 1/3 of width
-    let sep_width = area.width.saturating_sub(meter_width);
-
-    // Draw separator on the left portion using horizontal line chars
-    let sep_str: String = "\u{2500}".repeat(sep_width as usize);
-    let sep_span = Span::styled(sep_str, Style::default().fg(Color::DarkGray));
-
-    // Build mini meter spans for the right portion
-    let bar_width = (meter_width as usize).saturating_sub(3); // "LR " label
-    let meter_l_db = amp_to_db_normalized(vis.meter_l);
-    let meter_r_db = amp_to_db_normalized(vis.meter_r);
-    let filled_l = (meter_l_db * bar_width as f32) as usize;
-    let filled_r = (meter_r_db * bar_width as f32) as usize;
-
-    let mut spans = vec![sep_span];
-    spans.push(Span::styled("LR", Style::default().fg(Color::DarkGray)));
-    spans.push(Span::raw(" "));
-
-    for col in 0..bar_width {
-        let frac = col as f32 / bar_width as f32;
-        let zone_color = if frac > 0.85 {
-            Color::Red
-        } else if frac > 0.7 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-
-        let l_on = col < filled_l;
-        let r_on = col < filled_r;
-
-        let (ch, fg, bg) = match (l_on, r_on) {
-            (true, true) => ('\u{2580}', zone_color, zone_color),
-            (true, false) => ('\u{2580}', zone_color, Color::Black),
-            (false, true) => ('\u{2584}', zone_color, Color::Reset),
-            (false, false) => (' ', Color::Reset, Color::Reset),
-        };
-
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(fg).bg(bg),
-        ));
-    }
-
-    let line = Line::from(spans);
-    let para = Paragraph::new(vec![line]);
-    f.render_widget(para, area);
-}
-
-/// Borderless single-line L/R meter (height 1, no border).
-/// Same layout as HorizontalMeter but without the top border.
-pub fn draw_compact_meter(f: &mut Frame, vis: &VisualizationState, area: Rect) {
-    if area.height < 1 || area.width < 14 {
-        return;
-    }
-
-    let width = area.width as usize;
-    let gap = 1;
-    let label_width = 2; // "L " or "R "
-    let total_labels = label_width * 2 + gap;
-    let total_bar = width.saturating_sub(total_labels);
-    let bar_l_width = total_bar / 2;
-    let bar_r_width = total_bar - bar_l_width;
-
-    let meter_l_db = amp_to_db_normalized(vis.meter_l);
-    let meter_r_db = amp_to_db_normalized(vis.meter_r);
-    let peak_l_db = amp_to_db_normalized(vis.peak_hold_l);
-    let peak_r_db = amp_to_db_normalized(vis.peak_hold_r);
-
-    let mut spans = Vec::new();
-
-    for (label, level, peak, bar_width) in [
-        ("L ", meter_l_db, peak_l_db, bar_l_width),
-        ("R ", meter_r_db, peak_r_db, bar_r_width),
-    ] {
-        let filled = (level * bar_width as f32) as usize;
-        let peak_col = (peak * bar_width as f32) as usize;
-
-        spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
-
-        let mut bar = String::with_capacity(bar_width);
-        for col in 0..bar_width {
-            if col == peak_col && peak_col > filled {
-                bar.push('\u{2502}');
-            } else if col < filled {
-                bar.push('\u{2588}');
-            } else {
-                bar.push(' ');
-            }
-        }
-
-        let green_end = (0.7 * bar_width as f32) as usize;
-        let yellow_end = (0.85 * bar_width as f32) as usize;
-
-        let green_part: String = bar.chars().take(green_end).collect();
-        let yellow_part: String = bar.chars().skip(green_end).take(yellow_end - green_end).collect();
-        let red_part: String = bar.chars().skip(yellow_end).collect();
-
-        spans.push(Span::styled(green_part, Style::default().fg(Color::Green)));
-        spans.push(Span::styled(yellow_part, Style::default().fg(Color::Yellow)));
-        spans.push(Span::styled(red_part, Style::default().fg(Color::Red)));
-
-        if label == "L " {
-            spans.push(Span::raw(" "));
-        }
-    }
-
-    let line = Line::from(spans);
-    let para = Paragraph::new(vec![line]);
-    f.render_widget(para, area);
-}
-
-/// Half-block stereo meter: L in upper half, R in lower half of each cell (height 1).
-/// Uses upper-half block (\u{2580}) with fg=L color, bg=R color.
-pub fn draw_mini_meter(f: &mut Frame, vis: &VisualizationState, area: Rect) {
-    if area.height < 1 || area.width < 8 {
-        return;
-    }
-
-    let bar_width = (area.width as usize).saturating_sub(4); // "LR " prefix + trailing
-
-    let meter_l_db = amp_to_db_normalized(vis.meter_l);
-    let meter_r_db = amp_to_db_normalized(vis.meter_r);
-
-    let filled_l = (meter_l_db * bar_width as f32) as usize;
-    let filled_r = (meter_r_db * bar_width as f32) as usize;
-
-    let mut spans = Vec::new();
-    spans.push(Span::styled("LR ", Style::default().fg(Color::DarkGray)));
-
-    // Each column: upper half = L, lower half = R
-    // \u{2580} = upper half block (fg color on top, bg color on bottom)
-    for col in 0..bar_width {
-        let frac = col as f32 / bar_width as f32;
-        let zone_color = if frac > 0.85 {
-            Color::Red
-        } else if frac > 0.7 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        let l_on = col < filled_l;
-        let r_on = col < filled_r;
-
-        let (ch, fg, bg) = match (l_on, r_on) {
-            (true, true) => ('\u{2580}', zone_color, zone_color),
-            (true, false) => ('\u{2580}', zone_color, Color::Black),
-            (false, true) => ('\u{2584}', zone_color, Color::Reset),
-            (false, false) => (' ', Color::Reset, Color::Reset),
-        };
-
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(fg).bg(bg),
-        ));
-    }
-
-    let line = Line::from(spans);
-    let para = Paragraph::new(vec![line]);
-    f.render_widget(para, area);
 }

@@ -82,14 +82,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     if has_vis && chunks[2].height > 0 {
         use crate::tui::visualization::BottomPanel;
         match app.vis.panel {
-            BottomPanel::HorizontalMeter => {
-                visualization::draw_horizontal_meter(f, &app.vis, chunks[2]);
-            }
-            BottomPanel::CompactMeter => {
-                visualization::draw_compact_meter(f, &app.vis, chunks[2]);
-            }
-            BottomPanel::MiniMeter => {
-                visualization::draw_mini_meter(f, &app.vis, chunks[2]);
+            BottomPanel::StatusBarMeterSep => {
+                visualization::draw_separator(f, chunks[2]);
             }
             BottomPanel::VerticalMeterSpectrum => {
                 visualization::draw_visualization(f, &app.vis, chunks[2]);
@@ -97,17 +91,6 @@ pub fn draw(f: &mut Frame, app: &App) {
             BottomPanel::SampleView => {
                 sample_editor::draw_sample_panel(f, app, chunks[2]);
             }
-            BottomPanel::SeparatorMini => {
-                visualization::draw_separator_mini(f, &app.vis, chunks[2]);
-            }
-            BottomPanel::SeparatorOnly => {
-                visualization::draw_separator(f, chunks[2]);
-            }
-            BottomPanel::StatusBarMeter => {} // rendered inside status bar
-            BottomPanel::StatusBarMeterSep => {
-                visualization::draw_separator(f, chunks[2]);
-            }
-            BottomPanel::None => {}
         }
     }
 
@@ -290,7 +273,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     if let Some(ref msg) = app.status_message {
         spans.push(Span::styled(format!(" {} ", msg), Style::default().fg(theme.status_text)));
-    } else if matches!(app.vis.panel, visualization::BottomPanel::StatusBarMeter | visualization::BottomPanel::StatusBarMeterSep) {
+    } else if app.vis.panel == visualization::BottomPanel::StatusBarMeterSep {
         // Shortened hints + embedded mini meter
         spans.push(Span::styled(
             " [:]Cmd [F1]Help ",
