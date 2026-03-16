@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::constants::*;
 use crate::engine::{TrackerEngine, TrackerEvent};
-use crate::tracker::{Note, NoteValue, Pattern, Song};
+use crate::tracker::{Note, NoteValue, Pattern, Song, TempoPoint};
 
 /// Events collected during MIDI import
 #[derive(Debug, Clone)]
@@ -118,6 +118,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     // Run engine to collect per-channel MIDI events as (abs_tick, raw_bytes)
     let mut engine = TrackerEngine::new(song, false);
     let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
+    let mut tempo_events: Vec<(u32, f64)> = Vec::new();
     let mut active_notes: Vec<Option<u8>> = vec![None; song.channels];
     let mut abs_tick: u32 = 0;
 
@@ -178,7 +179,10 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     let midi_ch = (*channel & 0x0F) as u8;
                     channel_events[*channel].push((abs_tick, vec![0xC0 | midi_ch, *program & 0x7F]));
                 }
-                _ => {} // RowAdvanced, SpeedChanged, TempoChanged, GenerationAdvanced
+                TrackerEvent::TempoChanged { bpm } => {
+                    tempo_events.push((abs_tick, *bpm));
+                }
+                _ => {} // RowAdvanced, SpeedChanged, GenerationAdvanced
             }
         }
 
@@ -209,16 +213,33 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
         write_chunk(&mut file_buf, b"MThd", &hdr);
     }
 
-    // Track 0: tempo
+    // Track 0: tempo (initial + any changes during playback)
     {
         let mut trk = Vec::new();
-        let us = bpm_to_microseconds(song.bpm);
+        let mut last_tick: u32 = 0;
+
+        // Initial tempo at tick 0
+        let us = bpm_to_microseconds(song.bpm as f64);
         write_track_event(&mut trk, 0, &[
             0xFF, 0x51, 0x03,
             ((us >> 16) & 0xFF) as u8,
             ((us >> 8) & 0xFF) as u8,
             (us & 0xFF) as u8,
         ]);
+
+        // Tempo changes from Fxx effects and tempo automation
+        for &(tick, bpm) in &tempo_events {
+            let delta = tick.saturating_sub(last_tick);
+            let us = bpm_to_microseconds(bpm);
+            write_track_event(&mut trk, delta, &[
+                0xFF, 0x51, 0x03,
+                ((us >> 16) & 0xFF) as u8,
+                ((us >> 8) & 0xFF) as u8,
+                (us & 0xFF) as u8,
+            ]);
+            last_tick = tick;
+        }
+
         write_track_event(&mut trk, 0, &[0xFF, 0x2F, 0x00]);
         write_chunk(&mut file_buf, b"MTrk", &trk);
     }
@@ -286,6 +307,8 @@ pub fn import_midi(path: &Path) -> Result<Song> {
 
     // ---- Parse tracks ----
     let mut bpm: u16 = 120;
+    // Tempo changes: (abs_tick, bpm_f64)
+    let mut tempo_changes: Vec<(u32, f64)> = Vec::new();
     // Collected events per MIDI channel
     let mut channel_events: Vec<Vec<ImportEvent>> = vec![Vec::new(); 16];
 
@@ -385,10 +408,12 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                                 | ((data[pos + 1] as u32) << 8)
                                 | (data[pos + 2] as u32);
                             if us > 0 {
-                                bpm = (60_000_000 / us) as u16;
-                                if bpm == 0 {
-                                    bpm = 1;
+                                let bpm_f64 = 60_000_000.0 / us as f64;
+                                // First tempo event sets the base BPM
+                                if tempo_changes.is_empty() {
+                                    bpm = bpm_f64.round().max(1.0) as u16;
                                 }
+                                tempo_changes.push((abs_tick, bpm_f64));
                             }
                         }
                         pos += meta_len;
@@ -511,6 +536,23 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         }
     }
 
+    // Convert tempo changes to TempoPoint entries (skip tick 0 -- that's the base bpm)
+    let tempo_map: Vec<TempoPoint> = tempo_changes
+        .iter()
+        .filter(|(tick, _)| *tick > 0 && tpr > 0)
+        .map(|(tick, bpm_val)| {
+            let global_row = (*tick / tpr) as usize;
+            let pat_idx = global_row / rows_per_pattern;
+            let row_in_pat = global_row % rows_per_pattern;
+            // order index equals pattern index for imported MIDI (sequential order)
+            TempoPoint {
+                order: pat_idx.min(num_patterns.saturating_sub(1)),
+                row: row_in_pat,
+                bpm: *bpm_val,
+            }
+        })
+        .collect();
+
     Ok(Song {
         title: path
             .file_stem()
@@ -527,7 +569,7 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         highlight_beat: 4,
         highlight_bar: 16,
         swing: 50,
-        tempo_map: Vec::new(),
+        tempo_map,
     })
 }
 
@@ -551,11 +593,11 @@ fn ticks_per_row_with_tpb(speed: u8, tpb: u32) -> u32 {
     }
 }
 
-fn bpm_to_microseconds(bpm: u16) -> u32 {
-    if bpm == 0 {
+fn bpm_to_microseconds(bpm: f64) -> u32 {
+    if bpm <= 0.0 {
         500_000 // fallback 120 BPM
     } else {
-        60_000_000 / bpm as u32
+        (60_000_000.0 / bpm).round() as u32
     }
 }
 
@@ -888,9 +930,9 @@ mod tests {
 
     #[test]
     fn test_bpm_to_microseconds() {
-        assert_eq!(bpm_to_microseconds(120), 500_000);
-        assert_eq!(bpm_to_microseconds(60), 1_000_000);
-        assert_eq!(bpm_to_microseconds(0), 500_000); // fallback
+        assert_eq!(bpm_to_microseconds(120.0), 500_000);
+        assert_eq!(bpm_to_microseconds(60.0), 1_000_000);
+        assert_eq!(bpm_to_microseconds(0.0), 500_000); // fallback
     }
 
     #[test]
@@ -899,5 +941,97 @@ mod tests {
         assert_eq!(ticks_per_row(6), 120);
         // speed=3 => 3 * 20 = 60
         assert_eq!(ticks_per_row(3), 60);
+    }
+
+    #[test]
+    fn test_export_tempo_changes_in_midi() {
+        // Song with Fxx tempo change at row 4 (F80 = set tempo to 128 BPM)
+        let mut song = Song::new(1, 16);
+        song.bpm = 120;
+        song.speed = 6;
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None, volume: None, effect: None, effect_value: None,
+        });
+        song.patterns[0].set_cell(4, 0, Cell {
+            note: None, instrument: None, volume: None,
+            effect: Some(0x0F), // Fxx set speed/tempo
+            effect_value: Some(0x80), // 128 BPM (>= 0x20 = tempo)
+        });
+
+        let tmp = std::env::temp_dir().join("rtrack_test_tempo_export.mid");
+        export_midi(&song, &tmp).unwrap();
+
+        // Re-import and verify the tempo change survived
+        let imported = import_midi(&tmp).unwrap();
+        // The initial BPM should be 120
+        assert_eq!(imported.bpm, 120, "Initial BPM should be 120");
+        // There should be a tempo change in the tempo_map
+        assert!(
+            !imported.tempo_map.is_empty(),
+            "Tempo map should contain the tempo change from Fxx"
+        );
+        // The tempo change should be ~128 BPM
+        let tempo_change = imported.tempo_map.iter().find(|tp| {
+            (tp.bpm - 128.0).abs() < 2.0
+        });
+        assert!(
+            tempo_change.is_some(),
+            "Should find a tempo change near 128 BPM, got: {:?}",
+            imported.tempo_map
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_import_preserves_tempo_automation() {
+        // Song with tempo automation via tempo_map
+        let mut song = Song::new(1, 16);
+        song.bpm = 120;
+        song.speed = 6;
+        song.tempo_map = vec![
+            TempoPoint { order: 0, row: 8, bpm: 140.0 },
+        ];
+        song.patterns[0].set_cell(0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            instrument: None, volume: None, effect: None, effect_value: None,
+        });
+
+        let tmp = std::env::temp_dir().join("rtrack_test_tempo_automation.mid");
+        export_midi(&song, &tmp).unwrap();
+
+        let imported = import_midi(&tmp).unwrap();
+        // Should have a tempo change near 140 BPM
+        let has_140 = imported.tempo_map.iter().any(|tp| (tp.bpm - 140.0).abs() < 2.0);
+        assert!(
+            has_140,
+            "Imported song should preserve ~140 BPM tempo change, got: {:?}",
+            imported.tempo_map
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_fractional_bpm_preserved_in_engine() {
+        use crate::engine::TrackerEngine;
+
+        let mut song = Song::new(1, 16);
+        song.bpm = 120;
+        song.speed = 6;
+        song.tempo_map = vec![
+            TempoPoint { order: 0, row: 0, bpm: 127.5 },
+        ];
+
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.process_tick(&song);
+
+        // The engine should preserve the fractional tempo
+        assert!(
+            (engine.bpm - 127.5).abs() < f64::EPSILON,
+            "Engine should preserve fractional BPM 127.5, got {}",
+            engine.bpm
+        );
     }
 }

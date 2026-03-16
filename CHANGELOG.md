@@ -4,6 +4,13 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Loading a new song no longer keeps stale sample slots from the previous session; the sample bank is now cleared before loading referenced samples (`core.rs`)
+- Fractional tempo automation values (e.g. 127.5 BPM from `tempo_map`) are no longer rounded to integers during playback; `TrackerEngine.bpm` and `TrackerEvent::TempoChanged` now use `f64` precision (`engine/mod.rs`)
+- MIDI export now includes tempo changes from Fxx effects and tempo automation as `0xFF 0x51` meta-events on track 0, instead of writing only the initial song BPM (`midi_file.rs`)
+- MIDI import now populates `Song.tempo_map` from tempo meta-events encountered after tick 0, preserving multi-tempo MIDI files instead of reducing them to a single BPM (`midi_file.rs`)
+
 ### Added (GUI Frontend - rtrack-gui)
 
 - Built egui/eframe GUI frontend as alternative to TUI, sharing TrackerCore

@@ -94,7 +94,7 @@ pub enum TrackerEvent {
     },
     /// Tempo changed (Fxx >= 0x20, or tempo automation).
     TempoChanged {
-        bpm: u16,
+        bpm: f64,
     },
     /// Playback generation incremented (wrapped past end of order list).
     GenerationAdvanced {
@@ -145,7 +145,7 @@ pub struct TrackerEngine {
 
     // -- Timing (local copies, never mutates Song) --
     pub speed: u8,
-    pub bpm: u16,
+    pub bpm: f64,
 
     // -- Per-order repeat tracking --
     pub repeat_count: u8,
@@ -175,7 +175,7 @@ impl TrackerEngine {
             generation: 0,
             tick: 0,
             speed: song.speed,
-            bpm: song.bpm,
+            bpm: song.bpm as f64,
             repeat_count: 0,
             channel_states: vec![ChannelState::default(); song.channels],
             channel_info: vec![ChannelInfo::default(); song.channels],
@@ -194,7 +194,7 @@ impl TrackerEngine {
         self.generation = 0;
         self.tick = 0;
         self.speed = song.speed;
-        self.bpm = song.bpm;
+        self.bpm = song.bpm as f64;
         self.repeat_count = 0;
         self.finished = false;
         self.channel_states = vec![ChannelState::default(); song.channels];
@@ -244,7 +244,7 @@ impl TrackerEngine {
 
     /// Get current seconds_per_tick (incorporating swing).
     pub fn seconds_per_tick(&self, song: &Song) -> f64 {
-        let base_tps = (self.bpm as f64 * MIDI_CLOCKS_PER_BEAT) / 60.0;
+        let base_tps = (self.bpm * MIDI_CLOCKS_PER_BEAT) / 60.0;
         let base_spt = 1.0 / base_tps;
         if song.swing == 50 {
             base_spt
@@ -390,8 +390,8 @@ impl TrackerEngine {
                         self.speed = val;
                         self.emit(TrackerEvent::SpeedChanged { speed: val });
                     } else if val >= 0x20 {
-                        self.bpm = val as u16;
-                        self.emit(TrackerEvent::TempoChanged { bpm: val as u16 });
+                        self.bpm = val as f64;
+                        self.emit(TrackerEvent::TempoChanged { bpm: val as f64 });
                     }
                 }
                 _ => {}
@@ -400,10 +400,9 @@ impl TrackerEngine {
 
         // Check tempo automation
         if let Some(bpm) = song.tempo_at(self.order, self.row) {
-            let new_bpm = bpm.round() as u16;
-            if new_bpm >= 1 {
-                self.bpm = new_bpm;
-                self.emit(TrackerEvent::TempoChanged { bpm: new_bpm });
+            if bpm >= 1.0 {
+                self.bpm = bpm;
+                self.emit(TrackerEvent::TempoChanged { bpm });
             }
         }
 
@@ -671,7 +670,7 @@ mod tests {
         assert_eq!(engine.generation, 0);
         assert_eq!(engine.tick, 0);
         assert_eq!(engine.speed, song.speed);
-        assert_eq!(engine.bpm, song.bpm);
+        assert_eq!(engine.bpm, song.bpm as f64);
         assert!(!engine.finished);
     }
 
@@ -782,8 +781,8 @@ mod tests {
             engine.process_tick(&song);
         }
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::TempoChanged { bpm: 128 })));
-        assert_eq!(engine.bpm, 128);
+        assert!(events.iter().any(|e| matches!(e, TrackerEvent::TempoChanged { bpm } if *bpm == 128.0)));
+        assert_eq!(engine.bpm, 128.0);
     }
 
     #[test]
@@ -943,7 +942,7 @@ mod tests {
 
         let engine_even = TrackerEngine {
             row: 0, order: 0, generation: 0, tick: 0,
-            speed: song.speed, bpm: song.bpm,
+            speed: song.speed, bpm: song.bpm as f64,
             repeat_count: 0, channel_states: vec![],
             channel_info: vec![], events: vec![],
             wrap_at_end: true, finished: false,

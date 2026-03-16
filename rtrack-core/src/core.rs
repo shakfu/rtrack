@@ -237,7 +237,7 @@ impl TrackerCore {
             let new_bpm = new_tempo.round() as u16;
             if new_bpm != self.song.bpm && (32..=300).contains(&new_bpm) {
                 self.song.bpm = new_bpm;
-                self.engine.bpm = new_bpm;
+                self.engine.bpm = new_tempo;
             }
         }
     }
@@ -275,9 +275,9 @@ impl TrackerCore {
             if delta_ticks > 0.0 {
                 let spt = self.engine.seconds_per_tick(&self.song);
                 let ticks_per_second = 1.0 / spt;
-                let tracker_ticks = delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
+                let tracker_ticks = delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
                 self.timing.tick_accumulator += tracker_ticks * spt;
-                self.timing.playback_elapsed += delta_ticks / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT / 60.0);
+                self.timing.playback_elapsed += delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0);
             }
             self.timing.last_link_beat = beat;
 
@@ -298,7 +298,7 @@ impl TrackerCore {
 
             if self.midi.clock_enabled {
                 self.timing.clock_tick_accumulator += elapsed;
-                let clock_interval = 60.0 / (self.engine.bpm as f64 * MIDI_CLOCKS_PER_BEAT);
+                let clock_interval = 60.0 / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT);
                 while self.timing.clock_tick_accumulator >= clock_interval {
                     self.timing.clock_tick_accumulator -= clock_interval;
                     let _ = self.midi.send_clock();
@@ -358,9 +358,9 @@ impl TrackerCore {
                     self.song.speed = speed;
                 }
                 TrackerEvent::TempoChanged { bpm } => {
-                    self.song.bpm = bpm;
+                    self.song.bpm = bpm.round() as u16;
                     if self.link.is_enabled() {
-                        self.link.set_tempo(bpm as f64);
+                        self.link.set_tempo(bpm);
                     }
                 }
                 TrackerEvent::RowAdvanced { .. } | TrackerEvent::GenerationAdvanced { .. } => {}
@@ -1032,7 +1032,7 @@ impl TrackerCore {
 
                 // Reload samples from file references
                 let load_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                let mut bank = (*self.sample_bank).clone();
+                let mut bank = SampleBank::new();
                 let mut sample_errors = Vec::new();
                 for entry in &song_file.sample_refs {
                     if entry.slot >= bank.samples.len() {
