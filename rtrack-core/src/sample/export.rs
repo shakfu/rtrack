@@ -32,7 +32,14 @@ pub fn render_to_wav(
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(song, bank, instruments, channel_fx_params, send_bus_params, sample_rate)?;
+    let (left, right) = render_song(
+        song,
+        bank,
+        instruments,
+        channel_fx_params,
+        send_bus_params,
+        sample_rate,
+    )?;
     write_wav(path, &left, &right, sample_rate)
 }
 
@@ -94,7 +101,12 @@ fn render_song(
         // Dispatch engine events to synth/sample engines
         for event in &events {
             match event {
-                TrackerEvent::NoteOn { channel, midi_note, velocity, instrument } => {
+                TrackerEvent::NoteOn {
+                    channel,
+                    midi_note,
+                    velocity,
+                    instrument,
+                } => {
                     let midi_ch = (*channel & 0x0F) as u8;
                     // Turn off previous note on this channel
                     if let Some(prev) = active_notes.get(*channel).copied().flatten() {
@@ -114,9 +126,8 @@ fn render_song(
                     if has_sample {
                         let sample_idx = inst.unwrap().sample_index.unwrap();
                         let sample = bank.get(sample_idx).unwrap();
-                        sample_engine.note_on(
-                            sample_idx, *midi_note, *velocity, midi_ch, sample, sr,
-                        );
+                        sample_engine
+                            .note_on(sample_idx, *midi_note, *velocity, midi_ch, sample, sr);
                     } else if let Some(sp) = inst.and_then(|i| i.synth_params.as_ref()) {
                         synth.note_on_with_params(midi_ch, *midi_note, *velocity, sp);
                     } else {
@@ -134,7 +145,10 @@ fn render_song(
                         active_notes[*channel] = None;
                     }
                 }
-                TrackerEvent::PitchBend { channel, semitone_offset } => {
+                TrackerEvent::PitchBend {
+                    channel,
+                    semitone_offset,
+                } => {
                     let midi_ch = (*channel & 0x0F) as u8;
                     synth.set_channel_pitch_offset(midi_ch, *semitone_offset as f32);
                     sample_engine.set_channel_pitch_offset(midi_ch, *semitone_offset, bank, sr);
@@ -175,11 +189,14 @@ fn render_song(
             }
 
             {
-                let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
+                let mut slices: Vec<(&mut [f32], &mut [f32])> =
+                    Vec::with_capacity(MAX_EFFECT_CHANNELS);
                 for ch in 0..MAX_EFFECT_CHANNELS {
                     let l = &mut ch_left[ch][..fpt] as *mut [f32];
                     let r = &mut ch_right[ch][..fpt] as *mut [f32];
-                    unsafe { slices.push((&mut *l, &mut *r)); }
+                    unsafe {
+                        slices.push((&mut *l, &mut *r));
+                    }
                 }
                 sample_engine.render_per_channel(bank, &mut slices);
             }
@@ -294,8 +311,8 @@ fn write_wav(path: &Path, left: &[f32], right: &[f32], sample_rate: u32) -> Resu
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer =
-        hound::WavWriter::create(path, spec).with_context(|| format!("Failed to create WAV: {}", path.display()))?;
+    let mut writer = hound::WavWriter::create(path, spec)
+        .with_context(|| format!("Failed to create WAV: {}", path.display()))?;
 
     for i in 0..left.len() {
         let l = left[i].clamp(-1.0, 1.0);
@@ -322,7 +339,14 @@ pub fn render_to_flac(
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(song, bank, instruments, channel_fx_params, send_bus_params, sample_rate)?;
+    let (left, right) = render_song(
+        song,
+        bank,
+        instruments,
+        channel_fx_params,
+        send_bus_params,
+        sample_rate,
+    )?;
     let samples_i16 = to_interleaved_i16(&left, &right);
     write_flac(path, &samples_i16, sample_rate)
 }
@@ -331,7 +355,8 @@ fn write_flac(path: &Path, samples_i16: &[i16], sample_rate: u32) -> Result<()> 
     use flacenc::component::BitRepr;
     use flacenc::error::Verify;
 
-    let config = flacenc::config::Encoder::default().into_verified()
+    let config = flacenc::config::Encoder::default()
+        .into_verified()
         .map_err(|e| anyhow::anyhow!("FLAC config error: {:?}", e))?;
     let source = flacenc::source::MemSource::from_samples(
         &samples_i16.iter().map(|&s| s as i32).collect::<Vec<_>>(),
@@ -346,10 +371,10 @@ fn write_flac(path: &Path, samples_i16: &[i16], sample_rate: u32) -> Result<()> 
     let mut file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create FLAC: {}", path.display()))?;
     let mut bw = flacenc::bitsink::ByteSink::new();
-    flac_stream.write(&mut bw)
+    flac_stream
+        .write(&mut bw)
         .map_err(|e| anyhow::anyhow!("FLAC write failed: {:?}", e))?;
-    std::io::Write::write_all(&mut file, bw.as_slice())
-        .context("Failed to write FLAC data")?;
+    std::io::Write::write_all(&mut file, bw.as_slice()).context("Failed to write FLAC data")?;
 
     Ok(())
 }
@@ -364,7 +389,13 @@ mod tests {
     fn test_render_empty_song() {
         let song = Song::new(4, 64);
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256).map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None }).collect();
+        let instruments: Vec<ExportInstrument> = (0..256)
+            .map(|_| ExportInstrument {
+                sample_index: None,
+                midi_program: 0,
+                synth_params: None,
+            })
+            .collect();
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_empty.wav");
 
@@ -397,7 +428,13 @@ mod tests {
         );
 
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256).map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None }).collect();
+        let instruments: Vec<ExportInstrument> = (0..256)
+            .map(|_| ExportInstrument {
+                sample_index: None,
+                midi_program: 0,
+                synth_params: None,
+            })
+            .collect();
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_synth.wav");
 
@@ -454,7 +491,13 @@ mod tests {
         });
 
         let instruments: Vec<ExportInstrument> = {
-            let mut v: Vec<ExportInstrument> = (0..256).map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None }).collect();
+            let mut v: Vec<ExportInstrument> = (0..256)
+                .map(|_| ExportInstrument {
+                    sample_index: None,
+                    midi_program: 0,
+                    synth_params: None,
+                })
+                .collect();
             v[0].sample_index = Some(0); // instrument 0 -> sample 0
             v
         };
@@ -481,21 +524,36 @@ mod tests {
         song.speed = 6;
         song.bpm = 120;
         // Row 0: note on
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
-            volume: Some(100),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
         // Row 1: portamento up (1xx with param 0x40 = fast slide)
-        song.patterns[0].set_cell(1, 0, Cell {
-            effect: Some(EFFECT_PORTA_UP),
-            effect_value: Some(0x40),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            1,
+            0,
+            Cell {
+                effect: Some(EFFECT_PORTA_UP),
+                effect_value: Some(0x40),
+                ..Cell::default()
+            },
+        );
 
         let bank = SampleBank::new();
         let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None })
+            .map(|_| ExportInstrument {
+                sample_index: None,
+                midi_program: 0,
+                synth_params: None,
+            })
             .collect();
         let dir = std::env::temp_dir();
         let path_with = dir.join("rtrack_test_porta.wav");
@@ -506,14 +564,30 @@ mod tests {
         let mut song_no_fx = Song::new(1, 4);
         song_no_fx.speed = 6;
         song_no_fx.bpm = 120;
-        song_no_fx.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
-            volume: Some(100),
-            ..Cell::default()
-        });
+        song_no_fx.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
 
         let path_without = dir.join("rtrack_test_no_porta.wav");
-        render_to_wav(&path_without, &song_no_fx, &bank, &instruments, &[], &[], 44100).unwrap();
+        render_to_wav(
+            &path_without,
+            &song_no_fx,
+            &bank,
+            &instruments,
+            &[],
+            &[],
+            44100,
+        )
+        .unwrap();
 
         // Read both and compare -- they should differ
         let r1 = hound::WavReader::open(&path_with).unwrap();
@@ -522,12 +596,22 @@ mod tests {
         let s2: Vec<i16> = r2.into_samples::<i16>().map(|s| s.unwrap()).collect();
 
         // Both should have audio
-        assert!(s1.iter().any(|&s| s.abs() > 10), "porta render should have audio");
-        assert!(s2.iter().any(|&s| s.abs() > 10), "no-fx render should have audio");
+        assert!(
+            s1.iter().any(|&s| s.abs() > 10),
+            "porta render should have audio"
+        );
+        assert!(
+            s2.iter().any(|&s| s.abs() > 10),
+            "no-fx render should have audio"
+        );
 
         // Samples should differ (portamento shifted pitch)
         let min_len = s1.len().min(s2.len());
-        let diff_count = s1[..min_len].iter().zip(&s2[..min_len]).filter(|(a, b)| a != b).count();
+        let diff_count = s1[..min_len]
+            .iter()
+            .zip(&s2[..min_len])
+            .filter(|(a, b)| a != b)
+            .count();
         assert!(diff_count > min_len / 4, "Expected portamento to produce audibly different output, but only {}/{} samples differed", diff_count, min_len);
 
         let _ = std::fs::remove_file(&path_with);
@@ -541,21 +625,36 @@ mod tests {
         song.speed = 6;
         song.bpm = 120;
         // Row 0: note on at full volume
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
-            volume: Some(127),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                volume: Some(127),
+                ..Cell::default()
+            },
+        );
         // Row 1: volume slide down (50F = slide down by 15 per tick)
-        song.patterns[0].set_cell(1, 0, Cell {
-            effect: Some(EFFECT_VOLUME_SLIDE),
-            effect_value: Some(0x0F),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            1,
+            0,
+            Cell {
+                effect: Some(EFFECT_VOLUME_SLIDE),
+                effect_value: Some(0x0F),
+                ..Cell::default()
+            },
+        );
 
         let bank = SampleBank::new();
         let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None })
+            .map(|_| ExportInstrument {
+                sample_index: None,
+                midi_program: 0,
+                synth_params: None,
+            })
             .collect();
         let dir = std::env::temp_dir();
 
@@ -567,13 +666,29 @@ mod tests {
         let mut song_static = Song::new(1, 4);
         song_static.speed = 6;
         song_static.bpm = 120;
-        song_static.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
-            volume: Some(127),
-            ..Cell::default()
-        });
+        song_static.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                volume: Some(127),
+                ..Cell::default()
+            },
+        );
         let path_static = dir.join("rtrack_test_volstatic.wav");
-        render_to_wav(&path_static, &song_static, &bank, &instruments, &[], &[], 44100).unwrap();
+        render_to_wav(
+            &path_static,
+            &song_static,
+            &bank,
+            &instruments,
+            &[],
+            &[],
+            44100,
+        )
+        .unwrap();
 
         let r1 = hound::WavReader::open(&path_slide).unwrap();
         let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
@@ -586,8 +701,15 @@ mod tests {
 
         // Volume-slid version should differ from static
         let min_len = s1.len().min(s2.len());
-        let diff_count = s1[..min_len].iter().zip(&s2[..min_len]).filter(|(a, b)| a != b).count();
-        assert!(diff_count > 0, "Volume slide should produce different output than static volume");
+        let diff_count = s1[..min_len]
+            .iter()
+            .zip(&s2[..min_len])
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            diff_count > 0,
+            "Volume slide should produce different output than static volume"
+        );
 
         let _ = std::fs::remove_file(&path_slide);
         let _ = std::fs::remove_file(&path_static);
@@ -597,15 +719,26 @@ mod tests {
     fn test_render_to_flac() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 5 }),
-            volume: Some(100),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
 
         let bank = SampleBank::new();
         let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument { sample_index: None, midi_program: 0, synth_params: None })
+            .map(|_| ExportInstrument {
+                sample_index: None,
+                midi_program: 0,
+                synth_params: None,
+            })
             .collect();
         let dir = std::env::temp_dir();
         let path = dir.join("rtrack_test_export.flac");

@@ -82,8 +82,7 @@ pub struct SampleRefEntry {
 
 impl SongFile {
     pub fn save(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize song file")?;
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize song file")?;
         // Atomic save: write to temp file in same directory, then rename
         let dir = path.parent().unwrap_or(Path::new("."));
         let temp_name = format!(
@@ -94,16 +93,21 @@ impl SongFile {
         let temp_path = dir.join(temp_name);
         std::fs::write(&temp_path, &json)
             .with_context(|| format!("Failed to write temp file {}", temp_path.display()))?;
-        std::fs::rename(&temp_path, path)
-            .with_context(|| format!("Failed to rename {} -> {}", temp_path.display(), path.display()))?;
+        std::fs::rename(&temp_path, path).with_context(|| {
+            format!(
+                "Failed to rename {} -> {}",
+                temp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let song_file: SongFile = serde_json::from_str(&data)
-            .context("Failed to parse song file")?;
+        let song_file: SongFile =
+            serde_json::from_str(&data).context("Failed to parse song file")?;
         Ok(song_file)
     }
 }
@@ -135,9 +139,15 @@ pub struct Song {
     pub tempo_map: Vec<TempoPoint>,
 }
 
-fn default_highlight_beat() -> usize { 4 }
-fn default_highlight_bar() -> usize { 16 }
-fn default_swing() -> u8 { 50 }
+fn default_highlight_beat() -> usize {
+    4
+}
+fn default_highlight_bar() -> usize {
+    16
+}
+fn default_swing() -> u8 {
+    50
+}
 
 impl Song {
     pub fn new(channels: usize, rows_per_pattern: usize) -> Self {
@@ -186,8 +196,7 @@ impl Song {
 
     #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize song")?;
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize song")?;
         let dir = path.parent().unwrap_or(Path::new("."));
         let temp_name = format!(
             ".rtrack_save_{}_{}.tmp",
@@ -197,8 +206,13 @@ impl Song {
         let temp_path = dir.join(temp_name);
         std::fs::write(&temp_path, &json)
             .with_context(|| format!("Failed to write temp file {}", temp_path.display()))?;
-        std::fs::rename(&temp_path, path)
-            .with_context(|| format!("Failed to rename {} -> {}", temp_path.display(), path.display()))?;
+        std::fs::rename(&temp_path, path).with_context(|| {
+            format!(
+                "Failed to rename {} -> {}",
+                temp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -206,8 +220,7 @@ impl Song {
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let song: Song = serde_json::from_str(&data)
-            .context("Failed to parse song file")?;
+        let song: Song = serde_json::from_str(&data).context("Failed to parse song file")?;
         Ok(song)
     }
 
@@ -239,7 +252,10 @@ impl Song {
 
     /// Look up a tempo automation point at the given position.
     pub fn tempo_at(&self, order: usize, row: usize) -> Option<f64> {
-        self.tempo_map.iter().find(|tp| tp.order == order && tp.row == row).map(|tp| tp.bpm)
+        self.tempo_map
+            .iter()
+            .find(|tp| tp.order == order && tp.row == row)
+            .map(|tp| tp.bpm)
     }
 }
 
@@ -282,13 +298,20 @@ mod tests {
         song.title = "RoundtripTest".to_string();
         song.bpm = 155;
         song.speed = 3;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::Fs, octave: 5 }),
-            instrument: Some(0x0A),
-            volume: Some(0x60),
-            effect: Some(3),
-            effect_value: Some(0xFF),
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::Fs,
+                    octave: 5,
+                }),
+                instrument: Some(0x0A),
+                volume: Some(0x60),
+                effect: Some(3),
+                effect_value: Some(0xFF),
+            },
+        );
 
         let tmp = std::env::temp_dir().join("rtrack_song_roundtrip.rtrk");
         song.save(&tmp).unwrap();
@@ -301,7 +324,13 @@ mod tests {
         assert_eq!(loaded.rows_per_pattern, 32);
 
         let cell = loaded.patterns[0].get(0, 0);
-        assert_eq!(cell.note, Some(Note::On { value: NoteValue::Fs, octave: 5 }));
+        assert_eq!(
+            cell.note,
+            Some(Note::On {
+                value: NoteValue::Fs,
+                octave: 5
+            })
+        );
         assert_eq!(cell.instrument, Some(0x0A));
         assert_eq!(cell.volume, Some(0x60));
         assert_eq!(cell.effect, Some(3));
@@ -339,21 +368,19 @@ mod tests {
                     },
                 },
             ],
-            sample_refs: vec![
-                SampleRefEntry {
-                    slot: 0,
-                    sample_ref: SampleRef {
-                        name: "kick".to_string(),
-                        path: "samples/0-kick.wav".to_string(),
-                        base_note: 36,
-                        trim_start: 0,
-                        trim_end: 0,
-                        loop_enabled: false,
-                        loop_start: 0,
-                        loop_end: 0,
-                    },
+            sample_refs: vec![SampleRefEntry {
+                slot: 0,
+                sample_ref: SampleRef {
+                    name: "kick".to_string(),
+                    path: "samples/0-kick.wav".to_string(),
+                    base_note: 36,
+                    trim_start: 0,
+                    trim_end: 0,
+                    loop_enabled: false,
+                    loop_start: 0,
+                    loop_end: 0,
                 },
-            ],
+            }],
         };
 
         let tmp = std::env::temp_dir().join("rtrack_songfile_roundtrip.rtrk");

@@ -70,8 +70,7 @@ pub struct GridParams {
 pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<GridAction> {
     let font = FontId::monospace(13.0);
     let available = ui.available_size();
-    let (response, painter) =
-        ui.allocate_painter(available, egui::Sense::click_and_drag());
+    let (response, painter) = ui.allocate_painter(available, egui::Sense::click_and_drag());
     let rect = response.rect;
     let c = &params.colors;
 
@@ -88,9 +87,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
         let ch_offset = ch_idx - first_ch;
         let x = rect.left()
             + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
-            + ch_offset as f32
-                * (channel_width_chars() + SEPARATOR_CHARS) as f32
-                * CHAR_WIDTH;
+            + ch_offset as f32 * (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
 
         let default_name = format!("Ch{}", ch_idx + 1);
         let name = params
@@ -132,8 +129,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
 
         let y = data_top + screen_y as f32 * ROW_HEIGHT;
         let is_cursor_row = !params.playing && row_idx == params.cursor_row;
-        let is_playback_row =
-            params.playing && row_idx == params.playback_row;
+        let is_playback_row = params.playing && row_idx == params.playback_row;
         let is_beat = row_idx % beat == 0;
         let is_bar = row_idx % bar == 0;
 
@@ -194,9 +190,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             let ch_offset = ch_idx - first_ch;
             let base_x = rect.left()
                 + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
-                + ch_offset as f32
-                    * (channel_width_chars() + SEPARATOR_CHARS) as f32
-                    * CHAR_WIDTH;
+                + ch_offset as f32 * (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
 
             // Block highlight overlay for this cell
             if let Some((min_r, max_r, min_c, max_c)) = block_range {
@@ -234,10 +228,34 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             let vol_text = cell.display_volume();
             let fx_text = cell.display_effect();
 
-            let note_fg = if is_muted { c.fg_muted } else if cell.note.is_some() { c.fg_note_set } else { c.fg_note_empty };
-            let inst_fg = if is_muted { c.fg_muted } else if cell.instrument.is_some() { c.fg_inst_set } else { c.fg_inst_empty };
-            let vol_fg = if is_muted { c.fg_muted } else if cell.volume.is_some() { c.fg_vol_set } else { c.fg_vol_empty };
-            let fx_fg = if is_muted { c.fg_muted } else if cell.effect.is_some() || cell.effect_value.is_some() { c.fg_fx_set } else { c.fg_fx_empty };
+            let note_fg = if is_muted {
+                c.fg_muted
+            } else if cell.note.is_some() {
+                c.fg_note_set
+            } else {
+                c.fg_note_empty
+            };
+            let inst_fg = if is_muted {
+                c.fg_muted
+            } else if cell.instrument.is_some() {
+                c.fg_inst_set
+            } else {
+                c.fg_inst_empty
+            };
+            let vol_fg = if is_muted {
+                c.fg_muted
+            } else if cell.volume.is_some() {
+                c.fg_vol_set
+            } else {
+                c.fg_vol_empty
+            };
+            let fx_fg = if is_muted {
+                c.fg_muted
+            } else if cell.effect.is_some() || cell.effect_value.is_some() {
+                c.fg_fx_set
+            } else {
+                c.fg_fx_empty
+            };
 
             // Positions
             let mut x = base_x;
@@ -259,22 +277,46 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
 
             // Note
             draw_sub(x, NOTE_CHARS, SubColumn::Note, &painter);
-            painter.text(Pos2::new(x, y + 2.0), egui::Align2::LEFT_TOP, &note_text, font.clone(), note_fg);
+            painter.text(
+                Pos2::new(x, y + 2.0),
+                egui::Align2::LEFT_TOP,
+                &note_text,
+                font.clone(),
+                note_fg,
+            );
             x += (NOTE_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
 
             // Instrument
             draw_sub(x, INST_CHARS, SubColumn::Instrument, &painter);
-            painter.text(Pos2::new(x, y + 2.0), egui::Align2::LEFT_TOP, &inst_text, font.clone(), inst_fg);
+            painter.text(
+                Pos2::new(x, y + 2.0),
+                egui::Align2::LEFT_TOP,
+                &inst_text,
+                font.clone(),
+                inst_fg,
+            );
             x += (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
 
             // Volume
             draw_sub(x, VOL_CHARS, SubColumn::Volume, &painter);
-            painter.text(Pos2::new(x, y + 2.0), egui::Align2::LEFT_TOP, &vol_text, font.clone(), vol_fg);
+            painter.text(
+                Pos2::new(x, y + 2.0),
+                egui::Align2::LEFT_TOP,
+                &vol_text,
+                font.clone(),
+                vol_fg,
+            );
             x += (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
 
             // Effect
             draw_sub(x, FX_CHARS, SubColumn::Effect, &painter);
-            painter.text(Pos2::new(x, y + 2.0), egui::Align2::LEFT_TOP, &fx_text, font.clone(), fx_fg);
+            painter.text(
+                Pos2::new(x, y + 2.0),
+                egui::Align2::LEFT_TOP,
+                &fx_text,
+                font.clone(),
+                fx_fg,
+            );
         }
     }
 
@@ -301,10 +343,8 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             return None;
         }
 
-        let channels_start_x =
-            rect.left() + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-        let channel_total_width =
-            (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+        let channels_start_x = rect.left() + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+        let channel_total_width = (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
 
         let rel_x = pos.x - channels_start_x;
         if rel_x < 0.0 {

@@ -62,6 +62,21 @@ pub struct VisualizationState {
     pub panel: BottomPanel,
 }
 
+impl Default for VisualizationState {
+    fn default() -> Self {
+        Self {
+            meter_l: 0.0,
+            meter_r: 0.0,
+            peak_hold_l: 0.0,
+            peak_hold_r: 0.0,
+            spectrum: vec![0.0; SPECTRUM_BARS],
+            sample_buf: Vec::with_capacity(FFT_SIZE * 2),
+            voice_snapshots: Vec::new(),
+            panel: BottomPanel::default(),
+        }
+    }
+}
+
 impl VisualizationState {
     pub fn new() -> Self {
         Self {
@@ -124,8 +139,8 @@ impl VisualizationState {
 
         for bar in 0..SPECTRUM_BARS {
             // Log-spaced center frequency for this bar
-            let f_center = min_freq
-                * (max_freq / min_freq).powf((bar as f32 + 0.5) / SPECTRUM_BARS as f32);
+            let f_center =
+                min_freq * (max_freq / min_freq).powf((bar as f32 + 0.5) / SPECTRUM_BARS as f32);
 
             // Goertzel algorithm: O(N) per frequency bin
             let k = (f_center / sample_rate * n as f32).round();
@@ -179,7 +194,10 @@ pub fn draw_visualization(f: &mut Frame, vis: &VisualizationState, area: Rect) {
     let mut lines: Vec<Line> = Vec::with_capacity(height);
 
     // Block characters for vertical bars (from empty to full)
-    let bar_chars = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    let bar_chars = [
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
 
     // Convert meter levels from linear amplitude to dB-normalized (0.0-1.0)
     // so that typical audio levels are visible on the meter
@@ -301,7 +319,10 @@ pub fn draw_separator(f: &mut Frame, area: Rect) {
 
 /// Build mini meter spans for embedding in the status bar.
 /// Returns spans that can be appended to a status bar Line.
-pub fn build_statusbar_meter_spans(vis: &VisualizationState, avail_width: usize) -> Vec<Span<'static>> {
+pub fn build_statusbar_meter_spans(
+    vis: &VisualizationState,
+    avail_width: usize,
+) -> Vec<Span<'static>> {
     let bar_width = avail_width.saturating_sub(4).min(24); // "LR " + meter chars
     if bar_width == 0 {
         return Vec::new();
@@ -335,10 +356,7 @@ pub fn build_statusbar_meter_spans(vis: &VisualizationState, avail_width: usize)
             (false, false) => (' ', Color::Reset, Color::Reset),
         };
 
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(fg).bg(bg),
-        ));
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(fg).bg(bg)));
     }
 
     spans

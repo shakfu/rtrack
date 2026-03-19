@@ -1,8 +1,8 @@
 [package]
 name = "rtrack-gui"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.87"
 description = "GUI frontend for rtrack music tracker"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/shakfu/rtrack"
@@ -16,7 +16,7 @@ name = "rtrack-gui"
 path = "src/main.rs"
 
 [dependencies]
-rtrack-core = { version = "0.1.1", path = "../rtrack-core" }
+rtrack-core = { version = "0.1.2", path = "../rtrack-core" }
 eframe = "0.31"
 egui = "0.31"
 rfd = "0.15"

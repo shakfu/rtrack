@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use egui::{Color32, Painter, Rect, Stroke, Ui, Vec2, pos2};
-use rustfft::{FftPlanner, num_complex::Complex};
+use egui::{pos2, Color32, Painter, Rect, Stroke, Ui, Vec2};
+use rustfft::{num_complex::Complex, FftPlanner};
 
 use rtrack_core::audio::{AudioEngine, VoiceSnapshot};
 use rtrack_core::sample::SampleBank;
@@ -175,10 +175,10 @@ impl VisualizationState {
         for bar in 0..SPECTRUM_BARS {
             let t0 = bar as f32 / SPECTRUM_BARS as f32;
             let t1 = (bar + 1) as f32 / SPECTRUM_BARS as f32;
-            let lo = (min_freq_bin as f32
-                * (max_freq_bin as f32 / min_freq_bin as f32).powf(t0)) as usize;
-            let hi = ((min_freq_bin as f32
-                * (max_freq_bin as f32 / min_freq_bin as f32).powf(t1)) as usize)
+            let lo = (min_freq_bin as f32 * (max_freq_bin as f32 / min_freq_bin as f32).powf(t0))
+                as usize;
+            let hi = ((min_freq_bin as f32 * (max_freq_bin as f32 / min_freq_bin as f32).powf(t1))
+                as usize)
                 .max(lo + 1)
                 .min(half);
             let sum: f32 = magnitudes[lo..hi].iter().sum();
@@ -257,20 +257,31 @@ impl VisualizationState {
 
         ui.horizontal(|ui| {
             let spectrum_size = Vec2::new(spectrum_width.max(100.0), avail.y);
-            let (response, painter) =
-                ui.allocate_painter(spectrum_size, egui::Sense::hover());
+            let (response, painter) = ui.allocate_painter(spectrum_size, egui::Sense::hover());
             draw_spectrum_bars(&painter, response.rect, &self.spectrum);
 
             ui.add_space(meter_gap);
 
             let meter_size = Vec2::new(meter_width, avail.y);
             let (_, painter_l) = ui.allocate_painter(meter_size, egui::Sense::hover());
-            draw_meter(&painter_l, painter_l.clip_rect(), self.meter_l, self.peak_hold_l, "L");
+            draw_meter(
+                &painter_l,
+                painter_l.clip_rect(),
+                self.meter_l,
+                self.peak_hold_l,
+                "L",
+            );
 
             ui.add_space(2.0);
 
             let (_, painter_r) = ui.allocate_painter(meter_size, egui::Sense::hover());
-            draw_meter(&painter_r, painter_r.clip_rect(), self.meter_r, self.peak_hold_r, "R");
+            draw_meter(
+                &painter_r,
+                painter_r.clip_rect(),
+                self.meter_r,
+                self.peak_hold_r,
+                "R",
+            );
         });
     }
 
@@ -331,9 +342,7 @@ impl VisualizationState {
         let slice_boundaries: Vec<(usize, usize)> = if related_slots.len() > 1 {
             related_slots
                 .iter()
-                .filter_map(|&s| {
-                    sample_bank.get(s).map(|smp| (smp.trim_start, smp.end()))
-                })
+                .filter_map(|&s| sample_bank.get(s).map(|smp| (smp.trim_start, smp.end())))
                 .collect()
         } else {
             Vec::new()
@@ -352,8 +361,7 @@ impl VisualizationState {
                 SliceMode::Transient => {
                     ui.label("Sensitivity:");
                     ui.add(
-                        egui::Slider::new(&mut self.slice_sensitivity, 0.01..=1.0)
-                            .max_decimals(2),
+                        egui::Slider::new(&mut self.slice_sensitivity, 0.01..=1.0).max_decimals(2),
                     );
                 }
             }
@@ -492,10 +500,7 @@ fn draw_meter(painter: &Painter, rect: Rect, level: f32, peak: f32, label: &str)
     painter.rect_filled(rect, 2.0, Color32::from_rgb(20, 20, 25));
 
     let label_height = 14.0;
-    let meter_rect = Rect::from_min_max(
-        rect.min,
-        pos2(rect.right(), rect.bottom() - label_height),
-    );
+    let meter_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - label_height));
 
     let level_norm = level.sqrt().clamp(0.0, 1.0);
     let segments = 32;
@@ -522,7 +527,10 @@ fn draw_meter(painter: &Painter, rect: Rect, level: f32, peak: f32, label: &str)
     if peak_norm > 0.01 {
         let peak_y = meter_rect.bottom() - peak_norm * meter_rect.height();
         painter.line_segment(
-            [pos2(meter_rect.left() + 1.0, peak_y), pos2(meter_rect.right() - 1.0, peak_y)],
+            [
+                pos2(meter_rect.left() + 1.0, peak_y),
+                pos2(meter_rect.right() - 1.0, peak_y),
+            ],
             Stroke::new(1.5, Color32::WHITE),
         );
     }
@@ -687,7 +695,11 @@ fn draw_sample_waveform(
     for &(pos, is_selected) in voice_positions {
         let x = rect.left() + (pos as f32 / total_len as f32) * w;
         if x >= rect.left() && x <= rect.right() {
-            let color = if is_selected { playhead_selected } else { playhead_related };
+            let color = if is_selected {
+                playhead_selected
+            } else {
+                playhead_related
+            };
             // Vertical playhead line
             painter.line_segment(
                 [pos2(x, rect.top()), pos2(x, rect.bottom())],

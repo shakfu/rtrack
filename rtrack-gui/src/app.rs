@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rtrack_core::TrackerCore;
 use rtrack_core::tracker::Cell;
+use rtrack_core::TrackerCore;
 
 use crate::grid::{self, GridAction, GridParams};
 use crate::history::EditHistory;
@@ -174,8 +174,7 @@ impl RtrackApp {
                         self.history = EditHistory::new(100);
                         rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                         rtrack_core::config::save_recent_files(&self.recent_files);
-                        self.status_message =
-                            Some(format!("Loaded {}", path.display()));
+                        self.status_message = Some(format!("Loaded {}", path.display()));
                     }
                     Err(e) => {
                         self.status_message =
@@ -275,9 +274,7 @@ impl eframe::App for RtrackApp {
         self.process_keys(ctx);
 
         // Intercept window close when dirty
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.core.dirty
-        {
+        if ctx.input(|i| i.viewport().close_requested()) && self.core.dirty {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.show_quit_confirm = true;
         }
@@ -320,7 +317,8 @@ impl eframe::App for RtrackApp {
             // Preview sample slot on click (only when not playing)
             if let Some(slot) = self.vis.preview_slot.take() {
                 if !self.core.playing {
-                    self.core.preview_note_with_instrument(0, 60, 100, Some(slot as u8));
+                    self.core
+                        .preview_note_with_instrument(0, 60, 100, Some(slot as u8));
                 }
             }
 
@@ -367,22 +365,13 @@ impl eframe::App for RtrackApp {
                 let pattern_idx = self.core.song.order[order_pos];
                 let pattern = &self.core.song.patterns[pattern_idx];
 
-                let muted: Vec<bool> = self
-                    .core
-                    .channels
-                    .iter()
-                    .map(|c| c.muted)
-                    .collect();
-                let names: Vec<String> = self
-                    .core
-                    .channels
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect();
+                let muted: Vec<bool> = self.core.channels.iter().map(|c| c.muted).collect();
+                let names: Vec<String> =
+                    self.core.channels.iter().map(|c| c.name.clone()).collect();
 
                 // Compute how many channels fit in the available width
-                let visible_count = grid::max_visible_channels(ui.available_width())
-                    .min(self.core.song.channels);
+                let visible_count =
+                    grid::max_visible_channels(ui.available_width()).min(self.core.song.channels);
 
                 // Auto-scroll to keep cursor visible
                 if self.cursor_channel < self.first_visible_channel {

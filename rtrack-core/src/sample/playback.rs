@@ -62,7 +62,8 @@ impl SamplePlaybackEngine {
         //   pitch_ratio = 2^((note - base_note) / 12)
         //   rate_ratio  = sample.sample_rate / output_rate
         //   effective_rate = pitch_ratio * rate_ratio
-        let pitch_ratio = 2.0_f64.powf((note as f64 - sample.base_note as f64) / SEMITONES_PER_OCTAVE as f64);
+        let pitch_ratio =
+            2.0_f64.powf((note as f64 - sample.base_note as f64) / SEMITONES_PER_OCTAVE as f64);
         let rate_ratio = sample.sample_rate / output_rate;
         let rate = pitch_ratio * rate_ratio;
         let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
@@ -73,12 +74,16 @@ impl SamplePlaybackEngine {
                 self.voices.remove(idx);
             } else {
                 // Steal the quietest voice
-                let quietest = self.voices.iter()
+                let quietest = self
+                    .voices
+                    .iter()
                     .enumerate()
                     .min_by(|(_, a), (_, b)| {
                         let a_level = a.envelope.level * a.velocity;
                         let b_level = b.envelope.level * b.velocity;
-                        a_level.partial_cmp(&b_level).unwrap_or(std::cmp::Ordering::Equal)
+                        a_level
+                            .partial_cmp(&b_level)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .map(|(i, _)| i);
                 if let Some(idx) = quietest {
@@ -121,12 +126,20 @@ impl SamplePlaybackEngine {
 
     /// Adjust pitch offset (in semitones) for all active voices on a channel.
     /// Recalculates the playback rate to reflect the offset.
-    pub fn set_channel_pitch_offset(&mut self, channel: u8, semitones: f64, bank: &SampleBank, output_rate: f64) {
+    pub fn set_channel_pitch_offset(
+        &mut self,
+        channel: u8,
+        semitones: f64,
+        bank: &SampleBank,
+        output_rate: f64,
+    ) {
         for voice in &mut self.voices {
             if voice.active && voice.channel == channel {
                 if let Some(sample) = bank.get(voice.sample_index) {
                     let effective_note = voice.note as f64 + semitones;
-                    let pitch_ratio = 2.0_f64.powf((effective_note - sample.base_note as f64) / SEMITONES_PER_OCTAVE as f64);
+                    let pitch_ratio = 2.0_f64.powf(
+                        (effective_note - sample.base_note as f64) / SEMITONES_PER_OCTAVE as f64,
+                    );
                     let rate_ratio = sample.sample_rate / output_rate;
                     voice.rate = pitch_ratio * rate_ratio;
                 }
@@ -498,7 +511,10 @@ mod tests {
 
         // End should be silence (voice deactivated after envelope reaches < 0.001)
         let tail_energy: f32 = left2[20000..22050].iter().map(|s| s * s).sum();
-        assert!(tail_energy < 0.001,
-            "Expected silence after full release, but tail_energy={}", tail_energy);
+        assert!(
+            tail_energy < 0.001,
+            "Expected silence after full release, but tail_energy={}",
+            tail_energy
+        );
     }
 }

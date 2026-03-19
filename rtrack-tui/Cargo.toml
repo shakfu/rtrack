@@ -1,8 +1,8 @@
 [package]
 name = "rtrack-tui"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.87"
 description = "TUI frontend for rtrack music tracker"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/shakfu/rtrack"
@@ -20,7 +20,7 @@ name = "rtrack_tui"
 path = "src/lib.rs"
 
 [dependencies]
-rtrack-core = { version = "0.1.1", path = "../rtrack-core" }
+rtrack-core = { version = "0.1.2", path = "../rtrack-core" }
 ratatui = "0.29"
 crossterm = "0.28"
 anyhow = "1"

@@ -24,10 +24,18 @@ pub struct SendBusParams {
     pub reverb_damp: f32,
 }
 
-fn default_bus_delay_time() -> f32 { 300.0 }
-fn default_bus_delay_feedback() -> f32 { 0.4 }
-fn default_bus_reverb_size() -> f32 { 0.6 }
-fn default_bus_reverb_damp() -> f32 { 0.5 }
+fn default_bus_delay_time() -> f32 {
+    300.0
+}
+fn default_bus_delay_feedback() -> f32 {
+    0.4
+}
+fn default_bus_reverb_size() -> f32 {
+    0.6
+}
+fn default_bus_reverb_damp() -> f32 {
+    0.5
+}
 
 impl Default for SendBusParams {
     fn default() -> Self {
@@ -107,8 +115,12 @@ impl SendBus {
 
     /// Zero the input accumulation buffers.
     pub fn clear_inputs(&mut self, frames: usize) {
-        for s in self.input_left[..frames].iter_mut() { *s = 0.0; }
-        for s in self.input_right[..frames].iter_mut() { *s = 0.0; }
+        for s in self.input_left[..frames].iter_mut() {
+            *s = 0.0;
+        }
+        for s in self.input_right[..frames].iter_mut() {
+            *s = 0.0;
+        }
     }
 
     /// Add a channel's output to this bus's input, scaled by send level.
@@ -121,7 +133,12 @@ impl SendBus {
     }
 
     /// Process the accumulated input through the bus effect and add to master output.
-    pub fn process_to_master(&mut self, master_left: &mut [f32], master_right: &mut [f32], frames: usize) {
+    pub fn process_to_master(
+        &mut self,
+        master_left: &mut [f32],
+        master_right: &mut [f32],
+        frames: usize,
+    ) {
         if !self.params.enabled {
             return;
         }
@@ -211,9 +228,8 @@ impl EffectsChain {
         // Left delay 80ms, right delay 120ms, both at 15% wet mix.
         // Much cheaper than FDN reverb (reverb_stereo) which caused
         // buffer underruns and distortion.
-        let mut unit: Box<dyn AudioUnit> = Box::new(
-            multipass::<U2>() & ((delay(0.08) * 0.15) | (delay(0.12) * 0.15)),
-        );
+        let mut unit: Box<dyn AudioUnit> =
+            Box::new(multipass::<U2>() & ((delay(0.08) * 0.15) | (delay(0.12) * 0.15)));
         unit.set_sample_rate(sample_rate);
         Self {
             unit,
@@ -271,12 +287,21 @@ mod tests {
         }
         chain.process(&mut left, &mut right);
 
-        let peak = left.iter().chain(right.iter())
+        let peak = left
+            .iter()
+            .chain(right.iter())
             .fold(0.0_f32, |acc, &s| acc.max(s.abs()));
         let has_nan = left.iter().chain(right.iter()).any(|s| !s.is_finite());
-        eprintln!("Effects chain: input peak=0.25, output peak={:.4}, has_nan={}", peak, has_nan);
+        eprintln!(
+            "Effects chain: input peak=0.25, output peak={:.4}, has_nan={}",
+            peak, has_nan
+        );
         assert!(!has_nan, "Effects chain produced NaN/Inf");
-        assert!(peak < 2.0, "Effects chain excessive amplification: {:.4}", peak);
+        assert!(
+            peak < 2.0,
+            "Effects chain excessive amplification: {:.4}",
+            peak
+        );
     }
 
     #[test]
@@ -311,7 +336,10 @@ mod tests {
         let mut master_r = vec![0.0f32; frames];
         bus.process_to_master(&mut master_l, &mut master_r, frames);
         // Disabled bus should not add anything
-        let peak = master_l.iter().chain(master_r.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
+        let peak = master_l
+            .iter()
+            .chain(master_r.iter())
+            .fold(0.0f32, |a, &s| a.max(s.abs()));
         assert_eq!(peak, 0.0, "Disabled bus should produce no output");
     }
 
@@ -340,10 +368,19 @@ mod tests {
 
         // After 100ms (~4410 samples), we should see the delayed impulse
         let delay_sample = (0.1 * 44100.0) as usize;
-        let has_delayed = master_l[delay_sample..delay_sample + 10].iter().any(|&s| s.abs() > 0.1);
-        assert!(has_delayed, "Delay bus should produce delayed output around sample {}", delay_sample);
+        let has_delayed = master_l[delay_sample..delay_sample + 10]
+            .iter()
+            .any(|&s| s.abs() > 0.1);
+        assert!(
+            has_delayed,
+            "Delay bus should produce delayed output around sample {}",
+            delay_sample
+        );
 
-        let has_nan = master_l.iter().chain(master_r.iter()).any(|s| !s.is_finite());
+        let has_nan = master_l
+            .iter()
+            .chain(master_r.iter())
+            .any(|s| !s.is_finite());
         assert!(!has_nan, "Delay bus produced NaN/Inf");
     }
 
@@ -376,9 +413,16 @@ mod tests {
 
         // Reverb should produce output beyond the initial 100 samples
         let tail_energy: f32 = master_l[1000..5000].iter().map(|s| s * s).sum();
-        assert!(tail_energy > 0.001, "Reverb bus should produce tail energy, got {}", tail_energy);
+        assert!(
+            tail_energy > 0.001,
+            "Reverb bus should produce tail energy, got {}",
+            tail_energy
+        );
 
-        let has_nan = master_l.iter().chain(master_r.iter()).any(|s| !s.is_finite());
+        let has_nan = master_l
+            .iter()
+            .chain(master_r.iter())
+            .any(|s| !s.is_finite());
         assert!(!has_nan, "Reverb bus produced NaN/Inf");
     }
 

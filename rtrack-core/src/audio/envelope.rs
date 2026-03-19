@@ -17,10 +17,10 @@ pub enum EnvStage {
 pub struct Envelope {
     pub stage: EnvStage,
     pub level: f32,
-    pub attack: f32,   // seconds
-    pub decay: f32,    // seconds
-    pub sustain: f32,  // 0..1
-    pub release: f32,  // seconds (exponential time constant)
+    pub attack: f32,  // seconds
+    pub decay: f32,   // seconds
+    pub sustain: f32, // 0..1
+    pub release: f32, // seconds (exponential time constant)
     sample_rate: f32,
 }
 
@@ -117,8 +117,11 @@ mod tests {
         for _ in 0..44100 {
             env.tick();
         }
-        assert!((env.level - 0.5).abs() < 0.01,
-            "Level should settle at sustain=0.5, got {:.4}", env.level);
+        assert!(
+            (env.level - 0.5).abs() < 0.01,
+            "Level should settle at sustain=0.5, got {:.4}",
+            env.level
+        );
         assert_eq!(env.stage, EnvStage::Sustain);
     }
 

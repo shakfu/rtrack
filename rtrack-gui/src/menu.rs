@@ -1,5 +1,5 @@
-use rtrack_core::TrackerCore;
 use rtrack_core::tracker::Cell;
+use rtrack_core::TrackerCore;
 
 use crate::app::RtrackApp;
 use crate::state::SubColumn;
@@ -38,7 +38,10 @@ impl RtrackApp {
                                     self.reset_cursor_state();
                                     self.history.clear();
                                     self.clipboard = None;
-                                    rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                                    rtrack_core::config::push_recent_file(
+                                        &mut self.recent_files,
+                                        &path,
+                                    );
                                     rtrack_core::config::save_recent_files(&self.recent_files);
                                     self.status_message = Some(msg);
                                 }
@@ -85,10 +88,8 @@ impl RtrackApp {
                         ui.menu_button("Recent Files", |ui| {
                             let files: Vec<_> = self.recent_files.clone();
                             for path in &files {
-                                let label = path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("?");
+                                let label =
+                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                                 if ui.button(label).clicked() {
                                     match self.core.load_file(path) {
                                         Ok(msg) => {
@@ -144,7 +145,10 @@ impl RtrackApp {
                 });
 
                 ui.menu_button("Edit", |ui| {
-                    if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)")).clicked() {
+                    if ui
+                        .add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)"))
+                        .clicked()
+                    {
                         if let Some(edits) = self.history.undo() {
                             for edit in &edits {
                                 let cell = self.core.song.patterns[edit.pattern_idx]
@@ -156,7 +160,13 @@ impl RtrackApp {
                         }
                         ui.close_menu();
                     }
-                    if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo  (Ctrl+Shift+Z)")).clicked() {
+                    if ui
+                        .add_enabled(
+                            self.history.can_redo(),
+                            egui::Button::new("Redo  (Ctrl+Shift+Z)"),
+                        )
+                        .clicked()
+                    {
                         if let Some(edits) = self.history.redo() {
                             for edit in &edits {
                                 let cell = self.core.song.patterns[edit.pattern_idx]
@@ -169,7 +179,10 @@ impl RtrackApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.add_enabled(true, egui::Button::new("Copy  (Ctrl+C)")).clicked() {
+                    if ui
+                        .add_enabled(true, egui::Button::new("Copy  (Ctrl+C)"))
+                        .clicked()
+                    {
                         let pattern_idx = self.core.song.order[self.edit_order];
                         let cell = *self.core.song.patterns[pattern_idx]
                             .get(self.cursor_row, self.cursor_channel);
@@ -177,7 +190,10 @@ impl RtrackApp {
                         self.status_message = Some("Copied".to_string());
                         ui.close_menu();
                     }
-                    if ui.add_enabled(true, egui::Button::new("Cut  (Ctrl+X)")).clicked() {
+                    if ui
+                        .add_enabled(true, egui::Button::new("Cut  (Ctrl+X)"))
+                        .clicked()
+                    {
                         let pattern_idx = self.core.song.order[self.edit_order];
                         let old_cell = *self.core.song.patterns[pattern_idx]
                             .get(self.cursor_row, self.cursor_channel);
@@ -186,12 +202,24 @@ impl RtrackApp {
                             .get_mut(self.cursor_row, self.cursor_channel);
                         *cell = Cell::default();
                         let new_cell = *cell;
-                        self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
+                        self.record_cell_edit(
+                            pattern_idx,
+                            self.cursor_row,
+                            self.cursor_channel,
+                            old_cell,
+                            new_cell,
+                        );
                         self.core.dirty = true;
                         self.status_message = Some("Cut".to_string());
                         ui.close_menu();
                     }
-                    if ui.add_enabled(self.clipboard.is_some(), egui::Button::new("Paste  (Ctrl+V)")).clicked() {
+                    if ui
+                        .add_enabled(
+                            self.clipboard.is_some(),
+                            egui::Button::new("Paste  (Ctrl+V)"),
+                        )
+                        .clicked()
+                    {
                         if let Some(clip) = self.clipboard {
                             let pattern_idx = self.core.song.order[self.edit_order];
                             let old_cell = *self.core.song.patterns[pattern_idx]
@@ -199,7 +227,13 @@ impl RtrackApp {
                             let cell = self.core.song.patterns[pattern_idx]
                                 .get_mut(self.cursor_row, self.cursor_channel);
                             *cell = clip;
-                            self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, clip);
+                            self.record_cell_edit(
+                                pattern_idx,
+                                self.cursor_row,
+                                self.cursor_channel,
+                                old_cell,
+                                clip,
+                            );
                             self.core.dirty = true;
                             self.status_message = Some("Pasted".to_string());
                         }
@@ -234,10 +268,10 @@ impl RtrackApp {
                         ui.close_menu();
                     }
                     if ui.button("MIDI Ports  (F2)").clicked() {
-                        self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
-                            .unwrap_or_default();
-                        self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
-                            .unwrap_or_default();
+                        self.midi_port_list =
+                            rtrack_core::midi::MidiEngine::list_ports().unwrap_or_default();
+                        self.midi_input_port_list =
+                            rtrack_core::midi::MidiInputEngine::list_ports().unwrap_or_default();
                         self.show_midi_ports = true;
                         ui.close_menu();
                     }

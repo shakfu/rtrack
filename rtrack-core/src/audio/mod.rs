@@ -59,22 +59,64 @@ pub struct VoiceSnapshot {
 
 /// Commands sent from the UI thread to the audio thread via lock-free ring buffer.
 enum AudioCommand {
-    NoteOn { channel: u8, note: u8, velocity: u8 },
-    NoteOnWithParams { channel: u8, note: u8, velocity: u8, params: Box<SynthParams> },
-    NoteOff { channel: u8, note: u8 },
-    NoteOffAllChannel { channel: u8 },
+    NoteOn {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+    },
+    NoteOnWithParams {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: Box<SynthParams>,
+    },
+    NoteOff {
+        channel: u8,
+        note: u8,
+    },
+    NoteOffAllChannel {
+        channel: u8,
+    },
     NoteOffAll,
-    SendCC { channel: u8, controller: u8, value: u8 },
-    ProgramChange { channel: u8, program: u8 },
-    PitchBend { channel: u8, value: u16 },
+    SendCC {
+        channel: u8,
+        controller: u8,
+        value: u8,
+    },
+    ProgramChange {
+        channel: u8,
+        program: u8,
+    },
+    PitchBend {
+        channel: u8,
+        value: u16,
+    },
     ToggleEffects,
-    SetSampleBank { bank: Arc<SampleBank> },
-    SampleNoteOn { sample_index: usize, note: u8, velocity: u8, channel: u8 },
-    SampleNoteOff { channel: u8, note: u8 },
-    SampleNoteOffChannel { channel: u8 },
+    SetSampleBank {
+        bank: Arc<SampleBank>,
+    },
+    SampleNoteOn {
+        sample_index: usize,
+        note: u8,
+        velocity: u8,
+        channel: u8,
+    },
+    SampleNoteOff {
+        channel: u8,
+        note: u8,
+    },
+    SampleNoteOffChannel {
+        channel: u8,
+    },
     SampleNoteOffAll,
-    SetChannelEffects { channel: u8, params: Box<ChannelEffectsParams> },
-    SetSendBusParams { bus: u8, params: Box<effects::SendBusParams> },
+    SetChannelEffects {
+        channel: u8,
+        params: Box<ChannelEffectsParams>,
+    },
+    SetSendBusParams {
+        bus: u8,
+        params: Box<effects::SendBusParams>,
+    },
 }
 
 /// Unified audio engine. Supports:
@@ -238,8 +280,12 @@ impl AudioEngine {
                         let right = &mut scratch_right[..frames];
 
                         // Zero the master scratch buffers
-                        for s in left.iter_mut() { *s = 0.0; }
-                        for s in right.iter_mut() { *s = 0.0; }
+                        for s in left.iter_mut() {
+                            *s = 0.0;
+                        }
+                        for s in right.iter_mut() {
+                            *s = 0.0;
+                        }
 
                         // Check if any channel has effects enabled
                         let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
@@ -256,8 +302,12 @@ impl AudioEngine {
                             // Per-channel rendering path (needed for channel effects or send buses)
                             // Zero per-channel buffers
                             for ch in 0..MAX_EFFECT_CHANNELS {
-                                for s in ch_buf_left[ch][..frames].iter_mut() { *s = 0.0; }
-                                for s in ch_buf_right[ch][..frames].iter_mut() { *s = 0.0; }
+                                for s in ch_buf_left[ch][..frames].iter_mut() {
+                                    *s = 0.0;
+                                }
+                                for s in ch_buf_right[ch][..frames].iter_mut() {
+                                    *s = 0.0;
+                                }
                             }
 
                             // Render built-in synth per-channel
@@ -272,13 +322,17 @@ impl AudioEngine {
 
                             // Render samples per-channel
                             {
-                                let mut slices: Vec<(&mut [f32], &mut [f32])> = Vec::with_capacity(MAX_EFFECT_CHANNELS);
-                                let (ch_l_slices, ch_r_slices) = (&mut ch_buf_left, &mut ch_buf_right);
+                                let mut slices: Vec<(&mut [f32], &mut [f32])> =
+                                    Vec::with_capacity(MAX_EFFECT_CHANNELS);
+                                let (ch_l_slices, ch_r_slices) =
+                                    (&mut ch_buf_left, &mut ch_buf_right);
                                 for ch in 0..MAX_EFFECT_CHANNELS {
                                     let l = &mut ch_l_slices[ch][..frames] as *mut [f32];
                                     let r = &mut ch_r_slices[ch][..frames] as *mut [f32];
                                     // SAFETY: each channel index is unique, no aliasing
-                                    unsafe { slices.push((&mut *l, &mut *r)); }
+                                    unsafe {
+                                        slices.push((&mut *l, &mut *r));
+                                    }
                                 }
                                 sample_engine.render_per_channel(&sample_bank, &mut slices);
                             }
@@ -350,8 +404,12 @@ impl AudioEngine {
                             for i in 0..frames {
                                 let l = left[i].abs();
                                 let r = right[i].abs();
-                                if l > pl { pl = l; }
-                                if r > pr { pr = r; }
+                                if l > pl {
+                                    pl = l;
+                                }
+                                if r > pr {
+                                    pr = r;
+                                }
                                 // Push mono (L+R average) to ring buffer, drop if full
                                 let mono = (left[i] + right[i]) * 0.5;
                                 let _ = vis_producer.push(mono);
@@ -409,12 +467,24 @@ impl AudioEngine {
     }
 
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
-        self.send(AudioCommand::NoteOn { channel, note, velocity });
+        self.send(AudioCommand::NoteOn {
+            channel,
+            note,
+            velocity,
+        });
     }
 
-    pub fn note_on_with_params(&mut self, channel: u8, note: u8, velocity: u8, params: &SynthParams) {
+    pub fn note_on_with_params(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: &SynthParams,
+    ) {
         self.send(AudioCommand::NoteOnWithParams {
-            channel, note, velocity,
+            channel,
+            note,
+            velocity,
             params: Box::new(params.clone()),
         });
     }
@@ -433,7 +503,11 @@ impl AudioEngine {
     }
 
     pub fn send_cc(&mut self, channel: u8, controller: u8, value: u8) {
-        self.send(AudioCommand::SendCC { channel, controller, value });
+        self.send(AudioCommand::SendCC {
+            channel,
+            controller,
+            value,
+        });
     }
 
     pub fn program_change(&mut self, channel: u8, program: u8) {
@@ -466,7 +540,12 @@ impl AudioEngine {
 
     /// Trigger a sample voice
     pub fn sample_note_on(&mut self, sample_index: usize, note: u8, velocity: u8, channel: u8) {
-        self.send(AudioCommand::SampleNoteOn { sample_index, note, velocity, channel });
+        self.send(AudioCommand::SampleNoteOn {
+            sample_index,
+            note,
+            velocity,
+            channel,
+        });
     }
 
     /// Stop a sample voice
@@ -554,7 +633,11 @@ fn process_command(
     effects_flag: &AtomicBool,
 ) {
     match cmd {
-        AudioCommand::NoteOn { channel, note, velocity } => {
+        AudioCommand::NoteOn {
+            channel,
+            note,
+            velocity,
+        } => {
             if let Some(ref mut sf2) = sf2_synth {
                 sf2.note_off_all_channel(channel as i32, false);
                 sf2.note_on(channel as i32, note as i32, velocity as i32);
@@ -563,7 +646,12 @@ fn process_command(
                 builtin_synth.note_on(channel, note, velocity);
             }
         }
-        AudioCommand::NoteOnWithParams { channel, note, velocity, params } => {
+        AudioCommand::NoteOnWithParams {
+            channel,
+            note,
+            velocity,
+            params,
+        } => {
             builtin_synth.note_on_with_params(channel, note, velocity, &params);
         }
         AudioCommand::NoteOff { channel, note } => {
@@ -588,7 +676,11 @@ fn process_command(
             }
             builtin_synth.note_off_all();
         }
-        AudioCommand::SendCC { channel, controller, value } => {
+        AudioCommand::SendCC {
+            channel,
+            controller,
+            value,
+        } => {
             if let Some(ref mut sf2) = sf2_synth {
                 sf2.process_midi_message(channel as i32, 0xB0, controller as i32, value as i32);
             }
@@ -613,12 +705,18 @@ fn process_command(
         AudioCommand::SetSampleBank { bank } => {
             *sample_bank = bank;
         }
-        AudioCommand::SampleNoteOn { sample_index, note, velocity, channel } => {
+        AudioCommand::SampleNoteOn {
+            sample_index,
+            note,
+            velocity,
+            channel,
+        } => {
             if let Some(sample) = sample_bank.get(sample_index) {
                 let base_note = sample.base_note;
                 let sr = sample.sample_rate;
                 let trim_start = sample.trim_start;
-                let pitch_ratio = 2.0_f64.powf((note as f64 - base_note as f64) / SEMITONES_PER_OCTAVE as f64);
+                let pitch_ratio =
+                    2.0_f64.powf((note as f64 - base_note as f64) / SEMITONES_PER_OCTAVE as f64);
                 let rate_ratio = sr / sample_rate;
                 let rate = pitch_ratio * rate_ratio;
                 let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
@@ -630,12 +728,16 @@ fn process_command(
                     if let Some(idx) = sample_engine.voices.iter().position(|v| !v.active) {
                         sample_engine.voices.remove(idx);
                     } else {
-                        let quietest = sample_engine.voices.iter()
+                        let quietest = sample_engine
+                            .voices
+                            .iter()
                             .enumerate()
                             .min_by(|(_, a), (_, b)| {
                                 let a_level = a.envelope.level * a.velocity;
                                 let b_level = b.envelope.level * b.velocity;
-                                a_level.partial_cmp(&b_level).unwrap_or(std::cmp::Ordering::Equal)
+                                a_level
+                                    .partial_cmp(&b_level)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
                             })
                             .map(|(i, _)| i);
                         if let Some(idx) = quietest {
@@ -683,8 +785,8 @@ fn process_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::synth::BuiltinSynth;
     use crate::audio::effects::EffectsChain;
+    use crate::audio::synth::BuiltinSynth;
 
     #[test]
     fn test_system_audio_config() {
@@ -701,8 +803,12 @@ mod tests {
             }
             if let Ok(configs) = device.supported_output_configs() {
                 for c in configs {
-                    eprintln!("  Supported: {:?} {}ch {:?}",
-                        c.sample_format(), c.channels(), c.buffer_size());
+                    eprintln!(
+                        "  Supported: {:?} {}ch {:?}",
+                        c.sample_format(),
+                        c.channels(),
+                        c.buffer_size()
+                    );
                 }
             }
         }
@@ -743,13 +849,24 @@ mod tests {
             }
         }
 
-        eprintln!("Max sample jump: {:.6} at sample {} (buffer boundary at {})",
-            max_jump, max_jump_pos,
-            if max_jump_pos % chunk == 0 { "YES" } else { "no" });
+        eprintln!(
+            "Max sample jump: {:.6} at sample {} (buffer boundary at {})",
+            max_jump,
+            max_jump_pos,
+            if max_jump_pos % chunk == 0 {
+                "YES"
+            } else {
+                "no"
+            }
+        );
 
-        assert!(max_jump < max_allowed_jump,
+        assert!(
+            max_jump < max_allowed_jump,
             "Click detected: jump={:.6} at sample {} (limit {:.6})",
-            max_jump, max_jump_pos, max_allowed_jump);
+            max_jump,
+            max_jump_pos,
+            max_allowed_jump
+        );
     }
 
     #[test]
@@ -798,10 +915,20 @@ mod tests {
             let got_r = data[i * 2 + 1];
             let exp_l = soft_clip(left[i]);
             let exp_r = soft_clip(right[i]);
-            assert!((got_l - exp_l).abs() < 1e-7,
-                "L mismatch at frame {}: got={}, exp={}", i, got_l, exp_l);
-            assert!((got_r - exp_r).abs() < 1e-7,
-                "R mismatch at frame {}: got={}, exp={}", i, got_r, exp_r);
+            assert!(
+                (got_l - exp_l).abs() < 1e-7,
+                "L mismatch at frame {}: got={}, exp={}",
+                i,
+                got_l,
+                exp_l
+            );
+            assert!(
+                (got_r - exp_r).abs() < 1e-7,
+                "R mismatch at frame {}: got={}, exp={}",
+                i,
+                got_r,
+                exp_r
+            );
         }
 
         let peak = data.iter().fold(0f32, |a, &s| a.max(s.abs()));
@@ -811,9 +938,12 @@ mod tests {
         // Sine patch: L and R should be identical
         let mut diff_sum = 0f32;
         for i in 0..frames {
-            diff_sum += (data[i*2] - data[i*2+1]).abs();
+            diff_sum += (data[i * 2] - data[i * 2 + 1]).abs();
         }
         let avg_diff = diff_sum / frames as f32;
-        eprintln!("Interleave test: peak={:.4}, avg L-R diff={:.6}", peak, avg_diff);
+        eprintln!(
+            "Interleave test: peak={:.4}, avg L-R diff={:.6}",
+            peak, avg_diff
+        );
     }
 }

@@ -1,5 +1,5 @@
-mod playback;
 mod input;
+mod playback;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -10,10 +10,9 @@ use rtrack_core::midi::MidiEngine;
 use rtrack_core::tracker::Song;
 
 pub use rtrack_core::{
-    ChannelConfig, ChannelState, ChannelType, ClockMode, Instrument,
-    LearnableParam, MidiCcMapping, PlaybackTiming,
-    autosave_path_for, make_relative, resolve_relative, default_channel_configs,
-    AUTOSAVE_INTERVAL_SECS,
+    autosave_path_for, default_channel_configs, make_relative, resolve_relative, ChannelConfig,
+    ChannelState, ChannelType, ClockMode, Instrument, LearnableParam, MidiCcMapping,
+    PlaybackTiming, AUTOSAVE_INTERVAL_SECS,
 };
 
 // -- Constants (module-private; TUI-specific) --
@@ -185,7 +184,10 @@ impl FileBrowserState {
                 if is_dir {
                     entries.push(FileBrowserEntry { name, is_dir: true });
                 } else if self.filter.is_empty() {
-                    entries.push(FileBrowserEntry { name, is_dir: false });
+                    entries.push(FileBrowserEntry {
+                        name,
+                        is_dir: false,
+                    });
                 } else {
                     let ext = std::path::Path::new(&name)
                         .extension()
@@ -193,18 +195,19 @@ impl FileBrowserState {
                         .unwrap_or("")
                         .to_lowercase();
                     if self.filter.iter().any(|f| f == &ext) {
-                        entries.push(FileBrowserEntry { name, is_dir: false });
+                        entries.push(FileBrowserEntry {
+                            name,
+                            is_dir: false,
+                        });
                     }
                 }
             }
         }
 
-        entries.sort_by(|a, b| {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            }
+        entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         });
 
         self.entries = entries;
@@ -490,7 +493,8 @@ impl App {
         self.dialogs.synth_editor_field = SynthField::Waveform;
         if self.core.instruments[slot].synth_params.is_none() {
             let program = self.core.instruments[slot].midi_program.unwrap_or(0);
-            self.core.instruments[slot].synth_params = Some(rtrack_core::audio::synth::SynthParams::from_patch(program));
+            self.core.instruments[slot].synth_params =
+                Some(rtrack_core::audio::synth::SynthParams::from_patch(program));
         }
         self.prev_mode = self.mode;
         self.mode = Mode::SynthEditor;
@@ -525,7 +529,8 @@ impl App {
         let slot = self.dialogs.sample_editor_slot;
         let count = self.dialogs.sample_slice_count;
         let sensitivity = self.dialogs.sample_slice_sensitivity;
-        self.core.slice_sample(slot, count, sensitivity, use_transients)
+        self.core
+            .slice_sample(slot, count, sensitivity, use_transients)
     }
 
     // -- MIDI port selection --
@@ -606,7 +611,10 @@ impl App {
         self.core.song.order_repeats.push(1);
         self.edit_order = self.core.song.order.len() - 1;
         self.cursor_row = 0;
-        self.status_message = Some(format!("New pattern {:02X}, order pos {:02X}", idx, self.edit_order));
+        self.status_message = Some(format!(
+            "New pattern {:02X}, order pos {:02X}",
+            idx, self.edit_order
+        ));
     }
 
     pub fn clone_current_pattern(&mut self) {
@@ -622,7 +630,6 @@ impl App {
         self.status_message = Some(format!("Cloned pattern {:02X} -> {:02X}", src_idx, new_idx));
     }
 
-
     pub fn toggle_channel_mute(&mut self, channel: usize) {
         if let Some(msg) = self.core.toggle_channel_mute(channel) {
             self.status_message = Some(msg);
@@ -632,7 +639,6 @@ impl App {
     pub fn toggle_solo(&mut self, channel: usize) {
         self.status_message = Some(self.core.toggle_solo(channel));
     }
-
 
     // -- File I/O --
 
@@ -657,7 +663,6 @@ impl App {
             self.status_message = Some(msg);
         }
     }
-
 
     pub fn load_file(&mut self, path: PathBuf) {
         match self.core.load_file(&path) {
@@ -751,12 +756,14 @@ impl App {
     }
 
     pub fn theme(&self) -> crate::tui::theme::Theme {
-        let name = crate::tui::theme::THEME_NAMES.get(self.theme_index).copied().unwrap_or("dark");
+        let name = crate::tui::theme::THEME_NAMES
+            .get(self.theme_index)
+            .copied()
+            .unwrap_or("dark");
         crate::tui::theme::theme_by_name(name)
     }
 
     // -- MIDI clock toggle --
-
 
     pub fn toggle_midi_clock(&mut self) {
         self.status_message = Some(self.core.toggle_midi_clock());
@@ -807,20 +814,17 @@ impl App {
         let end = (start + CHANNELS_PER_PAGE).min(self.core.song.channels);
         start..end
     }
-
-
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rtrack_core::link::LinkEngine;
     use rtrack_core::midi::MidiInputEngine;
     use rtrack_core::sample::SampleBank;
     use rtrack_core::tracker::Note;
+    use std::sync::Arc;
 
     fn make_app() -> App {
         let song = Song::new(4, 64);
@@ -838,8 +842,12 @@ mod tests {
             timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
             channels: rtrack_core::default_channel_configs(4),
-            instruments: (0..MAX_INSTRUMENTS).map(|_| Instrument::default()).collect(),
-            send_bus_params: (0..rtrack_core::audio::effects::MAX_SEND_BUSES).map(|_| rtrack_core::audio::effects::SendBusParams::default()).collect(),
+            instruments: (0..MAX_INSTRUMENTS)
+                .map(|_| Instrument::default())
+                .collect(),
+            send_bus_params: (0..rtrack_core::audio::effects::MAX_SEND_BUSES)
+                .map(|_| rtrack_core::audio::effects::SendBusParams::default())
+                .collect(),
             solo_channel: None,
             file_path: None,
             dirty: false,
@@ -876,7 +884,14 @@ mod tests {
                 synth_editor_slot: 0,
                 synth_editor_field: SynthField::Waveform,
                 help_scroll: 0,
-                file_browser: FileBrowserState { dir: PathBuf::from("/tmp"), entries: Vec::new(), cursor: 0, action: FileBrowserAction::OpenSong, filter: Vec::new(), scroll: 0 },
+                file_browser: FileBrowserState {
+                    dir: PathBuf::from("/tmp"),
+                    entries: Vec::new(),
+                    cursor: 0,
+                    action: FileBrowserAction::OpenSong,
+                    filter: Vec::new(),
+                    scroll: 0,
+                },
                 recent_cursor: 0,
             },
             follow_playback: true,
@@ -1120,7 +1135,13 @@ mod tests {
 
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
-        assert_eq!(cell.note, Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 5 }));
+        assert_eq!(
+            cell.note,
+            Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::C,
+                octave: 5
+            })
+        );
     }
 
     #[test]
@@ -1693,7 +1714,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_ARPEGGIO);
         cell.effect_value = Some(0x37);
@@ -1713,7 +1737,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_PORTA_UP);
         cell.effect_value = Some(0x10);
@@ -1734,7 +1761,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_PORTA_DOWN);
         cell.effect_value = Some(0x10);
@@ -1753,13 +1783,19 @@ mod tests {
         // Row 0: C-4 note (no effect)
         {
             let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-            cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+            cell.note = Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::C,
+                octave: 4,
+            });
             cell.volume = Some(100);
         }
         // Row 1: E-4 with tone porta (3xx)
         {
             let cell = app.core.song.patterns[pat_idx].get_mut(1, 0);
-            cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::E, octave: 4 });
+            cell.note = Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::E,
+                octave: 4,
+            });
             cell.effect = Some(EFFECT_TONE_PORTA);
             cell.effect_value = Some(0x10);
         }
@@ -1770,7 +1806,9 @@ mod tests {
         assert_eq!(app.core.engine.channel_states[0].note, Some(48));
 
         // Advance through remaining ticks of row 0 (ticks 1-5)
-        for _ in 1..app.core.song.speed { app.core.process_tick(); }
+        for _ in 1..app.core.song.speed {
+            app.core.process_tick();
+        }
 
         // Row 1, tick 0: sets target to E-4 but keeps C-4 playing
         app.core.process_tick();
@@ -1788,7 +1826,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_VIBRATO);
         cell.effect_value = Some(0x42);
@@ -1805,7 +1846,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_VOLUME_SLIDE);
         cell.effect_value = Some(0x02);
@@ -1824,7 +1868,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_VOLUME_SLIDE);
         cell.effect_value = Some(0x30);
@@ -1841,7 +1888,10 @@ mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(5);
         cell.effect = Some(EFFECT_VOLUME_SLIDE);
         cell.effect_value = Some(0x0F);
@@ -1906,7 +1956,10 @@ mod tests {
 
         // Note C-4 with delay 3 ticks
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+        cell.note = Some(Note::On {
+            value: rtrack_core::tracker::NoteValue::C,
+            octave: 4,
+        });
         cell.volume = Some(100);
         cell.effect = Some(EFFECT_NOTE_DELAY);
         cell.effect_value = Some(3);
@@ -1939,7 +1992,10 @@ mod tests {
         // First row: trigger C-4
         {
             let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-            cell.note = Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 });
+            cell.note = Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::C,
+                octave: 4,
+            });
             cell.volume = Some(100);
         }
         // Second row: note-off with delay 2
@@ -1957,7 +2013,9 @@ mod tests {
         assert_eq!(app.core.engine.channel_states[0].note, Some(48));
 
         // Advance through remaining ticks of row 0 (ticks 1-5)
-        for _ in 1..app.core.song.speed { app.core.process_tick(); }
+        for _ in 1..app.core.song.speed {
+            app.core.process_tick();
+        }
 
         // Row 1, tick 0: note-off should be deferred
         app.core.process_tick();
@@ -1981,7 +2039,11 @@ mod tests {
         app.mode = Mode::Insert;
 
         // Simulate MIDI note C-4 (note 60)
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        });
 
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
@@ -1996,7 +2058,11 @@ mod tests {
         let mut app = make_app();
         app.mode = Mode::Normal;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        });
 
         // Should not have written to pattern
         let pattern_idx = app.core.song.order[0];
@@ -2012,7 +2078,11 @@ mod tests {
         app.mode = Mode::Insert;
         app.core.playing = true;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        });
 
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
@@ -2041,7 +2111,11 @@ mod tests {
         app.core.engine.row = 5;
         app.core.engine.order = 0;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 110 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 110,
+        });
 
         let pattern_idx = app.core.song.order[0];
         // Written at engine row (5), not cursor_row (0)
@@ -2064,7 +2138,11 @@ mod tests {
         app.core.playing = true;
         app.core.recording = false;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        });
 
         // Should not record (preview only)
         let pattern_idx = app.core.song.order[0];
@@ -2084,7 +2162,10 @@ mod tests {
         app.core.engine.row = 3;
         app.core.engine.order = 0;
 
-        app.handle_midi_input(MidiInputEvent::NoteOff { channel: 0, note: 60 });
+        app.handle_midi_input(MidiInputEvent::NoteOff {
+            channel: 0,
+            note: 60,
+        });
 
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(3, 0);
@@ -2099,7 +2180,10 @@ mod tests {
         app.mode = Mode::Insert;
         app.core.playing = false;
 
-        app.handle_midi_input(MidiInputEvent::NoteOff { channel: 0, note: 60 });
+        app.handle_midi_input(MidiInputEvent::NoteOff {
+            channel: 0,
+            note: 60,
+        });
 
         // Step mode should NOT record note-off from MIDI
         let pattern_idx = app.core.song.order[0];
@@ -2120,7 +2204,11 @@ mod tests {
         app.core.engine.row = 2;
         app.core.engine.order = 0;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 64, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 64,
+            velocity: 100,
+        });
 
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(2, 0);
@@ -2138,7 +2226,11 @@ mod tests {
         app.mode = Mode::Insert;
         app.core.playing = false;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        });
 
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
@@ -2156,7 +2248,11 @@ mod tests {
         app.core.recording = true;
         app.core.dirty = false;
 
-        app.handle_midi_input(MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 });
+        app.handle_midi_input(MidiInputEvent::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        });
 
         assert!(app.core.dirty);
     }
@@ -2170,11 +2266,17 @@ mod tests {
         app.core.channels[0].effects_params.filter_cutoff = 1000.0;
 
         // Channel pressure at max should set cutoff to ~20kHz
-        app.handle_midi_input(MidiInputEvent::ChannelPressure { channel: 0, pressure: 127 });
+        app.handle_midi_input(MidiInputEvent::ChannelPressure {
+            channel: 0,
+            pressure: 127,
+        });
         assert!((app.core.channels[0].effects_params.filter_cutoff - 20000.0).abs() < 1.0);
 
         // Channel pressure at 0 should set cutoff to 20 Hz
-        app.handle_midi_input(MidiInputEvent::ChannelPressure { channel: 0, pressure: 0 });
+        app.handle_midi_input(MidiInputEvent::ChannelPressure {
+            channel: 0,
+            pressure: 0,
+        });
         assert!((app.core.channels[0].effects_params.filter_cutoff - 20.0).abs() < 0.1);
     }
 
@@ -2186,7 +2288,10 @@ mod tests {
         app.core.channels[0].effects_params.filter_enabled = false;
         app.core.channels[0].effects_params.filter_cutoff = 1000.0;
 
-        app.handle_midi_input(MidiInputEvent::ChannelPressure { channel: 0, pressure: 127 });
+        app.handle_midi_input(MidiInputEvent::ChannelPressure {
+            channel: 0,
+            pressure: 127,
+        });
         // Filter cutoff should be unchanged
         assert!((app.core.channels[0].effects_params.filter_cutoff - 1000.0).abs() < 0.1);
     }
@@ -2199,10 +2304,18 @@ mod tests {
         app.core.channels[0].effects_params.filter_enabled = true;
 
         // Poly pressure should also modulate filter
-        app.handle_midi_input(MidiInputEvent::PolyPressure { channel: 0, note: 60, pressure: 64 });
+        app.handle_midi_input(MidiInputEvent::PolyPressure {
+            channel: 0,
+            note: 60,
+            pressure: 64,
+        });
         // Midpoint: 20 * 1000^(64/127) ~= 632 Hz
         let cutoff = app.core.channels[0].effects_params.filter_cutoff;
-        assert!(cutoff > 500.0 && cutoff < 800.0, "Expected ~632 Hz, got {}", cutoff);
+        assert!(
+            cutoff > 500.0 && cutoff < 800.0,
+            "Expected ~632 Hz, got {}",
+            cutoff
+        );
     }
 
     #[test]
@@ -2217,14 +2330,21 @@ mod tests {
         app.core.midi_learn_pending = Some((0, LearnableParam::FilterCutoff));
 
         // Send a CC -- should bind CC7 to filter cutoff
-        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 7, value: 64 });
+        app.handle_midi_input(MidiInputEvent::CC {
+            channel: 0,
+            controller: 7,
+            value: 64,
+        });
 
         // Learn pending should be consumed
         assert!(app.core.midi_learn_pending.is_none());
         assert_eq!(app.core.midi_cc_mappings.len(), 1);
         assert_eq!(app.core.midi_cc_mappings[0].cc, 7);
         assert_eq!(app.core.midi_cc_mappings[0].channel, 0);
-        assert_eq!(app.core.midi_cc_mappings[0].param, LearnableParam::FilterCutoff);
+        assert_eq!(
+            app.core.midi_cc_mappings[0].param,
+            LearnableParam::FilterCutoff
+        );
     }
 
     #[test]
@@ -2243,11 +2363,19 @@ mod tests {
         });
 
         // Send CC1 at max value -> should set cutoff to ~20000
-        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 1, value: 127 });
+        app.handle_midi_input(MidiInputEvent::CC {
+            channel: 0,
+            controller: 1,
+            value: 127,
+        });
         assert!((app.core.channels[0].effects_params.filter_cutoff - 20000.0).abs() < 1.0);
 
         // Send CC1 at zero -> cutoff to 20 Hz
-        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 1, value: 0 });
+        app.handle_midi_input(MidiInputEvent::CC {
+            channel: 0,
+            controller: 1,
+            value: 0,
+        });
         assert!((app.core.channels[0].effects_params.filter_cutoff - 20.0).abs() < 0.1);
     }
 
@@ -2258,8 +2386,15 @@ mod tests {
         let mut app = make_app();
         // No mappings, CC should just pass through (no crash, no effect on params)
         let cutoff_before = app.core.channels[0].effects_params.filter_cutoff;
-        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 74, value: 100 });
-        assert_eq!(app.core.channels[0].effects_params.filter_cutoff, cutoff_before);
+        app.handle_midi_input(MidiInputEvent::CC {
+            channel: 0,
+            controller: 74,
+            value: 100,
+        });
+        assert_eq!(
+            app.core.channels[0].effects_params.filter_cutoff,
+            cutoff_before
+        );
     }
 
     #[test]
@@ -2278,7 +2413,11 @@ mod tests {
 
         // Now learn again: CC2 -> filter cutoff (same param, should replace)
         app.core.midi_learn_pending = Some((0, LearnableParam::FilterCutoff));
-        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 2, value: 64 });
+        app.handle_midi_input(MidiInputEvent::CC {
+            channel: 0,
+            controller: 2,
+            value: 64,
+        });
 
         assert_eq!(app.core.midi_cc_mappings.len(), 1);
         assert_eq!(app.core.midi_cc_mappings[0].cc, 2);
@@ -2358,14 +2497,22 @@ mod tests {
 
         // Map CC1 to both filter cutoff and chorus rate (different params, same CC)
         app.core.midi_cc_mappings.push(MidiCcMapping {
-            cc: 1, channel: 0, param: LearnableParam::FilterCutoff,
+            cc: 1,
+            channel: 0,
+            param: LearnableParam::FilterCutoff,
         });
         app.core.midi_cc_mappings.push(MidiCcMapping {
-            cc: 1, channel: 0, param: LearnableParam::ChorusRate,
+            cc: 1,
+            channel: 0,
+            param: LearnableParam::ChorusRate,
         });
 
         // Send CC1 at 127 -- both should update
-        app.handle_midi_input(MidiInputEvent::CC { channel: 0, controller: 1, value: 127 });
+        app.handle_midi_input(MidiInputEvent::CC {
+            channel: 0,
+            controller: 1,
+            value: 127,
+        });
         assert!((app.core.channels[0].effects_params.filter_cutoff - 20000.0).abs() < 1.0);
         assert!((app.core.channels[0].effects_params.chorus_rate - 10.0).abs() < 0.1);
     }
@@ -2583,9 +2730,13 @@ mod tests {
         assert_eq!(app.dialogs.synth_editor_field, SynthField::Attack);
         // Adjust value
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        let attack = app.core.instruments[0].synth_params.as_ref().unwrap().attack;
+        let attack = app.core.instruments[0]
+            .synth_params
+            .as_ref()
+            .unwrap()
+            .attack;
         assert!(attack > 0.005); // Saw default is 0.005, +0.001
-        // Esc closes
+                                 // Esc closes
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_ne!(app.mode, Mode::SynthEditor);
     }
@@ -2693,28 +2844,54 @@ mod tests {
         let mut app = make_app();
         // Place a C-4 note
         let pattern_idx = app.core.song.order[0];
-        app.core.song.patterns[pattern_idx].set_cell(0, 0, rtrack_core::tracker::Cell {
-            note: Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 }),
-            ..Default::default()
-        });
+        app.core.song.patterns[pattern_idx].set_cell(
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                note: Some(Note::On {
+                    value: rtrack_core::tracker::NoteValue::C,
+                    octave: 4,
+                }),
+                ..Default::default()
+            },
+        );
         // Shift+Up transposes up 1 semitone
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
-        assert_eq!(cell.note, Some(Note::On { value: rtrack_core::tracker::NoteValue::Cs, octave: 4 }));
+        assert_eq!(
+            cell.note,
+            Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::Cs,
+                octave: 4
+            })
+        );
     }
 
     #[test]
     fn test_note_transpose_down() {
         let mut app = make_app();
         let pattern_idx = app.core.song.order[0];
-        app.core.song.patterns[pattern_idx].set_cell(0, 0, rtrack_core::tracker::Cell {
-            note: Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 }),
-            ..Default::default()
-        });
+        app.core.song.patterns[pattern_idx].set_cell(
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                note: Some(Note::On {
+                    value: rtrack_core::tracker::NoteValue::C,
+                    octave: 4,
+                }),
+                ..Default::default()
+            },
+        );
         // Shift+Down transposes down 1 semitone (C-4 -> B-3)
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
-        assert_eq!(cell.note, Some(Note::On { value: rtrack_core::tracker::NoteValue::B, octave: 3 }));
+        assert_eq!(
+            cell.note,
+            Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::B,
+                octave: 3
+            })
+        );
     }
 
     #[test]
@@ -2734,14 +2911,28 @@ mod tests {
         let mut app = make_app();
         let pattern_idx = app.core.song.order[0];
         // Place notes in rows 0-1, channels 0-1
-        app.core.song.patterns[pattern_idx].set_cell(0, 0, rtrack_core::tracker::Cell {
-            note: Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 }),
-            ..Default::default()
-        });
-        app.core.song.patterns[pattern_idx].set_cell(1, 1, rtrack_core::tracker::Cell {
-            note: Some(Note::On { value: rtrack_core::tracker::NoteValue::E, octave: 4 }),
-            ..Default::default()
-        });
+        app.core.song.patterns[pattern_idx].set_cell(
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                note: Some(Note::On {
+                    value: rtrack_core::tracker::NoteValue::C,
+                    octave: 4,
+                }),
+                ..Default::default()
+            },
+        );
+        app.core.song.patterns[pattern_idx].set_cell(
+            1,
+            1,
+            rtrack_core::tracker::Cell {
+                note: Some(Note::On {
+                    value: rtrack_core::tracker::NoteValue::E,
+                    octave: 4,
+                }),
+                ..Default::default()
+            },
+        );
         // Start block at (0,0)
         app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
         // Move cursor to (1,1)
@@ -2753,24 +2944,43 @@ mod tests {
         let clip = app.history.block_clipboard.as_ref().unwrap();
         assert_eq!(clip.len(), 2); // 2 rows
         assert_eq!(clip[0].len(), 2); // 2 channels
-        // Paste at (4,0)
+                                      // Paste at (4,0)
         app.cursor_row = 4;
         app.cursor_channel = 0;
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
         let cell = app.core.song.patterns[pattern_idx].get(4, 0);
-        assert_eq!(cell.note, Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 }));
+        assert_eq!(
+            cell.note,
+            Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::C,
+                octave: 4
+            })
+        );
         let cell2 = app.core.song.patterns[pattern_idx].get(5, 1);
-        assert_eq!(cell2.note, Some(Note::On { value: rtrack_core::tracker::NoteValue::E, octave: 4 }));
+        assert_eq!(
+            cell2.note,
+            Some(Note::On {
+                value: rtrack_core::tracker::NoteValue::E,
+                octave: 4
+            })
+        );
     }
 
     #[test]
     fn test_block_cut_clears_selection() {
         let mut app = make_app();
         let pattern_idx = app.core.song.order[0];
-        app.core.song.patterns[pattern_idx].set_cell(0, 0, rtrack_core::tracker::Cell {
-            note: Some(Note::On { value: rtrack_core::tracker::NoteValue::C, octave: 4 }),
-            ..Default::default()
-        });
+        app.core.song.patterns[pattern_idx].set_cell(
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                note: Some(Note::On {
+                    value: rtrack_core::tracker::NoteValue::C,
+                    octave: 4,
+                }),
+                ..Default::default()
+            },
+        );
         // Start block at (0,0), cursor at (0,0)
         app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
         // Cut
@@ -2829,7 +3039,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::TrackConfig);
         assert_eq!(app.ch_fx_field, 0); // Name field
-        // Type a name
+                                        // Type a name
         app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
@@ -2858,14 +3068,22 @@ mod tests {
         let mut app = make_app();
         let pattern_idx = app.core.song.order[0];
         // Set volume at row 0 and row 4
-        app.core.song.patterns[pattern_idx].set_cell(0, 0, rtrack_core::tracker::Cell {
-            volume: Some(0),
-            ..Default::default()
-        });
-        app.core.song.patterns[pattern_idx].set_cell(4, 0, rtrack_core::tracker::Cell {
-            volume: Some(100),
-            ..Default::default()
-        });
+        app.core.song.patterns[pattern_idx].set_cell(
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                volume: Some(0),
+                ..Default::default()
+            },
+        );
+        app.core.song.patterns[pattern_idx].set_cell(
+            4,
+            0,
+            rtrack_core::tracker::Cell {
+                volume: Some(100),
+                ..Default::default()
+            },
+        );
         // Select block from (0,0) to (4,0)
         app.history.block_anchor = Some((0, 0));
         app.cursor_row = 4;
@@ -2873,11 +3091,26 @@ mod tests {
         // Interpolate
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
         // Check intermediate values
-        assert_eq!(app.core.song.patterns[pattern_idx].get(0, 0).volume, Some(0));
-        assert_eq!(app.core.song.patterns[pattern_idx].get(1, 0).volume, Some(25));
-        assert_eq!(app.core.song.patterns[pattern_idx].get(2, 0).volume, Some(50));
-        assert_eq!(app.core.song.patterns[pattern_idx].get(3, 0).volume, Some(75));
-        assert_eq!(app.core.song.patterns[pattern_idx].get(4, 0).volume, Some(100));
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(0, 0).volume,
+            Some(0)
+        );
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(1, 0).volume,
+            Some(25)
+        );
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(2, 0).volume,
+            Some(50)
+        );
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(3, 0).volume,
+            Some(75)
+        );
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(4, 0).volume,
+            Some(100)
+        );
     }
 
     #[test]
@@ -2885,20 +3118,36 @@ mod tests {
         let mut app = make_app();
         let pattern_idx = app.core.song.order[0];
         // Set effect at row 0 and row 2 (same effect command)
-        app.core.song.patterns[pattern_idx].set_cell(0, 0, rtrack_core::tracker::Cell {
-            effect: Some(5), effect_value: Some(0),
-            ..Default::default()
-        });
-        app.core.song.patterns[pattern_idx].set_cell(2, 0, rtrack_core::tracker::Cell {
-            effect: Some(5), effect_value: Some(80),
-            ..Default::default()
-        });
+        app.core.song.patterns[pattern_idx].set_cell(
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                effect: Some(5),
+                effect_value: Some(0),
+                ..Default::default()
+            },
+        );
+        app.core.song.patterns[pattern_idx].set_cell(
+            2,
+            0,
+            rtrack_core::tracker::Cell {
+                effect: Some(5),
+                effect_value: Some(80),
+                ..Default::default()
+            },
+        );
         app.history.block_anchor = Some((0, 0));
         app.cursor_row = 2;
         app.cursor_channel = 0;
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
-        assert_eq!(app.core.song.patterns[pattern_idx].get(1, 0).effect, Some(5));
-        assert_eq!(app.core.song.patterns[pattern_idx].get(1, 0).effect_value, Some(40));
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(1, 0).effect,
+            Some(5)
+        );
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(1, 0).effect_value,
+            Some(40)
+        );
     }
 
     #[test]
@@ -2914,13 +3163,22 @@ mod tests {
         let base = std::path::Path::new("/home/user/songs");
         // Normal relative path
         let normal = resolve_relative(base, "samples/kick.wav");
-        assert_eq!(normal, std::path::PathBuf::from("/home/user/songs/samples/kick.wav"));
+        assert_eq!(
+            normal,
+            std::path::PathBuf::from("/home/user/songs/samples/kick.wav")
+        );
         // Path traversal -- `..` components should be stripped
         let traversal = resolve_relative(base, "../../etc/passwd");
-        assert_eq!(traversal, std::path::PathBuf::from("/home/user/songs/etc/passwd"));
+        assert_eq!(
+            traversal,
+            std::path::PathBuf::from("/home/user/songs/etc/passwd")
+        );
         // Absolute path -- should be reduced to just the filename under base
         let absolute = resolve_relative(base, "/etc/passwd");
-        assert_eq!(absolute, std::path::PathBuf::from("/home/user/songs/passwd"));
+        assert_eq!(
+            absolute,
+            std::path::PathBuf::from("/home/user/songs/passwd")
+        );
     }
 
     /// Helper: enter command mode and execute a command via :cmd<Enter>
@@ -2950,7 +3208,11 @@ mod tests {
         let mut app = make_app();
         run_command(&mut app, "nonsense");
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().contains("Unknown command"));
+        assert!(app
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("Unknown command"));
     }
 
     #[test]
@@ -3172,7 +3434,9 @@ mod tests {
         app.core.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
         // Navigate to cutoff (field 4 for Synth: Name, Type, Inst, Filter, Cutoff)
-        for _ in 0..4 { app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); }
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
         assert_eq!(app.ch_fx_field, 4);
         let initial = app.core.channels[0].effects_params.filter_cutoff;
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -3264,7 +3528,10 @@ mod tests {
             vec!["wav".to_string(), "aiff".to_string()],
         );
         assert_eq!(app.mode, Mode::FileBrowser);
-        assert_eq!(app.dialogs.file_browser.action, FileBrowserAction::LoadSample(0));
+        assert_eq!(
+            app.dialogs.file_browser.action,
+            FileBrowserAction::LoadSample(0)
+        );
         assert_eq!(app.dialogs.file_browser.filter, vec!["wav", "aiff"]);
         assert_eq!(app.dialogs.file_browser.cursor, 0);
     }
@@ -3297,7 +3564,12 @@ mod tests {
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
 
         // Find the subdir entry
-        let subdir_idx = app.dialogs.file_browser.entries.iter().position(|e| e.name == "subdir" && e.is_dir);
+        let subdir_idx = app
+            .dialogs
+            .file_browser
+            .entries
+            .iter()
+            .position(|e| e.name == "subdir" && e.is_dir);
         if let Some(idx) = subdir_idx {
             app.dialogs.file_browser.cursor = idx;
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3330,7 +3602,11 @@ mod tests {
         );
 
         // Should only show wav and aiff files (not txt)
-        let names: Vec<&str> = app.dialogs.file_browser.entries.iter()
+        let names: Vec<&str> = app
+            .dialogs
+            .file_browser
+            .entries
+            .iter()
             .filter(|e| !e.is_dir)
             .map(|e| e.name.as_str())
             .collect();
@@ -3346,7 +3622,9 @@ mod tests {
         let mut app = make_app();
         // Ensure we have enough channels for slot 5
         while app.core.channels.len() <= 5 {
-            app.core.channels.push(ChannelConfig::new(app.core.channels.len() as u8));
+            app.core
+                .channels
+                .push(ChannelConfig::new(app.core.channels.len() as u8));
         }
         let dir = std::env::temp_dir().join("rtrack_fb_load_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -3366,13 +3644,15 @@ mod tests {
         writer.finalize().unwrap();
 
         app.dialogs.file_browser.dir = dir.clone();
-        app.open_file_browser(
-            FileBrowserAction::LoadSample(5),
-            vec!["wav".to_string()],
-        );
+        app.open_file_browser(FileBrowserAction::LoadSample(5), vec!["wav".to_string()]);
 
         // Find the wav file and select it
-        let wav_idx = app.dialogs.file_browser.entries.iter().position(|e| e.name == "kick.wav");
+        let wav_idx = app
+            .dialogs
+            .file_browser
+            .entries
+            .iter()
+            .position(|e| e.name == "kick.wav");
         assert!(wav_idx.is_some(), "WAV file should appear in browser");
         app.dialogs.file_browser.cursor = wav_idx.unwrap();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3399,8 +3679,20 @@ mod tests {
         app.open_file_browser(FileBrowserAction::OpenSong, vec![]);
 
         // Directories should come before files
-        if let Some(dir_idx) = app.dialogs.file_browser.entries.iter().position(|e| e.name == "aaa_dir") {
-            if let Some(file_idx) = app.dialogs.file_browser.entries.iter().position(|e| e.name == "aaa_file.wav") {
+        if let Some(dir_idx) = app
+            .dialogs
+            .file_browser
+            .entries
+            .iter()
+            .position(|e| e.name == "aaa_dir")
+        {
+            if let Some(file_idx) = app
+                .dialogs
+                .file_browser
+                .entries
+                .iter()
+                .position(|e| e.name == "aaa_file.wav")
+            {
                 assert!(dir_idx < file_idx, "Directories should sort before files");
             }
         }
@@ -3461,15 +3753,22 @@ mod tests {
         let mut app = make_app();
         // Build sample with silence + burst pattern
         let mut data = vec![[0.0f32; 2]; 44100];
-        for frame in &mut data[11025..13000] { *frame = [0.8, 0.8]; }
-        for frame in &mut data[26460..28000] { *frame = [0.9, 0.9]; }
+        for frame in &mut data[11025..13000] {
+            *frame = [0.8, 0.8];
+        }
+        for frame in &mut data[26460..28000] {
+            *frame = [0.9, 0.9];
+        }
         let sample = rtrack_core::sample::Sample {
             name: "breaks".into(),
             data,
             sample_rate: 44100.0,
             base_note: 60,
-            trim_start: 0, trim_end: 0,
-            loop_enabled: false, loop_start: 0, loop_end: 0,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
             source_path: None,
         };
         let mut bank = (*app.core.sample_bank).clone();
@@ -3481,7 +3780,11 @@ mod tests {
         let result = app.slice_sample(true);
         assert!(result.is_ok());
         let count = result.unwrap();
-        assert!(count >= 2, "Expected at least 2 transient slices, got {}", count);
+        assert!(
+            count >= 2,
+            "Expected at least 2 transient slices, got {}",
+            count
+        );
 
         // All slices should exist in consecutive slots
         for i in 0..count {
@@ -3530,7 +3833,10 @@ mod tests {
 
         // Manual save should clean up autosave
         app.save();
-        assert!(!autosave.exists(), "Auto-save should be cleaned up after manual save");
+        assert!(
+            !autosave.exists(),
+            "Auto-save should be cleaned up after manual save"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -3605,8 +3911,16 @@ mod tests {
     #[test]
     fn test_tempo_map_lookup() {
         let mut song = Song::new(4, 64);
-        song.tempo_map.push(rtrack_core::tracker::TempoPoint { order: 0, row: 16, bpm: 140.0 });
-        song.tempo_map.push(rtrack_core::tracker::TempoPoint { order: 1, row: 0, bpm: 160.0 });
+        song.tempo_map.push(rtrack_core::tracker::TempoPoint {
+            order: 0,
+            row: 16,
+            bpm: 140.0,
+        });
+        song.tempo_map.push(rtrack_core::tracker::TempoPoint {
+            order: 1,
+            row: 0,
+            bpm: 160.0,
+        });
 
         assert_eq!(song.tempo_at(0, 0), None);
         assert_eq!(song.tempo_at(0, 16), Some(140.0));
@@ -3617,7 +3931,11 @@ mod tests {
     #[test]
     fn test_tempo_map_serialization() {
         let mut song = Song::new(4, 16);
-        song.tempo_map.push(rtrack_core::tracker::TempoPoint { order: 0, row: 8, bpm: 150.5 });
+        song.tempo_map.push(rtrack_core::tracker::TempoPoint {
+            order: 0,
+            row: 8,
+            bpm: 150.5,
+        });
         let json = serde_json::to_string(&song).unwrap();
         let loaded: Song = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.tempo_map.len(), 1);

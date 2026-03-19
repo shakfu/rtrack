@@ -6,7 +6,9 @@ use rtrack_core::Instrument;
 
 use crate::app::RtrackApp;
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 fn note_name(midi_note: u8) -> String {
     let name = NOTE_NAMES[(midi_note % 12) as usize];
@@ -54,14 +56,11 @@ impl RtrackApp {
 
         ui.horizontal(|ui| {
             ui.heading("Instruments");
-            ui.with_layout(
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    if ui.button("Close (Esc)").clicked() {
-                        self.show_instrument_list = false;
-                    }
-                },
-            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Close (Esc)").clicked() {
+                    self.show_instrument_list = false;
+                }
+            });
         });
 
         ui.add_space(4.0);
@@ -70,18 +69,15 @@ impl RtrackApp {
         ui.horizontal(|ui| {
             if ui.button("+ Synth").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
-                    self.core.instruments[slot].name =
-                        format!("Synth {:02X}", slot);
-                    self.core.instruments[slot].synth_params =
-                        Some(SynthParams::from_patch(0));
+                    self.core.instruments[slot].name = format!("Synth {:02X}", slot);
+                    self.core.instruments[slot].synth_params = Some(SynthParams::from_patch(0));
                     self.selected_instrument = Some(slot);
                     self.core.dirty = true;
                 }
             }
             if ui.button("+ Sample").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
-                    self.core.instruments[slot].name =
-                        format!("Sample {:02X}", slot);
+                    self.core.instruments[slot].name = format!("Sample {:02X}", slot);
                     self.core.instruments[slot].sample_index = Some(slot);
                     self.selected_instrument = Some(slot);
                     self.core.dirty = true;
@@ -112,8 +108,7 @@ impl RtrackApp {
                         inst.name.clone()
                     };
 
-                    let label =
-                        format!("{:02X} {} {}", i, itype.label(), display_name);
+                    let label = format!("{:02X} {} {}", i, itype.label(), display_name);
                     let selected = self.selected_instrument == Some(i);
 
                     let text = if selected {
@@ -208,9 +203,7 @@ impl RtrackApp {
         if itype != InstType::Empty {
             ui.horizontal(|ui| {
                 ui.label("Pitch Bend Range:");
-                let mut pbr = self.core.instruments[idx]
-                    .pitch_bend_range
-                    .unwrap_or(2.0) as f32;
+                let mut pbr = self.core.instruments[idx].pitch_bend_range.unwrap_or(2.0) as f32;
                 if ui
                     .add(egui::Slider::new(&mut pbr, 0.0..=48.0).suffix(" st"))
                     .changed()
@@ -227,20 +220,18 @@ impl RtrackApp {
         egui::ScrollArea::vertical()
             .id_salt("inst_editor_scroll")
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                match itype {
-                    InstType::Empty => {
-                        ui.label("Choose a type above to configure this instrument.");
-                    }
-                    InstType::Synth => {
-                        self.draw_synth_params(ui, idx);
-                    }
-                    InstType::Sample => {
-                        self.draw_sample_params(ui, idx);
-                    }
-                    InstType::Midi => {
-                        self.draw_midi_params(ui, idx);
-                    }
+            .show(ui, |ui| match itype {
+                InstType::Empty => {
+                    ui.label("Choose a type above to configure this instrument.");
+                }
+                InstType::Synth => {
+                    self.draw_synth_params(ui, idx);
+                }
+                InstType::Sample => {
+                    self.draw_sample_params(ui, idx);
+                }
+                InstType::Midi => {
+                    self.draw_midi_params(ui, idx);
                 }
             });
     }
@@ -327,31 +318,49 @@ impl RtrackApp {
             .spacing([10.0, 4.0])
             .show(ui, |ui| {
                 ui.label("Attack:");
-                if ui.add(
-                    egui::Slider::new(&mut params.attack, 0.001..=5.0)
-                        .logarithmic(true)
-                        .suffix(" s"),
-                ).changed() { changed = true; }
+                if ui
+                    .add(
+                        egui::Slider::new(&mut params.attack, 0.001..=5.0)
+                            .logarithmic(true)
+                            .suffix(" s"),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
 
                 ui.label("Decay:");
-                if ui.add(
-                    egui::Slider::new(&mut params.decay, 0.001..=5.0)
-                        .logarithmic(true)
-                        .suffix(" s"),
-                ).changed() { changed = true; }
+                if ui
+                    .add(
+                        egui::Slider::new(&mut params.decay, 0.001..=5.0)
+                            .logarithmic(true)
+                            .suffix(" s"),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
                 ui.end_row();
 
                 ui.label("Sustain:");
-                if ui.add(egui::Slider::new(&mut params.sustain, 0.0..=1.0)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.sustain, 0.0..=1.0))
+                    .changed()
+                {
                     changed = true;
                 }
 
                 ui.label("Release:");
-                if ui.add(
-                    egui::Slider::new(&mut params.release, 0.001..=10.0)
-                        .logarithmic(true)
-                        .suffix(" s"),
-                ).changed() { changed = true; }
+                if ui
+                    .add(
+                        egui::Slider::new(&mut params.release, 0.001..=10.0)
+                            .logarithmic(true)
+                            .suffix(" s"),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
                 ui.end_row();
             });
 
@@ -364,27 +373,55 @@ impl RtrackApp {
             .show(ui, |ui| {
                 ui.label("Type:");
                 ui.horizontal(|ui| {
-                    if ui.selectable_value(&mut params.filter_type, FilterType::LowPass, "LP").changed() { changed = true; }
-                    if ui.selectable_value(&mut params.filter_type, FilterType::HighPass, "HP").changed() { changed = true; }
-                    if ui.selectable_value(&mut params.filter_type, FilterType::BandPass, "BP").changed() { changed = true; }
+                    if ui
+                        .selectable_value(&mut params.filter_type, FilterType::LowPass, "LP")
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    if ui
+                        .selectable_value(&mut params.filter_type, FilterType::HighPass, "HP")
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    if ui
+                        .selectable_value(&mut params.filter_type, FilterType::BandPass, "BP")
+                        .changed()
+                    {
+                        changed = true;
+                    }
                 });
 
                 ui.label("Cutoff:");
-                if ui.add(egui::Slider::new(&mut params.filter_cutoff, 0.0..=1.0).custom_formatter(
-                    |v, _| {
-                        let hz = 20.0 * (1000.0_f64).powf(v);
-                        format!("{:.0} Hz", hz)
-                    },
-                )).changed() { changed = true; }
+                if ui
+                    .add(
+                        egui::Slider::new(&mut params.filter_cutoff, 0.0..=1.0).custom_formatter(
+                            |v, _| {
+                                let hz = 20.0 * (1000.0_f64).powf(v);
+                                format!("{:.0} Hz", hz)
+                            },
+                        ),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
                 ui.end_row();
 
                 ui.label("Resonance:");
-                if ui.add(egui::Slider::new(&mut params.filter_resonance, 0.0..=1.0)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.filter_resonance, 0.0..=1.0))
+                    .changed()
+                {
                     changed = true;
                 }
 
                 ui.label("Env Amt:");
-                if ui.add(egui::Slider::new(&mut params.filter_env, -1.0..=1.0)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.filter_env, -1.0..=1.0))
+                    .changed()
+                {
                     changed = true;
                 }
                 ui.end_row();
@@ -398,18 +435,27 @@ impl RtrackApp {
             .spacing([10.0, 4.0])
             .show(ui, |ui| {
                 ui.label("Detune:");
-                if ui.add(egui::Slider::new(&mut params.detune, 0.0..=50.0).suffix(" cents")).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.detune, 0.0..=50.0).suffix(" cents"))
+                    .changed()
+                {
                     changed = true;
                 }
 
                 ui.label("Sub Osc:");
-                if ui.add(egui::Slider::new(&mut params.sub_osc, 0.0..=1.0)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.sub_osc, 0.0..=1.0))
+                    .changed()
+                {
                     changed = true;
                 }
                 ui.end_row();
 
                 ui.label("Pulse Width:");
-                if ui.add(egui::Slider::new(&mut params.pulse_width, 0.05..=0.95)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.pulse_width, 0.05..=0.95))
+                    .changed()
+                {
                     changed = true;
                 }
 
@@ -426,12 +472,18 @@ impl RtrackApp {
             .spacing([10.0, 4.0])
             .show(ui, |ui| {
                 ui.label("FM Ratio:");
-                if ui.add(egui::Slider::new(&mut params.fm_ratio, 0.0..=16.0)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.fm_ratio, 0.0..=16.0))
+                    .changed()
+                {
                     changed = true;
                 }
 
                 ui.label("FM Index:");
-                if ui.add(egui::Slider::new(&mut params.fm_index, 0.0..=10.0)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut params.fm_index, 0.0..=10.0))
+                    .changed()
+                {
                     changed = true;
                 }
                 ui.end_row();
@@ -492,9 +544,12 @@ impl RtrackApp {
         let sample_slot = self.core.instruments[idx].sample_index;
         if let Some(slot) = sample_slot {
             // Extract sample data before entering closures to avoid borrow conflicts
-            let waveform_peaks: Vec<f32> = self.core.sample_bank.get(slot).map(|s| {
-                downsample_peaks(&s.data, 512)
-            }).unwrap_or_default();
+            let waveform_peaks: Vec<f32> = self
+                .core
+                .sample_bank
+                .get(slot)
+                .map(|s| downsample_peaks(&s.data, 512))
+                .unwrap_or_default();
             let sample_info = self.core.sample_bank.get(slot).map(|s| {
                 (
                     s.source_path.clone(),
@@ -509,7 +564,19 @@ impl RtrackApp {
                     s.trim_end,
                 )
             });
-            if let Some((source_path, sample_rate, sample_len, duration, init_base_note, init_loop_enabled, init_loop_start, init_loop_end, init_trim_start, init_trim_end)) = sample_info {
+            if let Some((
+                source_path,
+                sample_rate,
+                sample_len,
+                duration,
+                init_base_note,
+                init_loop_enabled,
+                init_loop_start,
+                init_loop_end,
+                init_trim_start,
+                init_trim_end,
+            )) = sample_info
+            {
                 ui.heading("Sample Info");
                 egui::Grid::new(format!("sample_info_{}", idx))
                     .num_columns(4)
@@ -523,11 +590,7 @@ impl RtrackApp {
                         ui.end_row();
 
                         ui.label("Length:");
-                        ui.label(format!(
-                            "{} ({:.2}s)",
-                            sample_len,
-                            duration
-                        ));
+                        ui.label(format!("{} ({:.2}s)", sample_len, duration));
                         ui.label("");
                         ui.label("");
                         ui.end_row();
@@ -561,14 +624,20 @@ impl RtrackApp {
                     if init_trim_start > 0 {
                         let trim_x = rect.left() + (init_trim_start as f32 / sample_len as f32) * w;
                         painter.line_segment(
-                            [egui::pos2(trim_x, rect.top()), egui::pos2(trim_x, rect.bottom())],
+                            [
+                                egui::pos2(trim_x, rect.top()),
+                                egui::pos2(trim_x, rect.bottom()),
+                            ],
                             egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 60)),
                         );
                     }
                     if init_trim_end > 0 && init_trim_end < sample_len {
                         let trim_x = rect.left() + (init_trim_end as f32 / sample_len as f32) * w;
                         painter.line_segment(
-                            [egui::pos2(trim_x, rect.top()), egui::pos2(trim_x, rect.bottom())],
+                            [
+                                egui::pos2(trim_x, rect.top()),
+                                egui::pos2(trim_x, rect.bottom()),
+                            ],
                             egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 60)),
                         );
                     }
@@ -657,10 +726,7 @@ impl RtrackApp {
 
                             ui.label("Loop End:");
                             if ui
-                                .add(
-                                    egui::DragValue::new(&mut loop_end_val)
-                                        .range(0..=sample_len),
-                                )
+                                .add(egui::DragValue::new(&mut loop_end_val).range(0..=sample_len))
                                 .changed()
                             {
                                 changed = true;
@@ -685,7 +751,6 @@ impl RtrackApp {
                     }
                     self.core.dirty = true;
                 }
-
             } else {
                 ui.label("No sample loaded. Click 'Load Sample' above.");
             }
@@ -702,7 +767,11 @@ impl RtrackApp {
         ui.heading("MIDI Program");
         let mut prog = self.core.instruments[idx].midi_program.unwrap_or(0) as i32;
         if ui
-            .add(egui::DragValue::new(&mut prog).range(0..=127).prefix("Program: "))
+            .add(
+                egui::DragValue::new(&mut prog)
+                    .range(0..=127)
+                    .prefix("Program: "),
+            )
             .changed()
         {
             self.core.instruments[idx].midi_program = Some(prog as u8);
@@ -736,7 +805,10 @@ impl RtrackApp {
                 Some(s) => s,
                 None => return,
             };
-            (strip_slice_suffix(&sample.name).to_string(), sample.data.len())
+            (
+                strip_slice_suffix(&sample.name).to_string(),
+                sample.data.len(),
+            )
         };
         if data_len == 0 || num_slices == 0 {
             self.status_message = Some("Cannot slice: empty sample".to_string());
@@ -767,7 +839,10 @@ impl RtrackApp {
             };
             // Always detect transients over the full data range (non-destructive)
             let pts = rtrack_core::sample::detect_transients_range(
-                sample, sensitivity, 0, sample.data.len(),
+                sample,
+                sensitivity,
+                0,
+                sample.data.len(),
             );
             let base = strip_slice_suffix(&sample.name);
             (base.to_string(), sample.data.len(), pts)
@@ -787,12 +862,7 @@ impl RtrackApp {
 
     /// Apply slices using trim bounds on the full sample data (no data copying).
     /// `boundaries` contains N+1 frame positions: [slice0_start, slice1_start, ..., last_slice_end].
-    fn apply_trim_slices(
-        &mut self,
-        start_slot: usize,
-        base_name: &str,
-        boundaries: &[usize],
-    ) {
+    fn apply_trim_slices(&mut self, start_slot: usize, base_name: &str, boundaries: &[usize]) {
         if boundaries.len() < 2 {
             self.status_message = Some("No slices produced".to_string());
             return;
@@ -847,9 +917,7 @@ fn strip_slice_suffix(name: &str) -> &str {
     let mut s = name;
     while s.len() >= 4 {
         let tail = &s[s.len() - 4..];
-        if tail.starts_with("_S")
-            && tail[2..].chars().all(|c| c.is_ascii_digit())
-        {
+        if tail.starts_with("_S") && tail[2..].chars().all(|c| c.is_ascii_digit()) {
             s = &s[..s.len() - 4];
         } else {
             break;

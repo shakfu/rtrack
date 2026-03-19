@@ -4,6 +4,8 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2]
+
 ### Fixed
 
 - Loading a new song no longer keeps stale sample slots from the previous session; the sample bank is now cleared before loading referenced samples (`core.rs`)

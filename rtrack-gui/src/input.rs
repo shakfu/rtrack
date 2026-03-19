@@ -147,7 +147,9 @@ impl RtrackApp {
                 if input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::Minus) {
                     actions.push(Action::MatrixPrevPattern);
                 }
-                if input.key_pressed(Key::ArrowRight) || (input.key_pressed(Key::Plus) || (shift && input.key_pressed(Key::Equals))) {
+                if input.key_pressed(Key::ArrowRight)
+                    || (input.key_pressed(Key::Plus) || (shift && input.key_pressed(Key::Equals)))
+                {
                     actions.push(Action::MatrixNextPattern);
                 }
                 if ctrl && input.key_pressed(Key::N) {
@@ -164,126 +166,125 @@ impl RtrackApp {
                 }
                 // Skip normal/insert mode processing
             } else {
-
-            // Ctrl+N / Ctrl+D (pattern ops, outside matrix)
-            if ctrl && input.key_pressed(Key::N) {
-                actions.push(Action::NewPattern);
-            }
-            if ctrl && input.key_pressed(Key::D) {
-                actions.push(Action::ClonePattern);
-            }
-            if ctrl && input.key_pressed(Key::P) {
-                actions.push(Action::TogglePatternMatrix);
-            }
-
-            match self.mode {
-                Mode::Normal => {
-                    if input.key_pressed(Key::I) && !ctrl {
-                        actions.push(Action::SetMode(Mode::Insert));
-                    }
-                    // Navigation
-                    if input.key_pressed(Key::ArrowUp) && !shift {
-                        actions.push(Action::CursorUp(1));
-                    }
-                    if input.key_pressed(Key::ArrowDown) && !shift {
-                        actions.push(Action::CursorDown(1));
-                    }
-                    if input.key_pressed(Key::ArrowLeft) {
-                        if ctrl {
-                            actions.push(Action::PrevOrder);
-                        } else {
-                            actions.push(Action::CursorLeft);
-                        }
-                    }
-                    if input.key_pressed(Key::ArrowRight) {
-                        if ctrl {
-                            actions.push(Action::NextOrder);
-                        } else {
-                            actions.push(Action::CursorRight);
-                        }
-                    }
-                    // Row insert/delete (Normal mode only)
-                    if input.key_pressed(Key::Insert) {
-                        actions.push(Action::InsertRow);
-                    }
-                    if input.key_pressed(Key::Backspace) {
-                        actions.push(Action::DeleteRow);
-                    }
-                    if input.key_pressed(Key::PageUp) {
-                        actions.push(Action::CursorUp(16));
-                    }
-                    if input.key_pressed(Key::PageDown) {
-                        actions.push(Action::CursorDown(16));
-                    }
-                    if input.key_pressed(Key::Home) {
-                        actions.push(Action::CursorHome);
-                    }
-                    if input.key_pressed(Key::End) {
-                        actions.push(Action::CursorEnd);
-                    }
-                    if input.key_pressed(Key::Tab) {
-                        if shift {
-                            actions.push(Action::PrevChannel);
-                        } else {
-                            actions.push(Action::NextChannel);
-                        }
-                    }
-                    if input.key_pressed(Key::Enter) {
-                        actions.push(Action::OpenTrackConfig);
-                    }
+                // Ctrl+N / Ctrl+D (pattern ops, outside matrix)
+                if ctrl && input.key_pressed(Key::N) {
+                    actions.push(Action::NewPattern);
                 }
-                Mode::Insert => {
-                    // Navigation
-                    if input.key_pressed(Key::ArrowUp) && !shift {
-                        actions.push(Action::CursorUp(1));
-                    }
-                    if input.key_pressed(Key::ArrowDown) && !shift {
-                        actions.push(Action::CursorDown(1));
-                    }
-                    if input.key_pressed(Key::ArrowLeft) {
-                        if ctrl {
-                            actions.push(Action::PrevOrder);
-                        } else {
-                            actions.push(Action::CursorLeft);
-                        }
-                    }
-                    if input.key_pressed(Key::ArrowRight) {
-                        if ctrl {
-                            actions.push(Action::NextOrder);
-                        } else {
-                            actions.push(Action::CursorRight);
-                        }
-                    }
-                    if input.key_pressed(Key::Tab) {
-                        if shift {
-                            actions.push(Action::PrevChannel);
-                        } else {
-                            actions.push(Action::NextChannel);
-                        }
-                    }
-                    if input.key_pressed(Key::Delete) || input.key_pressed(Key::Backspace) {
-                        actions.push(Action::ClearCell);
-                    }
+                if ctrl && input.key_pressed(Key::D) {
+                    actions.push(Action::ClonePattern);
+                }
+                if ctrl && input.key_pressed(Key::P) {
+                    actions.push(Action::TogglePatternMatrix);
+                }
 
-                    // Note-off
-                    if input.key_pressed(Key::Equals) && self.cursor_sub == SubColumn::Note {
-                        actions.push(Action::NoteOff);
+                match self.mode {
+                    Mode::Normal => {
+                        if input.key_pressed(Key::I) && !ctrl {
+                            actions.push(Action::SetMode(Mode::Insert));
+                        }
+                        // Navigation
+                        if input.key_pressed(Key::ArrowUp) && !shift {
+                            actions.push(Action::CursorUp(1));
+                        }
+                        if input.key_pressed(Key::ArrowDown) && !shift {
+                            actions.push(Action::CursorDown(1));
+                        }
+                        if input.key_pressed(Key::ArrowLeft) {
+                            if ctrl {
+                                actions.push(Action::PrevOrder);
+                            } else {
+                                actions.push(Action::CursorLeft);
+                            }
+                        }
+                        if input.key_pressed(Key::ArrowRight) {
+                            if ctrl {
+                                actions.push(Action::NextOrder);
+                            } else {
+                                actions.push(Action::CursorRight);
+                            }
+                        }
+                        // Row insert/delete (Normal mode only)
+                        if input.key_pressed(Key::Insert) {
+                            actions.push(Action::InsertRow);
+                        }
+                        if input.key_pressed(Key::Backspace) {
+                            actions.push(Action::DeleteRow);
+                        }
+                        if input.key_pressed(Key::PageUp) {
+                            actions.push(Action::CursorUp(16));
+                        }
+                        if input.key_pressed(Key::PageDown) {
+                            actions.push(Action::CursorDown(16));
+                        }
+                        if input.key_pressed(Key::Home) {
+                            actions.push(Action::CursorHome);
+                        }
+                        if input.key_pressed(Key::End) {
+                            actions.push(Action::CursorEnd);
+                        }
+                        if input.key_pressed(Key::Tab) {
+                            if shift {
+                                actions.push(Action::PrevChannel);
+                            } else {
+                                actions.push(Action::NextChannel);
+                            }
+                        }
+                        if input.key_pressed(Key::Enter) {
+                            actions.push(Action::OpenTrackConfig);
+                        }
                     }
+                    Mode::Insert => {
+                        // Navigation
+                        if input.key_pressed(Key::ArrowUp) && !shift {
+                            actions.push(Action::CursorUp(1));
+                        }
+                        if input.key_pressed(Key::ArrowDown) && !shift {
+                            actions.push(Action::CursorDown(1));
+                        }
+                        if input.key_pressed(Key::ArrowLeft) {
+                            if ctrl {
+                                actions.push(Action::PrevOrder);
+                            } else {
+                                actions.push(Action::CursorLeft);
+                            }
+                        }
+                        if input.key_pressed(Key::ArrowRight) {
+                            if ctrl {
+                                actions.push(Action::NextOrder);
+                            } else {
+                                actions.push(Action::CursorRight);
+                            }
+                        }
+                        if input.key_pressed(Key::Tab) {
+                            if shift {
+                                actions.push(Action::PrevChannel);
+                            } else {
+                                actions.push(Action::NextChannel);
+                            }
+                        }
+                        if input.key_pressed(Key::Delete) || input.key_pressed(Key::Backspace) {
+                            actions.push(Action::ClearCell);
+                        }
 
-                    // Piano keys and hex digits via text events
-                    for event in &input.events {
-                        if let egui::Event::Text(text) = event {
-                            for c in text.chars() {
-                                if self.cursor_sub == SubColumn::Note {
-                                    actions.push(Action::TryEnterNote(c));
-                                } else if c.is_ascii_hexdigit() {
-                                    actions.push(Action::EnterHexDigit(c));
+                        // Note-off
+                        if input.key_pressed(Key::Equals) && self.cursor_sub == SubColumn::Note {
+                            actions.push(Action::NoteOff);
+                        }
+
+                        // Piano keys and hex digits via text events
+                        for event in &input.events {
+                            if let egui::Event::Text(text) = event {
+                                for c in text.chars() {
+                                    if self.cursor_sub == SubColumn::Note {
+                                        actions.push(Action::TryEnterNote(c));
+                                    } else if c.is_ascii_hexdigit() {
+                                        actions.push(Action::EnterHexDigit(c));
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
             } // end else (not pattern matrix)
         });
 
@@ -504,7 +505,13 @@ impl RtrackApp {
                     *cell = Cell::default();
                     let new_cell = *cell;
 
-                    self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
+                    self.record_cell_edit(
+                        pattern_idx,
+                        self.cursor_row,
+                        self.cursor_channel,
+                        old_cell,
+                        new_cell,
+                    );
                     self.core.dirty = true;
                     self.status_message = Some("Cut".to_string());
                 }
@@ -552,7 +559,13 @@ impl RtrackApp {
                         .get_mut(self.cursor_row, self.cursor_channel);
                     *cell = clip;
 
-                    self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, clip);
+                    self.record_cell_edit(
+                        pattern_idx,
+                        self.cursor_row,
+                        self.cursor_channel,
+                        old_cell,
+                        clip,
+                    );
                     self.core.dirty = true;
 
                     // Advance cursor
@@ -567,7 +580,9 @@ impl RtrackApp {
                 let pattern = &mut self.core.song.patterns[pattern_idx];
                 if pattern.rows < 256 {
                     let channels = pattern.channels;
-                    pattern.data.insert(self.cursor_row, vec![Cell::default(); channels]);
+                    pattern
+                        .data
+                        .insert(self.cursor_row, vec![Cell::default(); channels]);
                     pattern.rows += 1;
                     self.core.dirty = true;
                 }
@@ -724,24 +739,18 @@ impl RtrackApp {
                 let state = if self.core.recording { "on" } else { "off" };
                 self.status_message = Some(format!("Recording {}", state));
             }
-            Action::ExportMidi => {
-                match self.core.export_midi_to_default() {
-                    Ok(msg) => self.status_message = Some(msg),
-                    Err(msg) => self.status_message = Some(msg),
-                }
-            }
-            Action::ExportWav => {
-                match self.core.export_wav_to_default() {
-                    Ok(msg) => self.status_message = Some(msg),
-                    Err(msg) => self.status_message = Some(msg),
-                }
-            }
-            Action::ExportFlac => {
-                match self.core.export_flac_to_default() {
-                    Ok(msg) => self.status_message = Some(msg),
-                    Err(msg) => self.status_message = Some(msg),
-                }
-            }
+            Action::ExportMidi => match self.core.export_midi_to_default() {
+                Ok(msg) => self.status_message = Some(msg),
+                Err(msg) => self.status_message = Some(msg),
+            },
+            Action::ExportWav => match self.core.export_wav_to_default() {
+                Ok(msg) => self.status_message = Some(msg),
+                Err(msg) => self.status_message = Some(msg),
+            },
+            Action::ExportFlac => match self.core.export_flac_to_default() {
+                Ok(msg) => self.status_message = Some(msg),
+                Err(msg) => self.status_message = Some(msg),
+            },
             Action::ToggleMidiClock => {
                 let msg = self.core.toggle_midi_clock();
                 self.status_message = Some(msg);
@@ -765,10 +774,10 @@ impl RtrackApp {
                 if self.show_midi_ports {
                     self.show_midi_ports = false;
                 } else {
-                    self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
-                        .unwrap_or_default();
-                    self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
-                        .unwrap_or_default();
+                    self.midi_port_list =
+                        rtrack_core::midi::MidiEngine::list_ports().unwrap_or_default();
+                    self.midi_input_port_list =
+                        rtrack_core::midi::MidiInputEngine::list_ports().unwrap_or_default();
                     self.show_midi_ports = true;
                 }
             }
@@ -796,7 +805,8 @@ impl RtrackApp {
                     let max_c = c1.max(c2);
                     let span = max_r - min_r;
                     if span < 2 {
-                        self.status_message = Some("Need at least 3 rows to interpolate".to_string());
+                        self.status_message =
+                            Some("Need at least 3 rows to interpolate".to_string());
                         return;
                     }
                     let mut edits = Vec::new();
@@ -829,13 +839,17 @@ impl RtrackApp {
                                 for row in min_r..=max_r {
                                     let t = (row - min_r) as f64 / span as f64;
                                     let e = e0 as f64 + (e1 as f64 - e0 as f64) * t;
-                                    let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
-                                    let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
+                                    let old_cell =
+                                        *self.core.song.patterns[pattern_idx].get(row, ch);
+                                    let cell =
+                                        self.core.song.patterns[pattern_idx].get_mut(row, ch);
                                     cell.effect = first.effect;
                                     cell.effect_value = Some(e.round() as u8);
                                     // Check if we already have an edit for this cell from volume interpolation
                                     let existing = edits.iter_mut().find(|ed: &&mut CellEdit| {
-                                        ed.pattern_idx == pattern_idx && ed.row == row && ed.channel == ch
+                                        ed.pattern_idx == pattern_idx
+                                            && ed.row == row
+                                            && ed.channel == ch
                                     });
                                     if let Some(existing) = existing {
                                         existing.new_cell = *cell;
@@ -866,7 +880,14 @@ impl RtrackApp {
         }
     }
 
-    pub(crate) fn record_cell_edit(&mut self, pattern_idx: usize, row: usize, channel: usize, old: Cell, new: Cell) {
+    pub(crate) fn record_cell_edit(
+        &mut self,
+        pattern_idx: usize,
+        row: usize,
+        channel: usize,
+        old: Cell,
+        new: Cell,
+    ) {
         self.history.push(vec![CellEdit {
             pattern_idx,
             row,
@@ -920,23 +941,36 @@ impl RtrackApp {
             let ch = self.cursor_channel;
             let midi_ch = self.core.midi_channel_for(ch);
             let ch_type = self.core.channels.get(ch).map(|c| c.channel_type);
-            let track_inst = if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-                self.core.channels.get(ch).and_then(|c| c.default_instrument)
-            } else {
-                None
-            };
-            self.core.preview_note_with_instrument(midi_ch, midi_note, MIDI_DEFAULT_VELOCITY, track_inst);
+            let track_inst =
+                if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
+                    self.core
+                        .channels
+                        .get(ch)
+                        .and_then(|c| c.default_instrument)
+                } else {
+                    None
+                };
+            self.core.preview_note_with_instrument(
+                midi_ch,
+                midi_note,
+                MIDI_DEFAULT_VELOCITY,
+                track_inst,
+            );
         }
 
         // Write to pattern
         let pattern_idx = self.core.song.order[self.edit_order];
         let ch = self.cursor_channel;
         let ch_type = self.core.channels.get(ch).map(|c| c.channel_type);
-        let track_inst = if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-            self.core.channels.get(ch).and_then(|c| c.default_instrument)
-        } else {
-            None
-        };
+        let track_inst =
+            if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
+                self.core
+                    .channels
+                    .get(ch)
+                    .and_then(|c| c.default_instrument)
+            } else {
+                None
+            };
 
         let old_cell = *self.core.song.patterns[pattern_idx].get(self.cursor_row, ch);
         let cell = self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, ch);
@@ -962,8 +996,10 @@ impl RtrackApp {
         };
 
         let pattern_idx = self.core.song.order[self.edit_order];
-        let old_cell = *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
-        let cell = self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+        let old_cell =
+            *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
+        let cell =
+            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
 
         match self.cursor_sub {
             SubColumn::Instrument => {
@@ -985,7 +1021,13 @@ impl RtrackApp {
             SubColumn::Note => {}
         }
         let new_cell = *cell;
-        self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
+        self.record_cell_edit(
+            pattern_idx,
+            self.cursor_row,
+            self.cursor_channel,
+            old_cell,
+            new_cell,
+        );
         self.core.dirty = true;
 
         let step = self.edit_step;
@@ -995,8 +1037,10 @@ impl RtrackApp {
 
     fn clear_cell(&mut self) {
         let pattern_idx = self.core.song.order[self.edit_order];
-        let old_cell = *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
-        let cell = self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+        let old_cell =
+            *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
+        let cell =
+            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
         match self.cursor_sub {
             SubColumn::Note => {
                 cell.note = None;
@@ -1010,17 +1054,31 @@ impl RtrackApp {
             }
         }
         let new_cell = *cell;
-        self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
+        self.record_cell_edit(
+            pattern_idx,
+            self.cursor_row,
+            self.cursor_channel,
+            old_cell,
+            new_cell,
+        );
         self.core.dirty = true;
     }
 
     fn enter_note_off(&mut self) {
         let pattern_idx = self.core.song.order[self.edit_order];
-        let old_cell = *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
-        let cell = self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+        let old_cell =
+            *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
+        let cell =
+            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
         cell.note = Some(Note::Off);
         let new_cell = *cell;
-        self.record_cell_edit(pattern_idx, self.cursor_row, self.cursor_channel, old_cell, new_cell);
+        self.record_cell_edit(
+            pattern_idx,
+            self.cursor_row,
+            self.cursor_channel,
+            old_cell,
+            new_cell,
+        );
         self.core.dirty = true;
 
         let step = self.edit_step;
@@ -1050,8 +1108,8 @@ impl RtrackApp {
             self.core.dirty = true;
             self.status_message = Some(format!("Transposed block by {} semitone(s)", semitones));
         } else {
-            let cell = self.core.song.patterns[pattern_idx]
-                .get_mut(self.cursor_row, self.cursor_channel);
+            let cell =
+                self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
             transpose_cell_note(cell, semitones);
             self.core.dirty = true;
         }
@@ -1065,7 +1123,11 @@ impl RtrackApp {
 
     fn handle_midi_input(&mut self, event: MidiInputEvent) {
         match event {
-            MidiInputEvent::NoteOn { channel: _, note, velocity } => {
+            MidiInputEvent::NoteOn {
+                channel: _,
+                note,
+                velocity,
+            } => {
                 let ch = self.cursor_channel;
                 let midi_ch = self.core.midi_channel_for(ch);
 
@@ -1106,7 +1168,11 @@ impl RtrackApp {
                     );
                 }
             }
-            MidiInputEvent::CC { channel: _, controller, value } => {
+            MidiInputEvent::CC {
+                channel: _,
+                controller,
+                value,
+            } => {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
                 if let Some(msg) = self.core.handle_midi_cc(controller, value, midi_ch) {
                     self.status_message = Some(msg);
@@ -1116,15 +1182,27 @@ impl RtrackApp {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
                 self.core.send_pitch_bend(midi_ch, value);
             }
-            MidiInputEvent::ProgramChange { channel: _, program } => {
+            MidiInputEvent::ProgramChange {
+                channel: _,
+                program,
+            } => {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
                 self.core.send_program_change(midi_ch, program);
             }
-            MidiInputEvent::ChannelPressure { channel: _, pressure } => {
-                self.core.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            MidiInputEvent::ChannelPressure {
+                channel: _,
+                pressure,
+            } => {
+                self.core
+                    .apply_aftertouch_to_filter(self.cursor_channel, pressure);
             }
-            MidiInputEvent::PolyPressure { channel: _, note: _, pressure } => {
-                self.core.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            MidiInputEvent::PolyPressure {
+                channel: _,
+                note: _,
+                pressure,
+            } => {
+                self.core
+                    .apply_aftertouch_to_filter(self.cursor_channel, pressure);
             }
             MidiInputEvent::Clock => {
                 self.core.handle_external_clock();
@@ -1140,7 +1218,6 @@ impl RtrackApp {
             }
         }
     }
-
 }
 
 enum Action {
@@ -1210,14 +1287,21 @@ enum Action {
 }
 
 fn transpose_cell_note(cell: &mut Cell, semitones: i8) {
-    if let Some(Note::On { ref value, ref octave }) = cell.note {
+    if let Some(Note::On {
+        ref value,
+        ref octave,
+    }) = cell.note
+    {
         let semi = SEMITONES_PER_OCTAVE as i16;
         let midi = (*octave as i16) * semi + value.to_index() as i16 + semitones as i16;
         if midi >= 0 && midi <= MIDI_MAX_NOTE as i16 {
             let new_octave = (midi / semi) as u8;
             let new_note_idx = (midi % semi) as u8;
             if let Some(nv) = NoteValue::from_index(new_note_idx) {
-                cell.note = Some(Note::On { value: nv, octave: new_octave });
+                cell.note = Some(Note::On {
+                    value: nv,
+                    octave: new_octave,
+                });
             }
         }
     }

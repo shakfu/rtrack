@@ -1,5 +1,8 @@
+use rtrack_core::tracker::{
+    Cell, InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song,
+    SongFile,
+};
 use rtrack_tui::app::{App, Mode, SubColumn};
-use rtrack_core::tracker::{Cell, Note, NoteValue, Song, SongFile, InstrumentEntry, InstrumentDef, SampleRefEntry, SampleRef};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -31,7 +34,8 @@ fn app_with_note() -> App {
 fn test_export_wav_roundtrip() {
     let app = app_with_note();
     let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = app
-        .core.instruments
+        .core
+        .instruments
         .iter()
         .map(|i| rtrack_core::sample::export::ExportInstrument {
             sample_index: i.sample_index,
@@ -186,7 +190,10 @@ fn test_insert_mode_note_entry() {
     // Check that a note was placed
     let pat_idx = app.core.song.order[app.current_order_position()];
     let cell = app.core.song.patterns[pat_idx].get(0, 0);
-    assert!(cell.note.is_some(), "Note should be placed after 'z' in insert mode");
+    assert!(
+        cell.note.is_some(),
+        "Note should be placed after 'z' in insert mode"
+    );
     if let Some(Note::On { value, .. }) = cell.note {
         assert_eq!(value, NoteValue::C);
     } else {
@@ -276,9 +283,19 @@ fn test_multi_pattern_song_renders() {
     let dir = std::env::temp_dir();
     let path = dir.join("rtrack_integration_multi.wav");
     let result = rtrack_core::sample::export::render_to_wav(
-        &path, &song, &bank, &instruments, &[], &[], 44100,
+        &path,
+        &song,
+        &bank,
+        &instruments,
+        &[],
+        &[],
+        44100,
     );
-    assert!(result.is_ok(), "Multi-pattern render failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Multi-pattern render failed: {:?}",
+        result.err()
+    );
 
     let reader = hound::WavReader::open(&path).unwrap();
     let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
@@ -322,7 +339,13 @@ fn test_channel_effects_in_render() {
     let dir = std::env::temp_dir();
     let path_dry = dir.join("rtrack_int_dry.wav");
     rtrack_core::sample::export::render_to_wav(
-        &path_dry, &song, &bank, &instruments, &[], &[], 44100,
+        &path_dry,
+        &song,
+        &bank,
+        &instruments,
+        &[],
+        &[],
+        44100,
     )
     .unwrap();
 
@@ -335,7 +358,13 @@ fn test_channel_effects_in_render() {
 
     let path_wet = dir.join("rtrack_int_wet.wav");
     rtrack_core::sample::export::render_to_wav(
-        &path_wet, &song, &bank, &instruments, &[ch_fx], &[], 44100,
+        &path_wet,
+        &song,
+        &bank,
+        &instruments,
+        &[ch_fx],
+        &[],
+        44100,
     )
     .unwrap();
 
@@ -394,7 +423,13 @@ fn test_send_bus_in_render() {
     let dir = std::env::temp_dir();
     let path_dry = dir.join("rtrack_int_send_dry.wav");
     rtrack_core::sample::export::render_to_wav(
-        &path_dry, &song, &bank, &instruments, &[], &[], 44100,
+        &path_dry,
+        &song,
+        &bank,
+        &instruments,
+        &[],
+        &[],
+        44100,
     )
     .unwrap();
 
@@ -472,7 +507,11 @@ fn test_generate_sliced_amen() {
     let slice_bounds: Vec<(usize, usize)> = (0..num_slices)
         .map(|i| {
             let start = i * slice_len;
-            let end = if i == num_slices - 1 { total_frames } else { start + slice_len };
+            let end = if i == num_slices - 1 {
+                total_frames
+            } else {
+                start + slice_len
+            };
             (start, end)
         })
         .collect();
@@ -539,7 +578,9 @@ fn test_generate_sliced_amen() {
     };
 
     let out_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/sliced-amen.rtrk");
-    song_file.save(&out_path).expect("Failed to save sliced-amen.rtrk");
+    song_file
+        .save(&out_path)
+        .expect("Failed to save sliced-amen.rtrk");
 
     // Verify it loads back
     let loaded = SongFile::load(&out_path).expect("Failed to reload");

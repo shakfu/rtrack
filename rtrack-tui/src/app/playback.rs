@@ -49,7 +49,11 @@ impl App {
 
     pub(crate) fn handle_midi_input(&mut self, event: MidiInputEvent) {
         match event {
-            MidiInputEvent::NoteOn { channel: _, note, velocity } => {
+            MidiInputEvent::NoteOn {
+                channel: _,
+                note,
+                velocity,
+            } => {
                 let ch = self.cursor_channel;
                 let midi_ch = self.core.midi_channel_for(ch);
 
@@ -90,7 +94,11 @@ impl App {
                     );
                 }
             }
-            MidiInputEvent::CC { channel: _, controller, value } => {
+            MidiInputEvent::CC {
+                channel: _,
+                controller,
+                value,
+            } => {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
                 if let Some(msg) = self.core.handle_midi_cc(controller, value, midi_ch) {
                     self.status_message = Some(msg);
@@ -100,15 +108,27 @@ impl App {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
                 self.core.send_pitch_bend(midi_ch, value);
             }
-            MidiInputEvent::ProgramChange { channel: _, program } => {
+            MidiInputEvent::ProgramChange {
+                channel: _,
+                program,
+            } => {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
                 self.core.send_program_change(midi_ch, program);
             }
-            MidiInputEvent::ChannelPressure { channel: _, pressure } => {
-                self.core.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            MidiInputEvent::ChannelPressure {
+                channel: _,
+                pressure,
+            } => {
+                self.core
+                    .apply_aftertouch_to_filter(self.cursor_channel, pressure);
             }
-            MidiInputEvent::PolyPressure { channel: _, note: _, pressure } => {
-                self.core.apply_aftertouch_to_filter(self.cursor_channel, pressure);
+            MidiInputEvent::PolyPressure {
+                channel: _,
+                note: _,
+                pressure,
+            } => {
+                self.core
+                    .apply_aftertouch_to_filter(self.cursor_channel, pressure);
             }
             MidiInputEvent::Clock => {
                 self.core.handle_external_clock();

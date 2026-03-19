@@ -67,7 +67,13 @@ fn main() -> Result<()> {
             eprintln!("Error: --render requires --output <path.wav|path.flac>");
             std::process::exit(1);
         }
-        let result = run_render(cli.file, sf2.clone(), cli.samples, sample_dir.clone(), cli.output.unwrap());
+        let result = run_render(
+            cli.file,
+            sf2.clone(),
+            cli.samples,
+            sample_dir.clone(),
+            cli.output.unwrap(),
+        );
         if let Err(e) = result {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -80,7 +86,13 @@ fn main() -> Result<()> {
             eprintln!("Error: --play requires a song file");
             std::process::exit(1);
         }
-        let result = run_headless(cli.file, sf2.clone(), cli.samples, sample_dir.clone(), cli.loops);
+        let result = run_headless(
+            cli.file,
+            sf2.clone(),
+            cli.samples,
+            sample_dir.clone(),
+            cli.loops,
+        );
         if let Err(e) = result {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -164,7 +176,8 @@ fn run_render(
 ) -> Result<()> {
     let app = setup_app(sf2_path, samples, sample_dir, file)?;
 
-    let ext = output.extension()
+    let ext = output
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
@@ -174,7 +187,10 @@ fn run_render(
     let order_len = app.core.song.order.len();
     eprintln!(
         "Rendering: \"{}\" ({} BPM, {} patterns in order) -> {}",
-        title, bpm, order_len, output.display()
+        title,
+        bpm,
+        order_len,
+        output.display()
     );
 
     let instruments = app.core.export_instruments();
@@ -184,14 +200,24 @@ fn run_render(
     match ext.as_str() {
         "wav" => {
             rtrack_core::sample::export::render_to_wav(
-                &output, &app.core.song, &app.core.sample_bank, &instruments,
-                &channel_fx, &app.core.send_bus_params, sample_rate,
+                &output,
+                &app.core.song,
+                &app.core.sample_bank,
+                &instruments,
+                &channel_fx,
+                &app.core.send_bus_params,
+                sample_rate,
             )?;
         }
         "flac" => {
             rtrack_core::sample::export::render_to_flac(
-                &output, &app.core.song, &app.core.sample_bank, &instruments,
-                &channel_fx, &app.core.send_bus_params, sample_rate,
+                &output,
+                &app.core.song,
+                &app.core.sample_bank,
+                &instruments,
+                &channel_fx,
+                &app.core.send_bus_params,
+                sample_rate,
             )?;
         }
         _ => {

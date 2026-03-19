@@ -27,9 +27,11 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     if area.width < 40 || area.height < 10 {
-        let msg = format!("Terminal too small ({}x{}, need 40x10)", area.width, area.height);
-        let text = Paragraph::new(msg)
-            .style(Style::default().fg(ratatui::style::Color::Red));
+        let msg = format!(
+            "Terminal too small ({}x{}, need 40x10)",
+            area.width, area.height
+        );
+        let text = Paragraph::new(msg).style(Style::default().fg(ratatui::style::Color::Red));
         f.render_widget(text, area);
         return;
     }
@@ -46,12 +48,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             vec![
                 Constraint::Length(3),          // header
                 Constraint::Min(10),            // main area
-                Constraint::Length(vis_height),  // visualization
-                Constraint::Length(1),           // status bar
+                Constraint::Length(vis_height), // visualization
+                Constraint::Length(1),          // status bar
             ]
         } else {
             vec![
-                Constraint::Length(3),  // header
+                Constraint::Length(3), // header
                 Constraint::Min(10),   // main area
                 Constraint::Length(0), // no visualization
                 Constraint::Length(1), // status bar
@@ -70,7 +72,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(7), // order list sidebar
-                Constraint::Min(20),  // pattern editor
+                Constraint::Min(20),   // pattern editor
             ])
             .split(chunks[1]);
 
@@ -127,8 +129,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(20),       // left: song info + transport + position
-            Constraint::Length(8),      // right: status symbols (right-justified)
+            Constraint::Min(20),   // left: song info + transport + position
+            Constraint::Length(8), // right: status symbols (right-justified)
         ])
         .split(inner);
 
@@ -140,7 +142,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     };
 
     let mut left_spans = vec![
-        Span::styled(" rtrack", Style::default().fg(theme.header_title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " rtrack",
+            Style::default()
+                .fg(theme.header_title)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::styled(title_display, Style::default().fg(theme.status_text)),
         Span::raw("  "),
@@ -149,7 +156,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.header_bpm),
         ),
         Span::styled(
-            if app.core.is_playing() { " \u{25B6}" } else { " \u{25A0}" },
+            if app.core.is_playing() {
+                " \u{25B6}"
+            } else {
+                " \u{25A0}"
+            },
             if app.core.is_playing() {
                 Style::default().fg(theme.header_title)
             } else {
@@ -159,7 +170,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Span::styled(
             " \u{25CF}",
             if app.core.recording {
-                Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.mode_insert)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.status_hint)
             },
@@ -175,8 +188,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     left_spans.extend([
         Span::raw("  "),
         Span::styled(
-            format!("P:{:02X}/{:02X}",
-                pattern_num, song.current_pattern_count() - 1),
+            format!(
+                "P:{:02X}/{:02X}",
+                pattern_num,
+                song.current_pattern_count() - 1
+            ),
             Style::default().fg(theme.header_position),
         ),
         Span::raw("  "),
@@ -189,9 +205,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.header_octave),
         ),
         Span::styled(
-            format!(" Ch:{}/{}",
-                app.cursor_channel + 1,
-                app.core.song.channels),
+            format!(" Ch:{}/{}", app.cursor_channel + 1, app.core.song.channels),
             Style::default().fg(theme.header_octave),
         ),
     ]);
@@ -202,15 +216,17 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if app.core.link.is_enabled() {
         let peers = app.core.link.num_peers();
         let style = if peers > 0 {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.status_hint)
         };
         right_spans.push(Span::styled(format!("Link:{}", peers), style));
     }
     if !right_spans.is_empty() {
-        let right = Paragraph::new(Line::from(right_spans))
-            .alignment(ratatui::layout::Alignment::Right);
+        let right =
+            Paragraph::new(Line::from(right_spans)).alignment(ratatui::layout::Alignment::Right);
         f.render_widget(right, columns[1]);
     }
 }
@@ -218,8 +234,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if app.mode == Mode::Command {
         let text = format!(":{}", app.command_buf);
-        let cmd_line = Paragraph::new(text)
-            .style(Style::default().fg(theme.popup_highlight_fg));
+        let cmd_line = Paragraph::new(text).style(Style::default().fg(theme.popup_highlight_fg));
         f.render_widget(cmd_line, area);
         return;
     }
@@ -240,18 +255,78 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     let mode_span = match app.mode {
         Mode::Normal => Span::styled(" NORMAL ", Style::default().fg(theme.mode_normal)),
-        Mode::Insert => Span::styled(" INSERT ", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)),
-        Mode::MidiPortSelect => Span::styled(" MIDI SELECT ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
-        Mode::Help => Span::styled(" HELP ", Style::default().fg(theme.mode_help).add_modifier(Modifier::BOLD)),
-        Mode::SongSettings => Span::styled(" SETTINGS ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
-        Mode::InstrumentList => Span::styled(" INSTRUMENTS ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
-        Mode::SampleEditor => Span::styled(" SAMPLE EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
-        Mode::SynthEditor => Span::styled(" SYNTH EDIT ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
-        Mode::QuitConfirm => Span::styled(" QUIT? ", Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD)),
-        Mode::TrackConfig => Span::styled(" TRACK ", Style::default().fg(theme.header_octave).add_modifier(Modifier::BOLD)),
-        Mode::PatternMatrix => Span::styled(" MATRIX ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
-        Mode::FileBrowser => Span::styled(" FILES ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
-        Mode::RecentFiles => Span::styled(" RECENT ", Style::default().fg(theme.mode_port_select).add_modifier(Modifier::BOLD)),
+        Mode::Insert => Span::styled(
+            " INSERT ",
+            Style::default()
+                .fg(theme.mode_insert)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::MidiPortSelect => Span::styled(
+            " MIDI SELECT ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::Help => Span::styled(
+            " HELP ",
+            Style::default()
+                .fg(theme.mode_help)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::SongSettings => Span::styled(
+            " SETTINGS ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::InstrumentList => Span::styled(
+            " INSTRUMENTS ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::SampleEditor => Span::styled(
+            " SAMPLE EDIT ",
+            Style::default()
+                .fg(theme.header_octave)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::SynthEditor => Span::styled(
+            " SYNTH EDIT ",
+            Style::default()
+                .fg(theme.header_octave)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::QuitConfirm => Span::styled(
+            " QUIT? ",
+            Style::default()
+                .fg(theme.mode_insert)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::TrackConfig => Span::styled(
+            " TRACK ",
+            Style::default()
+                .fg(theme.header_octave)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::PatternMatrix => Span::styled(
+            " MATRIX ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::FileBrowser => Span::styled(
+            " FILES ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::RecentFiles => Span::styled(
+            " RECENT ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
         Mode::Command => Span::from(""), // handled above, never reached
     };
 
@@ -272,7 +347,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let mut spans = vec![mode_span, midi_status, audio_span, fx_span];
 
     if let Some(ref msg) = app.status_message {
-        spans.push(Span::styled(format!(" {} ", msg), Style::default().fg(theme.status_text)));
+        spans.push(Span::styled(
+            format!(" {} ", msg),
+            Style::default().fg(theme.status_text),
+        ));
     } else if app.vis.panel == visualization::BottomPanel::StatusBarMeterSep {
         // Shortened hints + embedded mini meter
         spans.push(Span::styled(
@@ -298,76 +376,249 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     let key_style = Style::default().fg(theme.popup_key);
     let text_style = Style::default().fg(theme.popup_text);
-    let section_style = Style::default().fg(theme.popup_title).add_modifier(Modifier::BOLD);
+    let section_style = Style::default()
+        .fg(theme.popup_title)
+        .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(theme.status_hint);
 
     vec![
         Line::from(Span::styled("  Global Keys", section_style)),
         Line::from(""),
-        Line::from(vec![Span::styled("  F1           ", key_style), Span::styled("Toggle help", text_style)]),
-        Line::from(vec![Span::styled("  F2           ", key_style), Span::styled("MIDI port selector", text_style)]),
-        Line::from(vec![Span::styled("  F3           ", key_style), Span::styled("Toggle Ableton Link", text_style)]),
-        Line::from(vec![Span::styled("  F4           ", key_style), Span::styled("Cycle bottom panel (meter/spectrum/sample)", text_style)]),
-        Line::from(vec![Span::styled("  Space        ", key_style), Span::styled("Play / Stop", text_style)]),
-        Line::from(vec![Span::styled("  Esc          ", key_style), Span::styled("Toggle Normal / Insert mode", text_style)]),
-        Line::from(vec![Span::styled("  Tab/S-Tab    ", key_style), Span::styled("Next / prev track (wraps)", text_style)]),
-        Line::from(vec![Span::styled("  Arrows       ", key_style), Span::styled("Move cursor", text_style)]),
-        Line::from(vec![Span::styled("  PgUp/PgDn    ", key_style), Span::styled("Move cursor 16 rows", text_style)]),
-        Line::from(vec![Span::styled("  Home/End     ", key_style), Span::styled("Jump to first / last row", text_style)]),
-        Line::from(vec![Span::styled("  + / -        ", key_style), Span::styled("Octave up / down", text_style)]),
-        Line::from(vec![Span::styled("  [ / ]        ", key_style), Span::styled("BPM down / up", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+S       ", key_style), Span::styled("Save", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+Z / Y   ", key_style), Span::styled("Undo / Redo", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+C/X/V   ", key_style), Span::styled("Copy / Cut / Paste row (or block)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+B       ", key_style), Span::styled("Toggle block selection", text_style)]),
-        Line::from(vec![Span::styled("  Shift+Up/Dn  ", key_style), Span::styled("Transpose note(s) up/down semitone", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+I       ", key_style), Span::styled("Interpolate block (volume/effect ramp)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+F       ", key_style), Span::styled("Toggle follow mode (cursor follows playback)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+R       ", key_style), Span::styled("Toggle recording (punch-in MIDI notes during playback)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+L/R     ", key_style), Span::styled("Next / prev order position", text_style)]),
-        Line::from(vec![Span::styled("  F9-F12       ", key_style), Span::styled("Mute/unmute ch (current page)", text_style)]),
-        Line::from(vec![Span::styled("  ( / )        ", key_style), Span::styled("Edit step down / up", text_style)]),
+        Line::from(vec![
+            Span::styled("  F1           ", key_style),
+            Span::styled("Toggle help", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F2           ", key_style),
+            Span::styled("MIDI port selector", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F3           ", key_style),
+            Span::styled("Toggle Ableton Link", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F4           ", key_style),
+            Span::styled("Cycle bottom panel (meter/spectrum/sample)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space        ", key_style),
+            Span::styled("Play / Stop", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc          ", key_style),
+            Span::styled("Toggle Normal / Insert mode", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Tab/S-Tab    ", key_style),
+            Span::styled("Next / prev track (wraps)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Arrows       ", key_style),
+            Span::styled("Move cursor", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgUp/PgDn    ", key_style),
+            Span::styled("Move cursor 16 rows", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Home/End     ", key_style),
+            Span::styled("Jump to first / last row", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  + / -        ", key_style),
+            Span::styled("Octave up / down", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  [ / ]        ", key_style),
+            Span::styled("BPM down / up", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+S       ", key_style),
+            Span::styled("Save", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+Z / Y   ", key_style),
+            Span::styled("Undo / Redo", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+C/X/V   ", key_style),
+            Span::styled("Copy / Cut / Paste row (or block)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+B       ", key_style),
+            Span::styled("Toggle block selection", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Shift+Up/Dn  ", key_style),
+            Span::styled("Transpose note(s) up/down semitone", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+I       ", key_style),
+            Span::styled("Interpolate block (volume/effect ramp)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+F       ", key_style),
+            Span::styled("Toggle follow mode (cursor follows playback)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+R       ", key_style),
+            Span::styled(
+                "Toggle recording (punch-in MIDI notes during playback)",
+                text_style,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+L/R     ", key_style),
+            Span::styled("Next / prev order position", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F9-F12       ", key_style),
+            Span::styled("Mute/unmute ch (current page)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  ( / )        ", key_style),
+            Span::styled("Edit step down / up", text_style),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Normal Mode", section_style)),
         Line::from(""),
-        Line::from(vec![Span::styled("  q            ", key_style), Span::styled("Quit", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+N       ", key_style), Span::styled("New pattern (append to order)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+D       ", key_style), Span::styled("Clone current pattern", text_style)]),
-        Line::from(vec![Span::styled("  Enter        ", key_style), Span::styled("Track config (name, type, effects)", text_style)]),
-        Line::from(vec![Span::styled("  :            ", key_style), Span::styled("Command mode (vim-style)", text_style)]),
-        Line::from(vec![Span::styled("  Ins / Bksp   ", key_style), Span::styled("Insert / delete row in pattern", text_style)]),
-        Line::from(vec![Span::styled("  F6           ", key_style), Span::styled("Song settings dialog", text_style)]),
-        Line::from(vec![Span::styled("  F7           ", key_style), Span::styled("Instrument list", text_style)]),
-        Line::from(vec![Span::styled("  F8           ", key_style), Span::styled("Cycle color theme", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+E       ", key_style), Span::styled("Export to MIDI file (.mid)", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+W       ", key_style), Span::styled("Export to WAV file", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+L       ", key_style), Span::styled("Export to FLAC file", text_style)]),
-        Line::from(vec![Span::styled("  Ctrl+M       ", key_style), Span::styled("Toggle MIDI clock output", text_style)]),
+        Line::from(vec![
+            Span::styled("  q            ", key_style),
+            Span::styled("Quit", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+N       ", key_style),
+            Span::styled("New pattern (append to order)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+D       ", key_style),
+            Span::styled("Clone current pattern", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter        ", key_style),
+            Span::styled("Track config (name, type, effects)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :            ", key_style),
+            Span::styled("Command mode (vim-style)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ins / Bksp   ", key_style),
+            Span::styled("Insert / delete row in pattern", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F6           ", key_style),
+            Span::styled("Song settings dialog", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F7           ", key_style),
+            Span::styled("Instrument list", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  F8           ", key_style),
+            Span::styled("Cycle color theme", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+E       ", key_style),
+            Span::styled("Export to MIDI file (.mid)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+W       ", key_style),
+            Span::styled("Export to WAV file", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+L       ", key_style),
+            Span::styled("Export to FLAC file", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+M       ", key_style),
+            Span::styled("Toggle MIDI clock output", text_style),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Insert Mode", section_style)),
         Line::from(""),
-        Line::from(vec![Span::styled("  z s x d c .. ", key_style), Span::styled("Notes C C# D D# E .. (lower octave)", text_style)]),
-        Line::from(vec![Span::styled("  q 2 w 3 e .. ", key_style), Span::styled("Notes C C# D D# E .. (upper octave)", text_style)]),
-        Line::from(vec![Span::styled("  0-9 / a-f    ", key_style), Span::styled("Hex entry (inst/vol/fx columns)", text_style)]),
-        Line::from(vec![Span::styled("  Del/Bksp     ", key_style), Span::styled("Clear sub-column at cursor", text_style)]),
-        Line::from(vec![Span::styled("  =            ", key_style), Span::styled("Enter note-off (===)", text_style)]),
-        Line::from(vec![Span::styled("  Esc          ", key_style), Span::styled("Return to Normal mode", text_style)]),
+        Line::from(vec![
+            Span::styled("  z s x d c .. ", key_style),
+            Span::styled("Notes C C# D D# E .. (lower octave)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  q 2 w 3 e .. ", key_style),
+            Span::styled("Notes C C# D D# E .. (upper octave)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  0-9 / a-f    ", key_style),
+            Span::styled("Hex entry (inst/vol/fx columns)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Del/Bksp     ", key_style),
+            Span::styled("Clear sub-column at cursor", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  =            ", key_style),
+            Span::styled("Enter note-off (===)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc          ", key_style),
+            Span::styled("Return to Normal mode", text_style),
+        ]),
         Line::from(""),
-        Line::from(Span::styled("--- Commands (: in Normal) ---", section_style)),
-        Line::from(vec![Span::styled("  :p :pattern  ", key_style), Span::styled("Pattern matrix (full screen)", text_style)]),
-        Line::from(vec![Span::styled("  :w :write    ", key_style), Span::styled("Save file", text_style)]),
-        Line::from(vec![Span::styled("  :q :quit     ", key_style), Span::styled("Quit (prompts if unsaved)", text_style)]),
-        Line::from(vec![Span::styled("  :q!          ", key_style), Span::styled("Force quit without saving", text_style)]),
-        Line::from(vec![Span::styled("  :wq          ", key_style), Span::styled("Save and quit", text_style)]),
-        Line::from(vec![Span::styled("  :h :help     ", key_style), Span::styled("Help screen", text_style)]),
-        Line::from(vec![Span::styled("  :set         ", key_style), Span::styled("Song settings", text_style)]),
-        Line::from(vec![Span::styled("  :inst        ", key_style), Span::styled("Instrument list", text_style)]),
-        Line::from(vec![Span::styled("  :midi        ", key_style), Span::styled("MIDI port selector", text_style)]),
-        Line::from(vec![Span::styled("  :fx :effects ", key_style), Span::styled("Track config (name, type, effects)", text_style)]),
-        Line::from(vec![Span::styled("  :wav :flac   ", key_style), Span::styled("Export audio", text_style)]),
-        Line::from(vec![Span::styled("  :link        ", key_style), Span::styled("Toggle Ableton Link", text_style)]),
+        Line::from(Span::styled(
+            "--- Commands (: in Normal) ---",
+            section_style,
+        )),
+        Line::from(vec![
+            Span::styled("  :p :pattern  ", key_style),
+            Span::styled("Pattern matrix (full screen)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :w :write    ", key_style),
+            Span::styled("Save file", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :q :quit     ", key_style),
+            Span::styled("Quit (prompts if unsaved)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :q!          ", key_style),
+            Span::styled("Force quit without saving", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :wq          ", key_style),
+            Span::styled("Save and quit", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :h :help     ", key_style),
+            Span::styled("Help screen", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :set         ", key_style),
+            Span::styled("Song settings", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :inst        ", key_style),
+            Span::styled("Instrument list", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :midi        ", key_style),
+            Span::styled("MIDI port selector", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :fx :effects ", key_style),
+            Span::styled("Track config (name, type, effects)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :wav :flac   ", key_style),
+            Span::styled("Export audio", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :link        ", key_style),
+            Span::styled("Toggle Ableton Link", text_style),
+        ]),
         Line::from(""),
-        Line::from(Span::styled("  [Up/Down] scroll | [Esc/F1] close", dim_style)),
+        Line::from(Span::styled(
+            "  [Up/Down] scroll | [Esc/F1] close",
+            dim_style,
+        )),
     ]
 }
 
@@ -389,7 +640,11 @@ fn draw_help(f: &mut Frame, app: &App, theme: &Theme) {
     let scroll = app.dialogs.help_scroll;
     let max_scroll = total_lines.saturating_sub(content_height as usize);
     let offset = scroll.min(max_scroll);
-    let visible_lines: Vec<Line> = all_lines.into_iter().skip(offset).take(content_height as usize).collect();
+    let visible_lines: Vec<Line> = all_lines
+        .into_iter()
+        .skip(offset)
+        .take(content_height as usize)
+        .collect();
 
     let scroll_indicator = if max_scroll > 0 {
         format!(" Help [{}/{}] ", offset + 1, max_scroll + 1)
@@ -419,7 +674,9 @@ fn draw_order_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         let pat = app.core.song.order[i];
         let text = format!("{:02X}:{:02X}", i, pat);
         let style = if i == current_pos {
-            Style::default().fg(theme.order_current).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.order_current)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.order_normal)
         };
@@ -454,33 +711,38 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
         (SettingsField::Swing, "Swing"),
     ];
 
-    let lines: Vec<Line> = fields.iter().map(|(field, label)| {
-        let is_active = *field == app.dialogs.settings_field;
-        let display_val = if is_active {
-            format!("{}_", app.dialogs.settings_edit_buf)
-        } else {
-            match field {
-                SettingsField::Title => app.core.song.title.clone(),
-                SettingsField::Bpm => app.core.song.bpm.to_string(),
-                SettingsField::Speed => app.core.song.speed.to_string(),
-                SettingsField::Channels => app.core.song.channels.to_string(),
-                SettingsField::Rows => app.core.song.rows_per_pattern.to_string(),
-                SettingsField::HighlightBeat => app.core.song.highlight_beat.to_string(),
-                SettingsField::HighlightBar => app.core.song.highlight_bar.to_string(),
-                SettingsField::Swing => format!("{}%", app.core.song.swing),
-            }
-        };
-        let label_style = Style::default().fg(theme.settings_label);
-        let val_style = if is_active {
-            Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.settings_value)
-        };
-        Line::from(vec![
-            Span::styled(format!("  {:14}", label), label_style),
-            Span::styled(display_val, val_style),
-        ])
-    }).collect();
+    let lines: Vec<Line> = fields
+        .iter()
+        .map(|(field, label)| {
+            let is_active = *field == app.dialogs.settings_field;
+            let display_val = if is_active {
+                format!("{}_", app.dialogs.settings_edit_buf)
+            } else {
+                match field {
+                    SettingsField::Title => app.core.song.title.clone(),
+                    SettingsField::Bpm => app.core.song.bpm.to_string(),
+                    SettingsField::Speed => app.core.song.speed.to_string(),
+                    SettingsField::Channels => app.core.song.channels.to_string(),
+                    SettingsField::Rows => app.core.song.rows_per_pattern.to_string(),
+                    SettingsField::HighlightBeat => app.core.song.highlight_beat.to_string(),
+                    SettingsField::HighlightBar => app.core.song.highlight_bar.to_string(),
+                    SettingsField::Swing => format!("{}%", app.core.song.swing),
+                }
+            };
+            let label_style = Style::default().fg(theme.settings_label);
+            let val_style = if is_active {
+                Style::default()
+                    .fg(theme.settings_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.settings_value)
+            };
+            Line::from(vec![
+                Span::styled(format!("  {:14}", label), label_style),
+                Span::styled(display_val, val_style),
+            ])
+        })
+        .collect();
 
     let widget = Paragraph::new(lines).block(
         Block::default()
@@ -517,7 +779,9 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
                 let patch_name = Patch::from_program(sp.waveform).name();
                 tags.push_str(&format!(" [{}]", patch_name));
             }
-            if inst.sample_index.is_some() { tags.push_str(" [SMP]"); }
+            if inst.sample_index.is_some() {
+                tags.push_str(" [SMP]");
+            }
             if let Some(prg) = inst.midi_program {
                 tags.push_str(&format!(" [PRG:{:02X}]", prg));
             }
@@ -527,7 +791,10 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
                 || inst.midi_program.is_some()
                 || !inst.name.is_empty();
             let style = if i == app.dialogs.instrument_cursor {
-                Style::default().fg(theme.popup_highlight_fg).bg(theme.popup_highlight_bg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.popup_highlight_fg)
+                    .bg(theme.popup_highlight_bg)
+                    .add_modifier(Modifier::BOLD)
             } else if has_data {
                 Style::default().fg(theme.popup_text)
             } else {
@@ -576,7 +843,12 @@ fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
 fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
     let ch = app.cursor_channel;
-    let ch_type = app.core.channels.get(ch).map(|c| c.channel_type).unwrap_or(crate::app::ChannelType::Midi);
+    let ch_type = app
+        .core
+        .channels
+        .get(ch)
+        .map(|c| c.channel_type)
+        .unwrap_or(crate::app::ChannelType::Midi);
     let is_synth = ch_type == crate::app::ChannelType::Synth;
     let has_fx = ch_type != crate::app::ChannelType::Midi;
 
@@ -589,21 +861,32 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let popup_area = centered_rect(60, popup_h, area);
     f.render_widget(Clear, popup_area);
 
-    let params = app.core.channels.get(ch)
+    let params = app
+        .core
+        .channels
+        .get(ch)
         .map(|c| c.effects_params.clone())
         .unwrap_or_default();
     let field = app.ch_fx_field;
     // Effects fields start at offset 3 for Synth and Sample, 2 for Midi
     let fx_off: usize = if is_synth || is_sample { 3 } else { 2 };
 
-    let active = Style::default().fg(theme.settings_active).add_modifier(Modifier::BOLD);
+    let active = Style::default()
+        .fg(theme.settings_active)
+        .add_modifier(Modifier::BOLD);
     let normal = Style::default().fg(theme.popup_text);
-    let on_style = Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD);
+    let on_style = Style::default()
+        .fg(theme.mode_insert)
+        .add_modifier(Modifier::BOLD);
     let off_style = Style::default().fg(theme.muted_dim);
     let dim = Style::default().fg(theme.status_hint);
 
     let style_for = |f_idx: usize| -> Style {
-        if field == f_idx { active } else { normal }
+        if field == f_idx {
+            active
+        } else {
+            normal
+        }
     };
 
     let on_off = |enabled: bool, f_idx: usize| -> Span {
@@ -619,7 +902,10 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         if let Some(param) = crate::app::LearnableParam::from_fx_field(fx_rel) {
             for m in &app.core.midi_cc_mappings {
                 if m.channel == ch && m.param == param {
-                    return Span::styled(format!(" CC{}", m.cc), Style::default().fg(Color::Yellow));
+                    return Span::styled(
+                        format!(" CC{}", m.cc),
+                        Style::default().fg(Color::Yellow),
+                    );
                 }
             }
         }
@@ -652,10 +938,14 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
                 let label = if !inst.name.is_empty() {
                     inst.name.clone()
                 } else if let Some(ref sp) = inst.synth_params {
-                    rtrack_core::audio::synth::Patch::from_program(sp.waveform).name().to_string()
+                    rtrack_core::audio::synth::Patch::from_program(sp.waveform)
+                        .name()
+                        .to_string()
                 } else {
                     // No synth_params configured yet -- show default patch name
-                    rtrack_core::audio::synth::Patch::from_program(i).name().to_string()
+                    rtrack_core::audio::synth::Patch::from_program(i)
+                        .name()
+                        .to_string()
                 };
                 format!("{:02X} {}", i, label)
             }
@@ -671,7 +961,14 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         let selected_slot = app.core.channels.get(ch).and_then(|c| c.default_instrument);
         let sample_display = selected_slot
             .and_then(|s| app.core.sample_bank.get(s as usize))
-            .map(|s| format!("{:02X} {} ({:.1}s)", selected_slot.unwrap(), s.name, s.duration()))
+            .map(|s| {
+                format!(
+                    "{:02X} {} ({:.1}s)",
+                    selected_slot.unwrap(),
+                    s.name,
+                    s.duration()
+                )
+            })
             .unwrap_or_else(|| "(none)".to_string());
         let loaded = app.core.sample_bank.loaded_slots();
         let hint_text = if loaded.is_empty() {
@@ -693,17 +990,26 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
             Span::styled("  Filter:     ", style_for(fx_off)),
             on_off(params.filter_enabled, fx_off),
             Span::styled("  Cutoff: ", style_for(fx_off + 1)),
-            Span::styled(format!("{:.0}", params.filter_cutoff), style_for(fx_off + 1)),
+            Span::styled(
+                format!("{:.0}", params.filter_cutoff),
+                style_for(fx_off + 1),
+            ),
             cc_label(1),
             Span::styled("  Res: ", style_for(fx_off + 2)),
-            Span::styled(format!("{:.2}", params.filter_resonance), style_for(fx_off + 2)),
+            Span::styled(
+                format!("{:.2}", params.filter_resonance),
+                style_for(fx_off + 2),
+            ),
             cc_label(2),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Distortion: ", style_for(fx_off + 3)),
             on_off(params.distortion_enabled, fx_off + 3),
             Span::styled("  Drive: ", style_for(fx_off + 4)),
-            Span::styled(format!("{:.1}", params.distortion_drive), style_for(fx_off + 4)),
+            Span::styled(
+                format!("{:.1}", params.distortion_drive),
+                style_for(fx_off + 4),
+            ),
             cc_label(4),
         ]));
         lines.push(Line::from(vec![
@@ -723,10 +1029,16 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
             Span::styled("  Delay:      ", style_for(fx_off + 9)),
             on_off(params.delay_enabled, fx_off + 9),
             Span::styled("  Time: ", style_for(fx_off + 10)),
-            Span::styled(format!("{:.0}ms", params.delay_time), style_for(fx_off + 10)),
+            Span::styled(
+                format!("{:.0}ms", params.delay_time),
+                style_for(fx_off + 10),
+            ),
             cc_label(10),
             Span::styled("  Fdbk: ", style_for(fx_off + 11)),
-            Span::styled(format!("{:.2}", params.delay_feedback), style_for(fx_off + 11)),
+            Span::styled(
+                format!("{:.2}", params.delay_feedback),
+                style_for(fx_off + 11),
+            ),
             cc_label(11),
             Span::styled("  Mix: ", style_for(fx_off + 12)),
             Span::styled(format!("{:.2}", params.delay_mix), style_for(fx_off + 12)),
@@ -800,26 +1112,46 @@ fn draw_file_browser(f: &mut Frame, app: &App, theme: &Theme) {
             Style::default().fg(theme.status_hint),
         )));
     } else {
-        for (i, entry) in app.dialogs.file_browser.entries.iter().enumerate().skip(scroll).take(visible_rows) {
+        for (i, entry) in app
+            .dialogs
+            .file_browser
+            .entries
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_rows)
+        {
             let is_selected = i == cursor;
             let marker = if is_selected { "> " } else { "  " };
 
             let (icon, name_style) = if entry.is_dir {
-                ("/", if is_selected {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Cyan)
-                })
+                (
+                    "/",
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    },
+                )
             } else {
-                ("", if is_selected {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.popup_text)
-                })
+                (
+                    "",
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.popup_text)
+                    },
+                )
             };
 
             let marker_style = if is_selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.status_hint)
             };
@@ -859,21 +1191,24 @@ fn draw_recent_files(f: &mut Frame, app: &App, theme: &Theme) {
     } else {
         for (i, path) in app.recent_files.iter().enumerate() {
             let is_selected = i == app.dialogs.recent_cursor;
-            let display = path.file_name()
+            let display = path
+                .file_name()
                 .and_then(|f| f.to_str())
                 .unwrap_or_else(|| path.to_str().unwrap_or("?"));
-            let dir_display = path.parent()
-                .and_then(|p| p.to_str())
-                .unwrap_or("");
+            let dir_display = path.parent().and_then(|p| p.to_str()).unwrap_or("");
             let marker = if is_selected { "> " } else { "  " };
             let style = if is_selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.popup_text)
             };
             let dim = Style::default().fg(theme.status_hint);
             let marker_style = if is_selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.status_hint)
             };
@@ -891,14 +1226,16 @@ fn draw_recent_files(f: &mut Frame, app: &App, theme: &Theme) {
 
 fn draw_port_selector(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
-    let popup_height = (app.dialogs.midi_port_list.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let popup_height =
+        (app.dialogs.midi_port_list.len() as u16 + 2).min(area.height.saturating_sub(4));
     let popup_area = centered_rect(50, popup_height, area);
 
     // Clear the area behind the popup
     f.render_widget(Clear, popup_area);
 
     let items: Vec<ListItem> = app
-        .dialogs.midi_port_list
+        .dialogs
+        .midi_port_list
         .iter()
         .enumerate()
         .map(|(i, name)| {
@@ -953,7 +1290,9 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     }
 
     let buf = f.buffer_mut();
-    let header_style = Style::default().fg(theme.header_title).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(theme.header_title)
+        .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(theme.popup_text);
 
     // Header row: "Pos Pat  Rep | Ch1  Ch2  ..."
@@ -962,7 +1301,12 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     write_str(buf, inner.x, header_y, inner, header_label, header_style);
     for ch in 0..num_channels {
         let col_x = inner.x + label_w + ch as u16 * ch_col_w;
-        let name = app.core.channels.get(ch).map(|c| &c.name).filter(|n| !n.is_empty());
+        let name = app
+            .core
+            .channels
+            .get(ch)
+            .map(|c| &c.name)
+            .filter(|n| !n.is_empty());
         let label = match name {
             Some(n) => format!("{:>4} ", &n[..n.len().min(4)]),
             None => format!(" Ch{} ", ch + 1),
@@ -992,17 +1336,23 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     };
 
     // Precompute: for each pattern, which channels have data?
-    let pattern_channel_has_data: Vec<Vec<bool>> = app.core.song.patterns.iter().map(|pat| {
-        let mut channel_data = vec![false; pat.channels];
-        for row in &pat.data {
-            for (ch, cell) in row.iter().enumerate() {
-                if !cell.is_empty() {
-                    channel_data[ch] = true;
+    let pattern_channel_has_data: Vec<Vec<bool>> = app
+        .core
+        .song
+        .patterns
+        .iter()
+        .map(|pat| {
+            let mut channel_data = vec![false; pat.channels];
+            for row in &pat.data {
+                for (ch, cell) in row.iter().enumerate() {
+                    if !cell.is_empty() {
+                        channel_data[ch] = true;
+                    }
                 }
             }
-        }
-        channel_data
-    }).collect();
+            channel_data
+        })
+        .collect();
 
     // Draw order rows
     for vis_row in 0..data_height {
@@ -1019,13 +1369,28 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         let is_playing = app.core.playing && ord_idx == app.core.engine.order;
 
         // Row label: " 0: [00] x01 |"
-        let repeat = app.core.song.order_repeats.get(ord_idx).copied().unwrap_or(1);
-        let rep_str = if repeat == 0 { " -- ".to_string() } else { format!(" x{:<2}", repeat) };
+        let repeat = app
+            .core
+            .song
+            .order_repeats
+            .get(ord_idx)
+            .copied()
+            .unwrap_or(1);
+        let rep_str = if repeat == 0 {
+            " -- ".to_string()
+        } else {
+            format!(" x{:<2}", repeat)
+        };
         let label = format!("{:>2}: [{:02X}]{} |", ord_idx, pat_idx, rep_str);
         let label_style = if is_cursor {
-            Style::default().fg(theme.popup_highlight_fg).bg(theme.popup_highlight_bg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.popup_highlight_fg)
+                .bg(theme.popup_highlight_bg)
+                .add_modifier(Modifier::BOLD)
         } else if is_playing {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             dim_style
         };
@@ -1041,10 +1406,19 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 let style = Style::default()
                     .fg(theme.popup_highlight_fg)
                     .bg(theme.popup_highlight_bg)
-                    .add_modifier(if ch_has_data { Modifier::BOLD } else { Modifier::empty() });
+                    .add_modifier(if ch_has_data {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    });
                 (text, style)
             } else if ch_has_data {
-                ("#### ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                (
+                    "#### ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 ("  .  ", Style::default().fg(theme.muted_dim))
             };
@@ -1054,7 +1428,14 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 }
 
 /// Write a string into the buffer, clipping to `bounds`.
-fn write_str(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, bounds: Rect, s: &str, style: Style) {
+fn write_str(
+    buf: &mut ratatui::buffer::Buffer,
+    x: u16,
+    y: u16,
+    bounds: Rect,
+    s: &str,
+    style: Style,
+) {
     for (i, c) in s.chars().enumerate() {
         let cx = x + i as u16;
         if cx < bounds.x + bounds.width && y < bounds.y + bounds.height {

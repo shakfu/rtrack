@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection, MidiOutputPort};
 
 #[cfg(unix)]
-use midir::os::unix::VirtualOutput;
-#[cfg(unix)]
 use midir::os::unix::VirtualInput;
+#[cfg(unix)]
+use midir::os::unix::VirtualOutput;
 
 const MIDI_NOTE_ON: u8 = 0x90;
 const MIDI_NOTE_OFF: u8 = 0x80;
@@ -61,12 +61,16 @@ impl MidiEngine {
 
     /// List available MIDI output ports
     pub fn list_ports() -> Result<Vec<String>> {
-        let output = MidiOutput::new("rtrack-list")
-            .context("Failed to create MIDI output for listing")?;
+        let output =
+            MidiOutput::new("rtrack-list").context("Failed to create MIDI output for listing")?;
         let ports = output.ports();
         let names: Vec<String> = ports
             .iter()
-            .map(|p| output.port_name(p).unwrap_or_else(|_| "Unknown".to_string()))
+            .map(|p| {
+                output
+                    .port_name(p)
+                    .unwrap_or_else(|_| "Unknown".to_string())
+            })
             .collect();
         Ok(names)
     }
@@ -74,12 +78,9 @@ impl MidiEngine {
     /// Connect to a MIDI output port by index
     pub fn connect(&mut self, port_index: usize) -> Result<()> {
         self.disconnect();
-        let output = MidiOutput::new("rtrack")
-            .context("Failed to create MIDI output")?;
+        let output = MidiOutput::new("rtrack").context("Failed to create MIDI output")?;
         let ports = output.ports();
-        let port: &MidiOutputPort = ports
-            .get(port_index)
-            .context("Invalid MIDI port index")?;
+        let port: &MidiOutputPort = ports.get(port_index).context("Invalid MIDI port index")?;
         let name = output
             .port_name(port)
             .unwrap_or_else(|_| "Unknown".to_string());
@@ -99,8 +100,7 @@ impl MidiEngine {
     #[cfg(unix)]
     pub fn create_virtual_port(&mut self) -> Result<()> {
         self.disconnect();
-        let output = MidiOutput::new("rtrack")
-            .context("Failed to create MIDI output")?;
+        let output = MidiOutput::new("rtrack").context("Failed to create MIDI output")?;
         let conn = output
             .create_virtual("RTRACK_MIDI")
             .map_err(|e| anyhow::anyhow!("Failed to create virtual MIDI port: {}", e))?;
@@ -117,8 +117,7 @@ impl MidiEngine {
     /// Try to connect to the first available port, or do nothing if none available
     pub fn connect_first_available(&mut self) -> Result<bool> {
         self.disconnect();
-        let output = MidiOutput::new("rtrack")
-            .context("Failed to create MIDI output")?;
+        let output = MidiOutput::new("rtrack").context("Failed to create MIDI output")?;
         let ports = output.ports();
         if ports.is_empty() {
             return Ok(false);
@@ -248,15 +247,39 @@ impl MidiEngine {
 /// Represents a MIDI message received from an external controller.
 #[derive(Debug, Clone, Copy)]
 pub enum MidiInputEvent {
-    NoteOn { channel: u8, note: u8, velocity: u8 },
-    NoteOff { channel: u8, note: u8 },
-    CC { channel: u8, controller: u8, value: u8 },
-    PitchBend { channel: u8, value: u16 },
-    ProgramChange { channel: u8, program: u8 },
+    NoteOn {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        channel: u8,
+        note: u8,
+    },
+    CC {
+        channel: u8,
+        controller: u8,
+        value: u8,
+    },
+    PitchBend {
+        channel: u8,
+        value: u16,
+    },
+    ProgramChange {
+        channel: u8,
+        program: u8,
+    },
     /// Channel pressure (mono aftertouch): 0-127
-    ChannelPressure { channel: u8, pressure: u8 },
+    ChannelPressure {
+        channel: u8,
+        pressure: u8,
+    },
     /// Polyphonic key pressure (poly aftertouch): per-note 0-127
-    PolyPressure { channel: u8, note: u8, pressure: u8 },
+    PolyPressure {
+        channel: u8,
+        note: u8,
+        pressure: u8,
+    },
     Clock,
     Start,
     Stop,
@@ -306,12 +329,15 @@ impl MidiInputEngine {
         let (tx, rx) = mpsc::channel();
         self.receiver = rx;
 
-        let input = MidiInput::new("rtrack-input")
-            .context("Failed to create MIDI input")?;
+        let input = MidiInput::new("rtrack-input").context("Failed to create MIDI input")?;
         let conn = input
-            .create_virtual("RTRACK_MIDI_IN", move |_stamp, message, _| {
-                parse_midi_input(message, &tx);
-            }, ())
+            .create_virtual(
+                "RTRACK_MIDI_IN",
+                move |_stamp, message, _| {
+                    parse_midi_input(message, &tx);
+                },
+                (),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to create virtual MIDI input: {}", e))?;
 
         self.port_name = Some("RTRACK_MIDI_IN (virtual)".to_string());
@@ -331,8 +357,7 @@ impl MidiInputEngine {
         let (tx, rx) = mpsc::channel();
         self.receiver = rx;
 
-        let input = MidiInput::new("rtrack-input")
-            .context("Failed to create MIDI input")?;
+        let input = MidiInput::new("rtrack-input").context("Failed to create MIDI input")?;
         let ports = input.ports();
         let port = ports
             .get(port_index)
@@ -343,9 +368,14 @@ impl MidiInputEngine {
             .unwrap_or_else(|_| "Unknown".to_string());
 
         let conn = input
-            .connect(&port, "rtrack-in", move |_stamp, message, _| {
-                parse_midi_input(message, &tx);
-            }, ())
+            .connect(
+                &port,
+                "rtrack-in",
+                move |_stamp, message, _| {
+                    parse_midi_input(message, &tx);
+                },
+                (),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to connect to MIDI input '{}': {}", name, e))?;
 
         self.port_name = Some(name);
@@ -377,10 +407,22 @@ fn parse_midi_input(message: &[u8], tx: &mpsc::Sender<MidiInputEvent>) {
 
     // System realtime messages (single byte, no channel)
     match message[0] {
-        MIDI_CLOCK => { let _ = tx.send(MidiInputEvent::Clock); return; }
-        MIDI_START => { let _ = tx.send(MidiInputEvent::Start); return; }
-        MIDI_STOP => { let _ = tx.send(MidiInputEvent::Stop); return; }
-        0xFB => { let _ = tx.send(MidiInputEvent::Continue); return; }
+        MIDI_CLOCK => {
+            let _ = tx.send(MidiInputEvent::Clock);
+            return;
+        }
+        MIDI_START => {
+            let _ = tx.send(MidiInputEvent::Start);
+            return;
+        }
+        MIDI_STOP => {
+            let _ = tx.send(MidiInputEvent::Stop);
+            return;
+        }
+        0xFB => {
+            let _ = tx.send(MidiInputEvent::Continue);
+            return;
+        }
         _ => {}
     }
 
@@ -394,25 +436,49 @@ fn parse_midi_input(message: &[u8], tx: &mpsc::Sender<MidiInputEvent>) {
     match status {
         MIDI_NOTE_ON if message.len() >= 3 => {
             if message[2] > 0 {
-                let _ = tx.send(MidiInputEvent::NoteOn { channel: ch, note: message[1], velocity: message[2] });
+                let _ = tx.send(MidiInputEvent::NoteOn {
+                    channel: ch,
+                    note: message[1],
+                    velocity: message[2],
+                });
             } else {
-                let _ = tx.send(MidiInputEvent::NoteOff { channel: ch, note: message[1] });
+                let _ = tx.send(MidiInputEvent::NoteOff {
+                    channel: ch,
+                    note: message[1],
+                });
             }
         }
         MIDI_NOTE_OFF if message.len() >= 3 => {
-            let _ = tx.send(MidiInputEvent::NoteOff { channel: ch, note: message[1] });
+            let _ = tx.send(MidiInputEvent::NoteOff {
+                channel: ch,
+                note: message[1],
+            });
         }
         MIDI_CC if message.len() >= 3 => {
-            let _ = tx.send(MidiInputEvent::CC { channel: ch, controller: message[1], value: message[2] });
+            let _ = tx.send(MidiInputEvent::CC {
+                channel: ch,
+                controller: message[1],
+                value: message[2],
+            });
         }
         MIDI_PROGRAM_CHANGE => {
-            let _ = tx.send(MidiInputEvent::ProgramChange { channel: ch, program: message[1] });
+            let _ = tx.send(MidiInputEvent::ProgramChange {
+                channel: ch,
+                program: message[1],
+            });
         }
         MIDI_CHANNEL_PRESSURE => {
-            let _ = tx.send(MidiInputEvent::ChannelPressure { channel: ch, pressure: message[1] });
+            let _ = tx.send(MidiInputEvent::ChannelPressure {
+                channel: ch,
+                pressure: message[1],
+            });
         }
         MIDI_POLY_PRESSURE if message.len() >= 3 => {
-            let _ = tx.send(MidiInputEvent::PolyPressure { channel: ch, note: message[1], pressure: message[2] });
+            let _ = tx.send(MidiInputEvent::PolyPressure {
+                channel: ch,
+                note: message[1],
+                pressure: message[2],
+            });
         }
         MIDI_PITCH_BEND if message.len() >= 3 => {
             let value = ((message[2] as u16 & 0x7F) << 7) | (message[1] as u16 & 0x7F);
@@ -504,7 +570,11 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         parse_midi_input(&[0x90, 60, 100], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::NoteOn { channel: 0, note: 60, velocity: 100 } => {}
+            MidiInputEvent::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            } => {}
             other => panic!("Expected NoteOn, got {:?}", other),
         }
     }
@@ -514,7 +584,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         parse_midi_input(&[0x91, 60, 0], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::NoteOff { channel: 1, note: 60 } => {}
+            MidiInputEvent::NoteOff {
+                channel: 1,
+                note: 60,
+            } => {}
             other => panic!("Expected NoteOff, got {:?}", other),
         }
     }
@@ -524,7 +597,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         parse_midi_input(&[0x82, 64, 50], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::NoteOff { channel: 2, note: 64 } => {}
+            MidiInputEvent::NoteOff {
+                channel: 2,
+                note: 64,
+            } => {}
             other => panic!("Expected NoteOff, got {:?}", other),
         }
     }
@@ -534,7 +610,11 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         parse_midi_input(&[0xB0, 7, 100], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::CC { channel: 0, controller: 7, value: 100 } => {}
+            MidiInputEvent::CC {
+                channel: 0,
+                controller: 7,
+                value: 100,
+            } => {}
             other => panic!("Expected CC, got {:?}", other),
         }
     }
@@ -544,7 +624,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         parse_midi_input(&[0xC3, 42], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::ProgramChange { channel: 3, program: 42 } => {}
+            MidiInputEvent::ProgramChange {
+                channel: 3,
+                program: 42,
+            } => {}
             other => panic!("Expected ProgramChange, got {:?}", other),
         }
     }
@@ -555,7 +638,10 @@ mod tests {
         // Center: LSB=0, MSB=64 -> 0x2000
         parse_midi_input(&[0xE0, 0x00, 0x40], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::PitchBend { channel: 0, value: 0x2000 } => {}
+            MidiInputEvent::PitchBend {
+                channel: 0,
+                value: 0x2000,
+            } => {}
             other => panic!("Expected PitchBend center, got {:?}", other),
         }
     }
@@ -589,7 +675,10 @@ mod tests {
         // Channel 2, pressure 100
         parse_midi_input(&[0xD2, 100], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::ChannelPressure { channel: 2, pressure: 100 } => {}
+            MidiInputEvent::ChannelPressure {
+                channel: 2,
+                pressure: 100,
+            } => {}
             other => panic!("Expected ChannelPressure, got {:?}", other),
         }
     }
@@ -600,7 +689,11 @@ mod tests {
         // Channel 1, note 60, pressure 80
         parse_midi_input(&[0xA1, 60, 80], &tx);
         match rx.try_recv().unwrap() {
-            MidiInputEvent::PolyPressure { channel: 1, note: 60, pressure: 80 } => {}
+            MidiInputEvent::PolyPressure {
+                channel: 1,
+                note: 60,
+                pressure: 80,
+            } => {}
             other => panic!("Expected PolyPressure, got {:?}", other),
         }
     }
@@ -609,7 +702,10 @@ mod tests {
     fn test_parse_midi_empty_message() {
         let (tx, rx) = mpsc::channel();
         parse_midi_input(&[], &tx);
-        assert!(rx.try_recv().is_err(), "Empty message should not produce an event");
+        assert!(
+            rx.try_recv().is_err(),
+            "Empty message should not produce an event"
+        );
     }
 
     #[test]

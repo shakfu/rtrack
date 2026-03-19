@@ -48,7 +48,9 @@ pub struct SynthParams {
     pub pulse_width: f32,
 }
 
-fn default_pulse_width() -> f32 { 0.25 }
+fn default_pulse_width() -> f32 {
+    0.25
+}
 
 impl SynthParams {
     /// Create SynthParams from a preset patch's defaults
@@ -226,168 +228,528 @@ fn patch_params(patch: Patch) -> PatchParams {
     let (filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width) = DEFAULT_EXT;
     match patch {
         Patch::Saw => PatchParams {
-            env: EnvParams { attack: 0.005, decay: 0.1, sustain: 0.7, release: 0.15 },
-            filter_cutoff_mul: 4.0, filter_resonance: 0.3, filter_env_amount: 2.0, detune_cents: 8.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.005,
+                decay: 0.1,
+                sustain: 0.7,
+                release: 0.15,
+            },
+            filter_cutoff_mul: 4.0,
+            filter_resonance: 0.3,
+            filter_env_amount: 2.0,
+            detune_cents: 8.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Square => PatchParams {
-            env: EnvParams { attack: 0.005, decay: 0.15, sustain: 0.6, release: 0.12 },
-            filter_cutoff_mul: 3.0, filter_resonance: 0.4, filter_env_amount: 1.5, detune_cents: 5.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.005,
+                decay: 0.15,
+                sustain: 0.6,
+                release: 0.12,
+            },
+            filter_cutoff_mul: 3.0,
+            filter_resonance: 0.4,
+            filter_env_amount: 1.5,
+            detune_cents: 5.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Sine => PatchParams {
-            env: EnvParams { attack: 0.01, decay: 0.0, sustain: 1.0, release: 0.08 },
-            filter_cutoff_mul: 20.0, filter_resonance: 0.0, filter_env_amount: 0.0, detune_cents: 0.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.01,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.08,
+            },
+            filter_cutoff_mul: 20.0,
+            filter_resonance: 0.0,
+            filter_env_amount: 0.0,
+            detune_cents: 0.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Triangle => PatchParams {
-            env: EnvParams { attack: 0.01, decay: 0.2, sustain: 0.8, release: 0.2 },
-            filter_cutoff_mul: 6.0, filter_resonance: 0.2, filter_env_amount: 1.0, detune_cents: 6.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.01,
+                decay: 0.2,
+                sustain: 0.8,
+                release: 0.2,
+            },
+            filter_cutoff_mul: 6.0,
+            filter_resonance: 0.2,
+            filter_env_amount: 1.0,
+            detune_cents: 6.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Pulse => PatchParams {
-            env: EnvParams { attack: 0.003, decay: 0.08, sustain: 0.5, release: 0.1 },
-            filter_cutoff_mul: 3.0, filter_resonance: 0.5, filter_env_amount: 2.5, detune_cents: 10.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.003,
+                decay: 0.08,
+                sustain: 0.5,
+                release: 0.1,
+            },
+            filter_cutoff_mul: 3.0,
+            filter_resonance: 0.5,
+            filter_env_amount: 2.5,
+            detune_cents: 10.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::FmBell => PatchParams {
-            env: EnvParams { attack: 0.001, decay: 1.5, sustain: 0.0, release: 0.5 },
-            filter_cutoff_mul: 12.0, filter_resonance: 0.1, filter_env_amount: 3.0, detune_cents: 0.0,
-            filter_type, sub_osc_mix, fm_ratio: 3.5, fm_index: 2.0, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 1.5,
+                sustain: 0.0,
+                release: 0.5,
+            },
+            filter_cutoff_mul: 12.0,
+            filter_resonance: 0.1,
+            filter_env_amount: 3.0,
+            detune_cents: 0.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio: 3.5,
+            fm_index: 2.0,
+            pulse_width,
         },
         Patch::Organ => PatchParams {
-            env: EnvParams { attack: 0.008, decay: 0.0, sustain: 1.0, release: 0.05 },
-            filter_cutoff_mul: 8.0, filter_resonance: 0.15, filter_env_amount: 0.5, detune_cents: 4.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.008,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.05,
+            },
+            filter_cutoff_mul: 8.0,
+            filter_resonance: 0.15,
+            filter_env_amount: 0.5,
+            detune_cents: 4.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Noise => PatchParams {
-            env: EnvParams { attack: 0.002, decay: 0.3, sustain: 0.0, release: 0.1 },
-            filter_cutoff_mul: 2.0, filter_resonance: 0.6, filter_env_amount: 3.0, detune_cents: 0.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.002,
+                decay: 0.3,
+                sustain: 0.0,
+                release: 0.1,
+            },
+            filter_cutoff_mul: 2.0,
+            filter_resonance: 0.6,
+            filter_env_amount: 3.0,
+            detune_cents: 0.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::FundspPad => PatchParams {
-            env: EnvParams { attack: 0.05, decay: 0.3, sustain: 0.6, release: 0.4 },
-            filter_cutoff_mul: 6.0, filter_resonance: 0.3, filter_env_amount: 2.0, detune_cents: 0.0,
-            filter_type, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.05,
+                decay: 0.3,
+                sustain: 0.6,
+                release: 0.4,
+            },
+            filter_cutoff_mul: 6.0,
+            filter_resonance: 0.3,
+            filter_env_amount: 2.0,
+            detune_cents: 0.0,
+            filter_type,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         // -- New presets --
         Patch::Bass => PatchParams {
-            env: EnvParams { attack: 0.003, decay: 0.15, sustain: 0.6, release: 0.08 },
-            filter_cutoff_mul: 2.0, filter_resonance: 0.6, filter_env_amount: 2.5, detune_cents: 6.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.5, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.003,
+                decay: 0.15,
+                sustain: 0.6,
+                release: 0.08,
+            },
+            filter_cutoff_mul: 2.0,
+            filter_resonance: 0.6,
+            filter_env_amount: 2.5,
+            detune_cents: 6.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.5,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Pluck => PatchParams {
-            env: EnvParams { attack: 0.001, decay: 0.25, sustain: 0.0, release: 0.15 },
-            filter_cutoff_mul: 6.0, filter_resonance: 0.3, filter_env_amount: 4.0, detune_cents: 3.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 0.25,
+                sustain: 0.0,
+                release: 0.15,
+            },
+            filter_cutoff_mul: 6.0,
+            filter_resonance: 0.3,
+            filter_env_amount: 4.0,
+            detune_cents: 3.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Pad => PatchParams {
-            env: EnvParams { attack: 0.3, decay: 0.5, sustain: 0.7, release: 0.8 },
-            filter_cutoff_mul: 3.0, filter_resonance: 0.2, filter_env_amount: 1.0, detune_cents: 15.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.2, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.3,
+                decay: 0.5,
+                sustain: 0.7,
+                release: 0.8,
+            },
+            filter_cutoff_mul: 3.0,
+            filter_resonance: 0.2,
+            filter_env_amount: 1.0,
+            detune_cents: 15.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.2,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Lead => PatchParams {
-            env: EnvParams { attack: 0.005, decay: 0.1, sustain: 0.8, release: 0.1 },
-            filter_cutoff_mul: 5.0, filter_resonance: 0.5, filter_env_amount: 2.0, detune_cents: 12.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.3, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.005,
+                decay: 0.1,
+                sustain: 0.8,
+                release: 0.1,
+            },
+            filter_cutoff_mul: 5.0,
+            filter_resonance: 0.5,
+            filter_env_amount: 2.0,
+            detune_cents: 12.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.3,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Keys => PatchParams {
-            env: EnvParams { attack: 0.001, decay: 0.6, sustain: 0.3, release: 0.3 },
-            filter_cutoff_mul: 8.0, filter_resonance: 0.15, filter_env_amount: 2.5, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio: 2.0, fm_index: 1.5, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 0.6,
+                sustain: 0.3,
+                release: 0.3,
+            },
+            filter_cutoff_mul: 8.0,
+            filter_resonance: 0.15,
+            filter_env_amount: 2.5,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio: 2.0,
+            fm_index: 1.5,
+            pulse_width,
         },
         Patch::Brass => PatchParams {
-            env: EnvParams { attack: 0.05, decay: 0.1, sustain: 0.8, release: 0.12 },
-            filter_cutoff_mul: 2.0, filter_resonance: 0.4, filter_env_amount: 3.5, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.05,
+                decay: 0.1,
+                sustain: 0.8,
+                release: 0.12,
+            },
+            filter_cutoff_mul: 2.0,
+            filter_resonance: 0.4,
+            filter_env_amount: 3.5,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Strings => PatchParams {
-            env: EnvParams { attack: 0.15, decay: 0.3, sustain: 0.8, release: 0.5 },
-            filter_cutoff_mul: 4.0, filter_resonance: 0.15, filter_env_amount: 0.8, detune_cents: 18.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.15, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.15,
+                decay: 0.3,
+                sustain: 0.8,
+                release: 0.5,
+            },
+            filter_cutoff_mul: 4.0,
+            filter_resonance: 0.15,
+            filter_env_amount: 0.8,
+            detune_cents: 18.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.15,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Perc => PatchParams {
-            env: EnvParams { attack: 0.001, decay: 0.12, sustain: 0.0, release: 0.05 },
-            filter_cutoff_mul: 3.0, filter_resonance: 0.7, filter_env_amount: 4.0, detune_cents: 0.0,
-            filter_type: FilterType::BandPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 0.12,
+                sustain: 0.0,
+                release: 0.05,
+            },
+            filter_cutoff_mul: 3.0,
+            filter_resonance: 0.7,
+            filter_env_amount: 4.0,
+            detune_cents: 0.0,
+            filter_type: FilterType::BandPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Sub => PatchParams {
-            env: EnvParams { attack: 0.01, decay: 0.05, sustain: 0.9, release: 0.3 },
-            filter_cutoff_mul: 3.0, filter_resonance: 0.1, filter_env_amount: 0.5, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.8, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.01,
+                decay: 0.05,
+                sustain: 0.9,
+                release: 0.3,
+            },
+            filter_cutoff_mul: 3.0,
+            filter_resonance: 0.1,
+            filter_env_amount: 0.5,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.8,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         // -- Batch 2 presets --
         Patch::Acid => PatchParams {
             // TB-303 style: saw, high resonance, heavy filter envelope sweep
-            env: EnvParams { attack: 0.002, decay: 0.2, sustain: 0.3, release: 0.08 },
-            filter_cutoff_mul: 1.5, filter_resonance: 0.85, filter_env_amount: 4.0, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.002,
+                decay: 0.2,
+                sustain: 0.3,
+                release: 0.08,
+            },
+            filter_cutoff_mul: 1.5,
+            filter_resonance: 0.85,
+            filter_env_amount: 4.0,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Chip => PatchParams {
             // 8-bit chiptune: narrow pulse, bright, no filter modulation
-            env: EnvParams { attack: 0.001, decay: 0.0, sustain: 1.0, release: 0.02 },
-            filter_cutoff_mul: 20.0, filter_resonance: 0.0, filter_env_amount: 0.0, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width: 0.125,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.02,
+            },
+            filter_cutoff_mul: 20.0,
+            filter_resonance: 0.0,
+            filter_env_amount: 0.0,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width: 0.125,
         },
         Patch::Stab => PatchParams {
             // Short sharp synth stab: fast decay, big filter envelope
-            env: EnvParams { attack: 0.001, decay: 0.08, sustain: 0.0, release: 0.05 },
-            filter_cutoff_mul: 2.0, filter_resonance: 0.4, filter_env_amount: 5.0, detune_cents: 10.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 0.08,
+                sustain: 0.0,
+                release: 0.05,
+            },
+            filter_cutoff_mul: 2.0,
+            filter_resonance: 0.4,
+            filter_env_amount: 5.0,
+            detune_cents: 10.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Mallet => PatchParams {
             // Vibraphone/marimba: FM with quick decay
-            env: EnvParams { attack: 0.001, decay: 0.8, sustain: 0.0, release: 0.4 },
-            filter_cutoff_mul: 10.0, filter_resonance: 0.05, filter_env_amount: 1.5, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio: 4.0, fm_index: 1.8, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 0.8,
+                sustain: 0.0,
+                release: 0.4,
+            },
+            filter_cutoff_mul: 10.0,
+            filter_resonance: 0.05,
+            filter_env_amount: 1.5,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio: 4.0,
+            fm_index: 1.8,
+            pulse_width,
         },
         Patch::Flute => PatchParams {
             // Soft breathy flute: triangle, gentle HP to remove mud
-            env: EnvParams { attack: 0.05, decay: 0.1, sustain: 0.7, release: 0.2 },
-            filter_cutoff_mul: 6.0, filter_resonance: 0.1, filter_env_amount: 0.5, detune_cents: 3.0,
-            filter_type: FilterType::HighPass, sub_osc_mix: 0.15, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.05,
+                decay: 0.1,
+                sustain: 0.7,
+                release: 0.2,
+            },
+            filter_cutoff_mul: 6.0,
+            filter_resonance: 0.1,
+            filter_env_amount: 0.5,
+            detune_cents: 3.0,
+            filter_type: FilterType::HighPass,
+            sub_osc_mix: 0.15,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Reese => PatchParams {
             // Heavy detuned reese bass: wide detune + sub for weight
-            env: EnvParams { attack: 0.005, decay: 0.1, sustain: 0.8, release: 0.1 },
-            filter_cutoff_mul: 2.5, filter_resonance: 0.3, filter_env_amount: 1.5, detune_cents: 25.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.4, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.005,
+                decay: 0.1,
+                sustain: 0.8,
+                release: 0.1,
+            },
+            filter_cutoff_mul: 2.5,
+            filter_resonance: 0.3,
+            filter_env_amount: 1.5,
+            detune_cents: 25.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.4,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Wire => PatchParams {
             // Metallic bandpass square: thin, resonant, edgy
-            env: EnvParams { attack: 0.003, decay: 0.15, sustain: 0.5, release: 0.1 },
-            filter_cutoff_mul: 3.5, filter_resonance: 0.75, filter_env_amount: 2.0, detune_cents: 4.0,
-            filter_type: FilterType::BandPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.003,
+                decay: 0.15,
+                sustain: 0.5,
+                release: 0.1,
+            },
+            filter_cutoff_mul: 3.5,
+            filter_resonance: 0.75,
+            filter_env_amount: 2.0,
+            detune_cents: 4.0,
+            filter_type: FilterType::BandPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Chime => PatchParams {
             // Bright chime: FM bell variant with different ratio, longer tail
-            env: EnvParams { attack: 0.001, decay: 2.0, sustain: 0.0, release: 1.0 },
-            filter_cutoff_mul: 15.0, filter_resonance: 0.05, filter_env_amount: 2.0, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio: 5.0, fm_index: 1.5, pulse_width,
+            env: EnvParams {
+                attack: 0.001,
+                decay: 2.0,
+                sustain: 0.0,
+                release: 1.0,
+            },
+            filter_cutoff_mul: 15.0,
+            filter_resonance: 0.05,
+            filter_env_amount: 2.0,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio: 5.0,
+            fm_index: 1.5,
+            pulse_width,
         },
         Patch::Growl => PatchParams {
             // Aggressive growl: saw with FM modulation for grit
-            env: EnvParams { attack: 0.005, decay: 0.1, sustain: 0.7, release: 0.1 },
-            filter_cutoff_mul: 3.0, filter_resonance: 0.5, filter_env_amount: 2.5, detune_cents: 8.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.2, fm_ratio: 1.5, fm_index: 2.5, pulse_width,
+            env: EnvParams {
+                attack: 0.005,
+                decay: 0.1,
+                sustain: 0.7,
+                release: 0.1,
+            },
+            filter_cutoff_mul: 3.0,
+            filter_resonance: 0.5,
+            filter_env_amount: 2.5,
+            detune_cents: 8.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.2,
+            fm_ratio: 1.5,
+            fm_index: 2.5,
+            pulse_width,
         },
         Patch::Whistle => PatchParams {
             // Clean whistle: pure sine, wide open LP
-            env: EnvParams { attack: 0.02, decay: 0.0, sustain: 1.0, release: 0.15 },
-            filter_cutoff_mul: 20.0, filter_resonance: 0.0, filter_env_amount: 0.0, detune_cents: 0.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.02,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.15,
+            },
+            filter_cutoff_mul: 20.0,
+            filter_resonance: 0.0,
+            filter_env_amount: 0.0,
+            detune_cents: 0.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Siren => PatchParams {
             // Bright triangle with filter sweep
-            env: EnvParams { attack: 0.01, decay: 0.3, sustain: 0.6, release: 0.25 },
-            filter_cutoff_mul: 5.0, filter_resonance: 0.6, filter_env_amount: 3.0, detune_cents: 6.0,
-            filter_type: FilterType::LowPass, sub_osc_mix, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.01,
+                decay: 0.3,
+                sustain: 0.6,
+                release: 0.25,
+            },
+            filter_cutoff_mul: 5.0,
+            filter_resonance: 0.6,
+            filter_env_amount: 3.0,
+            detune_cents: 6.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
         Patch::Dist => PatchParams {
             // Distorted saw: high resonance, driven filter
-            env: EnvParams { attack: 0.003, decay: 0.08, sustain: 0.7, release: 0.08 },
-            filter_cutoff_mul: 1.8, filter_resonance: 0.9, filter_env_amount: 3.0, detune_cents: 5.0,
-            filter_type: FilterType::LowPass, sub_osc_mix: 0.3, fm_ratio, fm_index, pulse_width,
+            env: EnvParams {
+                attack: 0.003,
+                decay: 0.08,
+                sustain: 0.7,
+                release: 0.08,
+            },
+            filter_cutoff_mul: 1.8,
+            filter_resonance: 0.9,
+            filter_env_amount: 3.0,
+            detune_cents: 5.0,
+            filter_type: FilterType::LowPass,
+            sub_osc_mix: 0.3,
+            fm_ratio,
+            fm_index,
+            pulse_width,
         },
     }
 }
@@ -406,12 +768,22 @@ struct SvfState {
 
 impl SvfState {
     fn new() -> Self {
-        Self { low: 0.0, band: 0.0 }
+        Self {
+            low: 0.0,
+            band: 0.0,
+        }
     }
 
     /// Process one sample through a 2x oversampled SVF with selectable output
     #[inline]
-    fn tick(&mut self, input: f32, cutoff_hz: f32, resonance: f32, sample_rate: f32, filter_type: FilterType) -> f32 {
+    fn tick(
+        &mut self,
+        input: f32,
+        cutoff_hz: f32,
+        resonance: f32,
+        sample_rate: f32,
+        filter_type: FilterType,
+    ) -> f32 {
         let max_freq = sample_rate * 0.45;
         let freq = cutoff_hz.min(max_freq).max(20.0);
         let f = (2.0 * (std::f32::consts::PI * freq / (sample_rate * 2.0)).sin()).min(0.95);
@@ -443,7 +815,9 @@ struct NoiseGen {
 
 impl NoiseGen {
     fn new(seed: u32) -> Self {
-        Self { state: seed.wrapping_add(1) }
+        Self {
+            state: seed.wrapping_add(1),
+        }
     }
 
     #[inline]
@@ -467,7 +841,7 @@ struct Voice {
 
     // Oscillator state
     phase: f64,
-    phase2: f64, // detuned second oscillator
+    phase2: f64,       // detuned second oscillator
     fm_mod_phase: f64, // for FM bell
 
     // Pitch offset in semitones (from effects like portamento, vibrato, arpeggio)
@@ -494,11 +868,25 @@ impl Voice {
         Self::build(channel, note, velocity, patch, params, sample_rate)
     }
 
-    fn new_with_params(channel: u8, note: u8, velocity: f32, patch: Patch, params: PatchParams, sample_rate: f32) -> Self {
+    fn new_with_params(
+        channel: u8,
+        note: u8,
+        velocity: f32,
+        patch: Patch,
+        params: PatchParams,
+        sample_rate: f32,
+    ) -> Self {
         Self::build(channel, note, velocity, patch, params, sample_rate)
     }
 
-    fn build(channel: u8, note: u8, velocity: f32, patch: Patch, params: PatchParams, sample_rate: f32) -> Self {
+    fn build(
+        channel: u8,
+        note: u8,
+        velocity: f32,
+        patch: Patch,
+        params: PatchParams,
+        sample_rate: f32,
+    ) -> Self {
         let frequency = midi_to_freq(note as f32);
 
         // Build fundsp AudioUnit for FundspPad patch
@@ -509,8 +897,9 @@ impl Voice {
             // Two detuned saws summed, into moog low-pass filter
             let mut unit: Box<dyn AudioUnit> = Box::new(
                 (((constant(freq) >> saw()) + (constant(freq * 2.01) >> saw()) * 0.5)
-                    | constant(cutoff) | constant(res))
-                    >> moog()
+                    | constant(cutoff)
+                    | constant(res))
+                    >> moog(),
             );
             unit.set_sample_rate(sample_rate as f64);
             Some(unit)
@@ -530,7 +919,13 @@ impl Voice {
             phase2: 0.0,
             fm_mod_phase: 0.0,
             pitch_offset: 0.0,
-            envelope: Envelope::new(params.env.attack, params.env.decay, params.env.sustain, params.env.release, sample_rate),
+            envelope: Envelope::new(
+                params.env.attack,
+                params.env.decay,
+                params.env.sustain,
+                params.env.release,
+                sample_rate,
+            ),
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
             fundsp_unit,
@@ -570,37 +965,69 @@ impl Voice {
         let phase_inc2 = freq as f64 * detune_ratio / sr as f64;
 
         self.phase += phase_inc;
-        if self.phase >= 1.0 { self.phase -= 1.0; }
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+        }
         self.phase2 += phase_inc2;
-        if self.phase2 >= 1.0 { self.phase2 -= 1.0; }
+        if self.phase2 >= 1.0 {
+            self.phase2 -= 1.0;
+        }
 
         // -- Oscillator --
         // Helper: detuned pair of a waveform
         let saw_osc = |ph: f64, ph2: f64, pi: f64, pi2: f64, det: f32| -> f32 {
             let s1 = polyblep_saw(ph, pi);
-            if det > 0.0 { (s1 + polyblep_saw(ph2, pi2)) * 0.5 } else { s1 }
+            if det > 0.0 {
+                (s1 + polyblep_saw(ph2, pi2)) * 0.5
+            } else {
+                s1
+            }
         };
         let square_osc = |ph: f64, ph2: f64, pi: f64, pi2: f64, det: f32| -> f32 {
             let s1 = polyblep_square(ph, pi);
-            if det > 0.0 { (s1 + polyblep_square(ph2, pi2)) * 0.5 } else { s1 }
+            if det > 0.0 {
+                (s1 + polyblep_square(ph2, pi2)) * 0.5
+            } else {
+                s1
+            }
         };
         let tri_osc = |ph: f64, ph2: f64, det: f32| -> f32 {
             let s1 = triangle(ph);
-            if det > 0.0 { (s1 + triangle(ph2)) * 0.5 } else { s1 }
+            if det > 0.0 {
+                (s1 + triangle(ph2)) * 0.5
+            } else {
+                s1
+            }
         };
 
         let osc = match self.patch {
-            Patch::Saw | Patch::Bass | Patch::Pluck | Patch::Pad
-            | Patch::Lead | Patch::Brass | Patch::Strings | Patch::Sub
-            | Patch::Acid | Patch::Stab | Patch::Reese | Patch::Growl | Patch::Dist => {
-                saw_osc(self.phase, self.phase2, phase_inc, phase_inc2, self.params.detune_cents)
-            }
-            Patch::Square | Patch::Wire => {
-                square_osc(self.phase, self.phase2, phase_inc, phase_inc2, self.params.detune_cents)
-            }
-            Patch::Sine | Patch::Whistle => {
-                (self.phase as f32 * std::f32::consts::TAU).sin()
-            }
+            Patch::Saw
+            | Patch::Bass
+            | Patch::Pluck
+            | Patch::Pad
+            | Patch::Lead
+            | Patch::Brass
+            | Patch::Strings
+            | Patch::Sub
+            | Patch::Acid
+            | Patch::Stab
+            | Patch::Reese
+            | Patch::Growl
+            | Patch::Dist => saw_osc(
+                self.phase,
+                self.phase2,
+                phase_inc,
+                phase_inc2,
+                self.params.detune_cents,
+            ),
+            Patch::Square | Patch::Wire => square_osc(
+                self.phase,
+                self.phase2,
+                phase_inc,
+                phase_inc2,
+                self.params.detune_cents,
+            ),
+            Patch::Sine | Patch::Whistle => (self.phase as f32 * std::f32::consts::TAU).sin(),
             Patch::Triangle | Patch::Flute | Patch::Siren => {
                 tri_osc(self.phase, self.phase2, self.params.detune_cents)
             }
@@ -620,7 +1047,9 @@ impl Voice {
                 let mod_index = fm_index * env_level;
                 let fm_inc = freq as f64 * fm_ratio / sr as f64;
                 self.fm_mod_phase += fm_inc;
-                if self.fm_mod_phase >= 1.0 { self.fm_mod_phase -= 1.0; }
+                if self.fm_mod_phase >= 1.0 {
+                    self.fm_mod_phase -= 1.0;
+                }
                 let modulator = (self.fm_mod_phase as f32 * std::f32::consts::TAU).sin();
                 let mod_freq = self.phase as f32 + modulator * mod_index;
                 (mod_freq * std::f32::consts::TAU).sin()
@@ -631,9 +1060,7 @@ impl Voice {
                 let f3 = (self.phase as f32 * 3.0 * std::f32::consts::TAU).sin();
                 f1 * 0.6 + f2 * 0.3 + f3 * 0.1
             }
-            Patch::Noise | Patch::Perc => {
-                self.noise.next()
-            }
+            Patch::Noise | Patch::Perc => self.noise.next(),
             Patch::FundspPad => {
                 if let Some(ref mut unit) = self.fundsp_unit {
                     let mut output = [0f32; 1];
@@ -648,15 +1075,19 @@ impl Voice {
 
         // -- FM overlay (for any patch with fm_ratio > 0 not already handled) --
         let osc = if self.params.fm_ratio > 0.0
-            && self.patch != Patch::FmBell && self.patch != Patch::Keys
-            && self.patch != Patch::Mallet && self.patch != Patch::Chime
+            && self.patch != Patch::FmBell
+            && self.patch != Patch::Keys
+            && self.patch != Patch::Mallet
+            && self.patch != Patch::Chime
             && self.patch != Patch::FundspPad
         {
             let fm_ratio = self.params.fm_ratio as f64;
             let mod_index = self.params.fm_index * env_level;
             let fm_inc = freq as f64 * fm_ratio / sr as f64;
             self.fm_mod_phase += fm_inc;
-            if self.fm_mod_phase >= 1.0 { self.fm_mod_phase -= 1.0; }
+            if self.fm_mod_phase >= 1.0 {
+                self.fm_mod_phase -= 1.0;
+            }
             let modulator = (self.fm_mod_phase as f32 * std::f32::consts::TAU).sin();
             // Apply FM as phase modulation on top of the base oscillator
             osc + modulator * mod_index * 0.3
@@ -679,7 +1110,13 @@ impl Voice {
         let vel_mod = 0.5 + 0.5 * self.velocity;
         let final_cutoff = cutoff * vel_mod;
 
-        let filtered = self.filter.tick(osc, final_cutoff, self.params.filter_resonance, sr, self.params.filter_type);
+        let filtered = self.filter.tick(
+            osc,
+            final_cutoff,
+            self.params.filter_resonance,
+            sr,
+            self.params.filter_type,
+        );
 
         // -- Output --
         let gain = self.velocity * env_level * VOICE_GAIN;
@@ -774,7 +1211,13 @@ impl BuiltinSynth {
     }
 
     /// Note-on with user-configured synth parameters (overrides channel program)
-    pub fn note_on_with_params(&mut self, channel: u8, note: u8, velocity: u8, params: &SynthParams) {
+    pub fn note_on_with_params(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: &SynthParams,
+    ) {
         self.note_off_all_channel(channel);
 
         let patch = Patch::from_program(params.waveform);
@@ -796,7 +1239,8 @@ impl BuiltinSynth {
             fm_index: params.fm_index,
             pulse_width: params.pulse_width,
         };
-        let voice = Voice::new_with_params(channel, note, vel, patch, custom_params, self.sample_rate);
+        let voice =
+            Voice::new_with_params(channel, note, vel, patch, custom_params, self.sample_rate);
 
         self.push_voice(voice);
     }
@@ -808,12 +1252,16 @@ impl BuiltinSynth {
                 self.voices.remove(idx);
             } else {
                 // Steal the quietest voice (lowest envelope level * velocity)
-                let quietest = self.voices.iter()
+                let quietest = self
+                    .voices
+                    .iter()
                     .enumerate()
                     .min_by(|(_, a), (_, b)| {
                         let a_level = a.envelope.level * a.velocity;
                         let b_level = b.envelope.level * b.velocity;
-                        a_level.partial_cmp(&b_level).unwrap_or(std::cmp::Ordering::Equal)
+                        a_level
+                            .partial_cmp(&b_level)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .map(|(i, _)| i);
                 if let Some(idx) = quietest {
@@ -889,7 +1337,8 @@ impl BuiltinSynth {
         }
 
         // Garbage collect dead voices periodically
-        self.voices.retain(|v| v.active || v.envelope.stage != EnvStage::Off);
+        self.voices
+            .retain(|v| v.active || v.envelope.stage != EnvStage::Off);
 
         (left, right)
     }
@@ -908,7 +1357,8 @@ impl BuiltinSynth {
             channel_out[ch][0] += l;
             channel_out[ch][1] += r;
         }
-        self.voices.retain(|v| v.active || v.envelope.stage != EnvStage::Off);
+        self.voices
+            .retain(|v| v.active || v.envelope.stage != EnvStage::Off);
     }
 
     /// Get active voice count (for debugging/UI)
@@ -984,7 +1434,11 @@ mod tests {
 
         synth.note_on(0, 64, 100);
         // Old voice enters release, new voice is active
-        let active: Vec<_> = synth.voices.iter().filter(|v| v.active && v.envelope.stage != EnvStage::Release).collect();
+        let active: Vec<_> = synth
+            .voices
+            .iter()
+            .filter(|v| v.active && v.envelope.stage != EnvStage::Release)
+            .collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].note, 64);
     }
@@ -996,7 +1450,9 @@ mod tests {
         synth.note_on(1, 64, 100);
         synth.note_off_all_channel(0);
 
-        let active_non_releasing: Vec<_> = synth.voices.iter()
+        let active_non_releasing: Vec<_> = synth
+            .voices
+            .iter()
             .filter(|v| v.active && v.envelope.stage != EnvStage::Release)
             .collect();
         assert_eq!(active_non_releasing.len(), 1);
@@ -1025,10 +1481,20 @@ mod tests {
                 assert!(l.is_finite(), "Patch {}: non-finite L sample", prog);
                 assert!(r.is_finite(), "Patch {}: non-finite R sample", prog);
             }
-            assert!(peak > 0.01, "Patch {} ({:?}) near-silent: peak={:.6}",
-                prog, Patch::from_program(prog), peak);
-            assert!(peak < 1.0, "Patch {} ({:?}) clips: peak={:.4}",
-                prog, Patch::from_program(prog), peak);
+            assert!(
+                peak > 0.01,
+                "Patch {} ({:?}) near-silent: peak={:.6}",
+                prog,
+                Patch::from_program(prog),
+                peak
+            );
+            assert!(
+                peak < 1.0,
+                "Patch {} ({:?}) clips: peak={:.4}",
+                prog,
+                Patch::from_program(prog),
+                peak
+            );
         }
     }
 
@@ -1061,7 +1527,11 @@ mod tests {
             peak = peak.max(l.abs()).max(r.abs());
             assert!(l.is_finite(), "Custom params: non-finite sample");
         }
-        assert!(peak > 0.01, "Custom params produced no audio: peak={:.6}", peak);
+        assert!(
+            peak > 0.01,
+            "Custom params produced no audio: peak={:.6}",
+            peak
+        );
     }
 
     #[test]
@@ -1087,7 +1557,10 @@ mod tests {
             synth.render_sample();
         }
         let attack_level = synth.voices[0].envelope.level;
-        assert!(attack_level > 0.0, "Envelope should be rising during attack");
+        assert!(
+            attack_level > 0.0,
+            "Envelope should be rising during attack"
+        );
 
         // Wait for attack to finish and enter sustain
         for _ in 0..4410 {
@@ -1095,15 +1568,26 @@ mod tests {
         }
         let sustain_level = synth.voices[0].envelope.level;
         // Sine patch has sustain=1.0, so should be at ~1.0
-        assert!(sustain_level > 0.9, "Sine sustain should be near 1.0, got {:.4}", sustain_level);
+        assert!(
+            sustain_level > 0.9,
+            "Sine sustain should be near 1.0, got {:.4}",
+            sustain_level
+        );
 
         // Release
         synth.note_off(0, 69);
         let mut prev_env = synth.voices[0].envelope.level;
         for _ in 0..1000 {
             synth.render_sample();
-            let cur = synth.voices.first().map(|v| v.envelope.level).unwrap_or(0.0);
-            assert!(cur <= prev_env + 0.001, "Envelope should decrease during release");
+            let cur = synth
+                .voices
+                .first()
+                .map(|v| v.envelope.level)
+                .unwrap_or(0.0);
+            assert!(
+                cur <= prev_env + 0.001,
+                "Envelope should decrease during release"
+            );
             prev_env = cur;
         }
     }
@@ -1120,7 +1604,9 @@ mod tests {
         for _ in 0..frames {
             let (l, _r) = synth.render_sample();
             peak = peak.max(l.abs());
-            if l.abs() > 1e-6 { has_nonzero = true; }
+            if l.abs() > 1e-6 {
+                has_nonzero = true;
+            }
         }
         assert!(has_nonzero, "Synth produced only silence");
         assert!(peak < 1.0, "Peak level {} exceeds 1.0 (clipping)", peak);
@@ -1155,16 +1641,27 @@ mod tests {
             post_samples.push(l);
         }
 
-        let first_peak = post_samples[..44].iter().fold(0.0_f32, |a, &s| a.max(s.abs()));
-        let last_peak = post_samples[window-44..].iter().fold(0.0_f32, |a, &s| a.max(s.abs()));
+        let first_peak = post_samples[..44]
+            .iter()
+            .fold(0.0_f32, |a, &s| a.max(s.abs()));
+        let last_peak = post_samples[window - 44..]
+            .iter()
+            .fold(0.0_f32, |a, &s| a.max(s.abs()));
 
         // Fade should not be instant cutoff
-        assert!(first_peak > pre_off_peak * 0.2,
+        assert!(
+            first_peak > pre_off_peak * 0.2,
             "Note-off caused instant cutoff! first_window={:.6}, pre_peak={:.6}",
-            first_peak, pre_off_peak);
+            first_peak,
+            pre_off_peak
+        );
         // Should be decreasing
-        assert!(last_peak < first_peak,
-            "Fade not decreasing: first={:.6}, last={:.6}", first_peak, last_peak);
+        assert!(
+            last_peak < first_peak,
+            "Fade not decreasing: first={:.6}, last={:.6}",
+            first_peak,
+            last_peak
+        );
     }
 
     #[test]
@@ -1194,7 +1691,8 @@ mod tests {
         }
 
         let peak = all_left.iter().fold(0f32, |a, &s| a.max(s.abs()));
-        let rms = (all_left.iter().map(|&s| (s * s) as f64).sum::<f64>() / all_left.len() as f64).sqrt();
+        let rms =
+            (all_left.iter().map(|&s| (s * s) as f64).sum::<f64>() / all_left.len() as f64).sqrt();
 
         assert!(peak < 1.0, "Pipeline clips: {:.4}", peak);
         assert!(rms > 0.01, "Pipeline silent: {:.6}", rms);
@@ -1213,7 +1711,9 @@ mod tests {
             let s = polyblep_saw(phase, phase_inc);
             sum += s as f64;
             phase += phase_inc;
-            if phase >= 1.0 { phase -= 1.0; }
+            if phase >= 1.0 {
+                phase -= 1.0;
+            }
         }
         let dc = sum / (samples_per_cycle * 10) as f64;
         assert!(dc.abs() < 0.02, "Saw DC offset too high: {:.6}", dc);
@@ -1239,8 +1739,12 @@ mod tests {
             peak_quiet = peak_quiet.max(l.abs());
         }
 
-        assert!(peak_loud > peak_quiet * 1.5,
-            "Velocity should affect volume: loud={:.4}, quiet={:.4}", peak_loud, peak_quiet);
+        assert!(
+            peak_loud > peak_quiet * 1.5,
+            "Velocity should affect volume: loud={:.4}, quiet={:.4}",
+            peak_loud,
+            peak_quiet
+        );
     }
 
     #[test]
@@ -1279,8 +1783,11 @@ mod tests {
         let saw_diff_rms = (saw_diff_sq_sum / frames as f64).sqrt();
         let sine_diff_rms = (sine_diff_sq_sum / frames as f64).sqrt();
 
-        assert!(saw_diff_rms > sine_diff_rms,
+        assert!(
+            saw_diff_rms > sine_diff_rms,
             "Saw should have more HF content than sine: saw_diff_rms={:.6}, sine_diff_rms={:.6}",
-            saw_diff_rms, sine_diff_rms);
+            saw_diff_rms,
+            sine_diff_rms
+        );
     }
 }

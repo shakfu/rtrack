@@ -45,9 +45,12 @@ fn config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(xdg).join("rtrack").join("config.toml"));
     }
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".config").join("rtrack").join("config.toml"))
+    std::env::var("HOME").ok().map(|h| {
+        PathBuf::from(h)
+            .join(".config")
+            .join("rtrack")
+            .join("config.toml")
+    })
 }
 
 const MAX_RECENT_FILES: usize = 3;
@@ -90,11 +93,8 @@ pub fn save_recent_files(files: &[PathBuf]) {
 /// Add a path to the front of the recent files list, dedup and trim to MAX_RECENT_FILES.
 pub fn push_recent_file(recent: &mut Vec<PathBuf>, path: &std::path::Path) {
     // Canonicalize for consistent dedup
-    let canonical = std::fs::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf());
-    recent.retain(|p| {
-        std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) != canonical
-    });
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    recent.retain(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) != canonical);
     recent.insert(0, canonical);
     recent.truncate(MAX_RECENT_FILES);
 }
@@ -188,6 +188,8 @@ future_field = "some_value"
         assert_eq!(recent.len(), MAX_RECENT_FILES);
         assert!(recent[0].to_string_lossy().contains("d.rtrk"));
         // a.rtrk should have been dropped
-        assert!(!recent.iter().any(|p| p.to_string_lossy().contains("a.rtrk")));
+        assert!(!recent
+            .iter()
+            .any(|p| p.to_string_lossy().contains("a.rtrk")));
     }
 }

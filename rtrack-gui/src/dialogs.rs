@@ -46,17 +46,25 @@ impl RtrackApp {
 
                         // Highlight Beat
                         ui.label("Beat highlight:");
-                        ui.add(egui::DragValue::new(&mut self.core.song.highlight_beat).range(1..=64));
+                        ui.add(
+                            egui::DragValue::new(&mut self.core.song.highlight_beat).range(1..=64),
+                        );
                         ui.end_row();
 
                         // Highlight Bar
                         ui.label("Bar highlight:");
-                        ui.add(egui::DragValue::new(&mut self.core.song.highlight_bar).range(1..=256));
+                        ui.add(
+                            egui::DragValue::new(&mut self.core.song.highlight_bar).range(1..=256),
+                        );
                         ui.end_row();
 
                         // Swing
                         ui.label("Swing:");
-                        ui.add(egui::DragValue::new(&mut self.core.song.swing).range(0..=100).suffix("%"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.core.song.swing)
+                                .range(0..=100)
+                                .suffix("%"),
+                        );
                         ui.end_row();
 
                         // Rows per pattern (current pattern)
@@ -84,7 +92,10 @@ impl RtrackApp {
                         ui.label("Channels:");
                         let mut ch_count = self.core.song.channels;
                         let prev_ch_count = ch_count;
-                        ui.add(egui::DragValue::new(&mut ch_count).range(1..=rtrack_core::constants::MAX_CHANNELS));
+                        ui.add(
+                            egui::DragValue::new(&mut ch_count)
+                                .range(1..=rtrack_core::constants::MAX_CHANNELS),
+                        );
                         if ch_count != prev_ch_count {
                             self.core.song.channels = ch_count;
                             for pat in &mut self.core.song.patterns {
@@ -95,7 +106,9 @@ impl RtrackApp {
                             }
                             while self.core.channels.len() < ch_count {
                                 let idx = self.core.channels.len();
-                                self.core.channels.push(rtrack_core::ChannelConfig::new(idx as u8));
+                                self.core
+                                    .channels
+                                    .push(rtrack_core::ChannelConfig::new(idx as u8));
                             }
                             self.core.channels.truncate(ch_count);
                             if self.cursor_channel >= ch_count {
@@ -205,27 +218,40 @@ impl RtrackApp {
                         // MIDI Channel
                         ui.label("MIDI Ch:");
                         let mut midi_ch = self.core.channels[ch_idx].midi_channel as i32;
-                        if ui.add(egui::DragValue::new(&mut midi_ch).range(0..=15)).changed() {
+                        if ui
+                            .add(egui::DragValue::new(&mut midi_ch).range(0..=15))
+                            .changed()
+                        {
                             self.core.channels[ch_idx].midi_channel = midi_ch as u8;
                         }
                         ui.end_row();
 
                         // Default Instrument
                         ui.label("Instrument:");
-                        let mut inst = self.core.channels[ch_idx].default_instrument.unwrap_or(0) as i32;
-                        if ui.add(egui::DragValue::new(&mut inst).range(0..=255)).changed() {
+                        let mut inst =
+                            self.core.channels[ch_idx].default_instrument.unwrap_or(0) as i32;
+                        if ui
+                            .add(egui::DragValue::new(&mut inst).range(0..=255))
+                            .changed()
+                        {
                             self.core.channels[ch_idx].default_instrument = Some(inst as u8);
                         }
                         ui.end_row();
 
                         // Volume
                         ui.label("Volume:");
-                        ui.add(egui::Slider::new(&mut self.core.channels[ch_idx].volume, 0.0..=1.0));
+                        ui.add(egui::Slider::new(
+                            &mut self.core.channels[ch_idx].volume,
+                            0.0..=1.0,
+                        ));
                         ui.end_row();
 
                         // Pan
                         ui.label("Pan:");
-                        ui.add(egui::Slider::new(&mut self.core.channels[ch_idx].pan, -1.0..=1.0));
+                        ui.add(egui::Slider::new(
+                            &mut self.core.channels[ch_idx].pan,
+                            -1.0..=1.0,
+                        ));
                         ui.end_row();
                     });
 
@@ -246,7 +272,11 @@ impl RtrackApp {
                             ui.end_row();
                             if fx.filter_enabled {
                                 ui.label("  Cutoff:");
-                                ui.add(egui::Slider::new(&mut fx.filter_cutoff, 20.0..=20000.0).logarithmic(true).suffix(" Hz"));
+                                ui.add(
+                                    egui::Slider::new(&mut fx.filter_cutoff, 20.0..=20000.0)
+                                        .logarithmic(true)
+                                        .suffix(" Hz"),
+                                );
                                 ui.end_row();
                                 ui.label("  Resonance:");
                                 ui.add(egui::Slider::new(&mut fx.filter_resonance, 0.0..=1.0));
@@ -267,7 +297,10 @@ impl RtrackApp {
                             ui.end_row();
                             if fx.chorus_enabled {
                                 ui.label("  Rate:");
-                                ui.add(egui::Slider::new(&mut fx.chorus_rate, 0.1..=10.0).suffix(" Hz"));
+                                ui.add(
+                                    egui::Slider::new(&mut fx.chorus_rate, 0.1..=10.0)
+                                        .suffix(" Hz"),
+                                );
                                 ui.end_row();
                                 ui.label("  Depth:");
                                 ui.add(egui::Slider::new(&mut fx.chorus_depth, 0.5..=20.0));
@@ -282,7 +315,10 @@ impl RtrackApp {
                             ui.end_row();
                             if fx.delay_enabled {
                                 ui.label("  Time:");
-                                ui.add(egui::Slider::new(&mut fx.delay_time, 1.0..=2000.0).suffix(" ms"));
+                                ui.add(
+                                    egui::Slider::new(&mut fx.delay_time, 1.0..=2000.0)
+                                        .suffix(" ms"),
+                                );
                                 ui.end_row();
                                 ui.label("  Feedback:");
                                 ui.add(egui::Slider::new(&mut fx.delay_feedback, 0.0..=0.95));
@@ -364,8 +400,11 @@ impl RtrackApp {
                                         self.core
                                             .midi_cc_mappings
                                             .retain(|m| !(m.channel == ch_idx && m.param == p));
-                                        self.status_message =
-                                            Some(format!("Unlearned {} (ch {})", p.name(), ch_idx + 1));
+                                        self.status_message = Some(format!(
+                                            "Unlearned {} (ch {})",
+                                            p.name(),
+                                            ch_idx + 1
+                                        ));
                                     }
                                 } else {
                                     ui.label("---");
@@ -543,8 +582,7 @@ impl RtrackApp {
                                     Some("Created virtual MIDI output port".to_string());
                             }
                             Err(e) => {
-                                self.status_message =
-                                    Some(format!("Virtual port error: {}", e));
+                                self.status_message = Some(format!("Virtual port error: {}", e));
                             }
                         }
                     }
@@ -555,8 +593,7 @@ impl RtrackApp {
 
                 // Input ports
                 ui.heading("Input");
-                let input_port_name = self.core.midi_input.port_name.clone()
-                    .unwrap_or_default();
+                let input_port_name = self.core.midi_input.port_name.clone().unwrap_or_default();
                 if self.midi_input_port_list.is_empty() {
                     ui.label("No MIDI input ports found.");
                 } else {
@@ -574,8 +611,7 @@ impl RtrackApp {
                                         Some(format!("Input: connected to {}", port_name));
                                 }
                                 Err(e) => {
-                                    self.status_message =
-                                        Some(format!("MIDI input error: {}", e));
+                                    self.status_message = Some(format!("MIDI input error: {}", e));
                                 }
                             }
                         }
@@ -589,8 +625,7 @@ impl RtrackApp {
                                     Some("Created virtual MIDI input port".to_string());
                             }
                             Err(e) => {
-                                self.status_message =
-                                    Some(format!("Virtual input error: {}", e));
+                                self.status_message = Some(format!("Virtual input error: {}", e));
                             }
                         }
                     }
@@ -610,7 +645,9 @@ impl RtrackApp {
                             self.core.toggle_clock_mode();
                             self.status_message = Some("Clock: Internal".to_string());
                         }
-                        if ui.selectable_label(is_external, "External MIDI").clicked() && !is_external {
+                        if ui.selectable_label(is_external, "External MIDI").clicked()
+                            && !is_external
+                        {
                             self.core.toggle_clock_mode();
                             self.status_message = Some("Clock: External MIDI".to_string());
                         }
@@ -627,10 +664,10 @@ impl RtrackApp {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Refresh").clicked() {
-                        self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
-                            .unwrap_or_default();
-                        self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
-                            .unwrap_or_default();
+                        self.midi_port_list =
+                            rtrack_core::midi::MidiEngine::list_ports().unwrap_or_default();
+                        self.midi_input_port_list =
+                            rtrack_core::midi::MidiInputEngine::list_ports().unwrap_or_default();
                     }
                     if ui.button("Close").clicked() {
                         self.show_midi_ports = false;

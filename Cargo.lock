@@ -3551,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "rtrack-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "cpal",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "rtrack-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "eframe",
  "egui",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "rtrack-tui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",

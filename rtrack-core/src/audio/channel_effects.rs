@@ -57,12 +57,24 @@ pub struct ChannelEffectsParams {
     pub send_levels: [f32; MAX_SEND_BUSES],
 }
 
-fn default_delay_time() -> f32 { 250.0 }
-fn default_delay_feedback() -> f32 { 0.4 }
-fn default_delay_mix() -> f32 { 0.3 }
-fn default_reverb_size() -> f32 { 0.5 }
-fn default_reverb_damp() -> f32 { 0.5 }
-fn default_reverb_mix() -> f32 { 0.3 }
+fn default_delay_time() -> f32 {
+    250.0
+}
+fn default_delay_feedback() -> f32 {
+    0.4
+}
+fn default_delay_mix() -> f32 {
+    0.3
+}
+fn default_reverb_size() -> f32 {
+    0.5
+}
+fn default_reverb_damp() -> f32 {
+    0.5
+}
+fn default_reverb_mix() -> f32 {
+    0.3
+}
 
 impl Default for ChannelEffectsParams {
     fn default() -> Self {
@@ -138,18 +150,14 @@ impl ChannelEffects {
         let delay_buf_size = (sample_rate * 2.0) as usize + 1; // 2 seconds max
         let sr_ratio = sample_rate / 44100.0;
 
-        let comb_buffers_l = COMB_LENGTHS_44100.map(|len| {
-            vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]
-        });
-        let comb_buffers_r = COMB_LENGTHS_44100.map(|len| {
-            vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]
-        });
-        let allpass_buffers_l = ALLPASS_LENGTHS_44100.map(|len| {
-            vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]
-        });
-        let allpass_buffers_r = ALLPASS_LENGTHS_44100.map(|len| {
-            vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]
-        });
+        let comb_buffers_l =
+            COMB_LENGTHS_44100.map(|len| vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]);
+        let comb_buffers_r =
+            COMB_LENGTHS_44100.map(|len| vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]);
+        let allpass_buffers_l =
+            ALLPASS_LENGTHS_44100.map(|len| vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]);
+        let allpass_buffers_r =
+            ALLPASS_LENGTHS_44100.map(|len| vec![0.0f32; (len as f64 * sr_ratio) as usize + 1]);
 
         Self {
             params: ChannelEffectsParams::default(),
@@ -298,13 +306,19 @@ impl ChannelEffects {
 
         // Read from delay buffer with linear interpolation
         let read_pos = self.chorus_write_pos as f32 - delay_samples;
-        let read_pos = if read_pos < 0.0 { read_pos + buf_len as f32 } else { read_pos };
+        let read_pos = if read_pos < 0.0 {
+            read_pos + buf_len as f32
+        } else {
+            read_pos
+        };
         let idx0 = read_pos as usize % buf_len;
         let idx1 = (idx0 + 1) % buf_len;
         let frac = read_pos - read_pos.floor();
 
-        let delayed_l = self.chorus_buffer_l[idx0] * (1.0 - frac) + self.chorus_buffer_l[idx1] * frac;
-        let delayed_r = self.chorus_buffer_r[idx0] * (1.0 - frac) + self.chorus_buffer_r[idx1] * frac;
+        let delayed_l =
+            self.chorus_buffer_l[idx0] * (1.0 - frac) + self.chorus_buffer_l[idx1] * frac;
+        let delayed_r =
+            self.chorus_buffer_r[idx0] * (1.0 - frac) + self.chorus_buffer_r[idx1] * frac;
 
         // Advance write position
         self.chorus_write_pos = (self.chorus_write_pos + 1) % buf_len;
@@ -332,7 +346,10 @@ impl ChannelEffects {
         self.delay_write_pos = (self.delay_write_pos + 1) % buf_len;
 
         let mix = self.params.delay_mix;
-        (l * (1.0 - mix) + delayed_l * mix, r * (1.0 - mix) + delayed_r * mix)
+        (
+            l * (1.0 - mix) + delayed_l * mix,
+            r * (1.0 - mix) + delayed_r * mix,
+        )
     }
 
     /// Reverb tick: Schroeder reverb (4 parallel comb filters -> 2 series allpass filters).
@@ -393,23 +410,39 @@ impl ChannelEffects {
         self.svf_ic2eq_l = 0.0;
         self.svf_ic1eq_r = 0.0;
         self.svf_ic2eq_r = 0.0;
-        for s in &mut self.chorus_buffer_l { *s = 0.0; }
-        for s in &mut self.chorus_buffer_r { *s = 0.0; }
+        for s in &mut self.chorus_buffer_l {
+            *s = 0.0;
+        }
+        for s in &mut self.chorus_buffer_r {
+            *s = 0.0;
+        }
         self.chorus_write_pos = 0;
         self.chorus_phase = 0.0;
-        for s in &mut self.delay_buffer_l { *s = 0.0; }
-        for s in &mut self.delay_buffer_r { *s = 0.0; }
+        for s in &mut self.delay_buffer_l {
+            *s = 0.0;
+        }
+        for s in &mut self.delay_buffer_r {
+            *s = 0.0;
+        }
         self.delay_write_pos = 0;
         for i in 0..REVERB_COMBS {
-            for s in &mut self.comb_buffers_l[i] { *s = 0.0; }
-            for s in &mut self.comb_buffers_r[i] { *s = 0.0; }
+            for s in &mut self.comb_buffers_l[i] {
+                *s = 0.0;
+            }
+            for s in &mut self.comb_buffers_r[i] {
+                *s = 0.0;
+            }
         }
         self.comb_pos = [0; REVERB_COMBS];
         self.comb_filter_state_l = [0.0; REVERB_COMBS];
         self.comb_filter_state_r = [0.0; REVERB_COMBS];
         for i in 0..REVERB_ALLPASSES {
-            for s in &mut self.allpass_buffers_l[i] { *s = 0.0; }
-            for s in &mut self.allpass_buffers_r[i] { *s = 0.0; }
+            for s in &mut self.allpass_buffers_l[i] {
+                *s = 0.0;
+            }
+            for s in &mut self.allpass_buffers_r[i] {
+                *s = 0.0;
+            }
         }
         self.allpass_pos = [0; REVERB_ALLPASSES];
     }
@@ -476,8 +509,14 @@ mod tests {
 
         // After low-pass at 200Hz, 5kHz signal should be heavily attenuated
         // Check the last quarter to avoid transient
-        let tail_peak = left[frames*3/4..].iter().fold(0.0f32, |a, &s| a.max(s.abs()));
-        assert!(tail_peak < 0.1, "Filter didn't attenuate high freq: {}", tail_peak);
+        let tail_peak = left[frames * 3 / 4..]
+            .iter()
+            .fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(
+            tail_peak < 0.1,
+            "Filter didn't attenuate high freq: {}",
+            tail_peak
+        );
         assert!(left.iter().all(|s| s.is_finite()));
     }
 
@@ -536,7 +575,10 @@ mod tests {
 
         assert!(left.iter().all(|s| s.is_finite()));
         assert!(right.iter().all(|s| s.is_finite()));
-        let peak = left.iter().chain(right.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
+        let peak = left
+            .iter()
+            .chain(right.iter())
+            .fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak < 2.0, "Full chain output too hot: {}", peak);
     }
 
@@ -558,7 +600,10 @@ mod tests {
         let mut right = vec![0.0f32; 1000];
         fx.process(&mut left, &mut right);
 
-        let peak = left.iter().chain(right.iter()).fold(0.0f32, |a, &s| a.max(s.abs()));
+        let peak = left
+            .iter()
+            .chain(right.iter())
+            .fold(0.0f32, |a, &s| a.max(s.abs()));
         assert!(peak < 0.001, "Reset didn't clear state: peak={}", peak);
     }
 
@@ -609,6 +654,10 @@ mod tests {
         assert!(left.iter().all(|s| s.is_finite()));
         // Reverb tail: signal should still be present well after the burst ends
         let late_energy: f32 = left[22050..].iter().map(|s| s * s).sum();
-        assert!(late_energy > 0.001, "Reverb produced no tail: {}", late_energy);
+        assert!(
+            late_energy > 0.001,
+            "Reverb produced no tail: {}",
+            late_energy
+        );
     }
 }

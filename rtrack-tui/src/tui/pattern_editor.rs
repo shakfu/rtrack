@@ -5,18 +5,18 @@ use ratatui::{
     Frame,
 };
 
+use super::theme::Theme;
 use crate::app::App;
 pub use crate::app::SubColumn;
-use super::theme::Theme;
 
 // Layout constants
 const ROW_NUM_WIDTH: u16 = 3; // "00 "
-const NOTE_WIDTH: u16 = 3;    // "C-4"
-const INST_WIDTH: u16 = 2;    // "01"
-const VOL_WIDTH: u16 = 2;     // "80"
-const FX_WIDTH: u16 = 3;      // "000"
+const NOTE_WIDTH: u16 = 3; // "C-4"
+const INST_WIDTH: u16 = 2; // "01"
+const VOL_WIDTH: u16 = 2; // "80"
+const FX_WIDTH: u16 = 3; // "000"
 #[allow(dead_code)]
-const GAPS: u16 = 3;          // spaces between sub-columns
+const GAPS: u16 = 3; // spaces between sub-columns
 #[allow(dead_code)]
 const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
 const SEPARATOR_WIDTH: u16 = 3; // " | "
@@ -24,7 +24,8 @@ pub use rtrack_core::constants::MAX_CHANNEL_NAME;
 
 #[allow(dead_code)]
 pub fn channel_total_width(num_channels: usize) -> u16 {
-    ROW_NUM_WIDTH + SEPARATOR_WIDTH
+    ROW_NUM_WIDTH
+        + SEPARATOR_WIDTH
         + (CHANNEL_WIDTH * num_channels as u16)
         + (SEPARATOR_WIDTH * (num_channels.saturating_sub(1)) as u16)
 }
@@ -37,28 +38,54 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     // Draw column headers on the first row
     let header_y = area.y;
-    let header_style = Style::default().fg(theme.row_bar).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(theme.row_bar)
+        .add_modifier(Modifier::BOLD);
     let dim_header = Style::default().fg(theme.row_beat);
     write_str(buf, area.x, header_y, "   ", dim_header);
-    write_str(buf, area.x + ROW_NUM_WIDTH, header_y, " | ", Style::default().fg(theme.separator));
+    write_str(
+        buf,
+        area.x + ROW_NUM_WIDTH,
+        header_y,
+        " | ",
+        Style::default().fg(theme.separator),
+    );
     {
         let mut hx = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
         let visible = app.visible_channels();
         let first_visible = visible.start;
         for ch in visible.clone() {
             if ch > first_visible {
-                write_str(buf, hx, header_y, " | ", Style::default().fg(theme.separator));
+                write_str(
+                    buf,
+                    hx,
+                    header_y,
+                    " | ",
+                    Style::default().fg(theme.separator),
+                );
                 hx += SEPARATOR_WIDTH;
             }
             let col_start = hx;
-            let ch_name = app.core.channels.get(ch).map(|c| &c.name).filter(|n| !n.is_empty());
-            let ch_type = app.core.channels.get(ch).map(|c| c.channel_type).unwrap_or(crate::app::ChannelType::Midi);
+            let ch_name = app
+                .core
+                .channels
+                .get(ch)
+                .map(|c| &c.name)
+                .filter(|n| !n.is_empty());
+            let ch_type = app
+                .core
+                .channels
+                .get(ch)
+                .map(|c| c.channel_type)
+                .unwrap_or(crate::app::ChannelType::Midi);
             let type_label = ch_type.label();
-            let type_style = Style::default().fg(match ch_type {
-                crate::app::ChannelType::Midi => theme.header_bpm,
-                crate::app::ChannelType::Synth => theme.header_octave,
-                crate::app::ChannelType::Sample => theme.effect_set,
-            }).add_modifier(Modifier::BOLD);
+            let type_style = Style::default()
+                .fg(match ch_type {
+                    crate::app::ChannelType::Midi => theme.header_bpm,
+                    crate::app::ChannelType::Synth => theme.header_octave,
+                    crate::app::ChannelType::Sample => theme.effect_set,
+                })
+                .add_modifier(Modifier::BOLD);
 
             // Layout: <name> <pad> [TYP] M   (right-justified type + indicator)
             // Indicator: last char (pos 12), type: pos 6-10, space at 11
@@ -84,7 +111,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             let left_space = w.saturating_sub(right_len);
             let padded_name = format!("{:<width$}", name_str, width = left_space);
             let header_full: String = format!("{}{}", padded_name, right)
-                .chars().take(w).collect();
+                .chars()
+                .take(w)
+                .collect();
 
             // Write full string in dim style as background
             write_str(buf, hx, header_y, &header_full, dim_header);
@@ -95,11 +124,25 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             write_str(buf, type_x, header_y, type_label, type_style);
             // Overlay indicator in color
             if indicator == 'S' {
-                write_str(buf, hx + (w - 1) as u16, header_y, "S",
-                    Style::default().fg(theme.mode_insert).add_modifier(Modifier::BOLD));
+                write_str(
+                    buf,
+                    hx + (w - 1) as u16,
+                    header_y,
+                    "S",
+                    Style::default()
+                        .fg(theme.mode_insert)
+                        .add_modifier(Modifier::BOLD),
+                );
             } else if indicator == 'M' {
-                write_str(buf, hx + (w - 1) as u16, header_y, "M",
-                    Style::default().fg(theme.muted_dim).add_modifier(Modifier::BOLD));
+                write_str(
+                    buf,
+                    hx + (w - 1) as u16,
+                    header_y,
+                    "M",
+                    Style::default()
+                        .fg(theme.muted_dim)
+                        .add_modifier(Modifier::BOLD),
+                );
             }
 
             hx = col_start + CHANNEL_WIDTH;
@@ -142,7 +185,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
         // Row number
         let row_num_style = if is_bar {
-            Style::default().fg(theme.row_bar).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.row_bar)
+                .add_modifier(Modifier::BOLD)
         } else if is_beat {
             Style::default().fg(theme.row_beat)
         } else {
@@ -151,7 +196,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
         let row_str = format!("{:02X}", row_idx);
         write_str(buf, area.x, y, &row_str, row_num_style);
-        write_str(buf, area.x + ROW_NUM_WIDTH, y, " | ", Style::default().fg(theme.separator));
+        write_str(
+            buf,
+            area.x + ROW_NUM_WIDTH,
+            y,
+            " | ",
+            Style::default().fg(theme.separator),
+        );
 
         let mut x = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
 
@@ -181,10 +232,30 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
             let is_muted = !app.core.is_channel_audible(ch);
 
-            let note_fg = if is_muted { theme.muted_dim } else if cell.note.is_some() { theme.note_set } else { theme.note_empty };
-            let inst_fg = if is_muted { theme.muted_dim } else if cell.instrument.is_some() { theme.instrument_set } else { theme.instrument_empty };
-            let vol_fg = if is_muted { theme.muted_dim } else if cell.volume.is_some() { theme.volume_set } else { theme.volume_empty };
-            let fx_fg = if is_muted { theme.muted_dim } else if cell.effect.is_some() || cell.effect_value.is_some() {
+            let note_fg = if is_muted {
+                theme.muted_dim
+            } else if cell.note.is_some() {
+                theme.note_set
+            } else {
+                theme.note_empty
+            };
+            let inst_fg = if is_muted {
+                theme.muted_dim
+            } else if cell.instrument.is_some() {
+                theme.instrument_set
+            } else {
+                theme.instrument_empty
+            };
+            let vol_fg = if is_muted {
+                theme.muted_dim
+            } else if cell.volume.is_some() {
+                theme.volume_set
+            } else {
+                theme.volume_empty
+            };
+            let fx_fg = if is_muted {
+                theme.muted_dim
+            } else if cell.effect.is_some() || cell.effect_value.is_some() {
                 theme.effect_set
             } else {
                 theme.effect_empty
@@ -192,8 +263,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
             // Highlight the cursor sub-column
             let cursor_on = |sub: SubColumn| -> Style {
-                if is_cursor_row && ch == app.cursor_channel && app.cursor_sub == sub && !app.core.is_playing() {
-                    Style::default().bg(theme.cursor_bg).add_modifier(Modifier::BOLD)
+                if is_cursor_row
+                    && ch == app.cursor_channel
+                    && app.cursor_sub == sub
+                    && !app.core.is_playing()
+                {
+                    Style::default()
+                        .bg(theme.cursor_bg)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().bg(base_bg)
                 }
@@ -209,7 +286,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
             // Instrument
             let inst_str = cell.display_instrument();
-            write_str(buf, x, y, &inst_str, cursor_on(SubColumn::Instrument).fg(inst_fg));
+            write_str(
+                buf,
+                x,
+                y,
+                &inst_str,
+                cursor_on(SubColumn::Instrument).fg(inst_fg),
+            );
             x += INST_WIDTH;
 
             write_str(buf, x, y, " ", Style::default().bg(base_bg));

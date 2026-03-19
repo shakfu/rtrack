@@ -286,36 +286,120 @@ mod tests {
     #[test]
     fn test_pattern_insert_row() {
         let mut pat = Pattern::new(4, 2);
-        pat.set_cell(0, 0, Cell { note: Some(Note::On { value: NoteValue::C, octave: 4 }), ..Cell::default() });
-        pat.set_cell(1, 0, Cell { note: Some(Note::On { value: NoteValue::D, octave: 4 }), ..Cell::default() });
+        pat.set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        pat.set_cell(
+            1,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::D,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
 
         pat.insert_row(1);
         assert_eq!(pat.rows, 4); // length unchanged
         assert_eq!(pat.data.len(), 4);
-        assert_eq!(pat.get(0, 0).note, Some(Note::On { value: NoteValue::C, octave: 4 }));
+        assert_eq!(
+            pat.get(0, 0).note,
+            Some(Note::On {
+                value: NoteValue::C,
+                octave: 4
+            })
+        );
         assert!(pat.get(1, 0).note.is_none()); // new empty row
-        assert_eq!(pat.get(2, 0).note, Some(Note::On { value: NoteValue::D, octave: 4 }));
+        assert_eq!(
+            pat.get(2, 0).note,
+            Some(Note::On {
+                value: NoteValue::D,
+                octave: 4
+            })
+        );
     }
 
     #[test]
     fn test_pattern_delete_row() {
         let mut pat = Pattern::new(4, 2);
-        pat.set_cell(0, 0, Cell { note: Some(Note::On { value: NoteValue::C, octave: 4 }), ..Cell::default() });
-        pat.set_cell(1, 0, Cell { note: Some(Note::On { value: NoteValue::D, octave: 4 }), ..Cell::default() });
-        pat.set_cell(2, 0, Cell { note: Some(Note::On { value: NoteValue::E, octave: 4 }), ..Cell::default() });
+        pat.set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        pat.set_cell(
+            1,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::D,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        pat.set_cell(
+            2,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::E,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
 
         pat.delete_row(1);
         assert_eq!(pat.rows, 4); // length unchanged
         assert_eq!(pat.data.len(), 4);
-        assert_eq!(pat.get(0, 0).note, Some(Note::On { value: NoteValue::C, octave: 4 }));
-        assert_eq!(pat.get(1, 0).note, Some(Note::On { value: NoteValue::E, octave: 4 }));
+        assert_eq!(
+            pat.get(0, 0).note,
+            Some(Note::On {
+                value: NoteValue::C,
+                octave: 4
+            })
+        );
+        assert_eq!(
+            pat.get(1, 0).note,
+            Some(Note::On {
+                value: NoteValue::E,
+                octave: 4
+            })
+        );
         assert!(pat.get(3, 0).note.is_none()); // appended empty row
     }
 
     #[test]
     fn test_pattern_resize_rows() {
         let mut pat = Pattern::new(8, 2);
-        pat.set_cell(5, 0, Cell { note: Some(Note::On { value: NoteValue::A, octave: 3 }), ..Cell::default() });
+        pat.set_cell(
+            5,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::A,
+                    octave: 3,
+                }),
+                ..Cell::default()
+            },
+        );
 
         // Shrink
         pat.resize_rows(4);
@@ -344,7 +428,13 @@ mod tests {
         };
         pat.set_cell(10, 2, cell);
         let got = pat.get(10, 2);
-        assert_eq!(got.note, Some(Note::On { value: NoteValue::E, octave: 3 }));
+        assert_eq!(
+            got.note,
+            Some(Note::On {
+                value: NoteValue::E,
+                octave: 3
+            })
+        );
         assert_eq!(got.instrument, Some(1));
         assert_eq!(got.volume, Some(0x40));
     }

@@ -47,7 +47,8 @@ impl Sample {
 
     /// Effective loop start (clamped to < loop_end)
     pub fn effective_loop_start(&self) -> usize {
-        self.loop_start.min(self.effective_loop_end().saturating_sub(1))
+        self.loop_start
+            .min(self.effective_loop_end().saturating_sub(1))
     }
 
     /// Get a stereo frame at the given index, or silence if out of bounds
@@ -121,7 +122,9 @@ impl SampleBank {
 
     /// Return sorted list of slot indices that have samples loaded.
     pub fn loaded_slots(&self) -> Vec<usize> {
-        self.samples.iter().enumerate()
+        self.samples
+            .iter()
+            .enumerate()
             .filter_map(|(i, s)| if s.is_some() { Some(i) } else { None })
             .collect()
     }
@@ -147,7 +150,8 @@ impl SampleBank {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
@@ -156,9 +160,7 @@ impl SampleBank {
                 continue;
             }
 
-            let stem = path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
             // Parse <slot>-<name> format
             if let Some((slot_str, _name)) = stem.split_once('-') {
@@ -274,8 +276,8 @@ fn load_wav(path: &Path) -> Result<Sample> {
 fn load_aiff(path: &Path) -> Result<Sample> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let mut file =
-        std::fs::File::open(path).with_context(|| format!("Failed to open AIFF: {}", path.display()))?;
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open AIFF: {}", path.display()))?;
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -284,7 +286,8 @@ fn load_aiff(path: &Path) -> Result<Sample> {
 
     // Read FORM header
     let mut header = [0u8; 12];
-    file.read_exact(&mut header).context("Failed to read AIFF header")?;
+    file.read_exact(&mut header)
+        .context("Failed to read AIFF header")?;
     if &header[0..4] != b"FORM" || (&header[8..12] != b"AIFF" && &header[8..12] != b"AIFC") {
         anyhow::bail!("Not a valid AIFF file");
     }
@@ -312,7 +315,8 @@ fn load_aiff(path: &Path) -> Result<Sample> {
         match chunk_id {
             b"COMM" => {
                 let mut comm = vec![0u8; chunk_size];
-                file.read_exact(&mut comm).context("Failed to read COMM chunk")?;
+                file.read_exact(&mut comm)
+                    .context("Failed to read COMM chunk")?;
                 channels = u16::from_be_bytes([comm[0], comm[1]]);
                 num_frames = u32::from_be_bytes([comm[2], comm[3], comm[4], comm[5]]);
                 bits_per_sample = u16::from_be_bytes([comm[6], comm[7]]);
@@ -454,7 +458,11 @@ pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
     (0..num_slices)
         .map(|i| {
             let s = start + i * slice_len;
-            let e = if i == num_slices - 1 { end } else { s + slice_len };
+            let e = if i == num_slices - 1 {
+                end
+            } else {
+                s + slice_len
+            };
             Sample {
                 name: format!("{}_S{:02}", sample.name, i),
                 data: sample.data[s..e].to_vec(),
@@ -553,7 +561,11 @@ pub fn slice_at_points(sample: &Sample, points: &[usize]) -> Vec<Sample> {
     let end = sample.end();
     let mut slices = Vec::with_capacity(points.len());
     for (i, &p) in points.iter().enumerate() {
-        let slice_end = if i + 1 < points.len() { points[i + 1] } else { end };
+        let slice_end = if i + 1 < points.len() {
+            points[i + 1]
+        } else {
+            end
+        };
         if p >= slice_end || p >= sample.data.len() {
             continue;
         }
@@ -615,7 +627,11 @@ mod tests {
         // mantissa = 44100 << 48 = 0xAC44000000000000
         let bytes: [u8; 10] = [0x40, 0x0E, 0xAC, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let rate = extended_to_f64(&bytes);
-        assert!((rate - 44100.0).abs() < 1.0, "expected ~44100, got {}", rate);
+        assert!(
+            (rate - 44100.0).abs() < 1.0,
+            "expected ~44100, got {}",
+            rate
+        );
     }
 
     #[test]
@@ -865,7 +881,7 @@ mod tests {
     fn test_detect_transients_with_onset() {
         // Build a sample: silence then loud burst, repeated
         let mut data = vec![[0.0f32; 2]; 44100]; // 1 second total
-        // Burst at ~0.25s
+                                                 // Burst at ~0.25s
         for frame in &mut data[11025..13000] {
             *frame = [0.8, 0.8];
         }
@@ -887,29 +903,46 @@ mod tests {
         };
         let points = detect_transients(&sample, 0.5);
         // Should detect at least the initial point and the two bursts
-        assert!(points.len() >= 2, "Expected at least 2 transient points, got {}", points.len());
+        assert!(
+            points.len() >= 2,
+            "Expected at least 2 transient points, got {}",
+            points.len()
+        );
     }
 
     #[test]
     fn test_detect_transients_sensitivity() {
         // Higher sensitivity should find more (or equal) transients
         let mut data = vec![[0.0f32; 2]; 44100];
-        for frame in &mut data[11025..12000] { *frame = [0.5, 0.5]; }
-        for frame in &mut data[22050..23000] { *frame = [0.8, 0.8]; }
-        for frame in &mut data[33075..34000] { *frame = [0.3, 0.3]; }
+        for frame in &mut data[11025..12000] {
+            *frame = [0.5, 0.5];
+        }
+        for frame in &mut data[22050..23000] {
+            *frame = [0.8, 0.8];
+        }
+        for frame in &mut data[33075..34000] {
+            *frame = [0.3, 0.3];
+        }
         let sample = Sample {
             name: "multi".into(),
             data,
             sample_rate: 44100.0,
             base_note: 60,
-            trim_start: 0, trim_end: 0,
-            loop_enabled: false, loop_start: 0, loop_end: 0,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
             source_path: None,
         };
         let low = detect_transients(&sample, 0.2);
         let high = detect_transients(&sample, 0.9);
-        assert!(high.len() >= low.len(),
-            "Higher sensitivity should find >= transients: low={}, high={}", low.len(), high.len());
+        assert!(
+            high.len() >= low.len(),
+            "Higher sensitivity should find >= transients: low={}, high={}",
+            low.len(),
+            high.len()
+        );
     }
 
     #[test]

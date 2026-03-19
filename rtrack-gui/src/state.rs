@@ -122,13 +122,13 @@ impl GridColors {
 
             fg_row_num: Color32::from_rgb(117, 113, 94),
             fg_row_bar: Color32::from_rgb(150, 146, 128),
-            fg_note_set: Color32::from_rgb(102, 217, 239),   // cyan
+            fg_note_set: Color32::from_rgb(102, 217, 239), // cyan
             fg_note_empty: Color32::from_rgb(60, 60, 54),
-            fg_inst_set: Color32::from_rgb(230, 219, 116),    // yellow
+            fg_inst_set: Color32::from_rgb(230, 219, 116), // yellow
             fg_inst_empty: Color32::from_rgb(60, 60, 54),
-            fg_vol_set: Color32::from_rgb(166, 226, 46),      // green
+            fg_vol_set: Color32::from_rgb(166, 226, 46), // green
             fg_vol_empty: Color32::from_rgb(60, 60, 54),
-            fg_fx_set: Color32::from_rgb(249, 38, 114),       // pink/red
+            fg_fx_set: Color32::from_rgb(249, 38, 114), // pink/red
             fg_fx_empty: Color32::from_rgb(60, 60, 54),
             fg_separator: Color32::from_rgb(60, 60, 54),
             fg_muted: Color32::from_rgb(55, 55, 48),

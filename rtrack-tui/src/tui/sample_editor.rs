@@ -75,14 +75,8 @@ pub fn draw_sample_panel(f: &mut Frame, app: &App, area: Rect) {
         &sample.name
     };
     lines.push(Line::from(vec![
-        Span::styled(
-            format!(" {:02X}", slot),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::styled(
-            format!(" {} ", name),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(format!(" {:02X}", slot), Style::default().fg(Color::Yellow)),
+        Span::styled(format!(" {} ", name), Style::default().fg(Color::White)),
         Span::styled(
             format!("{:.1}s ", sample.duration()),
             Style::default().fg(Color::DarkGray),
@@ -159,24 +153,70 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
 
         // Editable fields
         let fields: Vec<(SampleField, &str, String)> = vec![
-            (SampleField::BaseNote, "Base Note", format!("{} (MIDI {})", note_name(sample.base_note), sample.base_note)),
-            (SampleField::TrimStart, "Trim Start", format!("{}", sample.trim_start)),
-            (SampleField::TrimEnd, "Trim End", format!("{}", if sample.trim_end == 0 { sample.data.len() } else { sample.trim_end })),
-            (SampleField::LoopEnabled, "Loop", (if sample.loop_enabled { "ON" } else { "OFF" }).to_string()),
-            (SampleField::LoopStart, "Loop Start", format!("{}", sample.loop_start)),
-            (SampleField::LoopEnd, "Loop End", format!("{}", if sample.loop_end == 0 { sample.end() } else { sample.loop_end })),
+            (
+                SampleField::BaseNote,
+                "Base Note",
+                format!(
+                    "{} (MIDI {})",
+                    note_name(sample.base_note),
+                    sample.base_note
+                ),
+            ),
+            (
+                SampleField::TrimStart,
+                "Trim Start",
+                format!("{}", sample.trim_start),
+            ),
+            (
+                SampleField::TrimEnd,
+                "Trim End",
+                format!(
+                    "{}",
+                    if sample.trim_end == 0 {
+                        sample.data.len()
+                    } else {
+                        sample.trim_end
+                    }
+                ),
+            ),
+            (
+                SampleField::LoopEnabled,
+                "Loop",
+                (if sample.loop_enabled { "ON" } else { "OFF" }).to_string(),
+            ),
+            (
+                SampleField::LoopStart,
+                "Loop Start",
+                format!("{}", sample.loop_start),
+            ),
+            (
+                SampleField::LoopEnd,
+                "Loop End",
+                format!(
+                    "{}",
+                    if sample.loop_end == 0 {
+                        sample.end()
+                    } else {
+                        sample.loop_end
+                    }
+                ),
+            ),
         ];
 
         for (field, label, value) in &fields {
             let is_active = *field == app.dialogs.sample_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Cyan)
             };
             let value_style = if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -195,22 +235,42 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
         )));
 
         let slice_fields: Vec<(SampleField, &str, String)> = vec![
-            (SampleField::SliceCount, "Slices", format!("{}", app.dialogs.sample_slice_count)),
-            (SampleField::SliceSensitivity, "Sensitivity", format!("{:.0}%", app.dialogs.sample_slice_sensitivity * 100.0)),
-            (SampleField::SliceEqual, "[Equal]", "Enter to slice".to_string()),
-            (SampleField::SliceTransient, "[Transient]", "Enter to slice".to_string()),
+            (
+                SampleField::SliceCount,
+                "Slices",
+                format!("{}", app.dialogs.sample_slice_count),
+            ),
+            (
+                SampleField::SliceSensitivity,
+                "Sensitivity",
+                format!("{:.0}%", app.dialogs.sample_slice_sensitivity * 100.0),
+            ),
+            (
+                SampleField::SliceEqual,
+                "[Equal]",
+                "Enter to slice".to_string(),
+            ),
+            (
+                SampleField::SliceTransient,
+                "[Transient]",
+                "Enter to slice".to_string(),
+            ),
         ];
 
         for (field, label, value) in &slice_fields {
             let is_active = *field == app.dialogs.sample_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Magenta)
             };
             let value_style = if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -308,8 +368,7 @@ fn compute_slice_preview(
             (1..count).map(|i| i * total / count).collect()
         }
         SampleField::SliceSensitivity | SampleField::SliceTransient => {
-            let points = sample::detect_transients(sample, sensitivity);
-            points
+            sample::detect_transients(sample, sensitivity)
         }
         _ => Vec::new(),
     }
@@ -337,7 +396,9 @@ fn find_related_boundaries(app: &App, slot: usize) -> Vec<usize> {
             continue;
         }
         if let Some(other) = bank.get(i) {
-            if other.source_path.as_deref() == Some(source.as_str()) && other.data.len() == total_len {
+            if other.source_path.as_deref() == Some(source.as_str())
+                && other.data.len() == total_len
+            {
                 if other.trim_start > 0 {
                     boundaries.push(other.trim_start);
                 }
@@ -441,9 +502,8 @@ fn render_waveform_colored(
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::raw("  ".to_string()));
 
-        for col in 0..width {
+        for (col, &peak) in peaks.iter().enumerate().take(width) {
             let from_bottom = height - 1 - row;
-            let peak = peaks[col];
             let level = (peak * height as f32) as usize;
 
             // Determine character
@@ -460,8 +520,7 @@ fn render_waveform_colored(
                 // Loop markers
                 '|'
             } else if from_bottom < level {
-                let intensity =
-                    ((peak * (blocks.len() - 1) as f32) as usize).min(blocks.len() - 1);
+                let intensity = ((peak * (blocks.len() - 1) as f32) as usize).min(blocks.len() - 1);
                 blocks[intensity]
             } else {
                 ' '
@@ -483,10 +542,7 @@ fn render_waveform_colored(
                 Color::Green
             };
 
-            spans.push(Span::styled(
-                ch.to_string(),
-                Style::default().fg(color),
-            ));
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
         }
 
         result.push(Line::from(spans));
@@ -504,7 +560,10 @@ fn render_waveform_colored(
     }
     if !boundary_cols.is_empty() {
         legend_spans.push(Span::styled("|", Style::default().fg(Color::Yellow)));
-        legend_spans.push(Span::styled("boundary ", Style::default().fg(Color::DarkGray)));
+        legend_spans.push(Span::styled(
+            "boundary ",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
     if loop_start_col.is_some() {
         legend_spans.push(Span::styled("|", Style::default().fg(Color::LightGreen)));
@@ -518,7 +577,9 @@ fn render_waveform_colored(
 }
 
 fn note_name(note: u8) -> String {
-    let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    let names = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
     let octave = note / SEMITONES_PER_OCTAVE;
     let name = names[(note % SEMITONES_PER_OCTAVE) as usize];
     format!("{}{}", name, octave)

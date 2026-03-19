@@ -40,10 +40,7 @@ impl RtrackApp {
                         egui::RichText::new(label).monospace()
                     };
 
-                    if ui
-                        .selectable_label(is_active, text)
-                        .clicked()
-                    {
+                    if ui.selectable_label(is_active, text).clicked() {
                         self.edit_order = i;
                         self.cursor_row = 0;
                     }
@@ -56,11 +53,15 @@ impl RtrackApp {
                 let new_pat_idx = self.core.song.patterns.len();
                 let rows = self.core.song.patterns[0].rows;
                 let channels = self.core.song.channels;
-                self.core.song.patterns.push(rtrack_core::tracker::Pattern::new(rows, channels));
+                self.core
+                    .song
+                    .patterns
+                    .push(rtrack_core::tracker::Pattern::new(rows, channels));
                 self.core.song.order.push(new_pat_idx);
                 self.core.song.sync_order_repeats();
             }
-            if ui.add_enabled(self.core.song.order.len() > 1, egui::Button::new("-"))
+            if ui
+                .add_enabled(self.core.song.order.len() > 1, egui::Button::new("-"))
                 .on_hover_text("Remove last order entry")
                 .clicked()
             {
@@ -70,18 +71,29 @@ impl RtrackApp {
                     self.edit_order = self.core.song.order.len() - 1;
                 }
             }
-            if ui.button("D").on_hover_text("Duplicate current pattern").clicked() {
+            if ui
+                .button("D")
+                .on_hover_text("Duplicate current pattern")
+                .clicked()
+            {
                 let src_pat_idx = self.core.song.order[self.edit_order];
                 let cloned = self.core.song.patterns[src_pat_idx].clone();
                 let new_pat_idx = self.core.song.patterns.len();
                 self.core.song.patterns.push(cloned);
-                self.core.song.order.insert(self.edit_order + 1, new_pat_idx);
+                self.core
+                    .song
+                    .order
+                    .insert(self.edit_order + 1, new_pat_idx);
                 self.core.song.sync_order_repeats();
                 self.edit_order += 1;
                 self.cursor_row = 0;
                 self.core.dirty = true;
             }
-            if ui.button("^").on_hover_text("Insert order entry at current position").clicked() {
+            if ui
+                .button("^")
+                .on_hover_text("Insert order entry at current position")
+                .clicked()
+            {
                 let pat = self.core.song.order[self.edit_order];
                 self.core.song.order.insert(self.edit_order + 1, pat);
                 self.core.song.sync_order_repeats();
@@ -133,11 +145,7 @@ impl RtrackApp {
                             egui::Color32::from_rgb(200, 200, 200)
                         };
 
-                        ui.label(
-                            egui::RichText::new(name)
-                                .monospace()
-                                .color(name_color),
-                        );
+                        ui.label(egui::RichText::new(name).monospace().color(name_color));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Solo button

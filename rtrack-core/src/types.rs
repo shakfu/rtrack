@@ -137,17 +137,17 @@ impl LearnableParam {
         let t = value as f32 / 127.0;
         match self {
             Self::FilterCutoff => 20.0 * (1000.0_f32).powf(t), // 20..20000 Hz (exp)
-            Self::FilterResonance => t,                          // 0..1
-            Self::DistortionDrive => 1.0 + t * 19.0,            // 1..20
-            Self::ChorusRate => 0.1 + t * 9.9,                  // 0.1..10
-            Self::ChorusDepth => 0.5 + t * 19.5,                // 0.5..20
-            Self::ChorusMix => t,                                // 0..1
-            Self::DelayTime => 1.0 + t * 1999.0,                // 1..2000 ms
-            Self::DelayFeedback => t * 0.95,                     // 0..0.95
-            Self::DelayMix => t,                                 // 0..1
-            Self::ReverbSize => t,                               // 0..1
-            Self::ReverbDamp => t,                               // 0..1
-            Self::ReverbMix => t,                                // 0..1
+            Self::FilterResonance => t,                        // 0..1
+            Self::DistortionDrive => 1.0 + t * 19.0,           // 1..20
+            Self::ChorusRate => 0.1 + t * 9.9,                 // 0.1..10
+            Self::ChorusDepth => 0.5 + t * 19.5,               // 0.5..20
+            Self::ChorusMix => t,                              // 0..1
+            Self::DelayTime => 1.0 + t * 1999.0,               // 1..2000 ms
+            Self::DelayFeedback => t * 0.95,                   // 0..0.95
+            Self::DelayMix => t,                               // 0..1
+            Self::ReverbSize => t,                             // 0..1
+            Self::ReverbDamp => t,                             // 0..1
+            Self::ReverbMix => t,                              // 0..1
         }
     }
 
@@ -300,9 +300,7 @@ pub fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String
 pub fn resolve_relative(base: &std::path::Path, rel: &str) -> PathBuf {
     let p = std::path::Path::new(rel);
     if p.is_absolute() {
-        return base.join(
-            p.file_name().unwrap_or_default(),
-        );
+        return base.join(p.file_name().unwrap_or_default());
     }
     let sanitized: PathBuf = p
         .components()

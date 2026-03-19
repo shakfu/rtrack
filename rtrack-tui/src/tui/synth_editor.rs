@@ -39,20 +39,72 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
             FilterType::BandPass => "BP",
         };
         let fields: Vec<(SynthField, &str, String)> = vec![
-            (SynthField::Waveform, "Waveform", format!("{} ({})", params.waveform, patch.name())),
-            (SynthField::Attack, "Attack", format!("{:.3}s", params.attack)),
+            (
+                SynthField::Waveform,
+                "Waveform",
+                format!("{} ({})", params.waveform, patch.name()),
+            ),
+            (
+                SynthField::Attack,
+                "Attack",
+                format!("{:.3}s", params.attack),
+            ),
             (SynthField::Decay, "Decay", format!("{:.3}s", params.decay)),
-            (SynthField::Sustain, "Sustain", format!("{:.2}", params.sustain)),
-            (SynthField::Release, "Release", format!("{:.3}s", params.release)),
-            (SynthField::FilterType, "Filter Type", filter_type_str.to_string()),
-            (SynthField::FilterCutoff, "Filter Cut", format!("{:.1}x", params.filter_cutoff)),
-            (SynthField::FilterResonance, "Filter Res", format!("{:.2}", params.filter_resonance)),
-            (SynthField::FilterEnv, "Filter Env", format!("{:.1} oct", params.filter_env)),
-            (SynthField::Detune, "Detune", format!("{:.1} cents", params.detune)),
-            (SynthField::SubOsc, "Sub Osc", format!("{:.2}", params.sub_osc)),
-            (SynthField::FmRatio, "FM Ratio", format!("{:.1}", params.fm_ratio)),
-            (SynthField::FmIndex, "FM Index", format!("{:.1}", params.fm_index)),
-            (SynthField::PulseWidth, "Pulse Width", format!("{:.2}", params.pulse_width)),
+            (
+                SynthField::Sustain,
+                "Sustain",
+                format!("{:.2}", params.sustain),
+            ),
+            (
+                SynthField::Release,
+                "Release",
+                format!("{:.3}s", params.release),
+            ),
+            (
+                SynthField::FilterType,
+                "Filter Type",
+                filter_type_str.to_string(),
+            ),
+            (
+                SynthField::FilterCutoff,
+                "Filter Cut",
+                format!("{:.1}x", params.filter_cutoff),
+            ),
+            (
+                SynthField::FilterResonance,
+                "Filter Res",
+                format!("{:.2}", params.filter_resonance),
+            ),
+            (
+                SynthField::FilterEnv,
+                "Filter Env",
+                format!("{:.1} oct", params.filter_env),
+            ),
+            (
+                SynthField::Detune,
+                "Detune",
+                format!("{:.1} cents", params.detune),
+            ),
+            (
+                SynthField::SubOsc,
+                "Sub Osc",
+                format!("{:.2}", params.sub_osc),
+            ),
+            (
+                SynthField::FmRatio,
+                "FM Ratio",
+                format!("{:.1}", params.fm_ratio),
+            ),
+            (
+                SynthField::FmIndex,
+                "FM Index",
+                format!("{:.1}", params.fm_index),
+            ),
+            (
+                SynthField::PulseWidth,
+                "Pulse Width",
+                format!("{:.2}", params.pulse_width),
+            ),
         ];
 
         lines.push(Line::from(""));
@@ -60,12 +112,16 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
             let is_active = *field == app.dialogs.synth_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Cyan)
             };
             let value_style = if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };

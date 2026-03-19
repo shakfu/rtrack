@@ -64,19 +64,14 @@ pub enum TrackerEvent {
         instrument: Option<u8>,
     },
     /// Note off on a channel.
-    NoteOff {
-        channel: usize,
-    },
+    NoteOff { channel: usize },
     /// Pitch bend change (semitone offset from base note).
     PitchBend {
         channel: usize,
         semitone_offset: f64,
     },
     /// Volume change on a channel (from volume slide).
-    VolumeChange {
-        channel: usize,
-        volume: u8,
-    },
+    VolumeChange { channel: usize, volume: u8 },
     /// MIDI CC (Cxx effect).
     MidiCC {
         channel: usize,
@@ -84,22 +79,13 @@ pub enum TrackerEvent {
         value: u8,
     },
     /// Program change (Exx effect).
-    ProgramChange {
-        channel: usize,
-        program: u8,
-    },
+    ProgramChange { channel: usize, program: u8 },
     /// Speed changed (Fxx < 0x20).
-    SpeedChanged {
-        speed: u8,
-    },
+    SpeedChanged { speed: u8 },
     /// Tempo changed (Fxx >= 0x20, or tempo automation).
-    TempoChanged {
-        bpm: f64,
-    },
+    TempoChanged { bpm: f64 },
     /// Playback generation incremented (wrapped past end of order list).
-    GenerationAdvanced {
-        generation: u32,
-    },
+    GenerationAdvanced { generation: u32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +285,9 @@ impl TrackerEngine {
             if self.wrap_at_end {
                 self.order = 0;
                 self.generation += 1;
-                self.emit(TrackerEvent::GenerationAdvanced { generation: self.generation });
+                self.emit(TrackerEvent::GenerationAdvanced {
+                    generation: self.generation,
+                });
             } else {
                 self.finished = true;
                 return;
@@ -324,7 +312,9 @@ impl TrackerEngine {
                 if self.wrap_at_end {
                     self.order = 0;
                     self.generation += 1;
-                    self.emit(TrackerEvent::GenerationAdvanced { generation: self.generation });
+                    self.emit(TrackerEvent::GenerationAdvanced {
+                        generation: self.generation,
+                    });
                 } else {
                     self.finished = true;
                     return;
@@ -407,7 +397,8 @@ impl TrackerEngine {
         }
 
         // Process notes and tick-0 effects
-        for (ch, (note, volume, effect, effect_value, instrument)) in cells.into_iter().enumerate() {
+        for (ch, (note, volume, effect, effect_value, instrument)) in cells.into_iter().enumerate()
+        {
             let param = effect_value.unwrap_or(0);
             let is_tone_porta = effect == Some(EFFECT_TONE_PORTA);
             let audible = self.channel_audible(ch);
@@ -441,7 +432,8 @@ impl TrackerEngine {
                         } else if is_note_delay {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
                             let scaled_vel = self.scale_velocity(ch, vel);
-                            self.channel_states[ch].delayed_note = Some((midi_note, scaled_vel, false));
+                            self.channel_states[ch].delayed_note =
+                                Some((midi_note, scaled_vel, false));
                             self.channel_states[ch].delay_tick = param;
                         } else {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
@@ -449,7 +441,10 @@ impl TrackerEngine {
                             // Reset pitch bend on new note
                             self.channel_states[ch].pitch_offset = 0.0;
                             self.channel_states[ch].vibrato_phase = 0.0;
-                            self.emit(TrackerEvent::PitchBend { channel: ch, semitone_offset: 0.0 });
+                            self.emit(TrackerEvent::PitchBend {
+                                channel: ch,
+                                semitone_offset: 0.0,
+                            });
                             self.emit(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
@@ -470,7 +465,10 @@ impl TrackerEngine {
                         self.emit(TrackerEvent::NoteOff { channel: ch });
                         self.channel_states[ch].note = None;
                         self.channel_states[ch].pitch_offset = 0.0;
-                        self.emit(TrackerEvent::PitchBend { channel: ch, semitone_offset: 0.0 });
+                        self.emit(TrackerEvent::PitchBend {
+                            channel: ch,
+                            semitone_offset: 0.0,
+                        });
                     }
                 }
                 None => {
@@ -488,10 +486,17 @@ impl TrackerEngine {
             match effect {
                 Some(EFFECT_MIDI_CC) => {
                     let controller = instrument.unwrap_or(0);
-                    self.emit(TrackerEvent::MidiCC { channel: ch, controller, value: param });
+                    self.emit(TrackerEvent::MidiCC {
+                        channel: ch,
+                        controller,
+                        value: param,
+                    });
                 }
                 Some(EFFECT_PROGRAM_CHANGE) => {
-                    self.emit(TrackerEvent::ProgramChange { channel: ch, program: param });
+                    self.emit(TrackerEvent::ProgramChange {
+                        channel: ch,
+                        program: param,
+                    });
                 }
                 _ => {}
             }
@@ -502,7 +507,9 @@ impl TrackerEngine {
             let target = target_order.min(song.order.len() - 1);
             if target <= self.order {
                 self.generation += 1;
-                self.emit(TrackerEvent::GenerationAdvanced { generation: self.generation });
+                self.emit(TrackerEvent::GenerationAdvanced {
+                    generation: self.generation,
+                });
             }
             self.order = target;
             self.repeat_count = 0;
@@ -551,11 +558,17 @@ impl TrackerEngine {
                             self.events.push(TrackerEvent::NoteOff { channel: ch });
                             self.channel_states[ch].note = None;
                             self.channel_states[ch].pitch_offset = 0.0;
-                            self.events.push(TrackerEvent::PitchBend { channel: ch, semitone_offset: 0.0 });
+                            self.events.push(TrackerEvent::PitchBend {
+                                channel: ch,
+                                semitone_offset: 0.0,
+                            });
                         } else {
                             self.channel_states[ch].pitch_offset = 0.0;
                             self.channel_states[ch].vibrato_phase = 0.0;
-                            self.events.push(TrackerEvent::PitchBend { channel: ch, semitone_offset: 0.0 });
+                            self.events.push(TrackerEvent::PitchBend {
+                                channel: ch,
+                                semitone_offset: 0.0,
+                            });
                             self.events.push(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
@@ -589,7 +602,10 @@ impl TrackerEngine {
                         1 => x,
                         _ => y,
                     };
-                    self.events.push(TrackerEvent::PitchBend { channel: ch, semitone_offset: offset });
+                    self.events.push(TrackerEvent::PitchBend {
+                        channel: ch,
+                        semitone_offset: offset,
+                    });
                 }
                 Some(EFFECT_PORTA_UP) => {
                     self.channel_states[ch].pitch_offset += param as f64 / 16.0;
@@ -628,18 +644,26 @@ impl TrackerEngine {
                     if self.channel_states[ch].vibrato_phase >= 1.0 {
                         self.channel_states[ch].vibrato_phase -= 1.0;
                     }
-                    let sine = (self.channel_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
+                    let sine =
+                        (self.channel_states[ch].vibrato_phase * std::f64::consts::TAU).sin();
                     let offset = sine * depth / 16.0;
                     let total = self.channel_states[ch].pitch_offset + offset;
-                    self.events.push(TrackerEvent::PitchBend { channel: ch, semitone_offset: total });
+                    self.events.push(TrackerEvent::PitchBend {
+                        channel: ch,
+                        semitone_offset: total,
+                    });
                 }
                 Some(EFFECT_VOLUME_SLIDE) => {
                     let up = (param >> 4) as i16;
                     let down = (param & 0x0F) as i16;
                     let delta = up - down;
-                    let new_vol = (self.channel_states[ch].volume as i16 + delta).clamp(0, MIDI_MAX_VALUE as i16) as u8;
+                    let new_vol = (self.channel_states[ch].volume as i16 + delta)
+                        .clamp(0, MIDI_MAX_VALUE as i16) as u8;
                     self.channel_states[ch].volume = new_vol;
-                    self.events.push(TrackerEvent::VolumeChange { channel: ch, volume: new_vol });
+                    self.events.push(TrackerEvent::VolumeChange {
+                        channel: ch,
+                        volume: new_vol,
+                    });
                 }
                 _ => {}
             }
@@ -648,7 +672,9 @@ impl TrackerEngine {
 
     fn scale_velocity(&self, ch: usize, vel: u8) -> u8 {
         let scale = self.channel_volume_scale(ch);
-        (vel as f32 * scale).round().clamp(0.0, MIDI_MAX_VALUE as f32) as u8
+        (vel as f32 * scale)
+            .round()
+            .clamp(0.0, MIDI_MAX_VALUE as f32) as u8
     }
 }
 
@@ -679,27 +705,53 @@ mod tests {
         let song = make_song();
         let mut engine = TrackerEngine::new(&song, true);
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::RowAdvanced { row: 0, order: 0, .. })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TrackerEvent::RowAdvanced {
+                row: 0,
+                order: 0,
+                ..
+            }
+        )));
     }
 
     #[test]
     fn test_engine_note_on_off() {
         let mut song = make_song();
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            volume: Some(100),
-            ..Cell::default()
-        });
-        song.patterns[0].set_cell(1, 0, Cell {
-            note: Some(Note::Off),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
+        song.patterns[0].set_cell(
+            1,
+            0,
+            Cell {
+                note: Some(Note::Off),
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
 
         // Tick through row 0
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::NoteOn { channel: 0, midi_note: 48, velocity: 100, .. })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TrackerEvent::NoteOn {
+                channel: 0,
+                midi_note: 48,
+                velocity: 100,
+                ..
+            }
+        )));
 
         // Advance through remaining ticks of row 0
         for _ in 1..song.speed {
@@ -708,29 +760,43 @@ mod tests {
 
         // Row 1: note off
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::NoteOff { channel: 0 })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::NoteOff { channel: 0 })));
     }
 
     #[test]
     fn test_engine_portamento_up() {
         let mut song = Song::new(1, 4);
         song.speed = 3;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            volume: Some(100),
-            effect: Some(EFFECT_PORTA_UP),
-            effect_value: Some(0x10),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                effect: Some(EFFECT_PORTA_UP),
+                effect_value: Some(0x10),
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         // Tick 0
         engine.process_tick(&song);
         // Tick 1: should emit pitch bend
         let events = engine.process_tick(&song).to_vec();
-        let pb = events.iter().find(|e| matches!(e, TrackerEvent::PitchBend { .. }));
+        let pb = events
+            .iter()
+            .find(|e| matches!(e, TrackerEvent::PitchBend { .. }));
         assert!(pb.is_some());
-        if let Some(TrackerEvent::PitchBend { semitone_offset, .. }) = pb {
+        if let Some(TrackerEvent::PitchBend {
+            semitone_offset, ..
+        }) = pb
+        {
             assert!(*semitone_offset > 0.0);
         }
     }
@@ -739,18 +805,27 @@ mod tests {
     fn test_engine_volume_slide() {
         let mut song = Song::new(1, 4);
         song.speed = 3;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            volume: Some(100),
-            effect: Some(EFFECT_VOLUME_SLIDE),
-            effect_value: Some(0x0F), // down by 15
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                effect: Some(EFFECT_VOLUME_SLIDE),
+                effect_value: Some(0x0F), // down by 15
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         engine.process_tick(&song); // tick 0
         let events = engine.process_tick(&song).to_vec(); // tick 1
-        let vc = events.iter().find(|e| matches!(e, TrackerEvent::VolumeChange { .. }));
+        let vc = events
+            .iter()
+            .find(|e| matches!(e, TrackerEvent::VolumeChange { .. }));
         assert!(vc.is_some());
         if let Some(TrackerEvent::VolumeChange { volume, .. }) = vc {
             assert_eq!(*volume, 85); // 100 - 15
@@ -760,20 +835,30 @@ mod tests {
     #[test]
     fn test_engine_set_speed_tempo() {
         let mut song = Song::new(1, 4);
-        song.patterns[0].set_cell(0, 0, Cell {
-            effect: Some(EFFECT_SET_SPEED),
-            effect_value: Some(3), // set speed to 3
-            ..Cell::default()
-        });
-        song.patterns[0].set_cell(1, 0, Cell {
-            effect: Some(EFFECT_SET_SPEED),
-            effect_value: Some(0x80), // set BPM to 128
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_SET_SPEED),
+                effect_value: Some(3), // set speed to 3
+                ..Cell::default()
+            },
+        );
+        song.patterns[0].set_cell(
+            1,
+            0,
+            Cell {
+                effect: Some(EFFECT_SET_SPEED),
+                effect_value: Some(0x80), // set BPM to 128
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::SpeedChanged { speed: 3 })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::SpeedChanged { speed: 3 })));
         assert_eq!(engine.speed, 3);
 
         // Advance through remaining ticks
@@ -781,7 +866,9 @@ mod tests {
             engine.process_tick(&song);
         }
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::TempoChanged { bpm } if *bpm == 128.0)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::TempoChanged { bpm } if *bpm == 128.0)));
         assert_eq!(engine.bpm, 128.0);
     }
 
@@ -789,11 +876,15 @@ mod tests {
     fn test_engine_position_jump() {
         let mut song = Song::new(1, 4);
         song.order = vec![0, 0, 0];
-        song.patterns[0].set_cell(0, 0, Cell {
-            effect: Some(EFFECT_POSITION_JUMP),
-            effect_value: Some(2),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_POSITION_JUMP),
+                effect_value: Some(2),
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         engine.process_tick(&song);
@@ -805,11 +896,15 @@ mod tests {
     fn test_engine_pattern_break() {
         let mut song = Song::new(1, 16);
         song.order = vec![0, 0];
-        song.patterns[0].set_cell(0, 0, Cell {
-            effect: Some(EFFECT_PATTERN_BREAK),
-            effect_value: Some(8),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_PATTERN_BREAK),
+                effect_value: Some(8),
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         engine.process_tick(&song);
@@ -845,17 +940,32 @@ mod tests {
     #[test]
     fn test_engine_muted_channel_no_events() {
         let mut song = make_song();
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            volume: Some(100),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
-        engine.update_channel_info(0, ChannelInfo { audible: false, ..Default::default() });
+        engine.update_channel_info(
+            0,
+            ChannelInfo {
+                audible: false,
+                ..Default::default()
+            },
+        );
         let events = engine.process_tick(&song).to_vec();
         // Should not emit NoteOn for muted channel
-        assert!(!events.iter().any(|e| matches!(e, TrackerEvent::NoteOn { channel: 0, .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::NoteOn { channel: 0, .. })));
         // But state should still be updated
         assert_eq!(engine.channel_states[0].note, Some(48));
     }
@@ -863,75 +973,139 @@ mod tests {
     #[test]
     fn test_engine_program_change() {
         let mut song = make_song();
-        song.patterns[0].set_cell(0, 0, Cell {
-            effect: Some(EFFECT_PROGRAM_CHANGE),
-            effect_value: Some(5),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_PROGRAM_CHANGE),
+                effect_value: Some(5),
+                ..Cell::default()
+            },
+        );
         let mut engine = TrackerEngine::new(&song, true);
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::ProgramChange { channel: 0, program: 5 })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TrackerEvent::ProgramChange {
+                channel: 0,
+                program: 5
+            }
+        )));
     }
 
     #[test]
     fn test_engine_midi_cc() {
         let mut song = make_song();
-        song.patterns[0].set_cell(0, 0, Cell {
-            effect: Some(EFFECT_MIDI_CC),
-            effect_value: Some(64),
-            instrument: Some(7),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_MIDI_CC),
+                effect_value: Some(64),
+                instrument: Some(7),
+                ..Cell::default()
+            },
+        );
         let mut engine = TrackerEngine::new(&song, true);
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::MidiCC { channel: 0, controller: 7, value: 64 })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TrackerEvent::MidiCC {
+                channel: 0,
+                controller: 7,
+                value: 64
+            }
+        )));
     }
 
     #[test]
     fn test_engine_note_delay() {
         let mut song = Song::new(1, 4);
         song.speed = 4;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            volume: Some(100),
-            effect: Some(EFFECT_NOTE_DELAY),
-            effect_value: Some(2),
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                effect: Some(EFFECT_NOTE_DELAY),
+                effect_value: Some(2),
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         // Tick 0: no note on
         let events = engine.process_tick(&song).to_vec();
-        assert!(!events.iter().any(|e| matches!(e, TrackerEvent::NoteOn { .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::NoteOn { .. })));
         // Tick 1: no note on
         let events = engine.process_tick(&song).to_vec();
-        assert!(!events.iter().any(|e| matches!(e, TrackerEvent::NoteOn { .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::NoteOn { .. })));
         // Tick 2: note on
         let events = engine.process_tick(&song).to_vec();
-        assert!(events.iter().any(|e| matches!(e, TrackerEvent::NoteOn { channel: 0, midi_note: 48, .. })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TrackerEvent::NoteOn {
+                channel: 0,
+                midi_note: 48,
+                ..
+            }
+        )));
     }
 
     #[test]
     fn test_engine_arpeggio() {
         let mut song = Song::new(1, 4);
         song.speed = 6;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            volume: Some(100),
-            effect: Some(EFFECT_ARPEGGIO),
-            effect_value: Some(0x37), // x=3, y=7
-            ..Cell::default()
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                effect: Some(EFFECT_ARPEGGIO),
+                effect_value: Some(0x37), // x=3, y=7
+                ..Cell::default()
+            },
+        );
 
         let mut engine = TrackerEngine::new(&song, true);
         engine.process_tick(&song); // tick 0
-        // Tick 1: phase 1 -> offset = 3
+                                    // Tick 1: phase 1 -> offset = 3
         let events = engine.process_tick(&song).to_vec();
-        let pb = events.iter().find_map(|e| if let TrackerEvent::PitchBend { semitone_offset, .. } = e { Some(*semitone_offset) } else { None });
+        let pb = events.iter().find_map(|e| {
+            if let TrackerEvent::PitchBend {
+                semitone_offset, ..
+            } = e
+            {
+                Some(*semitone_offset)
+            } else {
+                None
+            }
+        });
         assert_eq!(pb, Some(3.0));
         // Tick 2: phase 2 -> offset = 7
         let events = engine.process_tick(&song).to_vec();
-        let pb = events.iter().find_map(|e| if let TrackerEvent::PitchBend { semitone_offset, .. } = e { Some(*semitone_offset) } else { None });
+        let pb = events.iter().find_map(|e| {
+            if let TrackerEvent::PitchBend {
+                semitone_offset, ..
+            } = e
+            {
+                Some(*semitone_offset)
+            } else {
+                None
+            }
+        });
         assert_eq!(pb, Some(7.0));
     }
 
@@ -941,19 +1115,30 @@ mod tests {
         song.swing = 75; // heavy swing
 
         let engine_even = TrackerEngine {
-            row: 0, order: 0, generation: 0, tick: 0,
-            speed: song.speed, bpm: song.bpm as f64,
-            repeat_count: 0, channel_states: vec![],
-            channel_info: vec![], events: vec![],
-            wrap_at_end: true, finished: false,
+            row: 0,
+            order: 0,
+            generation: 0,
+            tick: 0,
+            speed: song.speed,
+            bpm: song.bpm as f64,
+            repeat_count: 0,
+            channel_states: vec![],
+            channel_info: vec![],
+            events: vec![],
+            wrap_at_end: true,
+            finished: false,
         };
         let engine_odd = TrackerEngine {
-            row: 1, ..engine_even.clone()
+            row: 1,
+            ..engine_even.clone()
         };
 
         let spt_even = engine_even.seconds_per_tick(&song);
         let spt_odd = engine_odd.seconds_per_tick(&song);
-        assert!(spt_even > spt_odd, "Even row should be longer with swing > 50");
+        assert!(
+            spt_even > spt_odd,
+            "Even row should be longer with swing > 50"
+        );
         // Total should be conserved
         let base_spt = 1.0 / ((song.bpm as f64 * MIDI_CLOCKS_PER_BEAT) / 60.0);
         assert!((spt_even + spt_odd - 2.0 * base_spt).abs() < 1e-10);

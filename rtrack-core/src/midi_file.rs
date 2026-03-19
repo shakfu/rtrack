@@ -15,10 +15,24 @@ use crate::tracker::{Note, NoteValue, Pattern, Song, TempoPoint};
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ImportEvent {
-    NoteOn { tick: u32, note: u8, velocity: u8 },
-    NoteOff { tick: u32, note: u8 },
-    CC { tick: u32, controller: u8, value: u8 },
-    ProgramChange { tick: u32, program: u8 },
+    NoteOn {
+        tick: u32,
+        note: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        tick: u32,
+        note: u8,
+    },
+    CC {
+        tick: u32,
+        controller: u8,
+        value: u8,
+    },
+    ProgramChange {
+        tick: u32,
+        program: u8,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +107,6 @@ fn write_track_event(track: &mut Vec<u8>, delta: u32, event_bytes: &[u8]) {
 // Export
 // ---------------------------------------------------------------------------
 
-
 /// Compute pitch bend value from a semitone offset.
 fn pitch_bend_from_offset(offset: f64) -> u16 {
     let bend = (PITCH_BEND_CENTER as f64 + offset * PITCH_BEND_PER_SEMITONE) as i32;
@@ -128,8 +141,15 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
 
         for event in &events {
             match event {
-                TrackerEvent::NoteOn { channel, midi_note, velocity, .. } => {
-                    if *channel >= song.channels { continue; }
+                TrackerEvent::NoteOn {
+                    channel,
+                    midi_note,
+                    velocity,
+                    ..
+                } => {
+                    if *channel >= song.channels {
+                        continue;
+                    }
                     let midi_ch = (*channel & 0x0F) as u8;
                     // Note off previous
                     if let Some(prev) = active_notes[*channel].take() {
@@ -137,47 +157,85 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     }
                     // Reset pitch bend
                     let center = PITCH_BEND_CENTER;
-                    channel_events[*channel].push((abs_tick, vec![
-                        0xE0 | midi_ch, (center & 0x7F) as u8, ((center >> 7) & 0x7F) as u8,
-                    ]));
+                    channel_events[*channel].push((
+                        abs_tick,
+                        vec![
+                            0xE0 | midi_ch,
+                            (center & 0x7F) as u8,
+                            ((center >> 7) & 0x7F) as u8,
+                        ],
+                    ));
                     // Note on
                     let vel = (*velocity).min(0x7F);
-                    channel_events[*channel].push((abs_tick, vec![0x90 | midi_ch, *midi_note, vel]));
+                    channel_events[*channel]
+                        .push((abs_tick, vec![0x90 | midi_ch, *midi_note, vel]));
                     active_notes[*channel] = Some(*midi_note);
                 }
                 TrackerEvent::NoteOff { channel } => {
-                    if *channel >= song.channels { continue; }
+                    if *channel >= song.channels {
+                        continue;
+                    }
                     let midi_ch = (*channel & 0x0F) as u8;
                     if let Some(prev) = active_notes[*channel].take() {
                         channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
                         let center = PITCH_BEND_CENTER;
-                        channel_events[*channel].push((abs_tick, vec![
-                            0xE0 | midi_ch, (center & 0x7F) as u8, ((center >> 7) & 0x7F) as u8,
-                        ]));
+                        channel_events[*channel].push((
+                            abs_tick,
+                            vec![
+                                0xE0 | midi_ch,
+                                (center & 0x7F) as u8,
+                                ((center >> 7) & 0x7F) as u8,
+                            ],
+                        ));
                     }
                 }
-                TrackerEvent::PitchBend { channel, semitone_offset } => {
-                    if *channel >= song.channels { continue; }
+                TrackerEvent::PitchBend {
+                    channel,
+                    semitone_offset,
+                } => {
+                    if *channel >= song.channels {
+                        continue;
+                    }
                     let midi_ch = (*channel & 0x0F) as u8;
                     let value = pitch_bend_from_offset(*semitone_offset).min(PITCH_BEND_MAX);
-                    channel_events[*channel].push((abs_tick, vec![
-                        0xE0 | midi_ch, (value & 0x7F) as u8, ((value >> 7) & 0x7F) as u8,
-                    ]));
+                    channel_events[*channel].push((
+                        abs_tick,
+                        vec![
+                            0xE0 | midi_ch,
+                            (value & 0x7F) as u8,
+                            ((value >> 7) & 0x7F) as u8,
+                        ],
+                    ));
                 }
                 TrackerEvent::VolumeChange { channel, volume } => {
-                    if *channel >= song.channels { continue; }
+                    if *channel >= song.channels {
+                        continue;
+                    }
                     let midi_ch = (*channel & 0x0F) as u8;
-                    channel_events[*channel].push((abs_tick, vec![0xB0 | midi_ch, 7, *volume & 0x7F]));
+                    channel_events[*channel]
+                        .push((abs_tick, vec![0xB0 | midi_ch, 7, *volume & 0x7F]));
                 }
-                TrackerEvent::MidiCC { channel, controller, value } => {
-                    if *channel >= song.channels { continue; }
+                TrackerEvent::MidiCC {
+                    channel,
+                    controller,
+                    value,
+                } => {
+                    if *channel >= song.channels {
+                        continue;
+                    }
                     let midi_ch = (*channel & 0x0F) as u8;
-                    channel_events[*channel].push((abs_tick, vec![0xB0 | midi_ch, *controller & 0x7F, *value & 0x7F]));
+                    channel_events[*channel].push((
+                        abs_tick,
+                        vec![0xB0 | midi_ch, *controller & 0x7F, *value & 0x7F],
+                    ));
                 }
                 TrackerEvent::ProgramChange { channel, program } => {
-                    if *channel >= song.channels { continue; }
+                    if *channel >= song.channels {
+                        continue;
+                    }
                     let midi_ch = (*channel & 0x0F) as u8;
-                    channel_events[*channel].push((abs_tick, vec![0xC0 | midi_ch, *program & 0x7F]));
+                    channel_events[*channel]
+                        .push((abs_tick, vec![0xC0 | midi_ch, *program & 0x7F]));
                 }
                 TrackerEvent::TempoChanged { bpm } => {
                     tempo_events.push((abs_tick, *bpm));
@@ -195,9 +253,14 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
             let midi_ch = (ch & 0x0F) as u8;
             channel_events[ch].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
             let center = PITCH_BEND_CENTER;
-            channel_events[ch].push((abs_tick, vec![
-                0xE0 | midi_ch, (center & 0x7F) as u8, ((center >> 7) & 0x7F) as u8,
-            ]));
+            channel_events[ch].push((
+                abs_tick,
+                vec![
+                    0xE0 | midi_ch,
+                    (center & 0x7F) as u8,
+                    ((center >> 7) & 0x7F) as u8,
+                ],
+            ));
         }
     }
 
@@ -220,23 +283,35 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
 
         // Initial tempo at tick 0
         let us = bpm_to_microseconds(song.bpm as f64);
-        write_track_event(&mut trk, 0, &[
-            0xFF, 0x51, 0x03,
-            ((us >> 16) & 0xFF) as u8,
-            ((us >> 8) & 0xFF) as u8,
-            (us & 0xFF) as u8,
-        ]);
+        write_track_event(
+            &mut trk,
+            0,
+            &[
+                0xFF,
+                0x51,
+                0x03,
+                ((us >> 16) & 0xFF) as u8,
+                ((us >> 8) & 0xFF) as u8,
+                (us & 0xFF) as u8,
+            ],
+        );
 
         // Tempo changes from Fxx effects and tempo automation
         for &(tick, bpm) in &tempo_events {
             let delta = tick.saturating_sub(last_tick);
             let us = bpm_to_microseconds(bpm);
-            write_track_event(&mut trk, delta, &[
-                0xFF, 0x51, 0x03,
-                ((us >> 16) & 0xFF) as u8,
-                ((us >> 8) & 0xFF) as u8,
-                (us & 0xFF) as u8,
-            ]);
+            write_track_event(
+                &mut trk,
+                delta,
+                &[
+                    0xFF,
+                    0x51,
+                    0x03,
+                    ((us >> 16) & 0xFF) as u8,
+                    ((us >> 8) & 0xFF) as u8,
+                    (us & 0xFF) as u8,
+                ],
+            );
             last_tick = tick;
         }
 
@@ -354,16 +429,26 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                     // Note off
                     let note = read_byte(&data, &mut pos)?;
                     let _vel = read_byte(&data, &mut pos)?;
-                    channel_events[ch].push(ImportEvent::NoteOff { tick: abs_tick, note: note & 0x7F });
+                    channel_events[ch].push(ImportEvent::NoteOff {
+                        tick: abs_tick,
+                        note: note & 0x7F,
+                    });
                 }
                 0x90 => {
                     // Note on (velocity 0 = note off)
                     let note = read_byte(&data, &mut pos)?;
                     let vel = read_byte(&data, &mut pos)?;
                     if vel == 0 {
-                        channel_events[ch].push(ImportEvent::NoteOff { tick: abs_tick, note: note & 0x7F });
+                        channel_events[ch].push(ImportEvent::NoteOff {
+                            tick: abs_tick,
+                            note: note & 0x7F,
+                        });
                     } else {
-                        channel_events[ch].push(ImportEvent::NoteOn { tick: abs_tick, note: note & 0x7F, velocity: vel });
+                        channel_events[ch].push(ImportEvent::NoteOn {
+                            tick: abs_tick,
+                            note: note & 0x7F,
+                            velocity: vel,
+                        });
                     }
                 }
                 0xA0 => {
@@ -374,12 +459,19 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                     // Control change
                     let controller = read_byte(&data, &mut pos)?;
                     let value = read_byte(&data, &mut pos)?;
-                    channel_events[ch].push(ImportEvent::CC { tick: abs_tick, controller: controller & 0x7F, value: value & 0x7F });
+                    channel_events[ch].push(ImportEvent::CC {
+                        tick: abs_tick,
+                        controller: controller & 0x7F,
+                        value: value & 0x7F,
+                    });
                 }
                 0xC0 => {
                     // Program change
                     let program = read_byte(&data, &mut pos)?;
-                    channel_events[ch].push(ImportEvent::ProgramChange { tick: abs_tick, program: program & 0x7F });
+                    channel_events[ch].push(ImportEvent::ProgramChange {
+                        tick: abs_tick,
+                        program: program & 0x7F,
+                    });
                 }
                 0xD0 => {
                     // Channel aftertouch -- skip 1 byte
@@ -392,9 +484,14 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                     let bend = ((msb as u16 & 0x7F) << 7) | (lsb as u16 & 0x7F);
                     // Convert 14-bit pitch bend to 7-bit value for effect column
                     let value = (bend >> 7) as u8;
-                    if bend != 0x2000 { // Skip center (no bend)
+                    if bend != 0x2000 {
+                        // Skip center (no bend)
                         // Use controller 128 as sentinel for pitch bend (not a valid MIDI CC)
-                        channel_events[ch].push(ImportEvent::CC { tick: abs_tick, controller: 128, value });
+                        channel_events[ch].push(ImportEvent::CC {
+                            tick: abs_tick,
+                            controller: 128,
+                            value,
+                        });
                     }
                 }
                 0xF0 => {
@@ -455,10 +552,14 @@ pub fn import_midi(path: &Path) -> Result<Song> {
     // Find the maximum tick across all events to determine total rows needed
     let max_tick: u32 = channel_events
         .iter()
-        .flat_map(|evts| evts.iter().map(|e| match e {
-            ImportEvent::NoteOn { tick, .. } | ImportEvent::NoteOff { tick, .. } |
-            ImportEvent::CC { tick, .. } | ImportEvent::ProgramChange { tick, .. } => *tick,
-        }))
+        .flat_map(|evts| {
+            evts.iter().map(|e| match e {
+                ImportEvent::NoteOn { tick, .. }
+                | ImportEvent::NoteOff { tick, .. }
+                | ImportEvent::CC { tick, .. }
+                | ImportEvent::ProgramChange { tick, .. } => *tick,
+            })
+        })
         .max()
         .unwrap_or(0);
 
@@ -482,14 +583,12 @@ pub fn import_midi(path: &Path) -> Result<Song> {
     for (tracker_ch, &midi_ch) in active_channels.iter().enumerate() {
         for event in &channel_events[midi_ch] {
             let tick = match event {
-                ImportEvent::NoteOn { tick, .. } | ImportEvent::NoteOff { tick, .. } |
-                ImportEvent::CC { tick, .. } | ImportEvent::ProgramChange { tick, .. } => *tick,
+                ImportEvent::NoteOn { tick, .. }
+                | ImportEvent::NoteOff { tick, .. }
+                | ImportEvent::CC { tick, .. }
+                | ImportEvent::ProgramChange { tick, .. } => *tick,
             };
-            let global_row = if tpr > 0 {
-                (tick / tpr) as usize
-            } else {
-                0
-            };
+            let global_row = if tpr > 0 { (tick / tpr) as usize } else { 0 };
             let pat_idx = global_row / rows_per_pattern;
             let row_in_pat = global_row % rows_per_pattern;
             if pat_idx >= patterns.len() {
@@ -498,14 +597,15 @@ pub fn import_midi(path: &Path) -> Result<Song> {
             let cell = patterns[pat_idx].get_mut(row_in_pat, tracker_ch);
 
             match event {
-                ImportEvent::NoteOn { note: midi_note, velocity: vel, .. } => {
+                ImportEvent::NoteOn {
+                    note: midi_note,
+                    velocity: vel,
+                    ..
+                } => {
                     let octave = midi_note / SEMITONES_PER_OCTAVE;
                     let note_idx = midi_note % SEMITONES_PER_OCTAVE;
                     if let Some(nv) = NoteValue::from_index(note_idx) {
-                        cell.note = Some(Note::On {
-                            value: nv,
-                            octave,
-                        });
+                        cell.note = Some(Note::On { value: nv, octave });
                         if *vel != 0x7F {
                             cell.volume = Some(*vel);
                         }
@@ -517,7 +617,9 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                         cell.note = Some(Note::Off);
                     }
                 }
-                ImportEvent::CC { controller, value, .. } => {
+                ImportEvent::CC {
+                    controller, value, ..
+                } => {
                     // Map CC to Cxx effect (controller in instrument column, value in effect)
                     // Only if the cell does not already have an effect
                     if cell.effect.is_none() {
@@ -841,20 +943,30 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.speed = 6;
         // Note C-4 with portamento up effect (1xx)
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None,
-            volume: Some(100),
-            effect: Some(0x01), // porta up
-            effect_value: Some(0x10), // speed
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: Some(100),
+                effect: Some(0x01),       // porta up
+                effect_value: Some(0x10), // speed
+            },
+        );
         let tmp = std::env::temp_dir().join("rtrack_test_porta.mid");
         export_midi(&song, &tmp).unwrap();
 
         let data = std::fs::read(&tmp).unwrap();
         // Check that pitch bend events (0xE0) are present in the file
         let has_pitch_bend = data.windows(1).any(|w| w[0] & 0xF0 == 0xE0);
-        assert!(has_pitch_bend, "Portamento should produce pitch bend events");
+        assert!(
+            has_pitch_bend,
+            "Portamento should produce pitch bend events"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -862,13 +974,20 @@ mod tests {
     fn test_export_volume_slide_produces_cc7() {
         let mut song = Song::new(1, 16);
         song.speed = 6;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None,
-            volume: Some(100),
-            effect: Some(0x05), // volume slide
-            effect_value: Some(0x01), // slide down by 1 per tick
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: Some(100),
+                effect: Some(0x05),       // volume slide
+                effect_value: Some(0x01), // slide down by 1 per tick
+            },
+        );
         let tmp = std::env::temp_dir().join("rtrack_test_volslide.mid");
         export_midi(&song, &tmp).unwrap();
 
@@ -883,13 +1002,20 @@ mod tests {
     fn test_export_vibrato_produces_pitch_bend() {
         let mut song = Song::new(1, 16);
         song.speed = 6;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None,
-            volume: None,
-            effect: Some(0x04), // vibrato
-            effect_value: Some(0x44), // speed 4, depth 4
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: None,
+                effect: Some(0x04),       // vibrato
+                effect_value: Some(0x44), // speed 4, depth 4
+            },
+        );
         let tmp = std::env::temp_dir().join("rtrack_test_vibrato.mid");
         export_midi(&song, &tmp).unwrap();
 
@@ -902,18 +1028,37 @@ mod tests {
     #[test]
     fn test_export_effects_larger_than_plain() {
         let mut song_plain = Song::new(1, 16);
-        song_plain.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None, volume: None, effect: None, effect_value: None,
-        });
+        song_plain.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: None,
+                effect: None,
+                effect_value: None,
+            },
+        );
 
         let mut song_fx = Song::new(1, 16);
         song_fx.speed = 6;
-        song_fx.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None, volume: Some(100),
-            effect: Some(0x01), effect_value: Some(0x10),
-        });
+        song_fx.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: Some(100),
+                effect: Some(0x01),
+                effect_value: Some(0x10),
+            },
+        );
 
         let tmp_plain = std::env::temp_dir().join("rtrack_test_plain.mid");
         let tmp_fx = std::env::temp_dir().join("rtrack_test_fx.mid");
@@ -922,7 +1067,12 @@ mod tests {
 
         let size_plain = std::fs::metadata(&tmp_plain).unwrap().len();
         let size_fx = std::fs::metadata(&tmp_fx).unwrap().len();
-        assert!(size_fx > size_plain, "Effects export should be larger: {} vs {}", size_fx, size_plain);
+        assert!(
+            size_fx > size_plain,
+            "Effects export should be larger: {} vs {}",
+            size_fx,
+            size_plain
+        );
 
         let _ = std::fs::remove_file(&tmp_plain);
         let _ = std::fs::remove_file(&tmp_fx);
@@ -949,15 +1099,31 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.bpm = 120;
         song.speed = 6;
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None, volume: None, effect: None, effect_value: None,
-        });
-        song.patterns[0].set_cell(4, 0, Cell {
-            note: None, instrument: None, volume: None,
-            effect: Some(0x0F), // Fxx set speed/tempo
-            effect_value: Some(0x80), // 128 BPM (>= 0x20 = tempo)
-        });
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: None,
+                effect: None,
+                effect_value: None,
+            },
+        );
+        song.patterns[0].set_cell(
+            4,
+            0,
+            Cell {
+                note: None,
+                instrument: None,
+                volume: None,
+                effect: Some(0x0F),       // Fxx set speed/tempo
+                effect_value: Some(0x80), // 128 BPM (>= 0x20 = tempo)
+            },
+        );
 
         let tmp = std::env::temp_dir().join("rtrack_test_tempo_export.mid");
         export_midi(&song, &tmp).unwrap();
@@ -972,9 +1138,10 @@ mod tests {
             "Tempo map should contain the tempo change from Fxx"
         );
         // The tempo change should be ~128 BPM
-        let tempo_change = imported.tempo_map.iter().find(|tp| {
-            (tp.bpm - 128.0).abs() < 2.0
-        });
+        let tempo_change = imported
+            .tempo_map
+            .iter()
+            .find(|tp| (tp.bpm - 128.0).abs() < 2.0);
         assert!(
             tempo_change.is_some(),
             "Should find a tempo change near 128 BPM, got: {:?}",
@@ -990,20 +1157,35 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.bpm = 120;
         song.speed = 6;
-        song.tempo_map = vec![
-            TempoPoint { order: 0, row: 8, bpm: 140.0 },
-        ];
-        song.patterns[0].set_cell(0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            instrument: None, volume: None, effect: None, effect_value: None,
-        });
+        song.tempo_map = vec![TempoPoint {
+            order: 0,
+            row: 8,
+            bpm: 140.0,
+        }];
+        song.patterns[0].set_cell(
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: None,
+                volume: None,
+                effect: None,
+                effect_value: None,
+            },
+        );
 
         let tmp = std::env::temp_dir().join("rtrack_test_tempo_automation.mid");
         export_midi(&song, &tmp).unwrap();
 
         let imported = import_midi(&tmp).unwrap();
         // Should have a tempo change near 140 BPM
-        let has_140 = imported.tempo_map.iter().any(|tp| (tp.bpm - 140.0).abs() < 2.0);
+        let has_140 = imported
+            .tempo_map
+            .iter()
+            .any(|tp| (tp.bpm - 140.0).abs() < 2.0);
         assert!(
             has_140,
             "Imported song should preserve ~140 BPM tempo change, got: {:?}",
@@ -1020,9 +1202,11 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.bpm = 120;
         song.speed = 6;
-        song.tempo_map = vec![
-            TempoPoint { order: 0, row: 0, bpm: 127.5 },
-        ];
+        song.tempo_map = vec![TempoPoint {
+            order: 0,
+            row: 0,
+            bpm: 127.5,
+        }];
 
         let mut engine = TrackerEngine::new(&song, false);
         engine.process_tick(&song);

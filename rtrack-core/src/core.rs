@@ -11,12 +11,13 @@ use crate::engine::{TrackerEngine, TrackerEvent};
 use crate::link::LinkEngine;
 use crate::midi::{MidiEngine, MidiInputEngine};
 use crate::sample::SampleBank;
-use crate::tracker::{Note, NoteValue, Song, SongFile, InstrumentDef, InstrumentEntry, SampleRef, SampleRefEntry};
+use crate::tracker::{
+    InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song, SongFile,
+};
 
 use crate::types::{
-    ChannelConfig, ChannelType, ClockMode, Instrument, LearnableParam,
-    MidiCcMapping, PlaybackTiming,
-    autosave_path_for, default_channel_configs, make_relative, resolve_relative,
+    autosave_path_for, default_channel_configs, make_relative, resolve_relative, ChannelConfig,
+    ChannelType, ClockMode, Instrument, LearnableParam, MidiCcMapping, PlaybackTiming,
     AUTOSAVE_INTERVAL_SECS,
 };
 
@@ -91,7 +92,9 @@ impl TrackerCore {
             timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
             channels: default_channel_configs(channels),
-            instruments: (0..MAX_INSTRUMENTS).map(|_| Instrument::default()).collect(),
+            instruments: (0..MAX_INSTRUMENTS)
+                .map(|_| Instrument::default())
+                .collect(),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES)
                 .map(|_| crate::audio::effects::SendBusParams::default())
                 .collect(),
@@ -154,7 +157,9 @@ impl TrackerCore {
 
     /// Map a tracker channel index to its MIDI channel (0-15).
     pub fn midi_channel_for(&self, tracker_channel: usize) -> u8 {
-        let ch = self.channels.get(tracker_channel)
+        let ch = self
+            .channels
+            .get(tracker_channel)
             .map(|c| c.midi_channel)
             .unwrap_or(tracker_channel as u8);
         ch & 0x0F
@@ -169,14 +174,22 @@ impl TrackerCore {
     }
 
     /// Collect per-channel effects parameters for all channels (used by export).
-    pub fn channel_effects_params_slice(&self) -> Vec<crate::audio::channel_effects::ChannelEffectsParams> {
-        self.channels.iter().map(|c| c.effects_params.clone()).collect()
+    pub fn channel_effects_params_slice(
+        &self,
+    ) -> Vec<crate::audio::channel_effects::ChannelEffectsParams> {
+        self.channels
+            .iter()
+            .map(|c| c.effects_params.clone())
+            .collect()
     }
 
     /// Compute the pitch bend value per semitone for a channel, based on its active instrument's
     /// pitch bend range setting.
     pub fn channel_pitch_bend_per_semitone(&self, ch: usize) -> f64 {
-        let range = self.engine.channel_states.get(ch)
+        let range = self
+            .engine
+            .channel_states
+            .get(ch)
             .and_then(|cs| cs.active_instrument)
             .and_then(|idx| self.instruments.get(idx as usize))
             .and_then(|inst| inst.pitch_bend_range)
@@ -187,7 +200,8 @@ impl TrackerCore {
     /// Returns true if the instrument at the given index has a sample loaded.
     #[allow(dead_code)]
     pub fn instrument_has_sample(&self, inst: usize) -> bool {
-        self.instruments.get(inst)
+        self.instruments
+            .get(inst)
             .and_then(|i| i.sample_index)
             .and_then(|idx| self.sample_bank.get(idx))
             .is_some()
@@ -262,14 +276,17 @@ impl TrackerCore {
 
     /// Push current channel mute/solo/volume state into the engine.
     pub fn sync_engine_channel_info(&mut self) {
-        let infos: Vec<crate::engine::ChannelInfo> = self.channels.iter().enumerate().map(|(i, ch)| {
-            crate::engine::ChannelInfo {
+        let infos: Vec<crate::engine::ChannelInfo> = self
+            .channels
+            .iter()
+            .enumerate()
+            .map(|(i, ch)| crate::engine::ChannelInfo {
                 audible: self.is_channel_audible(i),
                 volume_scale: ch.volume,
                 default_instrument: ch.default_instrument,
                 is_synth: ch.channel_type == ChannelType::Synth,
-            }
-        }).collect();
+            })
+            .collect();
         self.engine.set_channel_info(infos);
     }
 
@@ -294,9 +311,11 @@ impl TrackerCore {
             if delta_ticks > 0.0 {
                 let spt = self.engine.seconds_per_tick(&self.song);
                 let ticks_per_second = 1.0 / spt;
-                let tracker_ticks = delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
+                let tracker_ticks = delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0)
+                    * ticks_per_second;
                 self.timing.tick_accumulator += tracker_ticks * spt;
-                self.timing.playback_elapsed += delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0);
+                self.timing.playback_elapsed +=
+                    delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0);
             }
             self.timing.last_link_beat = beat;
 
@@ -346,7 +365,12 @@ impl TrackerCore {
     pub fn dispatch_engine_events(&mut self, events: Vec<TrackerEvent>) {
         for event in events {
             match event {
-                TrackerEvent::NoteOn { channel, midi_note, velocity, instrument } => {
+                TrackerEvent::NoteOn {
+                    channel,
+                    midi_note,
+                    velocity,
+                    instrument,
+                } => {
                     let midi_ch = self.midi_channel_for(channel);
                     self.send_note_on_with_instrument(midi_ch, midi_note, velocity, instrument);
                 }
@@ -354,18 +378,26 @@ impl TrackerCore {
                     let midi_ch = self.midi_channel_for(channel);
                     self.send_channel_note_off(midi_ch);
                 }
-                TrackerEvent::PitchBend { channel, semitone_offset } => {
+                TrackerEvent::PitchBend {
+                    channel,
+                    semitone_offset,
+                } => {
                     let midi_ch = self.midi_channel_for(channel);
                     let pb_per_semi = self.channel_pitch_bend_per_semitone(channel);
                     let bend = (semitone_offset * pb_per_semi) as i32;
-                    let value = (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
+                    let value =
+                        (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
                     self.send_pitch_bend(midi_ch, value);
                 }
                 TrackerEvent::VolumeChange { channel, volume } => {
                     let midi_ch = self.midi_channel_for(channel);
                     self.send_cc(midi_ch, 7, volume);
                 }
-                TrackerEvent::MidiCC { channel, controller, value } => {
+                TrackerEvent::MidiCC {
+                    channel,
+                    controller,
+                    value,
+                } => {
                     let midi_ch = self.midi_channel_for(channel);
                     self.send_cc(midi_ch, controller, value);
                 }
@@ -466,7 +498,13 @@ impl TrackerCore {
 
     /// Send a note-on routed through the instrument's sound source (sample, synth params,
     /// preset patch, or default synth).
-    pub fn send_note_on_with_instrument(&mut self, channel: u8, note: u8, velocity: u8, instrument: Option<u8>) {
+    pub fn send_note_on_with_instrument(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        instrument: Option<u8>,
+    ) {
         let inst_idx = instrument.unwrap_or(0) as usize;
         let inst = self.instruments.get(inst_idx);
 
@@ -528,7 +566,13 @@ impl TrackerCore {
     }
 
     /// Play a short preview note routed through a specific instrument.
-    pub fn preview_note_with_instrument(&mut self, channel: u8, note: u8, velocity: u8, instrument: Option<u8>) {
+    pub fn preview_note_with_instrument(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        instrument: Option<u8>,
+    ) {
         if let Some((prev_ch, _prev_note, _)) = self.preview_note.take() {
             self.send_channel_note_off(prev_ch);
         }
@@ -590,7 +634,14 @@ impl TrackerCore {
     /// Record a note into the pattern at the given position (punch-in recording).
     /// Auto-fills instrument from the channel's default if the channel is Synth or Sample type.
     /// Returns true if the note was recorded.
-    pub fn record_note_at(&mut self, order: usize, row: usize, channel: usize, note: u8, velocity: u8) -> bool {
+    pub fn record_note_at(
+        &mut self,
+        order: usize,
+        row: usize,
+        channel: usize,
+        note: u8,
+        velocity: u8,
+    ) -> bool {
         let note_index = note % SEMITONES_PER_OCTAVE;
         let octave = note / SEMITONES_PER_OCTAVE;
         let note_val = match NoteValue::from_index(note_index) {
@@ -604,14 +655,21 @@ impl TrackerCore {
         if pattern_idx >= self.song.patterns.len() {
             return false;
         }
-        let tracker_note = Note::On { value: note_val, octave };
+        let tracker_note = Note::On {
+            value: note_val,
+            octave,
+        };
         let cell = self.song.patterns[pattern_idx].get_mut(row, channel);
         cell.note = Some(tracker_note);
         cell.volume = Some(velocity);
         // Auto-fill instrument from track default
         let ch_type = self.channels.get(channel).map(|c| c.channel_type);
         if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-            if let Some(inst) = self.channels.get(channel).and_then(|c| c.default_instrument) {
+            if let Some(inst) = self
+                .channels
+                .get(channel)
+                .and_then(|c| c.default_instrument)
+            {
                 cell.instrument = Some(inst);
             }
         }
@@ -635,12 +693,27 @@ impl TrackerCore {
 
     /// Handle incoming MIDI CC: apply learned mappings or forward as thru.
     /// Returns Some(message) if a MIDI learn binding was made.
-    pub fn handle_midi_cc(&mut self, controller: u8, value: u8, thru_channel: u8) -> Option<String> {
+    pub fn handle_midi_cc(
+        &mut self,
+        controller: u8,
+        value: u8,
+        thru_channel: u8,
+    ) -> Option<String> {
         // MIDI learn: if waiting for a CC, bind it
         if let Some((ch, param)) = self.midi_learn_pending.take() {
-            self.midi_cc_mappings.retain(|m| m.cc != controller && !(m.channel == ch && m.param == param));
-            self.midi_cc_mappings.push(MidiCcMapping { cc: controller, channel: ch, param });
-            return Some(format!("Mapped CC{} -> {} (ch {})", controller, param.name(), ch + 1));
+            self.midi_cc_mappings
+                .retain(|m| m.cc != controller && !(m.channel == ch && m.param == param));
+            self.midi_cc_mappings.push(MidiCcMapping {
+                cc: controller,
+                channel: ch,
+                param,
+            });
+            return Some(format!(
+                "Mapped CC{} -> {} (ch {})",
+                controller,
+                param.name(),
+                ch + 1
+            ));
         }
 
         // Apply any learned CC mappings
@@ -649,7 +722,9 @@ impl TrackerCore {
             if mapping.cc == controller {
                 let ch = mapping.channel;
                 if ch < self.channels.len() {
-                    mapping.param.apply(&mut self.channels[ch].effects_params, value);
+                    mapping
+                        .param
+                        .apply(&mut self.channels[ch].effects_params, value);
                     if let Some(ref mut audio) = self.audio {
                         audio.set_channel_effects(ch as u8, &self.channels[ch].effects_params);
                     }
@@ -734,7 +809,8 @@ impl TrackerCore {
         let mut bank = (*self.sample_bank).clone();
         match bank.load(slot, path) {
             Ok(()) => {
-                let name = path.file_stem()
+                let name = path
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("sample")
                     .to_string();
@@ -816,7 +892,13 @@ impl TrackerCore {
     }
 
     /// Slice a sample. Returns Ok(count) or Err(message).
-    pub fn slice_sample(&mut self, slot: usize, count: usize, sensitivity: f32, use_transients: bool) -> Result<usize, String> {
+    pub fn slice_sample(
+        &mut self,
+        slot: usize,
+        count: usize,
+        sensitivity: f32,
+        use_transients: bool,
+    ) -> Result<usize, String> {
         let sample = match self.sample_bank.get(slot) {
             Some(s) => s.clone(),
             None => return Err("No sample loaded in this slot".to_string()),
@@ -835,7 +917,11 @@ impl TrackerCore {
 
         let end_slot = slot + slices.len();
         if end_slot > 256 {
-            return Err(format!("Not enough sample slots (need {} from slot {:02X})", slices.len(), slot));
+            return Err(format!(
+                "Not enough sample slots (need {} from slot {:02X})",
+                slices.len(),
+                slot
+            ));
         }
 
         let mut bank = (*self.sample_bank).clone();
@@ -867,7 +953,8 @@ impl TrackerCore {
 
     /// Collect instrument definitions for the offline renderer.
     pub fn export_instruments(&self) -> Vec<crate::sample::export::ExportInstrument> {
-        self.instruments.iter()
+        self.instruments
+            .iter()
             .map(|i| crate::sample::export::ExportInstrument {
                 sample_index: i.sample_index,
                 midi_program: i.midi_program.unwrap_or(0),
@@ -878,7 +965,8 @@ impl TrackerCore {
 
     /// Return the audio engine's sample rate, or 44100 if no audio engine is running.
     pub fn export_sample_rate(&self) -> u32 {
-        self.audio.as_ref()
+        self.audio
+            .as_ref()
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100)
     }
@@ -887,15 +975,22 @@ impl TrackerCore {
     #[allow(dead_code)]
     pub fn export_wav(&self, path: &std::path::Path) -> Result<(), String> {
         crate::sample::export::render_to_wav(
-            path, &self.song, &self.sample_bank, &self.export_instruments(),
-            &self.channel_effects_params_slice(), &self.send_bus_params,
+            path,
+            &self.song,
+            &self.sample_bank,
+            &self.export_instruments(),
+            &self.channel_effects_params_slice(),
+            &self.send_bus_params,
             self.export_sample_rate(),
-        ).map_err(|e| format!("{}", e))
+        )
+        .map_err(|e| format!("{}", e))
     }
 
     /// Export the song to a WAV file alongside the song file (or in the current directory).
     pub fn export_wav_to_default(&self) -> Result<String, String> {
-        let path = self.file_path.as_ref()
+        let path = self
+            .file_path
+            .as_ref()
             .map(|p| p.with_extension("wav"))
             .unwrap_or_else(|| {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
@@ -904,15 +999,23 @@ impl TrackerCore {
         let instruments = self.export_instruments();
         let sample_rate = self.export_sample_rate();
         crate::sample::export::render_to_wav(
-            &path, &self.song, &self.sample_bank, &instruments,
-            &self.channel_effects_params_slice(), &self.send_bus_params, sample_rate,
-        ).map(|()| format!("Exported WAV: {}", path.display()))
-         .map_err(|e| format!("WAV export failed: {}", e))
+            &path,
+            &self.song,
+            &self.sample_bank,
+            &instruments,
+            &self.channel_effects_params_slice(),
+            &self.send_bus_params,
+            sample_rate,
+        )
+        .map(|()| format!("Exported WAV: {}", path.display()))
+        .map_err(|e| format!("WAV export failed: {}", e))
     }
 
     /// Export the song to a FLAC file alongside the song file (or in the current directory).
     pub fn export_flac_to_default(&self) -> Result<String, String> {
-        let path = self.file_path.as_ref()
+        let path = self
+            .file_path
+            .as_ref()
             .map(|p| p.with_extension("flac"))
             .unwrap_or_else(|| {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
@@ -921,15 +1024,23 @@ impl TrackerCore {
         let instruments = self.export_instruments();
         let sample_rate = self.export_sample_rate();
         crate::sample::export::render_to_flac(
-            &path, &self.song, &self.sample_bank, &instruments,
-            &self.channel_effects_params_slice(), &self.send_bus_params, sample_rate,
-        ).map(|()| format!("Exported FLAC: {}", path.display()))
-         .map_err(|e| format!("FLAC export failed: {}", e))
+            &path,
+            &self.song,
+            &self.sample_bank,
+            &instruments,
+            &self.channel_effects_params_slice(),
+            &self.send_bus_params,
+            sample_rate,
+        )
+        .map(|()| format!("Exported FLAC: {}", path.display()))
+        .map_err(|e| format!("FLAC export failed: {}", e))
     }
 
     /// Export the song to a standard MIDI file alongside the song file.
     pub fn export_midi_to_default(&self) -> Result<String, String> {
-        let path = self.file_path.as_ref()
+        let path = self
+            .file_path
+            .as_ref()
             .map(|p| p.with_extension("mid"))
             .unwrap_or_else(|| {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
@@ -948,8 +1059,16 @@ impl TrackerCore {
     pub fn build_song_file(&self, save_path: &std::path::Path) -> SongFile {
         let save_dir = save_path.parent().unwrap_or(std::path::Path::new("."));
 
-        let instruments: Vec<InstrumentEntry> = self.instruments.iter().enumerate()
-            .filter(|(_, inst)| !inst.name.is_empty() || inst.sample_index.is_some() || inst.midi_program.is_some() || inst.synth_params.is_some())
+        let instruments: Vec<InstrumentEntry> = self
+            .instruments
+            .iter()
+            .enumerate()
+            .filter(|(_, inst)| {
+                !inst.name.is_empty()
+                    || inst.sample_index.is_some()
+                    || inst.midi_program.is_some()
+                    || inst.synth_params.is_some()
+            })
             .map(|(slot, inst)| InstrumentEntry {
                 slot,
                 def: InstrumentDef {
@@ -962,13 +1081,21 @@ impl TrackerCore {
             })
             .collect();
 
-        let sample_refs: Vec<SampleRefEntry> = self.sample_bank.samples.iter().enumerate()
+        let sample_refs: Vec<SampleRefEntry> = self
+            .sample_bank
+            .samples
+            .iter()
+            .enumerate()
             .filter_map(|(slot, opt)| {
                 opt.as_ref().map(|sample| {
-                    let rel_path = sample.source_path.as_ref().map(|p| {
-                        let abs = std::path::Path::new(p);
-                        make_relative(save_dir, abs)
-                    }).unwrap_or_default();
+                    let rel_path = sample
+                        .source_path
+                        .as_ref()
+                        .map(|p| {
+                            let abs = std::path::Path::new(p);
+                            make_relative(save_dir, abs)
+                        })
+                        .unwrap_or_default();
 
                     SampleRefEntry {
                         slot,
@@ -1062,7 +1189,9 @@ impl TrackerCore {
                 self.song.sync_order_repeats();
 
                 // Restore instruments
-                self.instruments = (0..MAX_INSTRUMENTS).map(|_| Instrument::default()).collect();
+                self.instruments = (0..MAX_INSTRUMENTS)
+                    .map(|_| Instrument::default())
+                    .collect();
                 for entry in &song_file.instruments {
                     if entry.slot < self.instruments.len() {
                         self.instruments[entry.slot].name = entry.def.name.clone();
@@ -1133,4 +1262,3 @@ impl TrackerCore {
         }
     }
 }
-

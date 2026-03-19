@@ -27,9 +27,7 @@ impl RtrackApp {
             .iter()
             .map(|pat| {
                 (0..channels)
-                    .map(|ch| {
-                        (0..pat.rows).any(|r| !pat.get(r, ch).is_empty())
-                    })
+                    .map(|ch| (0..pat.rows).any(|r| !pat.get(r, ch).is_empty()))
                     .collect()
             })
             .collect();
@@ -85,7 +83,13 @@ impl RtrackApp {
                 // Rows
                 for ord_idx in 0..order_len {
                     let pat_idx = self.core.song.order[ord_idx];
-                    let repeat = self.core.song.order_repeats.get(ord_idx).copied().unwrap_or(1);
+                    let repeat = self
+                        .core
+                        .song
+                        .order_repeats
+                        .get(ord_idx)
+                        .copied()
+                        .unwrap_or(1);
 
                     let is_cursor = ord_idx == self.matrix_cursor;
                     let is_playing = playback_order == Some(ord_idx);

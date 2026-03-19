@@ -49,8 +49,7 @@ impl RtrackApp {
                 }),
             );
             if ui.add(play_btn).clicked() {
-                self.core
-                    .toggle_playback(self.edit_order, self.cursor_row);
+                self.core.toggle_playback(self.edit_order, self.cursor_row);
             }
 
             // Record toggle
@@ -201,21 +200,24 @@ impl RtrackApp {
                 } else {
                     ("MIDI", MIDI_DIM_COLOR)
                 };
-                if ui.add(
-                    egui::Button::new(
-                        RichText::new(midi_text)
-                            .monospace()
-                            .size(12.0)
-                            .color(midi_color),
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(midi_text)
+                                .monospace()
+                                .size(12.0)
+                                .color(midi_color),
+                        )
+                        .frame(false),
                     )
-                    .frame(false),
-                ).clicked() {
+                    .clicked()
+                {
                     self.show_midi_ports = !self.show_midi_ports;
                     if self.show_midi_ports {
-                        self.midi_port_list = rtrack_core::midi::MidiEngine::list_ports()
-                            .unwrap_or_default();
-                        self.midi_input_port_list = rtrack_core::midi::MidiInputEngine::list_ports()
-                            .unwrap_or_default();
+                        self.midi_port_list =
+                            rtrack_core::midi::MidiEngine::list_ports().unwrap_or_default();
+                        self.midi_input_port_list =
+                            rtrack_core::midi::MidiInputEngine::list_ports().unwrap_or_default();
                     }
                 }
             }
@@ -227,18 +229,24 @@ impl RtrackApp {
                     ClockMode::Internal => ("INT", MIDI_DIM_COLOR),
                     ClockMode::ExternalMidi => ("EXT", MIDI_CONNECTED_COLOR),
                 };
-                if ui.add(
-                    egui::Button::new(
-                        RichText::new(clk_text)
-                            .monospace()
-                            .size(12.0)
-                            .color(clk_color),
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(clk_text)
+                                .monospace()
+                                .size(12.0)
+                                .color(clk_color),
+                        )
+                        .frame(false),
                     )
-                    .frame(false)
-                ).on_hover_text(match self.core.clock_mode {
-                    ClockMode::Internal => "Clock: Internal (click to switch to External MIDI)",
-                    ClockMode::ExternalMidi => "Clock: External MIDI (click to switch to Internal)",
-                }).clicked() {
+                    .on_hover_text(match self.core.clock_mode {
+                        ClockMode::Internal => "Clock: Internal (click to switch to External MIDI)",
+                        ClockMode::ExternalMidi => {
+                            "Clock: External MIDI (click to switch to Internal)"
+                        }
+                    })
+                    .clicked()
+                {
                     self.core.toggle_clock_mode();
                     let mode_name = match self.core.clock_mode {
                         ClockMode::Internal => "Internal",
@@ -256,28 +264,31 @@ impl RtrackApp {
                 } else {
                     ("LINK".to_string(), LINK_DIM_COLOR)
                 };
-                if ui.add(
-                    egui::Button::new(
-                        RichText::new(link_text)
-                            .monospace()
-                            .size(12.0)
-                            .color(color),
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(link_text).monospace().size(12.0).color(color),
+                        )
+                        .frame(false),
                     )
-                    .frame(false),
-                ).clicked() {
+                    .clicked()
+                {
                     self.core.toggle_link();
                     self.status_message = Some("Link disabled".to_string());
                 }
             } else {
-                if ui.add(
-                    egui::Button::new(
-                        RichText::new("LINK")
-                            .monospace()
-                            .size(12.0)
-                            .color(Color32::from_rgb(80, 80, 100)),
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("LINK")
+                                .monospace()
+                                .size(12.0)
+                                .color(Color32::from_rgb(80, 80, 100)),
+                        )
+                        .frame(false),
                     )
-                    .frame(false),
-                ).clicked() {
+                    .clicked()
+                {
                     self.core.toggle_link();
                     self.status_message = Some("Link enabled".to_string());
                 }
