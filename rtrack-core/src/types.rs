@@ -8,17 +8,27 @@ use crate::audio::channel_effects::ChannelEffectsParams;
 /// Auto-save interval in seconds
 pub const AUTOSAVE_INTERVAL_SECS: u64 = 60;
 
-/// Timing accumulators for playback (internal to the playback loop).
+/// Timing accumulators for the playback loop.
+///
+/// Tracks elapsed time, sub-tick fractions, MIDI clock counters, and
+/// Ableton Link beat position to drive deterministic tick-based playback.
 pub struct PlaybackTiming {
+    /// Timestamp of the last tick (None when stopped).
     pub last_tick: Option<Instant>,
+    /// Fractional tick accumulator (seconds).
     pub tick_accumulator: f64,
+    /// Fractional accumulator for outgoing MIDI clock messages (seconds).
     pub clock_tick_accumulator: f64,
+    /// Total elapsed playback time (seconds).
     pub playback_elapsed: f64,
+    /// Counter for incoming external MIDI clock ticks.
     pub ext_clock_count: u32,
+    /// Last polled Ableton Link beat position.
     pub last_link_beat: f64,
 }
 
 impl PlaybackTiming {
+    /// Create a new timing state with all accumulators zeroed.
     pub fn new() -> Self {
         Self {
             last_tick: None,
@@ -38,6 +48,7 @@ impl Default for PlaybackTiming {
 }
 
 impl PlaybackTiming {
+    /// Reset all timing accumulators to zero (called on playback start).
     pub fn reset(&mut self) {
         self.last_tick = None;
         self.tick_accumulator = 0.0;
@@ -51,14 +62,19 @@ impl PlaybackTiming {
 /// Re-export ChannelState from the engine module.
 pub use crate::engine::ChannelState;
 
+/// The sound source type for a tracker channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelType {
+    /// Route notes to an external MIDI device.
     Midi,
+    /// Use the built-in synthesizer.
     Synth,
+    /// Play loaded audio samples.
     Sample,
 }
 
 impl ChannelType {
+    /// Short display label for the channel type header (e.g. "[MID]").
     pub fn label(self) -> &'static str {
         match self {
             Self::Midi => "[MID]",
@@ -67,6 +83,7 @@ impl ChannelType {
         }
     }
 
+    /// Cycle to the next channel type (Midi -> Synth -> Sample -> Midi).
     pub fn next(self) -> Self {
         match self {
             Self::Midi => Self::Synth,
@@ -75,6 +92,7 @@ impl ChannelType {
         }
     }
 
+    /// Cycle to the previous channel type.
     pub fn prev(self) -> Self {
         match self {
             Self::Midi => Self::Sample,
@@ -87,17 +105,29 @@ impl ChannelType {
 /// A channel effects parameter that can be targeted by MIDI learn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LearnableParam {
+    /// Low-pass filter cutoff frequency (20-20000 Hz, exponential).
     FilterCutoff,
+    /// Filter resonance (0.0-1.0).
     FilterResonance,
+    /// Distortion drive amount (1.0-20.0).
     DistortionDrive,
+    /// Chorus LFO rate in Hz (0.1-10.0).
     ChorusRate,
+    /// Chorus depth in samples (0.5-20.0).
     ChorusDepth,
+    /// Chorus wet/dry mix (0.0-1.0).
     ChorusMix,
+    /// Delay time in milliseconds (1-2000).
     DelayTime,
+    /// Delay feedback amount (0.0-0.95).
     DelayFeedback,
+    /// Delay wet/dry mix (0.0-1.0).
     DelayMix,
+    /// Reverb room size (0.0-1.0).
     ReverbSize,
+    /// Reverb high-frequency damping (0.0-1.0).
     ReverbDamp,
+    /// Reverb wet/dry mix (0.0-1.0).
     ReverbMix,
 }
 
@@ -140,6 +170,7 @@ impl LearnableParam {
         }
     }
 
+    /// Human-readable display name for this parameter.
     pub fn name(self) -> &'static str {
         match self {
             Self::FilterCutoff => "Filter Cutoff",
@@ -177,11 +208,14 @@ impl LearnableParam {
     }
 }
 
-/// A single MIDI CC -> parameter mapping.
+/// A single MIDI CC -> parameter mapping, created via MIDI learn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiCcMapping {
+    /// MIDI CC number (0-127).
     pub cc: u8,
+    /// Tracker channel index this mapping targets.
     pub channel: usize,
+    /// The effects parameter controlled by this CC.
     pub param: LearnableParam,
 }
 
@@ -208,6 +242,7 @@ pub struct ChannelConfig {
 }
 
 impl ChannelConfig {
+    /// Create a new channel config with defaults for the given MIDI channel.
     pub fn new(midi_channel: u8) -> Self {
         Self {
             muted: false,
@@ -222,13 +257,21 @@ impl ChannelConfig {
     }
 }
 
+/// An instrument definition binding a name to a sound source.
+///
+/// Each instrument can route to one of: a loaded sample (via `sample_index`),
+/// custom synth parameters, a MIDI program number, or the default built-in synth.
 #[derive(Default)]
 pub struct Instrument {
+    /// Display name shown in the instrument list.
     pub name: String,
+    /// MIDI program change number (0-127).
     pub midi_program: Option<u8>,
+    /// Index into the sample bank (if this instrument plays a sample).
     pub sample_index: Option<usize>,
+    /// Custom synthesizer parameters (overrides preset patches).
     pub synth_params: Option<crate::audio::synth::SynthParams>,
-    /// Pitch bend range in semitones (None = use default of 2)
+    /// Pitch bend range in semitones (None = use default of 2).
     pub pitch_bend_range: Option<f64>,
 }
 

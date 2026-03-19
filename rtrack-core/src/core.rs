@@ -116,35 +116,43 @@ impl TrackerCore {
     // Accessors
     // -----------------------------------------------------------------------
 
+    /// Returns true if playback is currently running.
     pub fn is_playing(&self) -> bool {
         self.playing
     }
 
+    /// Returns true if a MIDI output port is connected.
     pub fn midi_connected(&self) -> bool {
         self.midi.is_connected()
     }
 
+    /// Returns the display name of the connected MIDI port, or "--" if disconnected.
     pub fn midi_port_display_name(&self) -> &str {
         self.midi.port_name.as_deref().unwrap_or("--")
     }
 
+    /// Returns true if the audio engine is initialized.
     pub fn has_audio(&self) -> bool {
         self.audio.is_some()
     }
 
+    /// Returns true if a SoundFont (.sf2) is loaded in the audio engine.
     pub fn has_sf2(&self) -> bool {
         self.audio.as_ref().is_some_and(|a| a.has_sf2())
     }
 
+    /// Returns true if per-channel audio effects are enabled.
     pub fn audio_effects_enabled(&self) -> bool {
         self.audio.as_ref().is_some_and(|a| a.effects_enabled())
     }
 
+    /// Toggle per-channel audio effects on/off. Returns the new state.
     #[allow(dead_code)]
     pub fn toggle_audio_effects(&mut self) -> bool {
         self.audio.as_mut().is_some_and(|a| a.toggle_effects())
     }
 
+    /// Map a tracker channel index to its MIDI channel (0-15).
     pub fn midi_channel_for(&self, tracker_channel: usize) -> u8 {
         let ch = self.channels.get(tracker_channel)
             .map(|c| c.midi_channel)
@@ -152,6 +160,7 @@ impl TrackerCore {
         ch & 0x0F
     }
 
+    /// Returns true if the channel should produce sound (respects mute and solo state).
     pub fn is_channel_audible(&self, channel: usize) -> bool {
         if let Some(solo) = self.solo_channel {
             return channel == solo;
@@ -159,10 +168,13 @@ impl TrackerCore {
         self.channels.get(channel).is_none_or(|c| !c.muted)
     }
 
+    /// Collect per-channel effects parameters for all channels (used by export).
     pub fn channel_effects_params_slice(&self) -> Vec<crate::audio::channel_effects::ChannelEffectsParams> {
         self.channels.iter().map(|c| c.effects_params.clone()).collect()
     }
 
+    /// Compute the pitch bend value per semitone for a channel, based on its active instrument's
+    /// pitch bend range setting.
     pub fn channel_pitch_bend_per_semitone(&self, ch: usize) -> f64 {
         let range = self.engine.channel_states.get(ch)
             .and_then(|cs| cs.active_instrument)
@@ -172,6 +184,7 @@ impl TrackerCore {
         (PITCH_BEND_CENTER as f64) / range
     }
 
+    /// Returns true if the instrument at the given index has a sample loaded.
     #[allow(dead_code)]
     pub fn instrument_has_sample(&self, inst: usize) -> bool {
         self.instruments.get(inst)
@@ -184,6 +197,7 @@ impl TrackerCore {
     // Playback
     // -----------------------------------------------------------------------
 
+    /// Enable or disable Ableton Link synchronization.
     pub fn toggle_link(&mut self) {
         if self.link.is_enabled() {
             self.link.disable();
@@ -192,6 +206,7 @@ impl TrackerCore {
         }
     }
 
+    /// Toggle playback: start from the given position if stopped, or stop if playing.
     pub fn toggle_playback(&mut self, start_order: usize, start_row: usize) {
         if self.playing {
             self.stop();
@@ -200,6 +215,7 @@ impl TrackerCore {
         }
     }
 
+    /// Start playback from the given order and row position.
     pub fn play(&mut self, start_order: usize, start_row: usize) {
         self.playing = true;
         self.engine.reset(&self.song, start_order, start_row);
@@ -213,6 +229,7 @@ impl TrackerCore {
         let _ = self.midi.send_start();
     }
 
+    /// Stop playback, reset pitch bends, and send all-notes-off.
     pub fn stop(&mut self) {
         self.playing = false;
         self.timing.last_tick = None;
@@ -228,6 +245,7 @@ impl TrackerCore {
         }
     }
 
+    /// Poll Ableton Link for tempo changes and apply them to the song.
     pub fn sync_link(&mut self) {
         if !self.link.is_enabled() {
             return;
@@ -242,6 +260,7 @@ impl TrackerCore {
         }
     }
 
+    /// Push current channel mute/solo/volume state into the engine.
     pub fn sync_engine_channel_info(&mut self) {
         let infos: Vec<crate::engine::ChannelInfo> = self.channels.iter().enumerate().map(|(i, ch)| {
             crate::engine::ChannelInfo {
@@ -370,6 +389,7 @@ impl TrackerCore {
 
     // -- External MIDI clock sync --
 
+    /// Switch between internal and external MIDI clock mode.
     pub fn toggle_clock_mode(&mut self) {
         self.clock_mode = match self.clock_mode {
             ClockMode::Internal => {
@@ -380,6 +400,7 @@ impl TrackerCore {
         };
     }
 
+    /// Process an incoming external MIDI clock tick (advances playback when in external mode).
     pub fn handle_external_clock(&mut self) {
         if self.clock_mode != ClockMode::ExternalMidi || !self.playing {
             return;
@@ -397,6 +418,7 @@ impl TrackerCore {
         }
     }
 
+    /// Handle an external MIDI Start message (reset and begin playback).
     pub fn handle_external_start(&mut self) {
         if self.clock_mode != ClockMode::ExternalMidi {
             return;
@@ -408,6 +430,7 @@ impl TrackerCore {
         self.timing.playback_elapsed = 0.0;
     }
 
+    /// Handle an external MIDI Stop message (halt playback and silence notes).
     pub fn handle_external_stop(&mut self) {
         if self.clock_mode != ClockMode::ExternalMidi {
             return;
@@ -420,6 +443,7 @@ impl TrackerCore {
         self.send_all_notes_off();
     }
 
+    /// Handle an external MIDI Continue message (resume playback from current position).
     pub fn handle_external_continue(&mut self) {
         if self.clock_mode != ClockMode::ExternalMidi {
             return;
@@ -432,6 +456,7 @@ impl TrackerCore {
     // Sound output helpers (dispatch to MIDI + optional audio engine)
     // -----------------------------------------------------------------------
 
+    /// Send a note-on to both MIDI output and the audio engine.
     pub fn send_note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         let _ = self.midi.note_on(channel, note, velocity);
         if let Some(ref mut audio) = self.audio {
@@ -439,6 +464,8 @@ impl TrackerCore {
         }
     }
 
+    /// Send a note-on routed through the instrument's sound source (sample, synth params,
+    /// preset patch, or default synth).
     pub fn send_note_on_with_instrument(&mut self, channel: u8, note: u8, velocity: u8, instrument: Option<u8>) {
         let inst_idx = instrument.unwrap_or(0) as usize;
         let inst = self.instruments.get(inst_idx);
@@ -477,6 +504,7 @@ impl TrackerCore {
         self.send_note_on(channel, note, velocity);
     }
 
+    /// Send note-off for all active notes on a MIDI channel.
     pub fn send_channel_note_off(&mut self, channel: u8) {
         let _ = self.midi.channel_note_off(channel);
         if let Some(ref mut audio) = self.audio {
@@ -485,6 +513,7 @@ impl TrackerCore {
         }
     }
 
+    /// Send note-off for a specific note on a MIDI channel.
     pub fn send_note_off(&mut self, channel: u8, note: u8) {
         let _ = self.midi.note_off(channel, note);
         if let Some(ref mut audio) = self.audio {
@@ -493,10 +522,12 @@ impl TrackerCore {
         }
     }
 
+    /// Play a short preview note (auto-expires after a timeout).
     pub fn preview_note(&mut self, channel: u8, note: u8, velocity: u8) {
         self.preview_note_with_instrument(channel, note, velocity, None);
     }
 
+    /// Play a short preview note routed through a specific instrument.
     pub fn preview_note_with_instrument(&mut self, channel: u8, note: u8, velocity: u8, instrument: Option<u8>) {
         if let Some((prev_ch, _prev_note, _)) = self.preview_note.take() {
             self.send_channel_note_off(prev_ch);
@@ -509,6 +540,7 @@ impl TrackerCore {
         self.preview_note = Some((channel, note, Instant::now()));
     }
 
+    /// Silence the preview note if its timeout has elapsed.
     pub fn expire_preview_note(&mut self) {
         if let Some((ch, _note, started)) = self.preview_note {
             if started.elapsed() > std::time::Duration::from_millis(PREVIEW_NOTE_TIMEOUT_MS) {
@@ -518,6 +550,7 @@ impl TrackerCore {
         }
     }
 
+    /// Send all-notes-off to MIDI and the audio engine (panic/silence).
     pub fn send_all_notes_off(&mut self) {
         let _ = self.midi.all_notes_off();
         if let Some(ref mut audio) = self.audio {
@@ -526,6 +559,7 @@ impl TrackerCore {
         }
     }
 
+    /// Send a MIDI Control Change message to both MIDI output and the audio engine.
     pub fn send_cc(&mut self, channel: u8, controller: u8, value: u8) {
         let _ = self.midi.send_cc(channel, controller, value);
         if let Some(ref mut audio) = self.audio {
@@ -533,6 +567,7 @@ impl TrackerCore {
         }
     }
 
+    /// Send a MIDI Program Change message to both MIDI output and the audio engine.
     pub fn send_program_change(&mut self, channel: u8, program: u8) {
         let _ = self.midi.program_change(channel, program);
         if let Some(ref mut audio) = self.audio {
@@ -540,6 +575,7 @@ impl TrackerCore {
         }
     }
 
+    /// Send a MIDI Pitch Bend message to both MIDI output and the audio engine.
     pub fn send_pitch_bend(&mut self, channel: u8, value: u16) {
         let _ = self.midi.pitch_bend(channel, value);
         if let Some(ref mut audio) = self.audio {
@@ -666,6 +702,7 @@ impl TrackerCore {
         }
     }
 
+    /// Toggle outgoing MIDI clock transmission. Returns a status message.
     pub fn toggle_midi_clock(&mut self) -> String {
         self.midi.clock_enabled = !self.midi.clock_enabled;
         let state = if self.midi.clock_enabled { "on" } else { "off" };
@@ -828,6 +865,7 @@ impl TrackerCore {
     // Export
     // -----------------------------------------------------------------------
 
+    /// Collect instrument definitions for the offline renderer.
     pub fn export_instruments(&self) -> Vec<crate::sample::export::ExportInstrument> {
         self.instruments.iter()
             .map(|i| crate::sample::export::ExportInstrument {
@@ -838,12 +876,14 @@ impl TrackerCore {
             .collect()
     }
 
+    /// Return the audio engine's sample rate, or 44100 if no audio engine is running.
     pub fn export_sample_rate(&self) -> u32 {
         self.audio.as_ref()
             .map(|a| a.sample_rate() as u32)
             .unwrap_or(44100)
     }
 
+    /// Export the song to a WAV file at the given path.
     #[allow(dead_code)]
     pub fn export_wav(&self, path: &std::path::Path) -> Result<(), String> {
         crate::sample::export::render_to_wav(
@@ -853,6 +893,7 @@ impl TrackerCore {
         ).map_err(|e| format!("{}", e))
     }
 
+    /// Export the song to a WAV file alongside the song file (or in the current directory).
     pub fn export_wav_to_default(&self) -> Result<String, String> {
         let path = self.file_path.as_ref()
             .map(|p| p.with_extension("wav"))
@@ -869,6 +910,7 @@ impl TrackerCore {
          .map_err(|e| format!("WAV export failed: {}", e))
     }
 
+    /// Export the song to a FLAC file alongside the song file (or in the current directory).
     pub fn export_flac_to_default(&self) -> Result<String, String> {
         let path = self.file_path.as_ref()
             .map(|p| p.with_extension("flac"))
@@ -885,6 +927,7 @@ impl TrackerCore {
          .map_err(|e| format!("FLAC export failed: {}", e))
     }
 
+    /// Export the song to a standard MIDI file alongside the song file.
     pub fn export_midi_to_default(&self) -> Result<String, String> {
         let path = self.file_path.as_ref()
             .map(|p| p.with_extension("mid"))

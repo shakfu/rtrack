@@ -2,14 +2,21 @@
 name = "rtrack-gui"
 version = "0.1.1"
 edition = "2021"
+rust-version = "1.70"
 description = "GUI frontend for rtrack music tracker"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/shakfu/rtrack"
+authors = ["Shakeeb Alireza"]
+keywords = ["tracker", "music", "gui", "midi", "audio"]
+categories = ["multimedia::audio"]
+readme = "README.md"
 
 [[bin]]
 name = "rtrack-gui"
 path = "src/main.rs"
 
 [dependencies]
-rtrack-core = { path = "../rtrack-core" }
+rtrack-core = { version = "0.1.1", path = "../rtrack-core" }
 eframe = "0.31"
 egui = "0.31"
 rfd = "0.15"

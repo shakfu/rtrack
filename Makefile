@@ -1,4 +1,5 @@
-.PHONY: build run gui test test-unit test-integration fmt clippy lint clean
+.PHONY: build run gui test test-unit test-integration fmt clippy lint clean \
+       publish-dry publish publish-core publish-tui publish-gui
 
 build:
 	cargo build --workspace
@@ -28,3 +29,19 @@ lint: fmt clippy
 
 clean:
 	cargo clean
+
+publish-dry:
+	cargo publish -p rtrack-core --dry-run
+	cargo publish -p rtrack-tui --dry-run
+	cargo publish -p rtrack-gui --dry-run
+
+publish-core:
+	cargo publish -p rtrack-core
+
+publish-tui:
+	cargo publish -p rtrack-tui
+
+publish-gui:
+	cargo publish -p rtrack-gui
+
+publish: publish-core publish-tui publish-gui

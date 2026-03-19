@@ -4,6 +4,18 @@ A music tracker written in Rust with both TUI and GUI frontends. Compose music u
 
 rtrack makes sound out of the box -- no external synth, DAW, or SoundFont required. Connect to external gear via MIDI, sync with Ableton Link, or load your own samples.
 
+### Highlights
+
+- **Built-in synthesizer** -- 30 patches (saw, square, FM bell, acid, chiptune, etc.) with ADSR, SVF filter, sub-oscillator, FM synthesis, and per-channel effects (distortion, filter, chorus, delay, reverb)
+- **Sample engine** -- WAV/AIFF loading, pitch-shifted playback, loop points, transient-based slicing, up to 32 simultaneous voices with voice stealing
+- **MIDI I/O** -- virtual ports, hardware routing, step and punch-in recording, aftertouch-to-filter, MIDI learn for CC mapping, clock output/input
+- **Ableton Link** -- bidirectional tempo and transport sync with any Link-enabled application
+- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 16 effect commands
+- **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects
+- **Export** -- offline render to WAV/FLAC (no audio device needed), standard MIDI file import/export
+- **Two frontends** -- terminal UI (ratatui) and native GUI (egui) sharing the same headless core
+- **SoundFont support** -- optional GM playback via .sf2 files
+
 ## Quick Start
 
 ### TUI (Terminal)

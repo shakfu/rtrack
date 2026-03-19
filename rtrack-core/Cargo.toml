@@ -2,7 +2,14 @@
 name = "rtrack-core"
 version = "0.1.1"
 edition = "2021"
+rust-version = "1.70"
 description = "Headless tracker core: engine, audio, MIDI, samples, and data model"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/shakfu/rtrack"
+authors = ["Shakeeb Alireza"]
+keywords = ["tracker", "music", "midi", "audio", "synth"]
+categories = ["multimedia::audio"]
+readme = "README.md"
 
 [dependencies]
 midir = "0.10"

@@ -1,3 +1,9 @@
+//! rtrack-gui: GUI frontend for the rtrack music tracker.
+//!
+//! Launches a native window using [eframe](https://docs.rs/eframe)/[egui](https://docs.rs/egui),
+//! wrapping [`rtrack_core::TrackerCore`] with a graphical pattern editor, transport controls,
+//! sidebar, menus, and dialogs.
+
 mod app;
 mod dialogs;
 mod grid;

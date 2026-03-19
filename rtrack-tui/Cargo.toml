@@ -2,7 +2,14 @@
 name = "rtrack-tui"
 version = "0.1.1"
 edition = "2021"
+rust-version = "1.70"
 description = "TUI frontend for rtrack music tracker"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/shakfu/rtrack"
+authors = ["Shakeeb Alireza"]
+keywords = ["tracker", "music", "tui", "midi", "audio"]
+categories = ["multimedia::audio", "command-line-utilities"]
+readme = "README.md"
 
 [[bin]]
 name = "rtrack"
@@ -13,7 +20,7 @@ name = "rtrack_tui"
 path = "src/lib.rs"
 
 [dependencies]
-rtrack-core = { path = "../rtrack-core" }
+rtrack-core = { version = "0.1.1", path = "../rtrack-core" }
 ratatui = "0.29"
 crossterm = "0.28"
 anyhow = "1"
