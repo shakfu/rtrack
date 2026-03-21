@@ -31,10 +31,146 @@ Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout),
 - Ableton Link tempo/transport sync
 - Export to WAV, FLAC, and standard MIDI files
 - Undo/redo, clipboard, autosave
+- Color themes: dark (default), light, monokai (F8 to cycle)
+
+### Note Entry
+
+Switch to **Insert** mode (Esc) and use the piano keyboard layout:
+
+```text
+Lower octave:  z s x d c v g b h n j m
+               C C#D D#E F F#G G#A A#B
+
+Upper octave:  q 2 w 3 e r 5 t 6 y 7 u
+               C C#D D#E F F#G G#A A#B
+```
+
+Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to navigate.
+
+## Keybindings
+
+### Global (all modes)
+
+| Key | Action |
+|-----|--------|
+| Space | Play / stop (from current position) |
+| Ctrl+Space | Play / stop (from beginning) |
+| Esc | Toggle Normal / Insert mode |
+| Tab / Shift+Tab | Next / previous track (wraps around) |
+| Enter | Open Track Config for current channel |
+| Arrows | Move cursor (auto-switches page at boundaries) |
+| PgUp / PgDn | Jump 16 rows |
+| Home / End | First / last row |
+| `+` / `-` | Octave up / down |
+| `[` / `]` | BPM down / up |
+| `(` / `)` | Edit step down / up |
+| F1 | Help |
+| F2 | MIDI port selector |
+| F3 | Toggle Ableton Link |
+| F6 | Song settings |
+| F7 | Instrument list |
+| F8 | Cycle color theme |
+| F9-F12 | Mute channels on current page |
+| Ctrl+F9-F12 | Solo channels on current page |
+| Shift+Up / Down | Transpose note(s) up / down by semitone |
+| Ctrl+B | Toggle block selection |
+| Ctrl+I | Interpolate block (volume/effect ramp) |
+| Ctrl+F | Toggle follow mode (cursor follows playback) |
+| Ctrl+S | Save |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| Ctrl+C / X / V | Copy / cut / paste row (or block if selected) |
+| Ctrl+Left / Right | Previous / next order position |
+| Ctrl+E | Export MIDI |
+| Ctrl+W | Export WAV |
+| Ctrl+L | Export FLAC |
+| Ctrl+M | Toggle MIDI clock |
+| Ctrl+R | Toggle recording (punch-in MIDI during playback) |
+
+### Normal Mode
+
+| Key | Action |
+|-----|--------|
+| q | Quit (confirms if unsaved changes) |
+| `:` | Enter command mode |
+| Ctrl+N | New pattern |
+| Ctrl+D | Clone current pattern |
+| Insert | Insert row at cursor |
+| Backspace | Delete row at cursor |
+
+### Insert Mode
+
+| Key | Action |
+|-----|--------|
+| Piano keys | Enter note (see [Note Entry](#note-entry)) |
+| `0`-`9`, `a`-`f` | Hex digit (instrument / volume / effect columns) |
+| Delete / Backspace | Clear cell |
+| `=` | Note off (`===`) |
+
+### Command Mode (`:` from Normal mode)
+
+| Command | Action |
+|---------|--------|
+| `:p` / `:pattern` | Open pattern matrix |
+| `:set` / `:settings` | Song settings |
+| `:fx` / `:effects` | Track config / effects editor |
+| `:inst` / `:instruments` | Instrument list |
+| `:midi` | MIDI port selector |
+| `:link` | Toggle Ableton Link |
+| `:w` / `:write` | Save |
+| `:q` / `:quit` | Quit |
+| `:q!` | Force quit (discard changes) |
+| `:wq` | Save and quit |
+| `:h` / `:help` | Help screen |
+| `:ew` / `:wav` | Export WAV |
+| `:ef` / `:flac` | Export FLAC |
+| `:em` / `:exportmidi` | Export MIDI |
+| `:load` | Open file browser to load a sample |
+| `:open` | Open file browser to load a song |
+| `:recent` | Open recent files list (last 3 songs) |
+
+### Track Config (Enter on channel)
+
+| Key | Action |
+|---------|--------|
+| Up / Down / Tab | Navigate fields |
+| Left / Right | Adjust value (type, instrument, effect params, sample select) |
+| Type chars | Edit channel name (when on name field) |
+| L | MIDI learn: bind next incoming CC to current parameter |
+| U | Remove MIDI learn mapping for current parameter |
+| Enter | Open file browser (on Sample field for Sample tracks) |
+| Enter / Esc | Save and close |
+
+### Instrument List (F7)
+
+| Key | Action |
+|---------|--------|
+| Up / Down | Navigate instruments |
+| PgUp / PgDn | Jump 16 slots |
+| Enter | Open sample editor for selected instrument |
+| Tab | Open synth editor for selected instrument |
+| Type chars | Edit instrument name |
+| Backspace | Delete character from name |
+| Esc / F7 | Close |
+
+### Pattern Matrix (`:p`)
+
+| Key | Action |
+|---------|--------|
+| Up / Down / j / k | Navigate order entries |
+| PgUp / PgDn | Jump 8 entries |
+| Home / End | First / last entry |
+| Left / Right / + / - | Change pattern assignment |
+| `[` / `]` | Decrease / increase repeat count |
+| Insert | Duplicate order entry |
+| Delete / Backspace | Remove order entry |
+| Ctrl+N | New empty pattern (insert after cursor) |
+| Ctrl+D | Clone current pattern (insert after cursor) |
+| Enter | Jump to order position and close |
+| Esc / q | Close |
 
 ## Build requirements
 
-- Rust 1.70+
+- Rust 1.87+
 - CMake 3.14+ (required by Ableton Link)
 
 ## License

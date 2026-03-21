@@ -13,68 +13,50 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 - **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 16 effect commands
 - **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects
 - **Export** -- offline render to WAV/FLAC (no audio device needed), standard MIDI file import/export
-- **Two frontends** -- terminal UI (ratatui) and native GUI (egui) sharing the same headless core
+- **Two frontends** -- terminal UI ([ratatui](https://ratatui.rs)) and native GUI ([egui](https://docs.rs/egui)) sharing the same headless core
 - **SoundFont support** -- optional GM playback via .sf2 files
 
-## Quick Start
+## Install
+
+```sh
+cargo install rtrack-tui                 # installs the `rtrack` binary
+cargo install rtrack-gui                 # installs the `rtrack-gui` binary (optional)
+```
+
+Requires Rust 1.87+ and CMake 3.14+ (for the Ableton Link C++ dependency).
+
+## Frontends
+
+rtrack is split into a headless core library (`rtrack-core`) and two independent frontends that wrap it. Both frontends share the same engine, audio, MIDI, and file format -- songs created in one open in the other.
 
 ### TUI (Terminal)
 
 ```sh
-cargo run                                # launch TUI with built-in synth
-cargo run -- song.rtrk                   # open a saved song (restores instruments + samples)
-cargo run -- recording.mid               # import a MIDI file
-cargo run -- --sample-dir samples/       # load a directory of samples
+rtrack                                   # launch with built-in synth
+rtrack song.rtrk                         # open a saved song
+rtrack recording.mid                     # import a MIDI file
+rtrack --sample-dir samples/             # load a directory of samples
 ```
 
-Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout), and hit **Space** to play back from the current position (or **Ctrl+Space** to play from the beginning). Press **F1** for the full help screen.
+Modal keyboard-driven interface built on ratatui and crossterm. Piano keyboard layout for note entry, vi-style command mode, pattern matrix, instrument/sample/synth editors, and color themes. See [`rtrack-tui/README.md`](rtrack-tui/README.md) for keybindings and TUI-specific details.
 
-### GUI
+### GUI (Desktop)
 
 ```sh
-cargo run -p rtrack-gui                  # launch GUI frontend
+rtrack-gui                               # launch GUI frontend
 ```
 
-The GUI provides the same tracker core with a graphical interface: menu bar with native file dialogs (including recent files), clickable pattern grid with drag-to-select block regions, horizontal channel scrolling, order list sidebar with channel mute/solo, interactive transport controls (drag to adjust BPM, speed, octave), real-time audio visualization (spectrum analyzer + sample waveform viewer with voice playheads), instrument editor (synth params, sample editor, slicing), undo/redo, clipboard, drag-and-drop sample loading, and multiple dialogs (song settings, track config, MIDI ports, help, pattern matrix).
+Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI program), interactive sample slicing (equal or transient detection with live preview), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
 
-### Offline Render
+### CLI (Headless)
 
-Render a song to an audio file without real-time playback or an audio device:
-
-```sh
-cargo run -- --render song.rtrk -o out.wav                # render to WAV
-cargo run -- --render song.rtrk -o out.flac               # render to FLAC
-cargo run -- --render --sf2 gm.sf2 song.rtrk -o out.wav   # with SoundFont
-```
-
-### Headless Playback
-
-Play a song from the command line without launching the TUI:
+Both offline render and headless playback work without launching either frontend:
 
 ```sh
-cargo run -- --play examples/multi-pattern.rtrk           # play once and exit
-cargo run -- --play --loops 3 song.rtrk                   # play 3 times
-cargo run -- --play --loops 0 song.rtrk                   # loop forever (Ctrl+C to stop)
-cargo run -- --play --sf2 gm.sf2 --sample-dir drums/ song.rtrk  # with audio options
-```
-
-## Audio Modes
-
-rtrack supports three ways to produce sound, and they can be combined:
-
-| Mode | How to activate | What it does |
-|------|----------------|--------------|
-| **Built-in synth** | Default (always on) | 30 waveform patches with ADSR envelopes, SVF filters, sub-oscillator, and FM synthesis. Select with `Exx` effect (0-29), or configure per-instrument (F7 > Tab). |
-| **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
-| **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
-
-All modes output through [cpal](https://crates.io/crates/cpal) with per-channel effects (distortion, filter, chorus, delay, reverb) and a master stereo delay. MIDI output runs in parallel regardless of audio mode.
-
-```sh
-cargo run -- --sf2 gm.sf2                                # SoundFont mode
-cargo run -- --sample 0:kick.wav --sample 1:snare.aiff   # individual samples
-cargo run -- --sample-dir drums/                         # sample directory
-cargo run -- --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
+rtrack --render song.rtrk -o out.wav     # render to WAV (no audio device needed)
+rtrack --render song.rtrk -o out.flac    # render to FLAC
+rtrack --play song.rtrk                  # play once and exit
+rtrack --play --loops 0 song.rtrk        # loop forever (Ctrl+C to stop)
 ```
 
 ## How Tracking Works
@@ -94,88 +76,30 @@ C-4 01 80 000
 
 Empty fields display as dashes: `--- -- -- ---`
 
-### Note Entry
+## Audio Modes
 
-Switch to **Insert** mode (Esc) and use the piano keyboard layout:
+rtrack supports three ways to produce sound, and they can be combined:
 
-```text
-Lower octave:  z s x d c v g b h n j m
-               C C#D D#E F F#G G#A A#B
+| Mode | How to activate | What it does |
+|------|----------------|--------------|
+| **Built-in synth** | Default (always on) | 30 waveform patches with ADSR envelopes, SVF filters, sub-oscillator, and FM synthesis. |
+| **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
+| **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
-Upper octave:  q 2 w 3 e r 5 t 6 y 7 u
-               C C#D D#E F F#G G#A A#B
+All modes output through [cpal](https://crates.io/crates/cpal) with per-channel effects and a master stereo delay. MIDI output runs in parallel regardless of audio mode.
+
+```sh
+rtrack --sf2 gm.sf2                                # SoundFont mode
+rtrack --sample 0:kick.wav --sample 1:snare.aiff   # individual samples
+rtrack --sample-dir drums/                          # sample directory
+rtrack --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
 ```
-
-Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to navigate.
 
 ## Features
 
-### Pattern Editing
-
-- Up to 8 channels with Tab/Shift+Tab track cycling (wraps around)
-- Track Config popup (Enter on channel): set channel type (Midi/Synth/Sample), MIDI channel, default instrument (used as fallback during playback and auto-filled on note entry), and per-channel effects
-- Column headers above the pattern grid (shows channel name or "Not In Vl Fx" labels)
-- Channel rename: name channels ("Kick", "Bass", etc.) shown in headers (via Track Config name field)
-- Configurable channel count and rows per pattern (default 4 channels, 64 rows)
-- Note, instrument, volume, and effect columns per cell
-- Normal mode (navigation) and Insert mode (data entry)
-- Edit step (`(`/`)`) -- auto-advance cursor by N rows after each entry
-- Row insert/delete, copy/cut/paste entire rows
-- Block selection (Ctrl+B): select a rectangular region, then copy/cut/paste the block
-- Interpolation tool (Ctrl+I): fill volume/effect ramps across a block selection
-- Note transpose (Shift+Up/Down): shift notes up or down by semitone (works on cursor or block)
-- Follow mode (Ctrl+F): cursor follows playback position (on by default, toggle off to navigate freely)
-- Undo/redo with 100-level history
-- Mouse: click to place cursor, scroll to navigate
-
-### Song Structure
-
-- Multiple patterns with per-pattern row counts
-- Order list sidebar (always visible) with insert/remove
-- Position jump (`Bxx`) and pattern break (`Dxx`) effects
-
-### Sample Directory
-
-Load an entire directory of samples with `--sample-dir`. Files must be named `<slot>-<name>.wav` (or `.aiff`):
-
-```text
-drums/
-  0-kick.wav
-  1-snare.wav
-  2-hihat.wav
-  samples.json   (optional metadata)
-```
-
-The optional `samples.json` can set BPM, base notes, and loop points:
-
-```json
-{
-  "bpm": 140,
-  "samples": {
-    "0": { "base_note": 36 },
-    "1": { "base_note": 38, "loop_enabled": true, "loop_start": 1000, "loop_end": 5000 }
-  }
-}
-```
-
-### Instruments & Samples
-
-- 256 instrument slots (F7 to browse)
-- Per-instrument sample assignment -- load WAV/AIFF files into slots
-- Sample editor (Enter from instrument list): trim, loop points, base note, waveform preview, slice tools
-- Sample slicing: auto-slice samples into equal segments or by transient detection (configurable sensitivity)
-  - Slice results create new instruments + sample refs with correct trim points
-  - Equal-segment: divides sample into N equal parts
-  - Transient detection: RMS energy envelope derivative with ~5ms windows, 50ms minimum gap between onsets
-- Synth editor (Tab from instrument list): per-instrument waveform, ADSR, filter (type/cutoff/resonance/env), detune, sub-oscillator, FM ratio/index, pulse width
-- Pitch-shifted playback with cubic hermite interpolation, up to 32 simultaneous voices with ADSR envelopes
-- Smart voice stealing: quietest voice is stolen when at capacity
-- Per-channel volume control (applied as velocity scaling during playback)
-- Configurable pitch bend range per instrument (default +/-2 semitones, adjustable for wide portamento or fine vibrato)
-
 ### Built-in Synth Patches
 
-30 patches available via `Exx` program change or the synth editor (F7 > Tab):
+30 patches selectable via `Exx` program change or per-instrument synth configuration:
 
 | # | Name | Oscillator | Character |
 |---|------|-----------|-----------|
@@ -212,7 +136,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 ### Per-Channel Effects
 
-Each Synth/Sample track can have its own effects chain, configured via Track Config (Enter). All continuous parameters support MIDI learn (`L` to bind a CC, `U` to unbind):
+Each Synth/Sample channel can have its own effects chain. All continuous parameters support MIDI learn:
 
 | Effect | Parameters |
 |--------|-----------|
@@ -241,44 +165,69 @@ Each Synth/Sample track can have its own effects chain, configured via Track Con
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 
-### Timing & Groove
+### Instruments & Samples
 
-- **Swing**: configurable groove amount (0-100%, 50% = straight). Even rows get proportionally more time, odd rows less. Set via Song Settings (F6).
-- **Tempo automation**: BPM changes beyond the `Fxx` effect via `tempo_map` in the song file. Supports fractional BPM and values outside the 32-255 range.
-- **Configurable row highlighting**: beat interval (default 4) and bar interval (default 16) are editable in Song Settings, supporting time signatures like 3/4, 6/8, 5/4, etc.
-- **Auto-save**: periodically saves to a `.{filename}.autosave` temp file every 60 seconds when changes exist. Cleaned up on manual save or quit.
+- 256 instrument slots with per-instrument synth parameters or sample assignment
+- Sample loading from WAV/AIFF files with pitch-shifted playback (cubic hermite interpolation)
+- Sample slicing: equal segments or transient detection (RMS energy derivative, configurable sensitivity)
+- Up to 32 simultaneous voices with ADSR envelopes and smart voice stealing
+- Configurable pitch bend range per instrument (default +/-2 semitones)
+
+### Sample Directory
+
+Load an entire directory of samples with `--sample-dir`. Files must be named `<slot>-<name>.wav` (or `.aiff`):
+
+```text
+drums/
+  0-kick.wav
+  1-snare.wav
+  2-hihat.wav
+  samples.json   (optional metadata)
+```
+
+The optional `samples.json` can set BPM, base notes, and loop points:
+
+```json
+{
+  "bpm": 140,
+  "samples": {
+    "0": { "base_note": 36 },
+    "1": { "base_note": 38, "loop_enabled": true, "loop_start": 1000, "loop_end": 5000 }
+  }
+}
+```
 
 ### MIDI
 
 - Virtual output port `RTRACK_MIDI` (macOS/Linux) -- visible to any DAW
 - Virtual input port `RTRACK_MIDI_IN` -- play notes from external controllers
-- Step recording: notes from MIDI input are written to the pattern in Insert mode (with velocity and instrument auto-fill)
-- Punch-in recording (Ctrl+R): arm recording, then play -- incoming MIDI notes are written at the playback position in real time
-- Aftertouch: channel pressure and polyphonic key pressure modulate filter cutoff (exponential 20 Hz - 20 kHz)
-- MIDI learn: map any CC to a channel effects parameter (filter cutoff, drive, chorus rate, etc.) via Track Config
-- MIDI port selection (F2) for switching to hardware ports
-- MIDI clock output (Ctrl+M) at 24 ppqn with start/stop messages
-- External MIDI clock input: slave to incoming MIDI clock when clock mode is set to External
+- Step recording: MIDI input writes notes to the pattern with velocity and instrument auto-fill
+- Punch-in recording: arm recording during playback to capture MIDI in real time
+- Aftertouch: channel pressure and polyphonic key pressure modulate filter cutoff
+- MIDI learn: map any CC to channel effects parameters
+- MIDI clock output at 24 ppqn with start/stop messages
+- External MIDI clock input for slaving to incoming clock
 - Per-channel MIDI channel mapping
 
 ### Sync
 
-- [Ableton Link](https://www.ableton.com/en/link/) (F3): bidirectional BPM and transport sync with Link-enabled apps
-- Link beat-timeline mode: when Link is enabled, playback timing is driven directly from Link's beat position instead of accumulating wall-clock deltas, eliminating drift
+- [Ableton Link](https://www.ableton.com/en/link/): bidirectional BPM and transport sync with Link-enabled apps
+- Link beat-timeline mode: playback timing driven from Link's beat position, eliminating drift
+
+### Timing & Groove
+
+- **Swing**: configurable groove amount (0-100%, 50% = straight)
+- **Tempo automation**: BPM changes via `Fxx` effect or `tempo_map` in the song file
+- **Configurable row highlighting**: beat and bar intervals supporting time signatures like 3/4, 6/8, 5/4
+- **Auto-save**: periodic save to temp file every 60 seconds when unsaved changes exist
 
 ### Import / Export
 
-- Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references (see [File Format](#file-format))
+- Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references
 - Atomic save -- writes to temp file then renames, preventing corruption on crash
-- Auto-save to temp file every 60 seconds when unsaved changes exist
-- Dirty flag -- `[*]` in header when unsaved changes exist, quit confirmation prompt
-- Recent files list (`:recent`) -- quickly re-open the last 3 songs, persisted across sessions
 - Import from standard MIDI files (`.mid`) with CC and program change preservation
-- Export to MIDI (Ctrl+E)
-- Export to WAV (Ctrl+W) -- offline render with synth, samples, and effects
-- Export to FLAC (Ctrl+L) -- lossless audio export
-- CLI offline render (`--render song.rtrk -o out.wav`) -- no audio device needed, format from extension
-- Color themes: dark (default), light, monokai (F8 to cycle)
+- Export to MIDI, WAV (offline render with synth, samples, and effects), and FLAC
+- CLI offline render (`--render song.rtrk -o out.wav`) -- no audio device needed
 
 ## File Format
 
@@ -310,132 +259,9 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ```
 
 - **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment, synth params)
-- **Synth params**: optional per-instrument synthesis parameters (waveform, ADSR envelope, filter type/cutoff/resonance/envelope, detune, sub-oscillator, FM ratio/index, pulse width). When present, overrides the channel's default patch. New fields use serde defaults for backwards compatibility.
-- **Sample refs**: file paths stored relative to the `.rtrk` file, plus all metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
-- **Pitch bend range**: optional `pitch_bend_range` on instruments (default 2 semitones). Affects portamento, vibrato, and arpeggio MIDI pitch bend calculations.
-- **Timing fields**: `highlight_beat`, `highlight_bar`, `swing`, `tempo_map` are optional with serde defaults for backwards compatibility.
-- **Backwards compatible**: old `.rtrk` files without `instruments`, `sample_refs`, `synth_params`, or timing fields load fine.
-
-## Keybindings
-
-### Global (all modes)
-
-| Key | Action |
-|-----|--------|
-| Space | Play / stop (from current position) |
-| Ctrl+Space | Play / stop (from beginning) |
-| Esc | Toggle Normal / Insert mode |
-| Tab / Shift+Tab | Next / previous track (wraps around) |
-| Enter | Open Track Config for current channel |
-| Arrows | Move cursor (auto-switches page at boundaries) |
-| PgUp / PgDn | Jump 16 rows |
-| Home / End | First / last row |
-| `+` / `-` | Octave up / down |
-| `[` / `]` | BPM down / up |
-| `(` / `)` | Edit step down / up |
-| F1 | Help |
-| F2 | MIDI port selector |
-| F3 | Toggle Ableton Link |
-| F6 | Song settings |
-| F7 | Instrument list |
-| F8 | Cycle color theme |
-| F9-F12 | Mute channels on current page |
-| Ctrl+F9-F12 | Solo channels on current page |
-| Shift+Up / Down | Transpose note(s) up / down by semitone |
-| Ctrl+B | Toggle block selection |
-| Ctrl+I | Interpolate block (volume/effect ramp) |
-| Ctrl+F | Toggle follow mode (cursor follows playback) |
-| Ctrl+S | Save |
-| Ctrl+Z / Ctrl+Y | Undo / redo |
-| Ctrl+C / X / V | Copy / cut / paste row (or block if selected) |
-| Ctrl+Left / Right | Previous / next order position |
-| Ctrl+E | Export MIDI |
-| Ctrl+W | Export WAV |
-| Ctrl+L | Export FLAC |
-| Ctrl+M | Toggle MIDI clock |
-| Ctrl+R | Toggle recording (punch-in MIDI during playback) |
-
-### Normal Mode
-
-| Key | Action |
-|-----|--------|
-| q | Quit (confirms if unsaved changes) |
-| `:` | Enter command mode |
-| Ctrl+N | New pattern |
-| Ctrl+D | Clone current pattern |
-| Insert | Insert row at cursor |
-| Backspace | Delete row at cursor |
-
-### Insert Mode
-
-| Key | Action |
-|-----|--------|
-| Piano keys | Enter note (see [Note Entry](#note-entry)) |
-| `0`-`9`, `a`-`f` | Hex digit (instrument / volume / effect columns) |
-| Delete / Backspace | Clear cell |
-| `=` | Note off (`===`) |
-
-### Command Mode (`:` from Normal mode)
-
-| Command | Action |
-|---------|--------|
-| `:p` / `:pattern` | Open pattern matrix |
-| `:set` / `:settings` | Song settings |
-| `:fx` / `:effects` | Track config / effects editor |
-| `:inst` / `:instruments` | Instrument list |
-| `:midi` | MIDI port selector |
-| `:link` | Toggle Ableton Link |
-| `:w` / `:write` | Save |
-| `:q` / `:quit` | Quit |
-| `:q!` | Force quit (discard changes) |
-| `:wq` | Save and quit |
-| `:h` / `:help` | Help screen |
-| `:ew` / `:wav` | Export WAV |
-| `:ef` / `:flac` | Export FLAC |
-| `:em` / `:exportmidi` | Export MIDI |
-| `:load` | Open file browser to load a sample |
-| `:open` | Open file browser to load a song |
-| `:recent` | Open recent files list (last 3 songs) |
-
-### Track Config (Enter on channel)
-
-| Key | Action |
-|---------|--------|
-| Up / Down / Tab | Navigate fields |
-| Left / Right | Adjust value (type, instrument, effect params, sample select) |
-| Type chars | Edit channel name (when on name field) |
-| L | MIDI learn: bind next incoming CC to current parameter |
-| U | Remove MIDI learn mapping for current parameter |
-| Enter | Open file browser (on Sample field for Sample tracks) |
-| Enter / Esc | Save and close |
-
-### Instrument List (F7)
-
-| Key | Action |
-|---------|--------|
-| Up / Down | Navigate instruments |
-| PgUp / PgDn | Jump 16 slots |
-| Enter | Open sample editor for selected instrument |
-| Tab | Open synth editor for selected instrument |
-| Type chars | Edit instrument name |
-| Backspace | Delete character from name |
-| Esc / F7 | Close |
-
-### Pattern Matrix (`:p`)
-
-| Key | Action |
-|---------|--------|
-| Up / Down / j / k | Navigate order entries |
-| PgUp / PgDn | Jump 8 entries |
-| Home / End | First / last entry |
-| Left / Right / +  / - | Change pattern assignment |
-| `[` / `]` | Decrease / increase repeat count |
-| Insert | Duplicate order entry |
-| Delete / Backspace | Remove order entry |
-| Ctrl+N | New empty pattern (insert after cursor) |
-| Ctrl+D | Clone current pattern (insert after cursor) |
-| Enter | Jump to order position and close |
-| Esc / q | Close |
+- **Synth params**: optional per-instrument synthesis parameters. When present, overrides the channel's default patch. New fields use serde defaults for backwards compatibility.
+- **Sample refs**: file paths stored relative to the `.rtrk` file, plus metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
+- **Backwards compatible**: old `.rtrk` files without newer fields load fine via serde defaults.
 
 ## Examples
 
@@ -455,15 +281,13 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `sliced-amen.rtrk` | Sample slicing -- 8 equal slices of amen.wav played sequentially (170 BPM) |
 | `drumloops.rtrk` | Looping drum slices -- 8 amen.wav slices with loop points enabled (130 BPM) |
 
-Load any example:
-
 ```sh
-cargo run -- examples/chord-progression.rtrk
+rtrack examples/chord-progression.rtrk
 ```
 
 ## Requirements
 
-- Rust 1.70+
+- Rust 1.87+
 - CMake 3.14+ (builds Ableton Link C++ dependency)
 - macOS/Linux: virtual MIDI ports created automatically
 - Windows: requires a third-party virtual MIDI driver (e.g., [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
@@ -483,19 +307,10 @@ CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed
 
 ```sh
 make build            # compile all crates
-make run              # compile and run TUI
 make test             # run all tests (358 tests across workspace)
-make test-unit        # unit tests only
-make test-integration # integration tests only
 make fmt              # format code
 make clippy           # lint with clippy
 make lint             # fmt + clippy
-```
-
-To run the GUI frontend:
-
-```sh
-cargo run -p rtrack-gui
 ```
 
 ## Architecture
@@ -512,38 +327,31 @@ rtrack-core/                Headless library (engine, audio, MIDI, data model)
     engine/mod.rs           Deterministic TrackerEngine (tick-based playback, effects, events)
     tracker/                Pattern, Song, Cell, Note (serde)
     audio/                  Unified audio engine (SF2 + synth + samples + effects, cpal)
-      synth.rs              Built-in subtractive synth (30 patches, PolyBLEP + SVF + FM)
-      channel_effects.rs    Per-channel effects (distortion, filter, chorus, delay, reverb)
-      envelope.rs           Shared ADSR envelope
-      effects.rs            Master stereo delay (fundsp)
     sample/                 Sample loading (WAV/AIFF), slicing, playback, offline export
-    midi/mod.rs             MIDI output + input (midir)
-    midi_file.rs            MIDI file (.mid) export and import
-    link/mod.rs             Ableton Link (rusty_link)
+    midi/                   MIDI output + input (midir), MIDI file export/import
+    link/                   Ableton Link (rusty_link)
 
-rtrack-tui/                 TUI frontend binary (default: `cargo run`)
+rtrack-tui/                 TUI frontend (binary: rtrack)
   src/
     main.rs                 Entry point, crossterm event loop, clap CLI
-    app/mod.rs              App state, undo/redo, file I/O (wraps TrackerCore)
-    app/input.rs            Keyboard/mouse input handling, mode dispatch
-    app/playback.rs         Playback driver, MIDI input/recording, Link sync
-    tui/                    ratatui rendering (pattern editor, sample/synth editors, theme)
-  tests/integration.rs      12 integration tests
+    app/                    App state, keyboard/mouse input, playback, undo/redo
+    tui/                    ratatui rendering (pattern editor, editors, themes)
 
-rtrack-gui/                 GUI frontend binary (`cargo run -p rtrack-gui`)
+rtrack-gui/                 GUI frontend (binary: rtrack-gui)
   src/
     main.rs                 eframe entry point
-    app.rs                  RtrackApp (wraps TrackerCore), eframe::App impl, drag-and-drop
+    app.rs                  RtrackApp, eframe::App impl, drag-and-drop, playback tick
+    state.rs                Mode (Normal/Insert), SubColumn, Theme, GridColors
     grid.rs                 Pattern grid (custom Painter rendering, click/drag/scroll)
-    input.rs                Keyboard handling (piano mapping, navigation, undo/redo)
-    transport.rs            Transport bar (DragValue BPM/speed/octave, play/stop/rec, timing)
-    menu.rs                 Menu bar (File/Edit with native file dialogs via rfd, recent files)
-    sidebar.rs              Order list + channel mute/solo panel
+    input.rs                Keyboard handling, piano mapping, hex entry, actions
+    transport.rs            Transport bar (BPM/speed/octave/step, play/rec, Link/MIDI status)
+    menu.rs                 Menu bar (File/Edit/View), save, export, recent files
+    sidebar.rs              Order list + channel mute/solo
     instrument_editor.rs    Instrument list, synth params, sample editor, slicing
-    visualization.rs        Spectrum analyzer, waveform viewer, voice playheads, slice preview
-    history.rs              Undo/redo edit history
-    dialogs.rs              Song settings, track config, MIDI ports, help, quit confirm
-    state.rs                Mode, SubColumn, Theme, GridColors enums
+    pattern_matrix.rs       Full-screen pattern matrix with channel data indicators
+    visualization.rs        FFT spectrum analyzer, level meters, sample waveform viewer
+    dialogs.rs              Song settings, track config, MIDI ports, help
+    history.rs              CellEdit + EditHistory (dual-stack undo/redo, max 100)
 ```
 
 ## License
