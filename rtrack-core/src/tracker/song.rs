@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::MIDI_CLOCKS_PER_BEAT;
 
-use super::Pattern;
+use super::{Cell, Chain, ChainEntry, Pattern, Phrase};
 use crate::audio::synth::SynthParams;
 
 /// A tempo change point in the song
@@ -137,6 +137,20 @@ pub struct Song {
     /// Tempo automation points (order, row, bpm)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_map: Vec<TempoPoint>,
+
+    // -- Chain/Phrase model (populated from patterns on load/new) --
+    /// True when patterns have been modified and phrases need rebuilding.
+    #[serde(skip)]
+    pub phrases_dirty: bool,
+    /// Pool of single-channel phrases
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phrases: Vec<Phrase>,
+    /// Pool of chains (each chain = sequence of phrase refs for one channel)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<Chain>,
+    /// Arrangement grid: arrangement[row][channel] = Option<chain_index>
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrangement: Vec<Vec<Option<usize>>>,
 }
 
 fn default_highlight_beat() -> usize {
@@ -152,7 +166,7 @@ fn default_swing() -> u8 {
 impl Song {
     pub fn new(channels: usize, rows_per_pattern: usize) -> Self {
         let initial_pattern = Pattern::new(rows_per_pattern, channels);
-        Self {
+        let mut song = Self {
             title: "Untitled".to_string(),
             bpm: 120,
             speed: 6,
@@ -165,7 +179,13 @@ impl Song {
             highlight_bar: 16,
             swing: 50,
             tempo_map: Vec::new(),
-        }
+            phrases_dirty: false,
+            phrases: Vec::new(),
+            chains: Vec::new(),
+            arrangement: Vec::new(),
+        };
+        song.rebuild_phrases_from_patterns();
+        song
     }
 
     /// Ensure order_repeats matches order length (for backwards compat with old files)
@@ -181,6 +201,7 @@ impl Song {
         let idx = self.patterns.len();
         self.patterns
             .push(Pattern::new(self.rows_per_pattern, self.channels));
+        self.phrases_dirty = true;
         idx
     }
 
@@ -257,11 +278,381 @@ impl Song {
             .find(|tp| tp.order == order && tp.row == row)
             .map(|tp| tp.bpm)
     }
+
+    // -------------------------------------------------------------------
+    // Chain/Phrase model
+    // -------------------------------------------------------------------
+
+    /// Returns true if the chain/phrase model is populated.
+    pub fn has_chain_data(&self) -> bool {
+        !self.phrases.is_empty()
+    }
+
+    /// Mark phrases as needing rebuild (call after modifying patterns directly).
+    pub fn mark_phrases_dirty(&mut self) {
+        self.phrases_dirty = true;
+    }
+
+    /// Rebuild phrases from patterns if they've been marked dirty.
+    pub fn sync_phrases_if_dirty(&mut self) {
+        if self.phrases_dirty {
+            self.rebuild_phrases_from_patterns();
+            self.phrases_dirty = false;
+        }
+    }
+
+    /// Populate phrases, chains, and arrangement from the existing patterns
+    /// and order list. Each pattern channel becomes a phrase; each pattern
+    /// becomes a set of chains (one per channel); each order entry becomes
+    /// an arrangement row.
+    pub fn rebuild_phrases_from_patterns(&mut self) {
+        self.phrases.clear();
+        self.chains.clear();
+        self.arrangement.clear();
+
+        // For each pattern, create one phrase per channel and one chain per channel.
+        // chain_base[pattern_idx][channel] = chain index
+        let mut chain_base: Vec<Vec<usize>> = Vec::new();
+
+        for pattern in &self.patterns {
+            let mut chains_for_pattern = Vec::new();
+            for ch in 0..pattern.channels {
+                let phrase_idx = self.phrases.len();
+                let mut phrase = Phrase::new(pattern.rows);
+                for row in 0..pattern.rows {
+                    phrase.data[row] = pattern.data[row][ch];
+                }
+                self.phrases.push(phrase);
+
+                let chain_idx = self.chains.len();
+                self.chains.push(Chain {
+                    entries: vec![ChainEntry {
+                        phrase: phrase_idx,
+                        transpose: 0,
+                    }],
+                });
+                chains_for_pattern.push(chain_idx);
+            }
+            chain_base.push(chains_for_pattern);
+        }
+
+        // Build arrangement from order list
+        for &pattern_idx in &self.order {
+            if pattern_idx < chain_base.len() {
+                let row: Vec<Option<usize>> = chain_base[pattern_idx]
+                    .iter()
+                    .map(|&ci| Some(ci))
+                    .collect();
+                self.arrangement.push(row);
+            }
+        }
+    }
+
+    /// Sync the legacy patterns/order fields from the chain/phrase model.
+    /// Call this before saving to maintain backwards compatibility.
+    pub fn rebuild_patterns_from_phrases(&mut self) {
+        if !self.has_chain_data() {
+            return;
+        }
+        self.patterns.clear();
+        self.order.clear();
+
+        for (arr_row, arr_channels) in self.arrangement.iter().enumerate() {
+            let rows = self.phrase_rows_at(arr_row);
+            let mut pattern = Pattern::new(rows, self.channels);
+            for (ch, chain_opt) in arr_channels.iter().enumerate() {
+                if let Some(&chain_idx) = chain_opt.as_ref() {
+                    if let Some(chain) = self.chains.get(chain_idx) {
+                        if let Some(entry) = chain.entries.first() {
+                            if let Some(phrase) = self.phrases.get(entry.phrase) {
+                                for row in 0..rows.min(phrase.rows) {
+                                    pattern.data[row][ch] = phrase.data[row];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let pattern_idx = self.patterns.len();
+            self.patterns.push(pattern);
+            self.order.push(pattern_idx);
+        }
+        self.order_repeats.resize(self.order.len(), 1);
+    }
+
+    /// Get the number of rows for an arrangement row (from the first
+    /// non-empty phrase found, or rows_per_pattern as fallback).
+    pub fn phrase_rows_at(&self, arrangement_row: usize) -> usize {
+        if let Some(arr) = self.arrangement.get(arrangement_row) {
+            for chain_idx in arr.iter().flatten() {
+                if let Some(chain) = self.chains.get(*chain_idx) {
+                    if let Some(entry) = chain.entries.first() {
+                        if let Some(phrase) = self.phrases.get(entry.phrase) {
+                            return phrase.rows;
+                        }
+                    }
+                }
+            }
+        }
+        self.rows_per_pattern
+    }
+
+    /// Get the chain transpose (in semitones) for a channel at an arrangement row.
+    pub fn chain_transpose_at(&self, arrangement_row: usize, channel: usize) -> i8 {
+        if let Some(arr) = self.arrangement.get(arrangement_row) {
+            if let Some(Some(chain_idx)) = arr.get(channel) {
+                if let Some(chain) = self.chains.get(*chain_idx) {
+                    if let Some(entry) = chain.entries.first() {
+                        return entry.transpose;
+                    }
+                }
+            }
+        }
+        0
+    }
+
+    /// Read a cell from the chain/phrase model. Falls back to patterns
+    /// if chain data is not populated.
+    pub fn cell_at(&self, arrangement_row: usize, row: usize, channel: usize) -> &Cell {
+        if self.has_chain_data() {
+            if let Some(arr) = self.arrangement.get(arrangement_row) {
+                if let Some(Some(chain_idx)) = arr.get(channel) {
+                    if let Some(chain) = self.chains.get(*chain_idx) {
+                        if let Some(entry) = chain.entries.first() {
+                            if let Some(phrase) = self.phrases.get(entry.phrase) {
+                                if row < phrase.rows {
+                                    return &phrase.data[row];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            static EMPTY: Cell = Cell {
+                note: None,
+                instrument: None,
+                volume: None,
+                effect: None,
+                effect_value: None,
+            };
+            return &EMPTY;
+        }
+        // Legacy fallback
+        if let Some(&pattern_idx) = self.order.get(arrangement_row) {
+            if let Some(pattern) = self.patterns.get(pattern_idx) {
+                return pattern.get(row, channel);
+            }
+        }
+        static EMPTY: Cell = Cell {
+            note: None,
+            instrument: None,
+            volume: None,
+            effect: None,
+            effect_value: None,
+        };
+        &EMPTY
+    }
+
+    /// Write a cell in the chain/phrase model. Creates phrases/chains on
+    /// the fly for empty arrangement slots.
+    pub fn cell_at_mut(
+        &mut self,
+        arrangement_row: usize,
+        row: usize,
+        channel: usize,
+    ) -> &mut Cell {
+        self.ensure_arrangement_slot(arrangement_row, channel);
+
+        let chain_idx = self.arrangement[arrangement_row][channel].unwrap();
+        let phrase_idx = self.chains[chain_idx].entries[0].phrase;
+        &mut self.phrases[phrase_idx].data[row]
+    }
+
+    /// Ensure an arrangement slot has a valid chain+phrase. Creates them
+    /// if the slot is None.
+    fn ensure_arrangement_slot(&mut self, arrangement_row: usize, channel: usize) {
+        // Ensure arrangement has enough rows
+        while self.arrangement.len() <= arrangement_row {
+            self.arrangement.push(vec![None; self.channels]);
+        }
+        // Ensure row has enough channels
+        let arr_row = &mut self.arrangement[arrangement_row];
+        while arr_row.len() <= channel {
+            arr_row.push(None);
+        }
+        // Create phrase + chain if missing
+        if arr_row[channel].is_none() {
+            let phrase_idx = self.phrases.len();
+            self.phrases.push(Phrase::new(self.rows_per_pattern));
+            let chain_idx = self.chains.len();
+            self.chains.push(Chain {
+                entries: vec![ChainEntry {
+                    phrase: phrase_idx,
+                    transpose: 0,
+                }],
+            });
+            arr_row[channel] = Some(chain_idx);
+        }
+    }
+
+    /// Build a virtual Pattern from an arrangement row (for rendering).
+    /// Assembles data from each channel's chain/phrase into a multi-channel Pattern.
+    pub fn build_virtual_pattern(&self, arrangement_row: usize) -> Pattern {
+        let rows = self.phrase_rows_at(arrangement_row);
+        let mut pattern = Pattern::new(rows, self.channels);
+        for ch in 0..self.channels {
+            let cell_data_iter = (0..rows).map(|r| *self.cell_at(arrangement_row, r, ch));
+            for (r, cell) in cell_data_iter.enumerate() {
+                pattern.data[r][ch] = cell;
+            }
+        }
+        pattern
+    }
+
+    /// Number of arrangement rows (equivalent to old order length).
+    pub fn arrangement_len(&self) -> usize {
+        if self.has_chain_data() {
+            self.arrangement.len()
+        } else {
+            self.order.len()
+        }
+    }
+
+    /// Set a cell, writing to both the phrase (new model) and the legacy
+    /// pattern (for backwards compat). Use this instead of directly
+    /// modifying `patterns[idx].set_cell()`.
+    pub fn set_cell(&mut self, order_idx: usize, row: usize, channel: usize, cell: Cell) {
+        // Write to legacy pattern
+        if let Some(&pattern_idx) = self.order.get(order_idx) {
+            if let Some(pattern) = self.patterns.get_mut(pattern_idx) {
+                if row < pattern.rows && channel < pattern.channels {
+                    pattern.data[row][channel] = cell;
+                }
+            }
+        }
+        // Write to phrase
+        if self.has_chain_data() {
+            *self.cell_at_mut(order_idx, row, channel) = cell;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Arrangement management
+    // -------------------------------------------------------------------
+
+    /// Add a new empty arrangement row (all channels get fresh empty phrases).
+    /// Also adds a corresponding legacy pattern and order entry.
+    /// Returns the index of the new arrangement row.
+    pub fn add_arrangement_row(&mut self) -> usize {
+        let idx = self.arrangement.len();
+        let mut row = Vec::with_capacity(self.channels);
+        for _ in 0..self.channels {
+            let phrase_idx = self.phrases.len();
+            self.phrases.push(Phrase::new(self.rows_per_pattern));
+            let chain_idx = self.chains.len();
+            self.chains.push(Chain {
+                entries: vec![ChainEntry {
+                    phrase: phrase_idx,
+                    transpose: 0,
+                }],
+            });
+            row.push(Some(chain_idx));
+        }
+        self.arrangement.push(row);
+        // Keep legacy in sync
+        let pat_idx = self.patterns.len();
+        self.patterns
+            .push(Pattern::new(self.rows_per_pattern, self.channels));
+        self.order.push(pat_idx);
+        self.order_repeats.push(1);
+        idx
+    }
+
+    /// Clone an arrangement row: deep-copies all chains and phrases.
+    /// Returns the index of the new row.
+    pub fn clone_arrangement_row(&mut self, src_row: usize) -> usize {
+        let idx = self.arrangement.len();
+        let src = match self.arrangement.get(src_row) {
+            Some(r) => r.clone(),
+            None => return self.add_arrangement_row(),
+        };
+        let mut new_row = Vec::with_capacity(src.len());
+        for chain_opt in &src {
+            match chain_opt {
+                Some(chain_idx) => {
+                    if let Some(chain) = self.chains.get(*chain_idx).cloned() {
+                        // Deep-clone: copy each phrase
+                        let mut new_entries = Vec::new();
+                        for entry in &chain.entries {
+                            let new_phrase_idx = self.phrases.len();
+                            if let Some(phrase) = self.phrases.get(entry.phrase).cloned() {
+                                self.phrases.push(phrase);
+                            } else {
+                                self.phrases.push(Phrase::new(self.rows_per_pattern));
+                            }
+                            new_entries.push(ChainEntry {
+                                phrase: new_phrase_idx,
+                                transpose: entry.transpose,
+                            });
+                        }
+                        let new_chain_idx = self.chains.len();
+                        self.chains.push(Chain {
+                            entries: new_entries,
+                        });
+                        new_row.push(Some(new_chain_idx));
+                    } else {
+                        new_row.push(None);
+                    }
+                }
+                None => new_row.push(None),
+            }
+        }
+        self.arrangement.push(new_row);
+        // Keep legacy in sync
+        self.phrases_dirty = true;
+        idx
+    }
+
+    /// Set the chain transpose for a specific channel at an arrangement row.
+    pub fn set_chain_transpose(
+        &mut self,
+        arrangement_row: usize,
+        channel: usize,
+        transpose: i8,
+    ) {
+        if let Some(arr) = self.arrangement.get(arrangement_row) {
+            if let Some(Some(chain_idx)) = arr.get(channel) {
+                if let Some(chain) = self.chains.get_mut(*chain_idx) {
+                    if let Some(entry) = chain.entries.first_mut() {
+                        entry.transpose = transpose;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove an arrangement row. Returns true if removed.
+    pub fn remove_arrangement_row(&mut self, row: usize) -> bool {
+        if row >= self.arrangement.len() || self.arrangement.len() <= 1 {
+            return false;
+        }
+        self.arrangement.remove(row);
+        // Keep legacy in sync
+        if row < self.order.len() {
+            self.order.remove(row);
+            if row < self.order_repeats.len() {
+                self.order_repeats.remove(row);
+            }
+        }
+        self.phrases_dirty = true;
+        true
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracker::{Note, NoteValue};
 
     #[test]
     fn test_song_new() {
@@ -298,7 +689,7 @@ mod tests {
         song.title = "RoundtripTest".to_string();
         song.bpm = 155;
         song.speed = 3;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -424,5 +815,66 @@ mod tests {
         assert!(loaded.sample_refs.is_empty());
 
         let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_chain_transpose_at() {
+        let mut song = Song::new(2, 4);
+        song.set_chain_transpose(0, 0, 5);
+        assert_eq!(song.chain_transpose_at(0, 0), 5);
+        assert_eq!(song.chain_transpose_at(0, 1), 0); // unmodified channel
+    }
+
+    #[test]
+    fn test_add_arrangement_row() {
+        let mut song = Song::new(2, 4);
+        assert_eq!(song.arrangement_len(), 1);
+        let idx = song.add_arrangement_row();
+        assert_eq!(idx, 1);
+        assert_eq!(song.arrangement_len(), 2);
+        assert_eq!(song.order.len(), 2);
+    }
+
+    #[test]
+    fn test_clone_arrangement_row() {
+        let mut song = Song::new(2, 4);
+        song.set_cell(0, 0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
+            ..Cell::default()
+        });
+        let idx = song.clone_arrangement_row(0);
+        // Cloned row should have same cell data
+        let cell = song.cell_at(idx, 0, 0);
+        assert!(cell.note.is_some());
+        // But different phrase indices (deep clone)
+        let chain_a = song.arrangement[0][0].unwrap();
+        let chain_b = song.arrangement[idx][0].unwrap();
+        assert_ne!(chain_a, chain_b);
+    }
+
+    #[test]
+    fn test_remove_arrangement_row() {
+        let mut song = Song::new(2, 4);
+        song.add_arrangement_row();
+        assert_eq!(song.arrangement_len(), 2);
+        assert!(song.remove_arrangement_row(0));
+        assert_eq!(song.arrangement_len(), 1);
+        // Can't remove last row
+        assert!(!song.remove_arrangement_row(0));
+    }
+
+    #[test]
+    fn test_rebuild_roundtrip() {
+        let mut song = Song::new(2, 4);
+        song.set_cell(0, 0, 0, Cell {
+            note: Some(Note::On { value: NoteValue::E, octave: 5 }),
+            instrument: Some(3),
+            ..Cell::default()
+        });
+        // Rebuild patterns from phrases (simulating save)
+        song.rebuild_patterns_from_phrases();
+        let cell = song.patterns[0].get(0, 0);
+        assert_eq!(cell.note, Some(Note::On { value: NoteValue::E, octave: 5 }));
+        assert_eq!(cell.instrument, Some(3));
     }
 }

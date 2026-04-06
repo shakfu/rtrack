@@ -281,7 +281,8 @@ impl TrackerEngine {
         }
         self.repeat_count = 0;
         self.order += 1;
-        if self.order >= song.order.len() {
+        let arr_len = song.arrangement_len();
+        if self.order >= arr_len {
             if self.wrap_at_end {
                 self.order = 0;
                 self.generation += 1;
@@ -297,7 +298,7 @@ impl TrackerEngine {
     }
 
     fn skip_zero_repeats_forward(&mut self, song: &Song) {
-        let len = song.order.len();
+        let len = song.arrangement_len();
         if len == 0 {
             self.finished = true;
             return;
@@ -328,17 +329,12 @@ impl TrackerEngine {
 
     /// Tick 0: process the new row -- trigger notes, set up effect state, advance row pointer.
     fn advance_row(&mut self, song: &Song) {
-        if self.order >= song.order.len() {
+        let arr_len = song.arrangement_len();
+        if self.order >= arr_len {
             self.finished = true;
             return;
         }
-        let pattern_idx = song.order[self.order];
-        if pattern_idx >= song.patterns.len() {
-            self.finished = true;
-            return;
-        }
-        let pattern = &song.patterns[pattern_idx];
-        let channels = pattern.channels;
+        let channels = song.channels;
 
         // Ensure channel_states has enough entries
         while self.channel_states.len() < channels {
@@ -349,16 +345,22 @@ impl TrackerEngine {
         self.emit(TrackerEvent::RowAdvanced {
             order: self.order,
             row: self.row,
-            pattern: pattern_idx,
+            pattern: self.order,
         });
 
-        // Collect cell data
+        // Collect cell data via chain/phrase model, applying chain transpose
         type CellTuple = (Option<Note>, Option<u8>, Option<u8>, Option<u8>, Option<u8>);
         let cells: Vec<CellTuple> = (0..channels)
             .map(|ch| {
-                let cell = pattern.get(self.row, ch);
+                let cell = song.cell_at(self.order, self.row, ch);
+                let transpose = song.chain_transpose_at(self.order, ch);
+                let note = if transpose != 0 {
+                    cell.note.map(|n| n.transposed(transpose))
+                } else {
+                    cell.note
+                };
                 let inst = self.resolve_instrument(ch, cell.instrument);
-                (cell.note, cell.volume, cell.effect, cell.effect_value, inst)
+                (note, cell.volume, cell.effect, cell.effect_value, inst)
             })
             .collect();
 
@@ -504,7 +506,7 @@ impl TrackerEngine {
 
         // Position jump (Bxx)
         if let Some(target_order) = jump_order {
-            let target = target_order.min(song.order.len() - 1);
+            let target = target_order.min(arr_len - 1);
             if target <= self.order {
                 self.generation += 1;
                 self.emit(TrackerEvent::GenerationAdvanced {
@@ -515,8 +517,7 @@ impl TrackerEngine {
             self.repeat_count = 0;
             self.skip_zero_repeats_forward(song);
             if !self.finished {
-                let target_pattern = song.order[self.order];
-                let target_rows = song.patterns[target_pattern].rows;
+                let target_rows = song.phrase_rows_at(self.order);
                 self.row = break_row.unwrap_or(0).min(target_rows - 1);
             }
             return;
@@ -526,8 +527,7 @@ impl TrackerEngine {
         if let Some(target_row) = break_row {
             self.advance_order_position(song);
             if !self.finished {
-                let target_pattern = song.order[self.order];
-                let target_rows = song.patterns[target_pattern].rows;
+                let target_rows = song.phrase_rows_at(self.order);
                 self.row = target_row.min(target_rows - 1);
             }
             return;
@@ -535,8 +535,8 @@ impl TrackerEngine {
 
         // Normal advance
         self.row += 1;
-        let pattern_rows = pattern.rows;
-        if self.row >= pattern_rows {
+        let phrase_rows = song.phrase_rows_at(self.order);
+        if self.row >= phrase_rows {
             self.row = 0;
             self.advance_order_position(song);
         }
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn test_engine_note_on_off() {
         let mut song = make_song();
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -730,7 +730,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             1,
             0,
             Cell {
@@ -769,7 +769,7 @@ mod tests {
     fn test_engine_portamento_up() {
         let mut song = Song::new(1, 4);
         song.speed = 3;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -805,7 +805,7 @@ mod tests {
     fn test_engine_volume_slide() {
         let mut song = Song::new(1, 4);
         song.speed = 3;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn test_engine_set_speed_tempo() {
         let mut song = Song::new(1, 4);
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -844,7 +844,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             1,
             0,
             Cell {
@@ -876,7 +876,8 @@ mod tests {
     fn test_engine_position_jump() {
         let mut song = Song::new(1, 4);
         song.order = vec![0, 0, 0];
-        song.patterns[0].set_cell(
+        song.rebuild_phrases_from_patterns();
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -896,7 +897,8 @@ mod tests {
     fn test_engine_pattern_break() {
         let mut song = Song::new(1, 16);
         song.order = vec![0, 0];
-        song.patterns[0].set_cell(
+        song.rebuild_phrases_from_patterns();
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -940,7 +942,7 @@ mod tests {
     #[test]
     fn test_engine_muted_channel_no_events() {
         let mut song = make_song();
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -973,7 +975,7 @@ mod tests {
     #[test]
     fn test_engine_program_change() {
         let mut song = make_song();
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -996,7 +998,7 @@ mod tests {
     #[test]
     fn test_engine_midi_cc() {
         let mut song = make_song();
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -1022,7 +1024,7 @@ mod tests {
     fn test_engine_note_delay() {
         let mut song = Song::new(1, 4);
         song.speed = 4;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -1064,7 +1066,7 @@ mod tests {
     fn test_engine_arpeggio() {
         let mut song = Song::new(1, 4);
         song.speed = 6;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -1149,6 +1151,7 @@ mod tests {
         let mut song = Song::new(1, 2);
         song.order = vec![0, 0];
         song.order_repeats = vec![2, 1]; // first entry plays twice
+        song.rebuild_phrases_from_patterns();
 
         let mut engine = TrackerEngine::new(&song, false);
         // Pattern has 2 rows, speed 6. Each full pattern = 2 * 6 = 12 ticks.
@@ -1163,5 +1166,39 @@ mod tests {
             engine.process_tick(&song);
         }
         assert!(engine.finished);
+    }
+
+    #[test]
+    fn test_engine_chain_transpose() {
+        let mut song = Song::new(1, 4);
+        song.set_cell(0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
+
+        // Set transpose +7 semitones on channel 0's chain
+        let chain_idx = song.arrangement[0][0].unwrap();
+        song.chains[chain_idx].entries[0].transpose = 7;
+
+        let mut engine = TrackerEngine::new(&song, true);
+        let events = engine.process_tick(&song).to_vec();
+
+        // Should emit NoteOn with C4+7 = G4 = MIDI 55
+        let note_on = events.iter().find(|e| matches!(e, TrackerEvent::NoteOn { .. }));
+        assert!(note_on.is_some(), "Expected NoteOn event");
+        match note_on.unwrap() {
+            TrackerEvent::NoteOn { midi_note, .. } => {
+                assert_eq!(*midi_note, 55, "C4 + 7 semitones = G4 = MIDI 55");
+            }
+            _ => unreachable!(),
+        }
     }
 }

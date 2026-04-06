@@ -1272,6 +1272,9 @@ impl App {
             Mode::FileBrowser => self.handle_file_browser_key(key),
             Mode::RecentFiles => self.handle_recent_files_key(key),
         }
+        // Any key press may have modified patterns; mark phrases dirty
+        // so the engine picks up changes on the next tick.
+        self.core.song.mark_phrases_dirty();
     }
 
     fn handle_common_key(&mut self, key: KeyEvent) -> bool {

@@ -359,6 +359,7 @@ impl TrackerCore {
     /// Start playback from the given order and row position.
     pub fn play(&mut self, start_order: usize, start_row: usize) {
         self.playing = true;
+        self.song.rebuild_phrases_from_patterns();
         self.engine.reset(&self.song, start_order, start_row);
         self.sync_engine_channel_info();
         self.timing.reset();
@@ -483,6 +484,7 @@ impl TrackerCore {
 
     /// Process a single sub-tick: drive engine and dispatch events.
     pub fn process_tick(&mut self) {
+        self.song.sync_phrases_if_dirty();
         self.engine.process_tick(&self.song);
         let events = self.engine.drain_events();
         self.dispatch_engine_events(events);
@@ -775,46 +777,44 @@ impl TrackerCore {
             Some(v) => v,
             None => return false,
         };
-        if order >= self.song.order.len() {
-            return false;
-        }
-        let pattern_idx = self.song.order[order];
-        if pattern_idx >= self.song.patterns.len() {
+        if order >= self.song.arrangement_len() {
             return false;
         }
         let tracker_note = Note::On {
             value: note_val,
             octave,
         };
-        let cell = self.song.patterns[pattern_idx].get_mut(row, channel);
+        // Auto-fill instrument from track default
+        let auto_inst = {
+            let ch_type = self.channels.get(channel).map(|c| c.channel_type);
+            if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
+                self.channels
+                    .get(channel)
+                    .and_then(|c| c.default_instrument)
+            } else {
+                None
+            }
+        };
+        // Build the cell and write to both representations
+        let mut cell = *self.song.cell_at(order, row, channel);
         cell.note = Some(tracker_note);
         cell.volume = Some(velocity);
-        // Auto-fill instrument from track default
-        let ch_type = self.channels.get(channel).map(|c| c.channel_type);
-        if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-            if let Some(inst) = self
-                .channels
-                .get(channel)
-                .and_then(|c| c.default_instrument)
-            {
-                cell.instrument = Some(inst);
-            }
+        if let Some(inst) = auto_inst {
+            cell.instrument = Some(inst);
         }
+        self.song.set_cell(order, row, channel, cell);
         self.dirty = true;
         true
     }
 
     /// Record a note-off at the given position (punch-in recording).
     pub fn record_note_off_at(&mut self, order: usize, row: usize, channel: usize) {
-        if order >= self.song.order.len() {
+        if order >= self.song.arrangement_len() {
             return;
         }
-        let pattern_idx = self.song.order[order];
-        if pattern_idx >= self.song.patterns.len() {
-            return;
-        }
-        let cell = self.song.patterns[pattern_idx].get_mut(row, channel);
+        let mut cell = *self.song.cell_at(order, row, channel);
         cell.note = Some(Note::Off);
+        self.song.set_cell(order, row, channel, cell);
         self.dirty = true;
     }
 
@@ -1252,6 +1252,9 @@ impl TrackerCore {
 
     /// Save the song. Returns Ok(message) or Err(message).
     pub fn save(&mut self) -> Result<String, String> {
+        // Ensure both representations are in sync before saving
+        self.song.sync_phrases_if_dirty();
+        self.song.rebuild_patterns_from_phrases();
         let path = self.file_path.clone().unwrap_or_else(|| {
             let name = self.song.title.replace(' ', "_").to_lowercase();
             PathBuf::from(format!("{}.rtrk", name))
@@ -1316,6 +1319,9 @@ impl TrackerCore {
                 self.solo_channel = None;
                 self.song = song;
                 self.song.sync_order_repeats();
+                if !self.song.has_chain_data() {
+                    self.song.rebuild_phrases_from_patterns();
+                }
 
                 // Restore instruments
                 self.instruments = (0..MAX_INSTRUMENTS)

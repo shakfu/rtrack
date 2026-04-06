@@ -13,7 +13,8 @@ fn key(code: KeyCode) -> KeyEvent {
 /// Create an App with a simple song: one pattern, one note on row 0.
 fn app_with_note() -> App {
     let mut app = App::new();
-    app.core.song.patterns[0].set_cell(
+    app.core.song.set_cell(
+        0,
         0,
         0,
         Cell {
@@ -73,7 +74,8 @@ fn test_export_wav_roundtrip() {
 fn test_export_midi_roundtrip() {
     let mut app = app_with_note();
     // Add a note-off on row 2
-    app.core.song.patterns[0].set_cell(
+    app.core.song.set_cell(
+        0,
         2,
         0,
         Cell {
@@ -242,7 +244,8 @@ fn test_multi_pattern_song_renders() {
     song.bpm = 200;
 
     // Pattern 0: note on
-    song.patterns[0].set_cell(
+    song.set_cell(
+        0,
         0,
         0,
         Cell {
@@ -257,7 +260,10 @@ fn test_multi_pattern_song_renders() {
 
     // Add pattern 1 with a different note
     song.add_pattern();
-    song.patterns[1].set_cell(
+    song.order = vec![0, 1];
+    song.rebuild_phrases_from_patterns();
+    song.set_cell(
+        1,
         0,
         0,
         Cell {
@@ -269,7 +275,6 @@ fn test_multi_pattern_song_renders() {
             ..Cell::default()
         },
     );
-    song.order = vec![0, 1];
 
     let bank = rtrack_core::sample::SampleBank::new();
     let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
@@ -313,7 +318,7 @@ fn test_multi_pattern_song_renders() {
 fn test_channel_effects_in_render() {
     let mut song = Song::new(1, 4);
     song.speed = 2;
-    song.patterns[0].set_cell(
+    song.set_cell(0,
         0,
         0,
         Cell {
@@ -397,7 +402,7 @@ fn test_channel_effects_in_render() {
 fn test_send_bus_in_render() {
     let mut song = Song::new(1, 4);
     song.speed = 2;
-    song.patterns[0].set_cell(
+    song.set_cell(0,
         0,
         0,
         Cell {
@@ -526,7 +531,7 @@ fn test_generate_sliced_amen() {
 
     for i in 0..num_slices {
         let row = i * 4;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             row,
             0,
             Cell {

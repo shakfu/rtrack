@@ -104,6 +104,29 @@ impl Note {
             Note::Off => "===".to_string(),
         }
     }
+
+    /// Return a new Note transposed by the given number of semitones.
+    /// Note::Off is returned unchanged. Clamps to valid MIDI range (0-127).
+    pub fn transposed(self, semitones: i8) -> Note {
+        match self {
+            Note::On { value, octave } => {
+                let midi = (octave as i16) * SEMITONES_PER_OCTAVE as i16
+                    + value.to_index() as i16
+                    + semitones as i16;
+                let midi = midi.clamp(0, MIDI_MAX_NOTE as i16) as u8;
+                let new_octave = midi / SEMITONES_PER_OCTAVE;
+                let new_index = midi % SEMITONES_PER_OCTAVE;
+                match NoteValue::from_index(new_index) {
+                    Some(nv) => Note::On {
+                        value: nv,
+                        octave: new_octave,
+                    },
+                    None => self, // shouldn't happen
+                }
+            }
+            Note::Off => Note::Off,
+        }
+    }
 }
 
 /// A single cell in the tracker grid
@@ -159,6 +182,76 @@ impl Cell {
         format!("{}{}", cmd, val)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phrase (single-channel note data)
+// ---------------------------------------------------------------------------
+
+/// A phrase is a single-channel column of note data.
+/// This is the atomic unit in the Song > Chain > Phrase hierarchy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Phrase {
+    pub rows: usize,
+    pub data: Vec<Cell>, // data[row], single channel
+}
+
+impl Phrase {
+    pub fn new(rows: usize) -> Self {
+        Self {
+            rows,
+            data: vec![Cell::default(); rows],
+        }
+    }
+
+    pub fn get(&self, row: usize) -> &Cell {
+        &self.data[row]
+    }
+
+    pub fn get_mut(&mut self, row: usize) -> &mut Cell {
+        &mut self.data[row]
+    }
+
+    pub fn set_cell(&mut self, row: usize, cell: Cell) {
+        self.data[row] = cell;
+    }
+
+    pub fn insert_row(&mut self, at: usize) {
+        if at >= self.rows {
+            return;
+        }
+        self.data.insert(at, Cell::default());
+        self.data.truncate(self.rows);
+    }
+
+    pub fn delete_row(&mut self, at: usize) {
+        if at >= self.rows {
+            return;
+        }
+        self.data.remove(at);
+        self.data.push(Cell::default());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chain (sequence of phrase references for one channel)
+// ---------------------------------------------------------------------------
+
+/// One entry in a chain: play a phrase with optional semitone transpose.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ChainEntry {
+    pub phrase: usize, // index into Song::phrases
+    pub transpose: i8, // semitones
+}
+
+/// A chain is a sequence of phrase references for one channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chain {
+    pub entries: Vec<ChainEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Pattern (multi-channel grid, kept for rendering and backwards compat)
+// ---------------------------------------------------------------------------
 
 /// A pattern is a grid of rows x channels
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,5 +530,86 @@ mod tests {
         );
         assert_eq!(got.instrument, Some(1));
         assert_eq!(got.volume, Some(0x40));
+    }
+
+    #[test]
+    fn test_note_transposed() {
+        let c4 = Note::On {
+            value: NoteValue::C,
+            octave: 4,
+        };
+        // Transpose up 7 semitones: C4 -> G4
+        let g4 = c4.transposed(7);
+        assert_eq!(g4.to_midi_note(), Some(55));
+        match g4 {
+            Note::On { value, octave } => {
+                assert_eq!(value, NoteValue::G);
+                assert_eq!(octave, 4);
+            }
+            _ => panic!("expected Note::On"),
+        }
+
+        // Transpose down 3 semitones: C4 -> A3
+        let a3 = c4.transposed(-3);
+        assert_eq!(a3.to_midi_note(), Some(45));
+
+        // Transpose Note::Off is a no-op
+        assert_eq!(Note::Off.transposed(5), Note::Off);
+
+        // Clamp to valid range
+        let high = Note::On {
+            value: NoteValue::G,
+            octave: 10,
+        };
+        let clamped = high.transposed(12);
+        assert_eq!(clamped.to_midi_note(), Some(127));
+    }
+
+    #[test]
+    fn test_phrase_new() {
+        let phrase = Phrase::new(16);
+        assert_eq!(phrase.rows, 16);
+        assert_eq!(phrase.data.len(), 16);
+        assert!(phrase.get(0).is_empty());
+    }
+
+    #[test]
+    fn test_phrase_set_and_get() {
+        let mut phrase = Phrase::new(4);
+        let cell = Cell {
+            note: Some(Note::On {
+                value: NoteValue::E,
+                octave: 5,
+            }),
+            ..Cell::default()
+        };
+        phrase.set_cell(1, cell);
+        assert_eq!(phrase.get(1).note, cell.note);
+        assert!(phrase.get(0).is_empty());
+    }
+
+    #[test]
+    fn test_phrase_insert_delete_row() {
+        let mut phrase = Phrase::new(4);
+        phrase.set_cell(
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        // Insert pushes row 0 down to row 1
+        phrase.insert_row(0);
+        assert!(phrase.get(0).is_empty());
+        assert!(phrase.get(1).note.is_some());
+        assert_eq!(phrase.data.len(), 4); // length preserved
+
+        // Delete row 0 pulls row 1 back to row 0
+        phrase.delete_row(0);
+        assert!(phrase.get(0).note.is_some());
+        assert_eq!(phrase.data.len(), 4);
     }
 }

@@ -655,7 +655,7 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         })
         .collect();
 
-    Ok(Song {
+    let mut song = Song {
         title: path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -672,7 +672,13 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         highlight_bar: 16,
         swing: 50,
         tempo_map,
-    })
+        phrases_dirty: false,
+        phrases: Vec::new(),
+        chains: Vec::new(),
+        arrangement: Vec::new(),
+    };
+    song.rebuild_phrases_from_patterns();
+    Ok(song)
 }
 
 // ---------------------------------------------------------------------------
@@ -811,7 +817,7 @@ mod tests {
         song.speed = 6;
 
         // Place some notes
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -825,7 +831,7 @@ mod tests {
                 effect_value: None,
             },
         );
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             4,
             0,
             Cell {
@@ -839,7 +845,7 @@ mod tests {
                 effect_value: None,
             },
         );
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             8,
             0,
             Cell {
@@ -851,7 +857,7 @@ mod tests {
             },
         );
         // Second channel
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             1,
             Cell {
@@ -943,7 +949,7 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.speed = 6;
         // Note C-4 with portamento up effect (1xx)
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -974,7 +980,7 @@ mod tests {
     fn test_export_volume_slide_produces_cc7() {
         let mut song = Song::new(1, 16);
         song.speed = 6;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -1002,7 +1008,7 @@ mod tests {
     fn test_export_vibrato_produces_pitch_bend() {
         let mut song = Song::new(1, 16);
         song.speed = 6;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -1028,7 +1034,7 @@ mod tests {
     #[test]
     fn test_export_effects_larger_than_plain() {
         let mut song_plain = Song::new(1, 16);
-        song_plain.patterns[0].set_cell(
+        song_plain.set_cell(0,
             0,
             0,
             Cell {
@@ -1045,7 +1051,7 @@ mod tests {
 
         let mut song_fx = Song::new(1, 16);
         song_fx.speed = 6;
-        song_fx.patterns[0].set_cell(
+        song_fx.set_cell(0,
             0,
             0,
             Cell {
@@ -1099,7 +1105,7 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.bpm = 120;
         song.speed = 6;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -1113,7 +1119,7 @@ mod tests {
                 effect_value: None,
             },
         );
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             4,
             0,
             Cell {
@@ -1162,7 +1168,7 @@ mod tests {
             row: 8,
             bpm: 140.0,
         }];
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {

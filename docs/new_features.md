@@ -6,7 +6,7 @@ Analysis of LSDj (Game Boy tracker) and picoTracker (Xiphonics) for ideas applic
 
 **Source:** Both LSDj and picoTracker.
 **Priority:** High -- foundational change that unlocks composition power.
-**Status:** Not started.
+**Status:** Core implementation complete. Data model, engine migration, chain transpose, arrangement management, dirty-flag sync, and dual-write all working. 377 tests pass. Remaining: dedicated Chain/Phrase editing screens in TUI/GUI, per-channel independent playback, full frontend read migration.
 
 ### Problem
 

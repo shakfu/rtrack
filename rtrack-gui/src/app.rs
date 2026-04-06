@@ -245,6 +245,8 @@ impl RtrackApp {
 
 impl eframe::App for RtrackApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Sync pattern edits to phrases before ticking the engine
+        self.core.song.mark_phrases_dirty();
         // Tick playback
         self.core.sync_link();
         if self.core.is_playing() {

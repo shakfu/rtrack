@@ -412,7 +412,7 @@ mod tests {
     fn test_render_with_synth_note() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -450,7 +450,7 @@ mod tests {
     fn test_render_with_sample() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -518,7 +518,7 @@ mod tests {
         song.speed = 6;
         song.bpm = 120;
         // Row 0: note on
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -531,7 +531,7 @@ mod tests {
             },
         );
         // Row 1: portamento up (1xx with param 0x40 = fast slide)
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             1,
             0,
             Cell {
@@ -558,7 +558,7 @@ mod tests {
         let mut song_no_fx = Song::new(1, 4);
         song_no_fx.speed = 6;
         song_no_fx.bpm = 120;
-        song_no_fx.patterns[0].set_cell(
+        song_no_fx.set_cell(0,
             0,
             0,
             Cell {
@@ -616,7 +616,7 @@ mod tests {
         song.speed = 6;
         song.bpm = 120;
         // Row 0: note on at full volume
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {
@@ -629,7 +629,7 @@ mod tests {
             },
         );
         // Row 1: volume slide down (50F = slide down by 15 per tick)
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             1,
             0,
             Cell {
@@ -657,7 +657,7 @@ mod tests {
         let mut song_static = Song::new(1, 4);
         song_static.speed = 6;
         song_static.bpm = 120;
-        song_static.patterns[0].set_cell(
+        song_static.set_cell(0,
             0,
             0,
             Cell {
@@ -707,7 +707,7 @@ mod tests {
     fn test_render_to_flac() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.patterns[0].set_cell(
+        song.set_cell(0,
             0,
             0,
             Cell {

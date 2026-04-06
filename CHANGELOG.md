@@ -12,6 +12,11 @@ All notable changes to rtrack will be documented in this file.
 
 ### Added
 
+- **Song > Chain > Phrase architecture**: Three-tier sequencing model inspired by LSDj and picoTracker. Songs are arranged via a grid of chain references per channel. Each chain is a sequence of phrase references with per-entry semitone transpose. Phrases are single-channel note data, the atomic reusable unit. The engine reads from this model; legacy patterns are kept in sync via a dirty-flag mechanism. Old `.rtrk` files auto-migrate on load. (`tracker/pattern.rs`, `tracker/song.rs`, `engine/mod.rs`, `core.rs`)
+  - New types: `Phrase`, `Chain`, `ChainEntry`
+  - Song accessors: `cell_at()`, `cell_at_mut()`, `set_cell()`, `build_virtual_pattern()`, `chain_transpose_at()`
+  - Arrangement management: `add_arrangement_row()`, `clone_arrangement_row()`, `remove_arrangement_row()`, `set_chain_transpose()`
+  - `Note::transposed()` for applying chain transpose during playback
 - `TrackerCoreBuilder`: builder API for `TrackerCore` with `.headless()` (skips MIDI port and Link session creation), `.song_size(ch, rows)`, and `.midi()` / `.midi_input()` / `.link()` injection for tests and offline use (`core.rs`)
 
 ### Changed
