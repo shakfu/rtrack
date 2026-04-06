@@ -10,9 +10,10 @@ impl RtrackApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New").clicked() {
+                        let config = rtrack_core::config::load_config();
                         self.core = TrackerCore::with_song_size(8, 64);
-                        // Re-init audio on the new core
-                        match rtrack_core::audio::AudioEngine::new(None) {
+                        // Re-init audio on the new core with SF2 from config
+                        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
                             Ok(engine) => {
                                 self.core.audio = Some(engine);
                             }

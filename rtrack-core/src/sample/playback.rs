@@ -288,6 +288,7 @@ mod tests {
     use super::*;
     use crate::audio::envelope::EnvStage;
     use crate::sample::Sample;
+    use std::sync::Arc;
 
     fn make_test_sample() -> Sample {
         // 10-frame sine-ish sample at 44100 Hz
@@ -314,7 +315,7 @@ mod tests {
 
     fn make_test_bank() -> SampleBank {
         let mut bank = SampleBank::new();
-        bank.samples[0] = Some(make_test_sample());
+        bank.samples[0] = Some(Arc::new(make_test_sample()));
         bank
     }
 
@@ -377,7 +378,7 @@ mod tests {
     fn test_render_stops_at_end() {
         let mut bank = SampleBank::new();
         // Short 5-frame sample
-        bank.samples[0] = Some(Sample {
+        bank.samples[0] = Some(Arc::new(Sample {
             name: "short".into(),
             data: vec![[1.0, 1.0]; 5],
             sample_rate: 44100.0,
@@ -388,7 +389,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
-        });
+        }));
 
         let sample = bank.get(0).unwrap();
         let mut engine = SamplePlaybackEngine::new(16);
@@ -407,7 +408,7 @@ mod tests {
     #[test]
     fn test_render_loops() {
         let mut bank = SampleBank::new();
-        bank.samples[0] = Some(Sample {
+        bank.samples[0] = Some(Arc::new(Sample {
             name: "loop".into(),
             data: vec![[0.5, 0.5]; 10],
             sample_rate: 44100.0,
@@ -418,7 +419,7 @@ mod tests {
             loop_start: 2,
             loop_end: 8,
             source_path: None,
-        });
+        }));
 
         let sample = bank.get(0).unwrap();
         let mut engine = SamplePlaybackEngine::new(16);
@@ -478,7 +479,7 @@ mod tests {
     fn test_envelope_fade_on_note_off() {
         // Use a looping sample so it doesn't end before we test
         let mut bank = SampleBank::new();
-        bank.samples[0] = Some(Sample {
+        bank.samples[0] = Some(Arc::new(Sample {
             name: "loop".into(),
             data: vec![[0.5, 0.5]; 1000],
             sample_rate: 44100.0,
@@ -489,7 +490,7 @@ mod tests {
             loop_start: 0,
             loop_end: 1000,
             source_path: None,
-        });
+        }));
         let sample = bank.get(0).unwrap();
         let mut engine = SamplePlaybackEngine::new(16);
         engine.note_on(0, 60, 127, 0, sample, 44100.0);

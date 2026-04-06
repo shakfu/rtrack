@@ -3717,7 +3717,7 @@ mod tests {
             source_path: None,
         };
         let mut bank = (*app.core.sample_bank).clone();
-        bank.samples[0] = Some(sample);
+        bank.samples[0] = Some(Arc::new(sample));
         app.core.sample_bank = Arc::new(bank);
         app.dialogs.sample_editor_slot = 0;
         app.dialogs.sample_slice_count = 4;
@@ -3772,7 +3772,7 @@ mod tests {
             source_path: None,
         };
         let mut bank = (*app.core.sample_bank).clone();
-        bank.samples[0] = Some(sample);
+        bank.samples[0] = Some(Arc::new(sample));
         app.core.sample_bank = Arc::new(bank);
         app.dialogs.sample_editor_slot = 0;
         app.dialogs.sample_slice_sensitivity = 0.5;
@@ -4036,7 +4036,7 @@ mod tests {
         let mut app = make_app();
         // Load two samples into the bank
         let mut bank = (*app.core.sample_bank).clone();
-        bank.samples[2] = Some(rtrack_core::sample::Sample {
+        bank.samples[2] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "kick".to_string(),
             data: vec![[0.0; 2]; 100],
             sample_rate: 44100.0,
@@ -4047,8 +4047,8 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
-        });
-        bank.samples[5] = Some(rtrack_core::sample::Sample {
+        }));
+        bank.samples[5] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "snare".to_string(),
             data: vec![[0.0; 2]; 100],
             sample_rate: 44100.0,
@@ -4059,7 +4059,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
-        });
+        }));
         app.core.sample_bank = std::sync::Arc::new(bank);
         app.core.channels[0].channel_type = ChannelType::Sample;
 
@@ -4106,7 +4106,7 @@ mod tests {
         let mut bank = rtrack_core::sample::SampleBank::new();
         assert!(bank.loaded_slots().is_empty());
 
-        bank.samples[3] = Some(rtrack_core::sample::Sample {
+        bank.samples[3] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "test".to_string(),
             data: vec![[0.0; 2]; 10],
             sample_rate: 44100.0,
@@ -4117,8 +4117,8 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
-        });
-        bank.samples[7] = Some(rtrack_core::sample::Sample {
+        }));
+        bank.samples[7] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "test2".to_string(),
             data: vec![[0.0; 2]; 10],
             sample_rate: 44100.0,
@@ -4129,7 +4129,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
-        });
+        }));
 
         let slots = bank.loaded_slots();
         assert_eq!(slots, vec![3, 7]);

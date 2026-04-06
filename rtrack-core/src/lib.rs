@@ -44,5 +44,5 @@ pub mod tracker;
 pub mod types;
 
 // Re-export key types at the crate root for convenience
-pub use core::TrackerCore;
+pub use core::{TrackerCore, TrackerCoreBuilder};
 pub use types::*;

@@ -4,6 +4,20 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `SampleBank::load_directory` now sorts directory entries by filename before loading, ensuring deterministic slot assignment across platforms (`sample/mod.rs`)
+- Export tests (`test_render_empty_song`, etc.) no longer flake due to temp-dir races; switched from `std::env::temp_dir()` to `tempfile::tempdir()` for isolated per-test directories (`sample/export.rs`)
+- GUI frontend now reads `sf2` and `sample_dir` from `~/.config/rtrack/config.toml` at startup and on File > New, matching TUI behavior (`app.rs`, `menu.rs`)
+
+### Added
+
+- `TrackerCoreBuilder`: builder API for `TrackerCore` with `.headless()` (skips MIDI port and Link session creation), `.song_size(ch, rows)`, and `.midi()` / `.midi_input()` / `.link()` injection for tests and offline use (`core.rs`)
+
+### Changed
+
+- `SampleBank` slots are now `Option<Arc<Sample>>` instead of `Option<Sample>`, making bank clones O(256 refcount bumps) instead of O(total audio frames). Mutations use `Arc::make_mut` for copy-on-write semantics (`sample/mod.rs`, `core.rs`, `app/input.rs`, `instrument_editor.rs`)
+
 ## [0.1.2]
 
 ### Fixed

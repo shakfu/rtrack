@@ -284,7 +284,12 @@ impl App {
         }
 
         let mut bank = (*self.core.sample_bank).clone();
-        if let Some(ref mut sample) = bank.samples.get_mut(slot).and_then(|s| s.as_mut()) {
+        if let Some(sample) = bank
+            .samples
+            .get_mut(slot)
+            .and_then(|s| s.as_mut())
+            .map(std::sync::Arc::make_mut)
+        {
             match self.dialogs.sample_editor_field {
                 SampleField::BaseNote => {
                     sample.base_note =

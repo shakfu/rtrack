@@ -737,7 +737,8 @@ impl RtrackApp {
 
                 if changed {
                     let mut bank_clone = (*self.core.sample_bank).clone();
-                    if let Some(s) = bank_clone.samples[slot].as_mut() {
+                    if let Some(arc) = bank_clone.samples[slot].as_mut() {
+                        let s = std::sync::Arc::make_mut(arc);
                         s.base_note = base_note;
                         s.loop_enabled = loop_enabled;
                         s.loop_start = loop_start;
@@ -871,8 +872,8 @@ impl RtrackApp {
         let mut bank = (*self.core.sample_bank).clone();
         let max_slot = bank.samples.len();
 
-        // Get the full sample data from the source slot
-        let full_sample = match bank.samples[start_slot].clone() {
+        // Clone the source sample data (Arc clone is cheap; we need owned copies for slices)
+        let full_sample = match bank.samples[start_slot].as_deref().cloned() {
             Some(s) => s,
             None => return,
         };
@@ -890,7 +891,7 @@ impl RtrackApp {
             slot_sample.trim_start = boundaries[i];
             slot_sample.trim_end = boundaries[i + 1];
             slot_sample.loop_enabled = false;
-            bank.samples[target_slot] = Some(slot_sample);
+            bank.samples[target_slot] = Some(Arc::new(slot_sample));
 
             if target_slot < self.core.instruments.len() {
                 let inst = &mut self.core.instruments[target_slot];

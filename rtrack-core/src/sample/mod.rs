@@ -2,6 +2,7 @@ pub mod export;
 pub mod playback;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use dasp::Sample as DaspSample;
@@ -76,10 +77,12 @@ impl Sample {
     }
 }
 
-/// Bank of up to 256 sample slots (matching instrument slots)
+/// Bank of up to 256 sample slots (matching instrument slots).
+/// Each slot holds an `Arc<Sample>` so cloning the bank is cheap
+/// (reference count bump, not frame-data copy).
 #[derive(Clone)]
 pub struct SampleBank {
-    pub samples: Vec<Option<Sample>>,
+    pub samples: Vec<Option<Arc<Sample>>>,
 }
 
 impl SampleBank {
@@ -112,12 +115,12 @@ impl SampleBank {
             "aif" | "aiff" => load_aiff(path)?,
             _ => anyhow::bail!("Unsupported audio format: {}", ext),
         };
-        self.samples[slot] = Some(sample);
+        self.samples[slot] = Some(Arc::new(sample));
         Ok(())
     }
 
     pub fn get(&self, slot: usize) -> Option<&Sample> {
-        self.samples.get(slot).and_then(|s| s.as_ref())
+        self.samples.get(slot).and_then(|s| s.as_deref())
     }
 
     /// Return sorted list of slot indices that have samples loaded.
@@ -143,12 +146,13 @@ impl SampleBank {
                 .with_context(|| format!("Failed to parse {}", meta_path.display()))?;
         }
 
-        // Scan directory for sample files
-        let entries = std::fs::read_dir(dir)
-            .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
+        // Scan directory for sample files, sorted by filename for deterministic slot assignment
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .with_context(|| format!("Failed to read directory: {}", dir.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|e| e.file_name());
 
         for entry in entries {
-            let entry = entry?;
             let path = entry.path();
             let ext = path
                 .extension()
@@ -170,7 +174,8 @@ impl SampleBank {
 
                         // Apply per-sample metadata if available
                         if let Some(sample_meta) = meta.samples.get(slot_str) {
-                            if let Some(sample) = self.samples[slot].as_mut() {
+                            if let Some(arc) = self.samples[slot].as_mut() {
+                                let sample = Arc::make_mut(arc);
                                 if let Some(base) = sample_meta.base_note {
                                     sample.base_note = base;
                                 }
@@ -775,6 +780,58 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_directory_deterministic_order() {
+        // Create a temp dir with multiple samples in non-alphabetical order.
+        // Verify they always land in the same slots regardless of FS iteration order.
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        // Create files in reverse order to stress iteration ordering
+        for &(slot, name) in &[(2, "2-hihat"), (0, "0-kick"), (1, "1-snare")] {
+            let path = dir.path().join(format!("{}-{}.wav", slot, name));
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            // Write distinct sample lengths so we can verify identity
+            for i in 0..((slot + 1) * 100) {
+                writer.write_sample((i * 50) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        // Load twice and verify identical slot assignment
+        let mut bank1 = SampleBank::new();
+        bank1.load_directory(dir.path()).unwrap();
+        let mut bank2 = SampleBank::new();
+        bank2.load_directory(dir.path()).unwrap();
+
+        for slot in 0..3 {
+            let s1 = bank1
+                .get(slot)
+                .unwrap_or_else(|| panic!("slot {} missing in bank1", slot));
+            let s2 = bank2
+                .get(slot)
+                .unwrap_or_else(|| panic!("slot {} missing in bank2", slot));
+            assert_eq!(s1.name, s2.name, "slot {} name mismatch", slot);
+            assert_eq!(
+                s1.data.len(),
+                s2.data.len(),
+                "slot {} length mismatch",
+                slot
+            );
+        }
+
+        // Verify correct slot assignment by sample length
+        assert_eq!(bank1.get(0).unwrap().data.len(), 100);
+        assert_eq!(bank1.get(1).unwrap().data.len(), 200);
+        assert_eq!(bank1.get(2).unwrap().data.len(), 300);
     }
 
     fn make_slice_sample(len: usize) -> Sample {

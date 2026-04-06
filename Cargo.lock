@@ -3647,6 +3647,7 @@ dependencies = [
  "rustysynth",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
 ]
 

@@ -396,18 +396,16 @@ mod tests {
                 synth_params: None,
             })
             .collect();
-        let dir = std::env::temp_dir();
-        let path = dir.join("rtrack_test_empty.wav");
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("rtrack_test_empty.wav");
 
         let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         // Verify the file exists and is a valid WAV
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().channels, 2);
         assert_eq!(reader.spec().sample_rate, 44100);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -435,19 +433,17 @@ mod tests {
                 synth_params: None,
             })
             .collect();
-        let dir = std::env::temp_dir();
-        let path = dir.join("rtrack_test_synth.wav");
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("rtrack_test_synth.wav");
 
         let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         // Should have some audio content (not all silence)
         let reader = hound::WavReader::open(&path).unwrap();
         let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
         let has_audio = samples.iter().any(|&s| s.abs() > 10);
         assert!(has_audio, "Expected non-silent output for synth note");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -477,7 +473,7 @@ mod tests {
                 [val, val]
             })
             .collect();
-        bank.samples[0] = Some(super::super::Sample {
+        bank.samples[0] = Some(std::sync::Arc::new(super::super::Sample {
             name: "sine".into(),
             data: sample_data,
             sample_rate: 44100.0,
@@ -488,7 +484,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
-        });
+        }));
 
         let instruments: Vec<ExportInstrument> = {
             let mut v: Vec<ExportInstrument> = (0..256)
@@ -501,18 +497,16 @@ mod tests {
             v[0].sample_index = Some(0); // instrument 0 -> sample 0
             v
         };
-        let dir = std::env::temp_dir();
-        let path = dir.join("rtrack_test_sample.wav");
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("rtrack_test_sample.wav");
 
         let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         let reader = hound::WavReader::open(&path).unwrap();
         let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
         let has_audio = samples.iter().any(|&s| s.abs() > 10);
         assert!(has_audio, "Expected non-silent output for sample note");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -555,8 +549,8 @@ mod tests {
                 synth_params: None,
             })
             .collect();
-        let dir = std::env::temp_dir();
-        let path_with = dir.join("rtrack_test_porta.wav");
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path_with = dir.path().join("rtrack_test_porta.wav");
 
         render_to_wav(&path_with, &song, &bank, &instruments, &[], &[], 44100).unwrap();
 
@@ -577,7 +571,7 @@ mod tests {
             },
         );
 
-        let path_without = dir.join("rtrack_test_no_porta.wav");
+        let path_without = dir.path().join("rtrack_test_no_porta.wav");
         render_to_wav(
             &path_without,
             &song_no_fx,
@@ -613,9 +607,6 @@ mod tests {
             .filter(|(a, b)| a != b)
             .count();
         assert!(diff_count > min_len / 4, "Expected portamento to produce audibly different output, but only {}/{} samples differed", diff_count, min_len);
-
-        let _ = std::fs::remove_file(&path_with);
-        let _ = std::fs::remove_file(&path_without);
     }
 
     #[test]
@@ -656,10 +647,10 @@ mod tests {
                 synth_params: None,
             })
             .collect();
-        let dir = std::env::temp_dir();
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
 
         // Render with volume slide
-        let path_slide = dir.join("rtrack_test_volslide.wav");
+        let path_slide = dir.path().join("rtrack_test_volslide.wav");
         render_to_wav(&path_slide, &song, &bank, &instruments, &[], &[], 44100).unwrap();
 
         // Render without (static volume)
@@ -678,7 +669,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        let path_static = dir.join("rtrack_test_volstatic.wav");
+        let path_static = dir.path().join("rtrack_test_volstatic.wav");
         render_to_wav(
             &path_static,
             &song_static,
@@ -710,9 +701,6 @@ mod tests {
             diff_count > 0,
             "Volume slide should produce different output than static volume"
         );
-
-        let _ = std::fs::remove_file(&path_slide);
-        let _ = std::fs::remove_file(&path_static);
     }
 
     #[test]
@@ -740,8 +728,8 @@ mod tests {
                 synth_params: None,
             })
             .collect();
-        let dir = std::env::temp_dir();
-        let path = dir.join("rtrack_test_export.flac");
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join("rtrack_test_export.flac");
 
         let result = render_to_flac(&path, &song, &bank, &instruments, &[], &[], 44100);
         assert!(result.is_ok(), "FLAC export failed: {:?}", result.err());
@@ -749,7 +737,5 @@ mod tests {
         // Verify the file exists and is non-empty
         let metadata = std::fs::metadata(&path).unwrap();
         assert!(metadata.len() > 0, "FLAC file should be non-empty");
-
-        let _ = std::fs::remove_file(&path);
     }
 }

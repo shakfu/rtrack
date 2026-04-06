@@ -76,15 +76,26 @@ pub struct RtrackApp {
 
 impl RtrackApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let config = rtrack_core::config::load_config();
         let mut core = TrackerCore::with_song_size(8, 64);
 
-        // Try to start audio engine
-        match rtrack_core::audio::AudioEngine::new(None) {
+        // Try to start audio engine with SF2 from config
+        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
             Ok(engine) => {
                 core.audio = Some(engine);
             }
             Err(e) => {
                 eprintln!("Audio warning: {}", e);
+            }
+        }
+
+        // Load sample directory from config
+        if let Some(ref dir) = config.sample_dir {
+            if dir.is_dir() {
+                let bank = std::sync::Arc::make_mut(&mut core.sample_bank);
+                if let Err(e) = bank.load_directory(dir) {
+                    eprintln!("Sample dir warning: {}", e);
+                }
             }
         }
 

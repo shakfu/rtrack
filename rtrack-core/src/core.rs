@@ -114,6 +114,133 @@ impl Default for TrackerCore {
     }
 }
 
+/// Builder for `TrackerCore` that allows skipping hardware initialization
+/// (MIDI ports, Ableton Link) for offline, test, or headless use.
+pub struct TrackerCoreBuilder {
+    channels: usize,
+    rows: usize,
+    headless: bool,
+    midi: Option<MidiEngine>,
+    midi_input: Option<MidiInputEngine>,
+    link: Option<LinkEngine>,
+}
+
+impl TrackerCoreBuilder {
+    pub fn new() -> Self {
+        Self {
+            channels: 4,
+            rows: 64,
+            headless: false,
+            midi: None,
+            midi_input: None,
+            link: None,
+        }
+    }
+
+    /// Set the number of channels and rows per pattern.
+    pub fn song_size(mut self, channels: usize, rows: usize) -> Self {
+        self.channels = channels;
+        self.rows = rows;
+        self
+    }
+
+    /// Skip all hardware initialization (MIDI ports, Ableton Link).
+    /// Creates disconnected engines using their Default impls.
+    pub fn headless(mut self) -> Self {
+        self.headless = true;
+        self
+    }
+
+    /// Inject a pre-configured MIDI output engine.
+    pub fn midi(mut self, midi: MidiEngine) -> Self {
+        self.midi = Some(midi);
+        self
+    }
+
+    /// Inject a pre-configured MIDI input engine.
+    pub fn midi_input(mut self, midi_input: MidiInputEngine) -> Self {
+        self.midi_input = Some(midi_input);
+        self
+    }
+
+    /// Inject a pre-configured Link engine.
+    pub fn link(mut self, link: LinkEngine) -> Self {
+        self.link = Some(link);
+        self
+    }
+
+    pub fn build(self) -> TrackerCore {
+        let song = Song::new(self.channels, self.rows);
+
+        let midi = self.midi.unwrap_or_else(|| {
+            if self.headless {
+                MidiEngine::default()
+            } else {
+                let mut m = MidiEngine::new();
+                if m.create_virtual_port().is_err() {
+                    let _ = m.connect_first_available();
+                }
+                m
+            }
+        });
+
+        let midi_input = self.midi_input.unwrap_or_else(|| {
+            if self.headless {
+                MidiInputEngine::default()
+            } else {
+                let mut m = MidiInputEngine::new();
+                let _ = m.create_virtual_port();
+                m
+            }
+        });
+
+        let link = self.link.unwrap_or_else(|| {
+            if self.headless {
+                // LinkEngine has no Default -- still construct it, but it won't
+                // connect to peers unless enable() is called.
+                LinkEngine::new(song.bpm as f64)
+            } else {
+                LinkEngine::new(song.bpm as f64)
+            }
+        });
+
+        let engine = TrackerEngine::new(&song, true);
+
+        TrackerCore {
+            song,
+            engine,
+            midi,
+            midi_input,
+            link,
+            audio: None,
+            sample_bank: Arc::new(SampleBank::new()),
+            playing: false,
+            recording: false,
+            timing: PlaybackTiming::new(),
+            clock_mode: ClockMode::Internal,
+            channels: default_channel_configs(self.channels),
+            instruments: (0..MAX_INSTRUMENTS)
+                .map(|_| Instrument::default())
+                .collect(),
+            send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES)
+                .map(|_| crate::audio::effects::SendBusParams::default())
+                .collect(),
+            solo_channel: None,
+            file_path: None,
+            dirty: false,
+            midi_cc_mappings: Vec::new(),
+            midi_learn_pending: None,
+            preview_note: None,
+        }
+    }
+}
+
+impl Default for TrackerCoreBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackerCore {
     // -----------------------------------------------------------------------
     // Accessors
@@ -900,46 +1027,48 @@ impl TrackerCore {
         use_transients: bool,
     ) -> Result<usize, String> {
         let sample = match self.sample_bank.get(slot) {
-            Some(s) => s.clone(),
+            Some(s) => s,
             None => return Err("No sample loaded in this slot".to_string()),
         };
 
         let slices = if use_transients {
-            let points = crate::sample::detect_transients(&sample, sensitivity);
-            crate::sample::slice_at_points(&sample, &points)
+            let points = crate::sample::detect_transients(sample, sensitivity);
+            crate::sample::slice_at_points(sample, &points)
         } else {
-            crate::sample::slice_equal(&sample, count)
+            crate::sample::slice_equal(sample, count)
         };
 
         if slices.is_empty() {
             return Err("Sample too short to slice".to_string());
         }
 
-        let end_slot = slot + slices.len();
+        let slice_count = slices.len();
+        let end_slot = slot + slice_count;
         if end_slot > 256 {
             return Err(format!(
                 "Not enough sample slots (need {} from slot {:02X})",
-                slices.len(),
-                slot
+                slice_count, slot
             ));
         }
 
+        // Collect names before consuming slices
+        let slice_names: Vec<String> = slices.iter().map(|s| s.name.clone()).collect();
+
         let mut bank = (*self.sample_bank).clone();
-        for (i, s) in slices.iter().enumerate() {
-            bank.samples[slot + i] = Some(s.clone());
+        for (i, s) in slices.into_iter().enumerate() {
+            bank.samples[slot + i] = Some(Arc::new(s));
         }
-        let slice_count = slices.len();
         self.sample_bank = Arc::new(bank);
         if let Some(ref mut audio) = self.audio {
             audio.set_sample_bank(Arc::clone(&self.sample_bank));
         }
 
-        for (i, slice) in slices.iter().enumerate().take(slice_count) {
+        for (i, name) in slice_names.iter().enumerate() {
             let inst_slot = slot + i;
             if inst_slot < self.instruments.len() {
                 self.instruments[inst_slot].sample_index = Some(inst_slot);
                 if self.instruments[inst_slot].name.is_empty() {
-                    self.instruments[inst_slot].name = slice.name.clone();
+                    self.instruments[inst_slot].name = name.clone();
                 }
             }
         }
@@ -1213,7 +1342,8 @@ impl TrackerCore {
                     let sample_path = resolve_relative(load_dir, &entry.sample_ref.path);
                     match bank.load(entry.slot, &sample_path) {
                         Ok(()) => {
-                            if let Some(ref mut sample) = bank.samples[entry.slot] {
+                            if let Some(ref mut arc) = bank.samples[entry.slot] {
+                                let sample = Arc::make_mut(arc);
                                 sample.name = entry.sample_ref.name.clone();
                                 sample.base_note = entry.sample_ref.base_note;
                                 sample.trim_start = entry.sample_ref.trim_start;
@@ -1260,5 +1390,51 @@ impl TrackerCore {
             }
             Err(e) => Err(format!("Import failed: {}", e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builder_headless() {
+        let core = TrackerCoreBuilder::new()
+            .song_size(2, 32)
+            .headless()
+            .build();
+        assert_eq!(core.song.patterns[0].rows, 32);
+        assert_eq!(core.channels.len(), 2);
+        assert!(!core.midi.is_connected());
+        assert!(!core.playing);
+    }
+
+    #[test]
+    fn test_builder_default_matches_new() {
+        let from_new = TrackerCore::new();
+        let from_builder = TrackerCoreBuilder::new().build();
+        assert_eq!(
+            from_new.song.patterns.len(),
+            from_builder.song.patterns.len()
+        );
+        assert_eq!(from_new.channels.len(), from_builder.channels.len());
+        assert_eq!(from_new.instruments.len(), from_builder.instruments.len());
+    }
+
+    #[test]
+    fn test_builder_custom_song_size() {
+        let core = TrackerCoreBuilder::new()
+            .song_size(8, 128)
+            .headless()
+            .build();
+        assert_eq!(core.song.patterns[0].rows, 128);
+        assert_eq!(core.channels.len(), 8);
+    }
+
+    #[test]
+    fn test_builder_injected_midi() {
+        let midi = MidiEngine::default();
+        let core = TrackerCoreBuilder::new().headless().midi(midi).build();
+        assert!(!core.midi.is_connected());
     }
 }
