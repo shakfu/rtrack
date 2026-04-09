@@ -1223,7 +1223,7 @@ impl App {
         // Calculate which channel/sub-column was clicked
         let row_num_width: u16 = 3;
         let sep_width: u16 = 3;
-        let channel_width: u16 = 14;
+        let channel_width: u16 = 17; // 16 (channel) + 1 for alignment
 
         if x < area_x + row_num_width + sep_width {
             return;
@@ -1239,14 +1239,14 @@ impl App {
         let actual_ch = self.track_page * CHANNELS_PER_PAGE + ch;
         if actual_ch < pattern.channels && actual_ch < self.core.song.channels {
             self.cursor_channel = actual_ch;
-            // note=0..3, gap=3, inst=4..6, gap=6, vol=7..9, gap=9, fx=10..13
-            if within < 3 {
+            // note=0..3, gap=3..5, inst=5..7, gap=7..9, vol=9..11, gap=11..13, fx=13..16
+            if within < 5 {
                 self.cursor_sub = SubColumn::Note;
-            } else if within < 6 {
-                self.cursor_sub = SubColumn::Instrument;
             } else if within < 9 {
+                self.cursor_sub = SubColumn::Instrument;
+            } else if within < 13 {
                 self.cursor_sub = SubColumn::Volume;
-            } else if within < 14 {
+            } else {
                 self.cursor_sub = SubColumn::Effect;
             }
         }

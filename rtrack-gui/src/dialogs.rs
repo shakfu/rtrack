@@ -260,89 +260,129 @@ impl RtrackApp {
                 if ch_type != rtrack_core::ChannelType::Midi {
                     ui.separator();
                     ui.heading("Effects");
+                    ui.add_space(4.0);
 
-                    egui::Grid::new("track_effects_grid")
-                        .num_columns(2)
-                        .spacing([10.0, 4.0])
-                        .show(ui, |ui| {
-                            let fx = &mut self.core.channels[ch_idx].effects_params;
+                    let fx = &mut self.core.channels[ch_idx].effects_params;
 
-                            // Filter
-                            ui.checkbox(&mut fx.filter_enabled, "Filter");
-                            ui.end_row();
-                            if fx.filter_enabled {
-                                ui.label("  Cutoff:");
-                                ui.add(
-                                    egui::Slider::new(&mut fx.filter_cutoff, 20.0..=20000.0)
-                                        .logarithmic(true)
-                                        .suffix(" Hz"),
-                                );
-                                ui.end_row();
-                                ui.label("  Resonance:");
-                                ui.add(egui::Slider::new(&mut fx.filter_resonance, 0.0..=1.0));
-                                ui.end_row();
-                            }
+                    // Filter
+                    ui.group(|ui| {
+                        ui.checkbox(&mut fx.filter_enabled, "Filter");
+                        if fx.filter_enabled {
+                            ui.indent("filter_params", |ui| {
+                                egui::Grid::new("filter_grid")
+                                    .num_columns(2)
+                                    .spacing([10.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Cutoff:");
+                                        ui.add(
+                                            egui::Slider::new(&mut fx.filter_cutoff, 20.0..=20000.0)
+                                                .logarithmic(true)
+                                                .suffix(" Hz"),
+                                        );
+                                        ui.end_row();
+                                        ui.label("Resonance:");
+                                        ui.add(egui::Slider::new(&mut fx.filter_resonance, 0.0..=1.0));
+                                        ui.end_row();
+                                    });
+                            });
+                        }
+                    });
+                    ui.add_space(2.0);
 
-                            // Distortion
-                            ui.checkbox(&mut fx.distortion_enabled, "Distortion");
-                            ui.end_row();
-                            if fx.distortion_enabled {
-                                ui.label("  Drive:");
-                                ui.add(egui::Slider::new(&mut fx.distortion_drive, 1.0..=20.0));
-                                ui.end_row();
-                            }
+                    // Distortion
+                    ui.group(|ui| {
+                        ui.checkbox(&mut fx.distortion_enabled, "Distortion");
+                        if fx.distortion_enabled {
+                            ui.indent("dist_params", |ui| {
+                                egui::Grid::new("dist_grid")
+                                    .num_columns(2)
+                                    .spacing([10.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Drive:");
+                                        ui.add(egui::Slider::new(&mut fx.distortion_drive, 1.0..=20.0));
+                                        ui.end_row();
+                                    });
+                            });
+                        }
+                    });
+                    ui.add_space(2.0);
 
-                            // Chorus
-                            ui.checkbox(&mut fx.chorus_enabled, "Chorus");
-                            ui.end_row();
-                            if fx.chorus_enabled {
-                                ui.label("  Rate:");
-                                ui.add(
-                                    egui::Slider::new(&mut fx.chorus_rate, 0.1..=10.0)
-                                        .suffix(" Hz"),
-                                );
-                                ui.end_row();
-                                ui.label("  Depth:");
-                                ui.add(egui::Slider::new(&mut fx.chorus_depth, 0.5..=20.0));
-                                ui.end_row();
-                                ui.label("  Mix:");
-                                ui.add(egui::Slider::new(&mut fx.chorus_mix, 0.0..=1.0));
-                                ui.end_row();
-                            }
+                    // Chorus
+                    ui.group(|ui| {
+                        ui.checkbox(&mut fx.chorus_enabled, "Chorus");
+                        if fx.chorus_enabled {
+                            ui.indent("chorus_params", |ui| {
+                                egui::Grid::new("chorus_grid")
+                                    .num_columns(2)
+                                    .spacing([10.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Rate:");
+                                        ui.add(
+                                            egui::Slider::new(&mut fx.chorus_rate, 0.1..=10.0)
+                                                .suffix(" Hz"),
+                                        );
+                                        ui.end_row();
+                                        ui.label("Depth:");
+                                        ui.add(egui::Slider::new(&mut fx.chorus_depth, 0.5..=20.0));
+                                        ui.end_row();
+                                        ui.label("Mix:");
+                                        ui.add(egui::Slider::new(&mut fx.chorus_mix, 0.0..=1.0));
+                                        ui.end_row();
+                                    });
+                            });
+                        }
+                    });
+                    ui.add_space(2.0);
 
-                            // Delay
-                            ui.checkbox(&mut fx.delay_enabled, "Delay");
-                            ui.end_row();
-                            if fx.delay_enabled {
-                                ui.label("  Time:");
-                                ui.add(
-                                    egui::Slider::new(&mut fx.delay_time, 1.0..=2000.0)
-                                        .suffix(" ms"),
-                                );
-                                ui.end_row();
-                                ui.label("  Feedback:");
-                                ui.add(egui::Slider::new(&mut fx.delay_feedback, 0.0..=0.95));
-                                ui.end_row();
-                                ui.label("  Mix:");
-                                ui.add(egui::Slider::new(&mut fx.delay_mix, 0.0..=1.0));
-                                ui.end_row();
-                            }
+                    // Delay
+                    ui.group(|ui| {
+                        ui.checkbox(&mut fx.delay_enabled, "Delay");
+                        if fx.delay_enabled {
+                            ui.indent("delay_params", |ui| {
+                                egui::Grid::new("delay_grid")
+                                    .num_columns(2)
+                                    .spacing([10.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Time:");
+                                        ui.add(
+                                            egui::Slider::new(&mut fx.delay_time, 1.0..=2000.0)
+                                                .suffix(" ms"),
+                                        );
+                                        ui.end_row();
+                                        ui.label("Feedback:");
+                                        ui.add(egui::Slider::new(&mut fx.delay_feedback, 0.0..=0.95));
+                                        ui.end_row();
+                                        ui.label("Mix:");
+                                        ui.add(egui::Slider::new(&mut fx.delay_mix, 0.0..=1.0));
+                                        ui.end_row();
+                                    });
+                            });
+                        }
+                    });
+                    ui.add_space(2.0);
 
-                            // Reverb
-                            ui.checkbox(&mut fx.reverb_enabled, "Reverb");
-                            ui.end_row();
-                            if fx.reverb_enabled {
-                                ui.label("  Size:");
-                                ui.add(egui::Slider::new(&mut fx.reverb_size, 0.0..=1.0));
-                                ui.end_row();
-                                ui.label("  Damp:");
-                                ui.add(egui::Slider::new(&mut fx.reverb_damp, 0.0..=1.0));
-                                ui.end_row();
-                                ui.label("  Mix:");
-                                ui.add(egui::Slider::new(&mut fx.reverb_mix, 0.0..=1.0));
-                                ui.end_row();
-                            }
-                        });
+                    // Reverb
+                    ui.group(|ui| {
+                        ui.checkbox(&mut fx.reverb_enabled, "Reverb");
+                        if fx.reverb_enabled {
+                            ui.indent("reverb_params", |ui| {
+                                egui::Grid::new("reverb_grid")
+                                    .num_columns(2)
+                                    .spacing([10.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label("Size:");
+                                        ui.add(egui::Slider::new(&mut fx.reverb_size, 0.0..=1.0));
+                                        ui.end_row();
+                                        ui.label("Damp:");
+                                        ui.add(egui::Slider::new(&mut fx.reverb_damp, 0.0..=1.0));
+                                        ui.end_row();
+                                        ui.label("Mix:");
+                                        ui.add(egui::Slider::new(&mut fx.reverb_mix, 0.0..=1.0));
+                                        ui.end_row();
+                                    });
+                            });
+                        }
+                    });
 
                     // MIDI Learn section
                     ui.separator();

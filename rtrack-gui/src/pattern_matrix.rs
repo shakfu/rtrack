@@ -39,7 +39,7 @@ impl RtrackApp {
                 if name.is_empty() {
                     format!("Ch{}", i + 1)
                 } else {
-                    name.chars().take(5).collect()
+                    name.chars().take(rtrack_core::constants::MAX_CHANNEL_NAME).collect()
                 }
             })
             .collect();

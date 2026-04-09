@@ -9,7 +9,7 @@ use rtrack_core::audio::synth::{FilterType, Patch};
 
 /// Draw the synth editor popup
 pub fn draw_synth_editor(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 24, f.area());
+    let area = centered_rect(55, 20, f.area());
     f.render_widget(Clear, area);
 
     let slot = app.dialogs.synth_editor_slot;

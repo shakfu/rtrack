@@ -46,14 +46,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints(if has_vis {
             vec![
-                Constraint::Length(3),          // header
+                Constraint::Length(2),          // header (1 content + bottom border)
                 Constraint::Min(10),            // main area
                 Constraint::Length(vis_height), // visualization
                 Constraint::Length(1),          // status bar
             ]
         } else {
             vec![
-                Constraint::Length(3), // header
+                Constraint::Length(2), // header (1 content + bottom border)
                 Constraint::Min(10),   // main area
                 Constraint::Length(0), // no visualization
                 Constraint::Length(1), // status bar
@@ -67,17 +67,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         // Full-screen pattern matrix replaces order sidebar + pattern editor
         draw_pattern_matrix(f, app, chunks[1], &theme);
     } else {
-        // Split main area: order sidebar + pattern editor
-        let main_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(7), // order list sidebar
-                Constraint::Min(20),   // pattern editor
-            ])
-            .split(chunks[1]);
-
-        draw_order_sidebar(f, app, main_chunks[0], &theme);
-        pattern_editor::draw(f, app, main_chunks[1], &theme);
+        pattern_editor::draw(f, app, chunks[1], &theme);
     }
 
     // Bottom panel
@@ -118,39 +108,27 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let pattern_idx = app.current_order_position();
     let pattern_num = song.order.get(pattern_idx).copied().unwrap_or(0);
 
-    // Draw the border first
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.header_border));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    // Two-column layout: left has all info, right is for status symbols (Link, etc.)
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(20),   // left: song info + transport + position
-            Constraint::Length(8), // right: status symbols (right-justified)
-        ])
-        .split(inner);
-
-    // -- Left: song info + bpm + transport + position + edit state --
     let title_display = if app.core.dirty {
         format!("{}*", song.title)
     } else {
         song.title.clone()
     };
 
-    let mut left_spans = vec![
+    let mins = (app.core.timing.playback_elapsed / 60.0) as u32;
+    let secs = (app.core.timing.playback_elapsed % 60.0) as u32;
+    let centis = ((app.core.timing.playback_elapsed.fract()) * 100.0) as u32;
+
+    let mut spans = vec![
         Span::styled(
-            " rtrack",
+            " rtrack  ",
             Style::default()
                 .fg(theme.header_title)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
-        Span::styled(title_display, Style::default().fg(theme.status_text)),
-        Span::raw("  "),
+        Span::styled(
+            format!("{}  ", title_display),
+            Style::default().fg(theme.status_text),
+        ),
         Span::styled(
             format!("{}bpm", song.bpm),
             Style::default().fg(theme.header_bpm),
@@ -177,42 +155,31 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 Style::default().fg(theme.status_hint)
             },
         ),
-    ];
-    let mins = (app.core.timing.playback_elapsed / 60.0) as u32;
-    let secs = (app.core.timing.playback_elapsed % 60.0) as u32;
-    let centis = ((app.core.timing.playback_elapsed.fract()) * 100.0) as u32;
-    left_spans.push(Span::styled(
-        format!(" {:02}:{:02}:{:02}", mins, secs, centis),
-        Style::default().fg(theme.header_bpm),
-    ));
-    left_spans.extend([
-        Span::raw("  "),
+        Span::styled(
+            format!(" {:02}:{:02}:{:02}  ", mins, secs, centis),
+            Style::default().fg(theme.header_bpm),
+        ),
         Span::styled(
             format!(
-                "P:{:02X}/{:02X}",
+                "P:{:02X}/{:02X}  ",
                 pattern_num,
                 song.current_pattern_count() - 1
             ),
             Style::default().fg(theme.header_position),
         ),
-        Span::raw("  "),
         Span::styled(
-            format!("Oct:{}", app.current_octave),
+            format!("Oct:{}  ", app.current_octave),
             Style::default().fg(theme.header_octave),
         ),
         Span::styled(
-            format!(" Stp:{}", app.edit_step),
+            format!("Stp:{}  ", app.edit_step),
             Style::default().fg(theme.header_octave),
         ),
         Span::styled(
-            format!(" Ch:{}/{}", app.cursor_channel + 1, app.core.song.channels),
+            format!("Ch:{}/{}", app.cursor_channel + 1, app.core.song.channels),
             Style::default().fg(theme.header_octave),
         ),
-    ]);
-    f.render_widget(Paragraph::new(Line::from(left_spans)), columns[0]);
-
-    // -- Right: status symbols (right-justified) --
-    let mut right_spans: Vec<Span> = Vec::new();
+    ];
     if app.core.link.is_enabled() {
         let peers = app.core.link.num_peers();
         let style = if peers > 0 {
@@ -222,19 +189,21 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         } else {
             Style::default().fg(theme.status_hint)
         };
-        right_spans.push(Span::styled(format!("Link:{}", peers), style));
+        spans.push(Span::styled(format!("  Link:{}", peers), style));
     }
-    if !right_spans.is_empty() {
-        let right =
-            Paragraph::new(Line::from(right_spans)).alignment(ratatui::layout::Alignment::Right);
-        f.render_widget(right, columns[1]);
-    }
+
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(theme.header_border));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if app.mode == Mode::Command {
         let text = format!(":{}", app.command_buf);
-        let cmd_line = Paragraph::new(text).style(Style::default().fg(theme.popup_highlight_fg));
+        let cmd_line = Paragraph::new(text).style(Style::default().fg(theme.status_text));
         f.render_widget(cmd_line, area);
         return;
     }
@@ -662,36 +631,6 @@ fn draw_help(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(help, popup_area);
 }
 
-fn draw_order_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let current_pos = app.current_order_position();
-    let visible = area.height.saturating_sub(2) as usize;
-
-    // Center on current position
-    let start = current_pos.saturating_sub(visible / 2);
-
-    let mut lines = Vec::new();
-    for i in start..app.core.song.order.len().min(start + visible) {
-        let pat = app.core.song.order[i];
-        let text = format!("{:02X}:{:02X}", i, pat);
-        let style = if i == current_pos {
-            Style::default()
-                .fg(theme.order_current)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.order_normal)
-        };
-        lines.push(Line::from(Span::styled(text, style)));
-    }
-
-    let block = Block::default()
-        .title(" Ord ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.order_border));
-
-    let widget = Paragraph::new(lines).block(block);
-    f.render_widget(widget, area);
-}
-
 fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
     use crate::app::SettingsField;
 
@@ -855,8 +794,8 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let is_sample = ch_type == crate::app::ChannelType::Sample;
     let popup_h = match ch_type {
         crate::app::ChannelType::Midi => 5,
-        crate::app::ChannelType::Synth => 18,
-        crate::app::ChannelType::Sample => 18,
+        crate::app::ChannelType::Synth => 28,
+        crate::app::ChannelType::Sample => 28,
     };
     let popup_area = centered_rect(60, popup_h, area);
     f.render_widget(Clear, popup_area);
@@ -986,74 +925,97 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     if has_fx {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("  -- Effects --", dim)));
+
+        // Filter
         lines.push(Line::from(vec![
-            Span::styled("  Filter:     ", style_for(fx_off)),
+            Span::styled("  Filter        ", style_for(fx_off)),
             on_off(params.filter_enabled, fx_off),
-            Span::styled("  Cutoff: ", style_for(fx_off + 1)),
-            Span::styled(
-                format!("{:.0}", params.filter_cutoff),
-                style_for(fx_off + 1),
-            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Cutoff      ", style_for(fx_off + 1)),
+            Span::styled(format!("{:.0} Hz", params.filter_cutoff), style_for(fx_off + 1)),
             cc_label(1),
-            Span::styled("  Res: ", style_for(fx_off + 2)),
-            Span::styled(
-                format!("{:.2}", params.filter_resonance),
-                style_for(fx_off + 2),
-            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Resonance   ", style_for(fx_off + 2)),
+            Span::styled(format!("{:.2}", params.filter_resonance), style_for(fx_off + 2)),
             cc_label(2),
         ]));
+        lines.push(Line::from(""));
+
+        // Distortion
         lines.push(Line::from(vec![
-            Span::styled("  Distortion: ", style_for(fx_off + 3)),
+            Span::styled("  Distortion    ", style_for(fx_off + 3)),
             on_off(params.distortion_enabled, fx_off + 3),
-            Span::styled("  Drive: ", style_for(fx_off + 4)),
-            Span::styled(
-                format!("{:.1}", params.distortion_drive),
-                style_for(fx_off + 4),
-            ),
-            cc_label(4),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  Chorus:     ", style_for(fx_off + 5)),
+            Span::styled("    Drive       ", style_for(fx_off + 4)),
+            Span::styled(format!("{:.1}", params.distortion_drive), style_for(fx_off + 4)),
+            cc_label(4),
+        ]));
+        lines.push(Line::from(""));
+
+        // Chorus
+        lines.push(Line::from(vec![
+            Span::styled("  Chorus        ", style_for(fx_off + 5)),
             on_off(params.chorus_enabled, fx_off + 5),
-            Span::styled("  Rate: ", style_for(fx_off + 6)),
-            Span::styled(format!("{:.1}", params.chorus_rate), style_for(fx_off + 6)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Rate        ", style_for(fx_off + 6)),
+            Span::styled(format!("{:.1} Hz", params.chorus_rate), style_for(fx_off + 6)),
             cc_label(6),
-            Span::styled("  Depth: ", style_for(fx_off + 7)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Depth       ", style_for(fx_off + 7)),
             Span::styled(format!("{:.1}", params.chorus_depth), style_for(fx_off + 7)),
             cc_label(7),
-            Span::styled("  Mix: ", style_for(fx_off + 8)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Mix         ", style_for(fx_off + 8)),
             Span::styled(format!("{:.2}", params.chorus_mix), style_for(fx_off + 8)),
             cc_label(8),
         ]));
+        lines.push(Line::from(""));
+
+        // Delay
         lines.push(Line::from(vec![
-            Span::styled("  Delay:      ", style_for(fx_off + 9)),
+            Span::styled("  Delay         ", style_for(fx_off + 9)),
             on_off(params.delay_enabled, fx_off + 9),
-            Span::styled("  Time: ", style_for(fx_off + 10)),
-            Span::styled(
-                format!("{:.0}ms", params.delay_time),
-                style_for(fx_off + 10),
-            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Time        ", style_for(fx_off + 10)),
+            Span::styled(format!("{:.0} ms", params.delay_time), style_for(fx_off + 10)),
             cc_label(10),
-            Span::styled("  Fdbk: ", style_for(fx_off + 11)),
-            Span::styled(
-                format!("{:.2}", params.delay_feedback),
-                style_for(fx_off + 11),
-            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Feedback    ", style_for(fx_off + 11)),
+            Span::styled(format!("{:.2}", params.delay_feedback), style_for(fx_off + 11)),
             cc_label(11),
-            Span::styled("  Mix: ", style_for(fx_off + 12)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Mix         ", style_for(fx_off + 12)),
             Span::styled(format!("{:.2}", params.delay_mix), style_for(fx_off + 12)),
             cc_label(12),
         ]));
+        lines.push(Line::from(""));
+
+        // Reverb
         lines.push(Line::from(vec![
-            Span::styled("  Reverb:     ", style_for(fx_off + 13)),
+            Span::styled("  Reverb        ", style_for(fx_off + 13)),
             on_off(params.reverb_enabled, fx_off + 13),
-            Span::styled("  Size: ", style_for(fx_off + 14)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Size        ", style_for(fx_off + 14)),
             Span::styled(format!("{:.2}", params.reverb_size), style_for(fx_off + 14)),
             cc_label(14),
-            Span::styled("  Damp: ", style_for(fx_off + 15)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Damp        ", style_for(fx_off + 15)),
             Span::styled(format!("{:.2}", params.reverb_damp), style_for(fx_off + 15)),
             cc_label(15),
-            Span::styled("  Mix: ", style_for(fx_off + 16)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("    Mix         ", style_for(fx_off + 16)),
             Span::styled(format!("{:.2}", params.reverb_mix), style_for(fx_off + 16)),
             cc_label(16),
         ]));

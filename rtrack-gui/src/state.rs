@@ -71,15 +71,15 @@ impl GridColors {
             fg_row_num: Color32::from_rgb(100, 100, 120),
             fg_row_bar: Color32::from_rgb(160, 160, 200),
             fg_note_set: Color32::from_rgb(180, 220, 255),
-            fg_note_empty: Color32::from_rgb(60, 60, 80),
+            fg_note_empty: Color32::from_rgb(85, 85, 105),
             fg_inst_set: Color32::from_rgb(255, 200, 100),
-            fg_inst_empty: Color32::from_rgb(60, 60, 80),
+            fg_inst_empty: Color32::from_rgb(85, 85, 105),
             fg_vol_set: Color32::from_rgb(100, 255, 100),
-            fg_vol_empty: Color32::from_rgb(60, 60, 80),
+            fg_vol_empty: Color32::from_rgb(85, 85, 105),
             fg_fx_set: Color32::from_rgb(255, 150, 150),
-            fg_fx_empty: Color32::from_rgb(60, 60, 80),
+            fg_fx_empty: Color32::from_rgb(85, 85, 105),
             fg_separator: Color32::from_rgb(50, 50, 70),
-            fg_muted: Color32::from_rgb(50, 50, 60),
+            fg_muted: Color32::from_rgb(70, 70, 85),
             fg_header: Color32::from_rgb(140, 140, 180),
         }
     }
@@ -123,15 +123,15 @@ impl GridColors {
             fg_row_num: Color32::from_rgb(117, 113, 94),
             fg_row_bar: Color32::from_rgb(150, 146, 128),
             fg_note_set: Color32::from_rgb(102, 217, 239), // cyan
-            fg_note_empty: Color32::from_rgb(60, 60, 54),
+            fg_note_empty: Color32::from_rgb(85, 83, 74),
             fg_inst_set: Color32::from_rgb(230, 219, 116), // yellow
-            fg_inst_empty: Color32::from_rgb(60, 60, 54),
+            fg_inst_empty: Color32::from_rgb(85, 83, 74),
             fg_vol_set: Color32::from_rgb(166, 226, 46), // green
-            fg_vol_empty: Color32::from_rgb(60, 60, 54),
+            fg_vol_empty: Color32::from_rgb(85, 83, 74),
             fg_fx_set: Color32::from_rgb(249, 38, 114), // pink/red
-            fg_fx_empty: Color32::from_rgb(60, 60, 54),
+            fg_fx_empty: Color32::from_rgb(85, 83, 74),
             fg_separator: Color32::from_rgb(60, 60, 54),
-            fg_muted: Color32::from_rgb(55, 55, 48),
+            fg_muted: Color32::from_rgb(75, 73, 65),
             fg_header: Color32::from_rgb(248, 248, 242),
         }
     }

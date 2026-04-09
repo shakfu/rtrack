@@ -15,6 +15,7 @@ const MIDI_DIM_COLOR: Color32 = Color32::from_rgb(80, 80, 100);
 
 impl RtrackApp {
     pub fn draw_transport(&mut self, ui: &mut Ui) {
+        // Row 1: Transport -- title, play/stop, record, BPM, speed, time
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
@@ -84,6 +85,27 @@ impl RtrackApp {
 
             ui.separator();
 
+            // Playback time
+            let elapsed = self.core.timing.playback_elapsed;
+            let mins = (elapsed / 60.0) as u32;
+            let secs = (elapsed % 60.0) as u32;
+            let time_color = if self.core.playing {
+                Color32::from_rgb(200, 200, 200)
+            } else {
+                Color32::from_rgb(100, 100, 120)
+            };
+            ui.label(
+                RichText::new(format!("{}:{:02}", mins, secs))
+                    .monospace()
+                    .size(13.0)
+                    .color(time_color),
+            );
+        });
+
+        // Row 2: Edit state -- position, pattern, octave, step, follow, mode, status indicators
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+
             // Position
             ui.label(
                 RichText::new(format!(
@@ -124,22 +146,6 @@ impl RtrackApp {
                 );
             }
 
-            // Playback time
-            let elapsed = self.core.timing.playback_elapsed;
-            let mins = (elapsed / 60.0) as u32;
-            let secs = (elapsed % 60.0) as u32;
-            let time_color = if self.core.playing {
-                Color32::from_rgb(200, 200, 200)
-            } else {
-                Color32::from_rgb(100, 100, 120)
-            };
-            ui.label(
-                RichText::new(format!("{}:{:02}", mins, secs))
-                    .monospace()
-                    .size(13.0)
-                    .color(time_color),
-            );
-
             ui.separator();
 
             // Octave
@@ -169,6 +175,8 @@ impl RtrackApp {
                     .size(13.0)
                     .color(mode_color),
             );
+
+            ui.separator();
 
             // Audio status
             if self.core.has_sf2() {
@@ -276,22 +284,20 @@ impl RtrackApp {
                     self.core.toggle_link();
                     self.status_message = Some("Link disabled".to_string());
                 }
-            } else {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("LINK")
-                                .monospace()
-                                .size(12.0)
-                                .color(Color32::from_rgb(80, 80, 100)),
-                        )
-                        .frame(false),
+            } else if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("LINK")
+                            .monospace()
+                            .size(12.0)
+                            .color(Color32::from_rgb(80, 80, 100)),
                     )
-                    .clicked()
-                {
-                    self.core.toggle_link();
-                    self.status_message = Some("Link enabled".to_string());
-                }
+                    .frame(false),
+                )
+                .clicked()
+            {
+                self.core.toggle_link();
+                self.status_message = Some("Link enabled".to_string());
             }
         });
     }

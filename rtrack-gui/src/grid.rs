@@ -29,7 +29,7 @@ const NOTE_CHARS: usize = 3;
 const INST_CHARS: usize = 2;
 const VOL_CHARS: usize = 2;
 const FX_CHARS: usize = 3;
-const GAP_CHARS: usize = 1;
+const GAP_CHARS: usize = 2;
 const ROW_NUM_CHARS: usize = 3;
 const SEPARATOR_CHARS: usize = 3;
 

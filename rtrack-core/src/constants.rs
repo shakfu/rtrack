@@ -75,7 +75,7 @@ pub const MAX_CHANNELS: usize = 16;
 pub const CHANNELS_PER_PAGE: usize = 4;
 
 /// Maximum length of a channel name in the pattern editor header.
-pub const MAX_CHANNEL_NAME: usize = 5;
+pub const MAX_CHANNEL_NAME: usize = 8;
 
 /// Preview note auto-off timeout in milliseconds.
 pub const PREVIEW_NOTE_TIMEOUT_MS: u64 = 250;

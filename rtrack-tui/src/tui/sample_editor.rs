@@ -108,7 +108,7 @@ fn current_sample_slot(app: &App) -> Option<usize> {
 
 /// Draw the sample editor popup
 pub fn draw_sample_editor(f: &mut Frame, app: &App) {
-    let area = centered_rect(70, 30, f.area());
+    let area = centered_rect(65, 24, f.area());
     f.render_widget(Clear, area);
 
     let slot = app.dialogs.sample_editor_slot;

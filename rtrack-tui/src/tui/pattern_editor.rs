@@ -16,7 +16,7 @@ const INST_WIDTH: u16 = 2; // "01"
 const VOL_WIDTH: u16 = 2; // "80"
 const FX_WIDTH: u16 = 3; // "000"
 #[allow(dead_code)]
-const GAPS: u16 = 3; // spaces between sub-columns
+const GAPS: u16 = 6; // spaces between sub-columns (2 per gap)
 #[allow(dead_code)]
 const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
 const SEPARATOR_WIDTH: u16 = 3; // " | "
@@ -88,8 +88,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 .add_modifier(Modifier::BOLD);
 
             // Layout: <name> <pad> [TYP] M   (right-justified type + indicator)
-            // Indicator: last char (pos 12), type: pos 6-10, space at 11
-            let w = CHANNEL_WIDTH as usize; // 13
+            let w = CHANNEL_WIDTH as usize; // 16
             let name_str: String = if let Some(name) = ch_name {
                 name.chars().take(MAX_CHANNEL_NAME).collect()
             } else {
@@ -281,8 +280,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             write_str(buf, x, y, &note_str, cursor_on(SubColumn::Note).fg(note_fg));
             x += NOTE_WIDTH;
 
-            write_str(buf, x, y, " ", Style::default().bg(base_bg));
-            x += 1;
+            write_str(buf, x, y, "  ", Style::default().bg(base_bg));
+            x += 2;
 
             // Instrument
             let inst_str = cell.display_instrument();
@@ -295,16 +294,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             );
             x += INST_WIDTH;
 
-            write_str(buf, x, y, " ", Style::default().bg(base_bg));
-            x += 1;
+            write_str(buf, x, y, "  ", Style::default().bg(base_bg));
+            x += 2;
 
             // Volume
             let vol_str = cell.display_volume();
             write_str(buf, x, y, &vol_str, cursor_on(SubColumn::Volume).fg(vol_fg));
             x += VOL_WIDTH;
 
-            write_str(buf, x, y, " ", Style::default().bg(base_bg));
-            x += 1;
+            write_str(buf, x, y, "  ", Style::default().bg(base_bg));
+            x += 2;
 
             // Effect
             let fx_str = cell.display_effect();
@@ -341,9 +340,9 @@ mod tests {
 
     #[test]
     fn test_channel_total_width() {
-        // 1 channel: 3 (row) + 3 (sep) + 13 (channel) = 19
-        assert_eq!(channel_total_width(1), 19);
-        // 4 channels: 3 + 3 + 4*13 + 3*3 = 67
-        assert_eq!(channel_total_width(4), 67);
+        // 1 channel: 3 (row) + 3 (sep) + 16 (channel) = 22
+        assert_eq!(channel_total_width(1), 22);
+        // 4 channels: 3 + 3 + 4*16 + 3*3 = 79
+        assert_eq!(channel_total_width(4), 79);
     }
 }
