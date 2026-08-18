@@ -8,11 +8,18 @@ use anyhow::{Context, Result};
 use dasp::Sample as DaspSample;
 
 /// A loaded audio sample stored as stereo f32 frames.
+///
+/// A sample is a *view* of a frame buffer: `data` holds the frames and
+/// `trim_start`/`trim_end` bound the part that plays. Slicing produces
+/// several samples that share one buffer and differ only in their bounds,
+/// which is both how the `.rtrk` format stores them -- a source path plus a
+/// span -- and why slicing does not multiply memory by the slice count.
 #[derive(Clone)]
 pub struct Sample {
     pub name: String,
-    /// Stereo frames: [left, right] pairs
-    pub data: Vec<[f32; 2]>,
+    /// Stereo frames: [left, right] pairs. Shared between slices of the same
+    /// source, and never mutated after loading.
+    pub data: Arc<[[f32; 2]]>,
     pub sample_rate: f64,
     /// MIDI note at which the sample plays at original pitch (default 60 = C5)
     pub base_note: u8,
@@ -71,9 +78,22 @@ impl Sample {
         self.data.is_empty()
     }
 
-    /// Duration in seconds
+    /// Duration of the whole buffer in seconds
     pub fn duration(&self) -> f64 {
         self.data.len() as f64 / self.sample_rate
+    }
+
+    /// Number of frames that actually play, honouring the trim bounds.
+    ///
+    /// Differs from [`Sample::len`] for a slice, which views a span of a
+    /// larger buffer.
+    pub fn played_len(&self) -> usize {
+        self.end().saturating_sub(self.trim_start)
+    }
+
+    /// Duration of the part that plays, in seconds.
+    pub fn played_duration(&self) -> f64 {
+        self.played_len() as f64 / self.sample_rate
     }
 }
 
@@ -276,7 +296,7 @@ fn load_wav(path: &Path) -> Result<Sample> {
     let source = path.to_string_lossy().to_string();
     Ok(Sample {
         name,
-        data,
+        data: data.into(),
         sample_rate,
         base_note: 60,
         trim_start: 0,
@@ -411,7 +431,7 @@ fn load_aiff(path: &Path) -> Result<Sample> {
 
     Ok(Sample {
         name,
-        data,
+        data: data.into(),
         sample_rate,
         base_note: 60,
         trim_start: 0,
@@ -481,11 +501,16 @@ pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
             };
             Sample {
                 name: format!("{}_S{:02}", sample.name, i),
-                data: sample.data[s..e].to_vec(),
+                // Share the source buffer and bound this slice with the trim
+                // range. Copying the frames instead would leave the slice
+                // with no record of where it came from, and saving -- which
+                // stores a path and a span, not audio -- would lose the
+                // boundaries and reload every slot as the whole file.
+                data: Arc::clone(&sample.data),
                 sample_rate: sample.sample_rate,
                 base_note: sample.base_note,
-                trim_start: 0,
-                trim_end: 0,
+                trim_start: s,
+                trim_end: e,
                 loop_enabled: false,
                 loop_start: 0,
                 loop_end: 0,
@@ -588,11 +613,12 @@ pub fn slice_at_points(sample: &Sample, points: &[usize]) -> Vec<Sample> {
         let actual_end = slice_end.min(sample.data.len());
         slices.push(Sample {
             name: format!("{}_S{:02}", sample.name, i),
-            data: sample.data[p..actual_end].to_vec(),
+            // Shared buffer plus a span; see `slice_equal`.
+            data: Arc::clone(&sample.data),
             sample_rate: sample.sample_rate,
             base_note: sample.base_note,
-            trim_start: 0,
-            trim_end: 0,
+            trim_start: p,
+            trim_end: actual_end,
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
@@ -654,7 +680,7 @@ mod tests {
     fn test_sample_end_default() {
         let sample = Sample {
             name: "test".into(),
-            data: vec![[0.0; 2]; 100],
+            data: vec![[0.0; 2]; 100].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -672,7 +698,7 @@ mod tests {
     fn test_sample_trimmed() {
         let sample = Sample {
             name: "test".into(),
-            data: vec![[0.0; 2]; 100],
+            data: vec![[0.0; 2]; 100].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 10,
@@ -689,7 +715,7 @@ mod tests {
     fn test_sample_frame_at_out_of_bounds() {
         let sample = Sample {
             name: "test".into(),
-            data: vec![[1.0, -1.0]],
+            data: vec![[1.0, -1.0]].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -855,7 +881,7 @@ mod tests {
             .collect();
         Sample {
             name: "test".into(),
-            data,
+            data: data.into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -872,10 +898,13 @@ mod tests {
         let sample = make_slice_sample(1000);
         let slices = slice_equal(&sample, 4);
         assert_eq!(slices.len(), 4);
-        assert_eq!(slices[0].data.len(), 250);
-        assert_eq!(slices[1].data.len(), 250);
-        assert_eq!(slices[2].data.len(), 250);
-        assert_eq!(slices[3].data.len(), 250);
+        // Slices are spans of the shared buffer, so it is the played length
+        // that is a quarter of the source, not the buffer length.
+        for (i, slice) in slices.iter().enumerate() {
+            assert_eq!(slice.played_len(), 250, "slice {i}");
+            assert_eq!(slice.trim_start, i * 250, "slice {i} start");
+            assert_eq!(slice.end(), (i + 1) * 250, "slice {i} end");
+        }
         assert_eq!(slices[0].name, "test_S00");
         assert_eq!(slices[3].name, "test_S03");
     }
@@ -897,9 +926,11 @@ mod tests {
         sample.trim_end = 500;
         let slices = slice_equal(&sample, 4);
         assert_eq!(slices.len(), 4);
-        // (500-100)/4 = 100 frames each
-        assert_eq!(slices[0].data.len(), 100);
-        assert_eq!(slices[3].data.len(), 100);
+        // (500-100)/4 = 100 frames each, positioned within the trimmed range
+        assert_eq!(slices[0].played_len(), 100);
+        assert_eq!(slices[0].trim_start, 100);
+        assert_eq!(slices[3].played_len(), 100);
+        assert_eq!(slices[3].end(), 500);
     }
 
     #[test]
@@ -908,8 +939,14 @@ mod tests {
         let slices = slice_equal(&sample, 4);
         assert_eq!(slices.len(), 4);
         // 1003/4 = 250 per slice, last gets remainder
-        assert_eq!(slices[0].data.len(), 250);
-        assert_eq!(slices[3].data.len(), 253); // 1003 - 250*3 = 253
+        assert_eq!(slices[0].played_len(), 250);
+        assert_eq!(slices[3].played_len(), 253); // 1003 - 250*3 = 253
+                                                 // The slices tile the source exactly, with no gap or overlap.
+        assert_eq!(slices[0].trim_start, 0);
+        assert_eq!(slices[3].end(), 1003);
+        for pair in slices.windows(2) {
+            assert_eq!(pair[0].end(), pair[1].trim_start);
+        }
     }
 
     #[test]
@@ -930,7 +967,7 @@ mod tests {
     fn test_detect_transients_silent() {
         let sample = Sample {
             name: "silent".into(),
-            data: vec![[0.0; 2]; 44100],
+            data: vec![[0.0; 2]; 44100].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -959,7 +996,7 @@ mod tests {
         }
         let sample = Sample {
             name: "bursts".into(),
-            data,
+            data: data.into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -993,7 +1030,7 @@ mod tests {
         }
         let sample = Sample {
             name: "multi".into(),
-            data,
+            data: data.into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -1019,8 +1056,9 @@ mod tests {
         let points = vec![0, 250, 500, 750];
         let slices = slice_at_points(&sample, &points);
         assert_eq!(slices.len(), 4);
-        assert_eq!(slices[0].data.len(), 250);
-        assert_eq!(slices[3].data.len(), 250); // 750..1000
+        assert_eq!(slices[0].played_len(), 250);
+        assert_eq!(slices[3].played_len(), 250); // 750..1000
+        assert_eq!(slices[3].trim_start, 750);
         assert_eq!(slices[0].name, "test_S00");
     }
 
@@ -1035,6 +1073,6 @@ mod tests {
         let sample = make_slice_sample(100);
         let slices = slice_at_points(&sample, &[0]);
         assert_eq!(slices.len(), 1);
-        assert_eq!(slices[0].data.len(), 100);
+        assert_eq!(slices[0].played_len(), 100);
     }
 }

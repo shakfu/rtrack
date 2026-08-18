@@ -2,7 +2,6 @@ use egui::Key;
 use rtrack_core::constants::*;
 use rtrack_core::midi::MidiInputEvent;
 use rtrack_core::tracker::{Cell, Note};
-use rtrack_core::ChannelType;
 
 use crate::app::RtrackApp;
 use crate::history::CellEdit;
@@ -934,40 +933,22 @@ impl RtrackApp {
         };
         let note = Note::On { value, octave };
 
-        // Preview
+        let ch = self.cursor_channel;
+        // One resolution for both the preview and the written cell, so what
+        // you hear while typing is what plays back.
+        let track_inst = self
+            .core
+            .resolve_edit_instrument(self.edit_order, self.cursor_row, ch);
+
         if let Some(midi_note) = note.to_midi_note() {
-            let ch = self.cursor_channel;
-            let midi_ch = self.core.midi_channel_for(ch);
-            let ch_type = self.core.channels.get(ch).map(|c| c.channel_type);
-            let track_inst =
-                if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-                    self.core
-                        .channels
-                        .get(ch)
-                        .and_then(|c| c.default_instrument)
-                } else {
-                    None
-                };
-            self.core.preview_note_with_instrument(
-                midi_ch,
+            self.core.preview_note_for_cell(
+                self.edit_order,
+                self.cursor_row,
+                ch,
                 midi_note,
                 MIDI_DEFAULT_VELOCITY,
-                track_inst,
             );
         }
-
-        // Write to pattern
-        let ch = self.cursor_channel;
-        let ch_type = self.core.channels.get(ch).map(|c| c.channel_type);
-        let track_inst =
-            if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-                self.core
-                    .channels
-                    .get(ch)
-                    .and_then(|c| c.default_instrument)
-            } else {
-                None
-            };
 
         let Some(pattern_idx) = self.current_pattern_idx() else {
             return;
@@ -1147,22 +1128,23 @@ impl RtrackApp {
                 velocity,
             } => {
                 let ch = self.cursor_channel;
-                let midi_ch = self.core.midi_channel_for(ch);
 
                 // Punch-in recording: playing + recording + Insert mode
                 if self.core.playing && self.core.recording && self.mode == Mode::Insert {
                     let order = self.core.engine.order;
                     let row = self.core.engine.row;
                     self.core.record_note_at(order, row, ch, note, velocity);
-                    self.core.preview_note(midi_ch, note, velocity);
+                    self.core
+                        .preview_note_for_cell(order, row, ch, note, velocity);
                     return;
                 }
 
                 // Step recording: Insert mode + stopped
                 if self.mode == Mode::Insert && !self.core.playing {
-                    self.core.preview_note(midi_ch, note, velocity);
                     let order = self.current_order_position();
                     let row = self.cursor_row;
+                    self.core
+                        .preview_note_for_cell(order, row, ch, note, velocity);
                     if self.core.record_note_at(order, row, ch, note, velocity) {
                         let step = self.edit_step;
                         let max_row = self.current_pattern_rows().saturating_sub(1);
@@ -1171,8 +1153,11 @@ impl RtrackApp {
                     return;
                 }
 
-                // Preview only
-                self.core.preview_note(midi_ch, note, velocity);
+                // Preview only, still through the instrument the cursor's
+                // cell would use.
+                let order = self.current_order_position();
+                self.core
+                    .preview_note_for_cell(order, self.cursor_row, ch, note, velocity);
             }
             MidiInputEvent::NoteOff { channel: _, note } => {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);
@@ -1309,6 +1294,7 @@ mod tests {
     use super::*;
     use crate::state::SubColumn;
     use rtrack_core::tracker::NoteValue;
+    use rtrack_core::ChannelType;
 
     fn app() -> RtrackApp {
         RtrackApp::headless(4, 16)
@@ -1409,6 +1395,79 @@ mod tests {
         a.try_enter_note('z');
         let cell = a.core.song.cell_at(a.edit_order, 0, 0);
         assert_eq!(cell.instrument, Some(7));
+    }
+
+    #[test]
+    fn entering_a_note_below_a_sample_note_inherits_its_instrument() {
+        // The sliced-sample case: each slice is its own instrument, the track
+        // is Midi-typed because the song predates persisted channel state,
+        // and a note typed on an empty row used to fall through to the
+        // built-in synth instead of playing the slice.
+        let mut a = app();
+        a.core.instruments[3].sample_index = Some(3);
+        a.core.song.set_cell(
+            a.edit_order,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                instrument: Some(3),
+                ..Cell::default()
+            },
+        );
+
+        a.cursor_row = 4;
+        a.try_enter_note('z');
+
+        let cell = a.core.song.cell_at(a.edit_order, 4, 0);
+        assert!(cell.note.is_some());
+        assert_eq!(
+            cell.instrument,
+            Some(3),
+            "the new note should sound like the sample above it"
+        );
+    }
+
+    #[test]
+    fn re_entering_a_note_keeps_the_instrument_already_in_the_cell() {
+        let mut a = app();
+        a.core.song.set_cell(
+            a.edit_order,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                instrument: Some(1),
+                ..Cell::default()
+            },
+        );
+        a.core.song.set_cell(
+            a.edit_order,
+            4,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 5,
+                }),
+                instrument: Some(6),
+                ..Cell::default()
+            },
+        );
+
+        a.cursor_row = 4;
+        a.try_enter_note('x');
+        assert_eq!(
+            a.core.song.cell_at(a.edit_order, 4, 0).instrument,
+            Some(6),
+            "editing a note must not retune it to the one above"
+        );
     }
 
     #[test]

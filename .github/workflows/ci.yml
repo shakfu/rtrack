@@ -51,6 +51,12 @@ jobs:
         # built to run headless, so this must pass without one.
         run: cargo test --workspace
 
+      - name: Generated examples are current
+        # The committed example songs are build artifacts. This catches them
+        # drifting from the code that produces them, without a test writing
+        # into the repository.
+        run: cargo xtask regen-examples --check
+
   msrv:
     name: MSRV (1.87)
     runs-on: ubuntu-latest

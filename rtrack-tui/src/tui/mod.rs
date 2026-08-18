@@ -406,6 +406,10 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("Save", text_style),
         ]),
         Line::from(vec![
+            Span::styled("  Ctrl+O       ", key_style),
+            Span::styled("Open song (file browser)", text_style),
+        ]),
+        Line::from(vec![
             Span::styled("  Ctrl+Z / Y   ", key_style),
             Span::styled("Undo / Redo", text_style),
         ]),
@@ -554,6 +558,18 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled("  :wq          ", key_style),
             Span::styled("Save and quit", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :open        ", key_style),
+            Span::styled("Open song (file browser)", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :recent      ", key_style),
+            Span::styled("Open a recently used song", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :load        ", key_style),
+            Span::styled("Load sample into current channel", text_style),
         ]),
         Line::from(vec![
             Span::styled("  :h :help     ", key_style),

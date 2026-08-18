@@ -1120,26 +1120,14 @@ impl App {
             }
             "load" => {
                 self.mode = Mode::Normal;
-                self.open_file_browser(
-                    super::FileBrowserAction::LoadSample(self.cursor_channel),
-                    vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
-                );
+                self.open_sample_browser();
             }
             "open" => {
                 self.mode = Mode::Normal;
-                self.open_file_browser(
-                    super::FileBrowserAction::OpenSong,
-                    vec!["rtrk".to_string()],
-                );
+                self.open_song_browser();
             }
             "recent" => {
-                if self.recent_files.is_empty() {
-                    self.mode = Mode::Normal;
-                    self.status_message = Some("No recent files".to_string());
-                } else {
-                    self.dialogs.recent_cursor = 0;
-                    self.mode = Mode::RecentFiles;
-                }
+                self.open_recent_files();
             }
             _ => {
                 self.mode = self.prev_mode;
@@ -1277,6 +1265,10 @@ impl App {
             match key.code {
                 KeyCode::Char('s') => {
                     self.save();
+                    return true;
+                }
+                KeyCode::Char('o') => {
+                    self.open_song_browser();
                     return true;
                 }
                 KeyCode::Char('z') => {
@@ -1698,39 +1690,29 @@ impl App {
 
         self.push_undo();
 
-        // Determine instrument: use track default if set (Synth/Sample tracks), else cell's existing value
-        let pattern_idx = self.core.song.order[self.current_order_position()];
+        let order = self.current_order_position();
         let ch = self.cursor_channel;
-        let ch_type = self.core.channels.get(ch).map(|c| c.channel_type);
-        let track_inst =
-            if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-                self.core
-                    .channels
-                    .get(ch)
-                    .and_then(|c| c.default_instrument)
-            } else {
-                None
-            };
-        let current_inst = track_inst.or(self.core.song.patterns[pattern_idx]
-            .get(self.cursor_row, ch)
-            .instrument);
+        // One resolution for both the preview and the written cell, so what
+        // you hear while typing is what plays back.
+        let instrument = self
+            .core
+            .resolve_edit_instrument(order, self.cursor_row, ch);
 
-        // Preview the note
         if let Some(midi_note) = note.to_midi_note() {
-            let midi_ch = self.core.midi_channel_for(ch);
-            self.core.preview_note_with_instrument(
-                midi_ch,
+            self.core.preview_note_for_cell(
+                order,
+                self.cursor_row,
+                ch,
                 midi_note,
                 MIDI_DEFAULT_VELOCITY,
-                current_inst,
             );
         }
 
-        // Write to pattern
-        let cell = self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, ch);
+        let Some(cell) = self.core.song.cell_at_mut(order, self.cursor_row, ch) else {
+            return;
+        };
         cell.note = Some(note);
-        // Auto-fill instrument from track default
-        if let Some(inst) = track_inst {
+        if let Some(inst) = instrument {
             cell.instrument = Some(inst);
         }
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["rtrack-core", "rtrack-tui", "rtrack-gui"]
+members = ["rtrack-core", "rtrack-tui", "rtrack-gui", "xtask"]
 default-members = ["rtrack-tui"]
 resolver = "2"
 

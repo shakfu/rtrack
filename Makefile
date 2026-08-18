@@ -1,4 +1,5 @@
 .PHONY: build run gui test test-unit test-integration fmt fmt-check clippy lint ci clean \
+       regen-examples check-examples \
        publish-dry publish publish-core publish-tui publish-gui
 
 build:
@@ -33,8 +34,16 @@ clippy:
 # rather than rewrites.
 lint: fmt clippy
 
+# Rebuild the generated example songs (writes into examples/).
+regen-examples:
+	cargo xtask regen-examples
+
+# Verify the generated examples are current, without writing.
+check-examples:
+	cargo xtask regen-examples --check
+
 # What CI runs.
-ci: fmt-check clippy test
+ci: fmt-check clippy test check-examples
 
 clean:
 	cargo clean

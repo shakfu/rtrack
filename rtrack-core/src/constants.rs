@@ -102,3 +102,11 @@ pub const MAX_SCHEDULED_POSITIONS: usize = 64;
 /// a mistyped path or a corrupt header, not a judgement about what makes a
 /// reasonable sample.
 pub const MAX_SAMPLE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// How long a one-shot sample preview is tracked before the record is
+/// dropped.
+///
+/// One-shot samples end on their own, so they are not cut off at
+/// `PREVIEW_NOTE_TIMEOUT_MS`. This is only an upper bound on how long the
+/// core remembers that a preview happened.
+pub const PREVIEW_ONE_SHOT_MAX_MS: u64 = 10_000;

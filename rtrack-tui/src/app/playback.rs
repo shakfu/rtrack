@@ -56,31 +56,35 @@ impl App {
                 velocity,
             } => {
                 let ch = self.cursor_channel;
-                let midi_ch = self.core.midi_channel_for(ch);
 
                 // Punch-in recording: playing + recording + Insert mode
                 if self.core.playing && self.core.recording && self.mode == Mode::Insert {
                     let order = self.core.engine.order;
                     let row = self.core.engine.row;
                     self.core.record_note_at(order, row, ch, note, velocity);
-                    self.core.preview_note(midi_ch, note, velocity);
+                    self.core
+                        .preview_note_for_cell(order, row, ch, note, velocity);
                     return;
                 }
 
                 // Step recording: Insert mode + stopped
                 if self.mode == Mode::Insert && !self.core.playing {
                     self.push_undo();
-                    self.core.preview_note(midi_ch, note, velocity);
                     let order = self.current_order_position();
                     let row = self.cursor_row;
+                    self.core
+                        .preview_note_for_cell(order, row, ch, note, velocity);
                     if self.core.record_note_at(order, row, ch, note, velocity) {
                         self.move_cursor_down(self.edit_step);
                     }
                     return;
                 }
 
-                // All other modes: preview only
-                self.core.preview_note(midi_ch, note, velocity);
+                // All other modes: preview only, still through the
+                // instrument the cursor's cell would use.
+                let order = self.current_order_position();
+                self.core
+                    .preview_note_for_cell(order, self.cursor_row, ch, note, velocity);
             }
             MidiInputEvent::NoteOff { channel: _, note } => {
                 let midi_ch = self.core.midi_channel_for(self.cursor_channel);

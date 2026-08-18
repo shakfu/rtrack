@@ -48,6 +48,23 @@ impl LoadReport {
     }
 }
 
+/// A note sounding because the user touched the keyboard, not because the
+/// sequencer played it.
+#[derive(Debug, Clone, Copy)]
+pub struct PreviewNote {
+    /// MIDI channel the note was sent on.
+    pub channel: u8,
+    pub note: u8,
+    pub started: Instant,
+    /// Whether the note has to be stopped explicitly.
+    ///
+    /// A one-shot sample ends by itself, so cutting it off after a fixed
+    /// timeout would truncate it -- an amen-break slice runs to ~340ms,
+    /// well past the timeout. Sustaining sources (the synth, external MIDI,
+    /// looping samples) do need stopping.
+    pub needs_note_off: bool,
+}
+
 /// Headless tracker core. Owns all non-UI state: song data, playback engine,
 /// audio/MIDI I/O, channel configuration, instruments, and samples.
 pub struct TrackerCore {
@@ -83,7 +100,7 @@ pub struct TrackerCore {
     pub midi_learn_pending: Option<(usize, LearnableParam)>,
 
     // -- Preview --
-    pub preview_note: Option<(u8, u8, Instant)>,
+    pub preview_note: Option<PreviewNote>,
 
     /// Audio frame the tick currently being dispatched should sound at.
     /// `None` for anything triggered outside the sequencer (note preview,
@@ -936,23 +953,37 @@ impl TrackerCore {
         velocity: u8,
         instrument: Option<u8>,
     ) {
-        if let Some((prev_ch, _prev_note, _)) = self.preview_note.take() {
-            self.send_channel_note_off(prev_ch);
+        if let Some(previous) = self.preview_note.take() {
+            self.send_channel_note_off(previous.channel);
         }
+        let needs_note_off = !self.instrument_is_one_shot_sample(instrument);
         if instrument.is_some() {
             self.send_note_on_with_instrument(channel, note, velocity, instrument);
         } else {
             self.send_note_on(channel, note, velocity);
         }
-        self.preview_note = Some((channel, note, Instant::now()));
+        self.preview_note = Some(PreviewNote {
+            channel,
+            note,
+            started: Instant::now(),
+            needs_note_off,
+        });
     }
 
     /// Silence the preview note if its timeout has elapsed.
     pub fn expire_preview_note(&mut self) {
-        if let Some((ch, _note, started)) = self.preview_note {
-            if started.elapsed() > std::time::Duration::from_millis(PREVIEW_NOTE_TIMEOUT_MS) {
-                self.send_channel_note_off(ch);
-                self.preview_note = None;
+        if let Some(preview) = self.preview_note {
+            let elapsed = preview.started.elapsed();
+            if elapsed > std::time::Duration::from_millis(PREVIEW_NOTE_TIMEOUT_MS) {
+                if preview.needs_note_off {
+                    self.send_channel_note_off(preview.channel);
+                    self.preview_note = None;
+                } else if elapsed > std::time::Duration::from_millis(PREVIEW_ONE_SHOT_MAX_MS) {
+                    // Stop tracking it; the voice has long since ended on its
+                    // own, and holding the record would suppress the note-off
+                    // for whatever is previewed next.
+                    self.preview_note = None;
+                }
             }
         }
         // Both frontends call this every UI frame, which makes it the natural
@@ -1002,6 +1033,82 @@ impl TrackerCore {
     /// Record a note into the pattern at the given position (punch-in recording).
     /// Auto-fills instrument from the channel's default if the channel is Synth or Sample type.
     /// Returns true if the note was recorded.
+    /// The instrument a note entered at this cell should sound with.
+    ///
+    /// Tracker instrument columns are sticky: a note with a blank instrument
+    /// plays whatever the column last named. rtrack's engine does not infer
+    /// that at playback time, so note entry resolves it and writes it into
+    /// the cell, which keeps what you hear while editing identical to what
+    /// you hear on playback.
+    ///
+    /// Resolution order:
+    /// 1. The track's default instrument, for Synth and Sample tracks --
+    ///    this is the "currently selected instrument" behaviour.
+    /// 2. Whatever the cell already names, so re-entering a note over an
+    ///    existing one keeps its sound.
+    /// 3. The nearest instrument above it in the same channel column.
+    ///
+    /// Step 3 is what makes a sliced sample usable: the slices are separate
+    /// instruments, the track is often a plain Midi-typed one, and without it
+    /// every newly entered note fell through to the built-in synth.
+    pub fn resolve_edit_instrument(&self, order: usize, row: usize, channel: usize) -> Option<u8> {
+        if let Some(inst) = self.track_default_instrument(channel) {
+            return Some(inst);
+        }
+        if let Some(inst) = self.song.cell_at(order, row, channel).instrument {
+            return Some(inst);
+        }
+        (0..row)
+            .rev()
+            .find_map(|r| self.song.cell_at(order, r, channel).instrument)
+    }
+
+    /// True if this instrument plays a sample that ends by itself.
+    fn instrument_is_one_shot_sample(&self, instrument: Option<u8>) -> bool {
+        let Some(idx) = instrument else {
+            return false;
+        };
+        let Some(sample_index) = self
+            .instruments
+            .get(idx as usize)
+            .and_then(|i| i.sample_index)
+        else {
+            return false;
+        };
+        match self.sample_bank.get(sample_index) {
+            Some(sample) => !sample.loop_enabled,
+            None => false,
+        }
+    }
+
+    /// The track's default instrument, for tracks that auto-fill one.
+    fn track_default_instrument(&self, channel: usize) -> Option<u8> {
+        let cfg = self.channels.get(channel)?;
+        match cfg.channel_type {
+            ChannelType::Synth | ChannelType::Sample => cfg.default_instrument,
+            ChannelType::Midi => None,
+        }
+    }
+
+    /// Preview a note as it will sound at a particular cell.
+    ///
+    /// Use this rather than [`TrackerCore::preview_note`] for anything driven
+    /// by the edit cursor: it routes through the same instrument the note
+    /// will use on playback, so a sample track previews its sample instead of
+    /// falling back to the built-in synth.
+    pub fn preview_note_for_cell(
+        &mut self,
+        order: usize,
+        row: usize,
+        channel: usize,
+        note: u8,
+        velocity: u8,
+    ) {
+        let instrument = self.resolve_edit_instrument(order, row, channel);
+        let midi_ch = self.midi_channel_for(channel);
+        self.preview_note_with_instrument(midi_ch, note, velocity, instrument);
+    }
+
     pub fn record_note_at(
         &mut self,
         order: usize,
@@ -1023,18 +1130,9 @@ impl TrackerCore {
             value: note_val,
             octave,
         };
-        // Auto-fill instrument from track default
-        let auto_inst = {
-            let ch_type = self.channels.get(channel).map(|c| c.channel_type);
-            if ch_type == Some(ChannelType::Synth) || ch_type == Some(ChannelType::Sample) {
-                self.channels
-                    .get(channel)
-                    .and_then(|c| c.default_instrument)
-            } else {
-                None
-            }
-        };
-        // Build the cell and write to both representations
+        // Resolve the instrument the same way manual note entry does, so a
+        // recorded note sounds like the ones around it.
+        let auto_inst = self.resolve_edit_instrument(order, row, channel);
         let mut cell = *self.song.cell_at(order, row, channel);
         cell.note = Some(tracker_note);
         cell.volume = Some(velocity);
@@ -1308,9 +1406,12 @@ impl TrackerCore {
             let inst_slot = slot + i;
             if inst_slot < self.instruments.len() {
                 self.instruments[inst_slot].sample_index = Some(inst_slot);
-                if self.instruments[inst_slot].name.is_empty() {
-                    self.instruments[inst_slot].name = name.clone();
-                }
+                // Name every slot slicing writes into, rather than only the
+                // empty ones. Slicing replaces the audio in these slots, so
+                // a name describing what used to be there is wrong -- the
+                // first slot in particular kept the whole sample's name and
+                // ended up as "amen" sitting alongside "amen_S01".
+                self.instruments[inst_slot].name = name.clone();
             }
         }
 
@@ -1813,5 +1914,137 @@ mod tests {
             Some(2)
         );
         assert_eq!(core.timing.scheduled_positions.len(), 2);
+    }
+
+    // -- Instrument resolution when editing --
+
+    fn sample_core() -> TrackerCore {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(2, 16)
+            .headless()
+            .build();
+        // Eight slices of one sample, as `slice_sample` produces.
+        for slot in 0..8 {
+            core.instruments[slot].sample_index = Some(slot);
+        }
+        core
+    }
+
+    fn note_cell(instrument: Option<u8>) -> crate::tracker::Cell {
+        crate::tracker::Cell {
+            note: Some(Note::On {
+                value: NoteValue::C,
+                octave: 5,
+            }),
+            instrument,
+            ..crate::tracker::Cell::default()
+        }
+    }
+
+    #[test]
+    fn editing_inherits_the_instrument_from_the_column_above() {
+        // The case that made sliced samples unusable: the track is Midi-typed
+        // (which is what every song saved before channel state was persisted
+        // loads as), so there is no track default, and an empty cell resolved
+        // to nothing and fell through to the built-in synth.
+        let mut core = sample_core();
+        core.song.set_cell(0, 0, 0, note_cell(Some(3)));
+        assert_eq!(core.resolve_edit_instrument(0, 4, 0), Some(3));
+    }
+
+    #[test]
+    fn the_nearest_instrument_above_wins() {
+        let mut core = sample_core();
+        core.song.set_cell(0, 0, 0, note_cell(Some(1)));
+        core.song.set_cell(0, 4, 0, note_cell(Some(6)));
+        assert_eq!(core.resolve_edit_instrument(0, 8, 0), Some(6));
+        assert_eq!(core.resolve_edit_instrument(0, 2, 0), Some(1));
+    }
+
+    #[test]
+    fn a_cells_own_instrument_is_kept_when_re_entering_a_note() {
+        let mut core = sample_core();
+        core.song.set_cell(0, 0, 0, note_cell(Some(1)));
+        core.song.set_cell(0, 4, 0, note_cell(Some(6)));
+        // Editing the note at row 4 must not silently retune it to row 0's.
+        assert_eq!(core.resolve_edit_instrument(0, 4, 0), Some(6));
+    }
+
+    #[test]
+    fn the_track_default_takes_priority_where_one_is_set() {
+        let mut core = sample_core();
+        core.channels[0].channel_type = ChannelType::Sample;
+        core.channels[0].default_instrument = Some(2);
+        core.song.set_cell(0, 0, 0, note_cell(Some(7)));
+        assert_eq!(
+            core.resolve_edit_instrument(0, 4, 0),
+            Some(2),
+            "an explicitly selected instrument is what the user is placing"
+        );
+    }
+
+    #[test]
+    fn midi_tracks_do_not_pick_up_a_track_default() {
+        let mut core = sample_core();
+        core.channels[0].channel_type = ChannelType::Midi;
+        core.channels[0].default_instrument = Some(2);
+        assert_eq!(core.resolve_edit_instrument(0, 0, 0), None);
+    }
+
+    #[test]
+    fn resolution_is_per_channel() {
+        let mut core = sample_core();
+        core.song.set_cell(0, 0, 0, note_cell(Some(3)));
+        assert_eq!(core.resolve_edit_instrument(0, 4, 0), Some(3));
+        assert_eq!(
+            core.resolve_edit_instrument(0, 4, 1),
+            None,
+            "channel 1 has nothing above it"
+        );
+    }
+
+    #[test]
+    fn resolution_does_not_reach_across_order_positions() {
+        let mut core = sample_core();
+        core.song.order = vec![0, 1];
+        core.song.sync_order_repeats();
+        core.song.patterns.push(crate::tracker::Pattern::new(16, 2));
+        core.song.set_cell(0, 0, 0, note_cell(Some(3)));
+        assert_eq!(
+            core.resolve_edit_instrument(1, 4, 0),
+            None,
+            "a later pattern should not inherit from an earlier one"
+        );
+    }
+
+    #[test]
+    fn an_empty_column_resolves_to_nothing() {
+        let core = sample_core();
+        assert_eq!(core.resolve_edit_instrument(0, 8, 0), None);
+    }
+
+    #[test]
+    fn out_of_range_coordinates_resolve_to_nothing() {
+        let core = sample_core();
+        assert_eq!(core.resolve_edit_instrument(99, 0, 0), None);
+        assert_eq!(core.resolve_edit_instrument(0, 0, 99), None);
+    }
+
+    #[test]
+    fn recorded_notes_inherit_the_instrument_from_the_column_above() {
+        // MIDI step and punch-in recording route through the same resolution.
+        let mut core = sample_core();
+        core.song.set_cell(0, 0, 0, note_cell(Some(3)));
+        assert!(core.record_note_at(0, 4, 0, 60, 100));
+        assert_eq!(core.song.cell_at(0, 4, 0).instrument, Some(3));
+    }
+
+    #[test]
+    fn recorded_notes_still_honour_a_track_default() {
+        let mut core = sample_core();
+        core.channels[0].channel_type = ChannelType::Synth;
+        core.channels[0].default_instrument = Some(5);
+        assert!(core.record_note_at(0, 0, 0, 60, 100));
+        assert_eq!(core.song.cell_at(0, 0, 0).instrument, Some(5));
     }
 }

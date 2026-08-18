@@ -488,14 +488,23 @@ fn test_send_bus_in_render() {
 }
 
 #[test]
-fn test_generate_sliced_amen() {
+fn test_sliced_sample_song_round_trips() {
     use std::path::Path;
 
-    let amen_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/amen.wav");
-    if !amen_path.exists() {
-        eprintln!("Skipping: examples/data/amen.wav not found");
-        return;
-    }
+    // `CARGO_MANIFEST_DIR` is the crate directory, not the workspace root, so
+    // this has to step up one level to reach the shared examples. It did not,
+    // which meant the fixture was never found and the whole test skipped
+    // itself while still reporting success.
+    let amen_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate dir has a parent")
+        .join("examples/data/amen.wav");
+    assert!(
+        amen_path.exists(),
+        "fixture {} is missing; it is committed, so this is a real failure \
+         rather than a reason to skip",
+        amen_path.display()
+    );
 
     // Load the sample
     let mut bank = rtrack_core::sample::SampleBank::new();
@@ -584,10 +593,12 @@ fn test_generate_sliced_amen() {
         ..SongFile::from_song(song)
     };
 
-    let out_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/sliced-amen.rtrk");
-    song_file
-        .save(&out_path)
-        .expect("Failed to save sliced-amen.rtrk");
+    // Write to a temp file. A test must not modify the repository: the
+    // checked-in example is an artifact to be regenerated deliberately, not a
+    // side effect of running the suite.
+    let out_path = std::env::temp_dir().join("rtrack_sliced_sample_roundtrip.rtrk");
+    let _ = std::fs::remove_file(&out_path);
+    song_file.save(&out_path).expect("Failed to save song");
 
     // Verify it loads back
     let loaded = SongFile::load(&out_path).expect("Failed to reload");
@@ -608,4 +619,21 @@ fn test_generate_sliced_amen() {
             assert!(gap.note.is_none(), "Row {} should be empty", row + 1);
         }
     }
+
+    // Each slice must reference a distinct, non-empty span of the source file.
+    let mut previous_end = 0;
+    for (i, entry) in loaded.sample_refs.iter().enumerate() {
+        let r = &entry.sample_ref;
+        assert_eq!(r.path, "data/amen.wav");
+        assert!(
+            r.trim_end > r.trim_start,
+            "slice {i} spans no frames ({}..{})",
+            r.trim_start,
+            r.trim_end
+        );
+        assert_eq!(r.trim_start, previous_end, "slice {i} is not contiguous");
+        previous_end = r.trim_end;
+    }
+
+    let _ = std::fs::remove_file(&out_path);
 }

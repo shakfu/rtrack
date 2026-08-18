@@ -77,6 +77,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Ctrl+I | Interpolate block (volume/effect ramp) |
 | Ctrl+F | Toggle follow mode (cursor follows playback) |
 | Ctrl+S | Save |
+| Ctrl+O | Open song (file browser) |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+C / X / V | Copy / cut / paste row (or block if selected) |
 | Ctrl+Left / Right | Previous / next order position |
@@ -125,7 +126,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:ef` / `:flac` | Export FLAC |
 | `:em` / `:exportmidi` | Export MIDI |
 | `:load` | Open file browser to load a sample |
-| `:open` | Open file browser to load a song |
+| `:open` | Open file browser to load a song (same as Ctrl+O) |
 | `:recent` | Open recent files list (last 3 songs) |
 
 ### Track Config (Enter on channel)

@@ -38,7 +38,9 @@ rtrack recording.mid                     # import a MIDI file
 rtrack --sample-dir samples/             # load a directory of samples
 ```
 
-Modal keyboard-driven interface built on ratatui and crossterm. Piano keyboard layout for note entry, vi-style command mode, pattern matrix, instrument/sample/synth editors, and color themes. See [`rtrack-tui/README.md`](rtrack-tui/README.md) for keybindings and TUI-specific details.
+Modal keyboard-driven interface built on ratatui and crossterm. Piano keyboard layout for note entry, vi-style command mode, pattern matrix, instrument/sample/synth editors, and color themes.
+
+Once running, open a song with `Ctrl+O` (or `:open`), reopen a recent one with `:recent`, and press `F1` for the full keybinding list. See [`rtrack-tui/README.md`](rtrack-tui/README.md) for keybindings and TUI-specific details.
 
 ### GUI (Desktop)
 

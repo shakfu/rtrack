@@ -313,7 +313,7 @@ mod tests {
             .collect();
         Sample {
             name: "test".into(),
-            data,
+            data: data.into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -392,7 +392,7 @@ mod tests {
         // Short 5-frame sample
         bank.samples[0] = Some(Arc::new(Sample {
             name: "short".into(),
-            data: vec![[1.0, 1.0]; 5],
+            data: vec![[1.0, 1.0]; 5].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -422,7 +422,7 @@ mod tests {
         let mut bank = SampleBank::new();
         bank.samples[0] = Some(Arc::new(Sample {
             name: "loop".into(),
-            data: vec![[0.5, 0.5]; 10],
+            data: vec![[0.5, 0.5]; 10].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -493,7 +493,7 @@ mod tests {
         let mut bank = SampleBank::new();
         bank.samples[0] = Some(Arc::new(Sample {
             name: "loop".into(),
-            data: vec![[0.5, 0.5]; 1000],
+            data: vec![[0.5, 0.5]; 1000].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,

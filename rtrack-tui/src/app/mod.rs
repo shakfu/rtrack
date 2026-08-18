@@ -530,6 +530,33 @@ impl App {
         self.mode = Mode::SampleEditor;
     }
 
+    /// Open the file browser on song files. Shared by `:open` and Ctrl+O so
+    /// the two entry points cannot drift apart.
+    pub fn open_song_browser(&mut self) {
+        self.open_file_browser(FileBrowserAction::OpenSong, vec!["rtrk".to_string()]);
+    }
+
+    /// Open the file browser on audio files, loading into the cursor's
+    /// channel. Reached by `:load`.
+    pub fn open_sample_browser(&mut self) {
+        self.open_file_browser(
+            FileBrowserAction::LoadSample(self.cursor_channel),
+            vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
+        );
+    }
+
+    /// Show the recent-files list, or say so if there are none.
+    pub fn open_recent_files(&mut self) {
+        if self.recent_files.is_empty() {
+            self.mode = Mode::Normal;
+            self.status_message = Some("No recent files".to_string());
+        } else {
+            self.dialogs.recent_cursor = 0;
+            self.prev_mode = self.mode;
+            self.mode = Mode::RecentFiles;
+        }
+    }
+
     pub fn open_file_browser(&mut self, action: FileBrowserAction, extensions: Vec<String>) {
         self.prev_mode = self.mode;
         self.dialogs.file_browser.open(action, extensions);
@@ -3531,6 +3558,42 @@ mod tests {
     }
 
     #[test]
+    fn test_note_entry_inherits_sample_instrument_from_column_above() {
+        // The sliced-sample case: each slice is its own instrument and the
+        // track is Midi-typed, as any song saved before channel state was
+        // persisted loads. A note typed on an empty row used to fall through
+        // to the built-in synth instead of playing the slice.
+        let mut app = make_app();
+        app.core.instruments[3].sample_index = Some(3);
+        let order = app.current_order_position();
+        app.core.song.set_cell(
+            order,
+            0,
+            0,
+            rtrack_core::tracker::Cell {
+                note: Some(Note::On {
+                    value: rtrack_core::tracker::NoteValue::C,
+                    octave: 5,
+                }),
+                instrument: Some(3),
+                ..Default::default()
+            },
+        );
+
+        app.cursor_row = 4;
+        app.mode = Mode::Insert;
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        let cell = app.core.song.cell_at(order, 4, 0);
+        assert!(cell.note.is_some());
+        assert_eq!(
+            cell.instrument,
+            Some(3),
+            "the new note should sound like the sample above it"
+        );
+    }
+
+    #[test]
     fn test_sample_track_auto_fills_instrument() {
         let mut app = make_app();
         app.core.channels[0].channel_type = ChannelType::Sample;
@@ -3543,6 +3606,49 @@ mod tests {
         assert!(cell.note.is_some());
         // Sample tracks should auto-fill instrument just like Synth tracks
         assert_eq!(cell.instrument, Some(3));
+    }
+
+    #[test]
+    fn test_ctrl_o_opens_the_song_browser() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::FileBrowser);
+        assert_eq!(app.dialogs.file_browser.action, FileBrowserAction::OpenSong);
+        assert_eq!(app.dialogs.file_browser.filter, vec!["rtrk"]);
+    }
+
+    #[test]
+    fn test_ctrl_o_works_from_insert_mode_and_returns_there() {
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::FileBrowser);
+        // Cancelling returns to where the user was, rather than dumping them
+        // in Normal mode mid-entry.
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn test_open_command_and_ctrl_o_reach_the_same_place() {
+        let mut by_key = make_app();
+        by_key.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+        let mut by_command = make_app();
+        for c in ":open".chars() {
+            by_command.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        by_command.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(by_key.mode, by_command.mode);
+        assert_eq!(
+            by_key.dialogs.file_browser.action,
+            by_command.dialogs.file_browser.action
+        );
+        assert_eq!(
+            by_key.dialogs.file_browser.filter,
+            by_command.dialogs.file_browser.filter
+        );
     }
 
     #[test]
@@ -3731,7 +3837,7 @@ mod tests {
         // Load a sample into slot 0
         let sample = rtrack_core::sample::Sample {
             name: "kick".into(),
-            data: vec![[0.5, 0.5]; 4000],
+            data: vec![[0.5, 0.5]; 4000].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -3756,9 +3862,15 @@ mod tests {
         assert!(app.core.sample_bank.get(1).is_some());
         assert!(app.core.sample_bank.get(2).is_some());
         assert!(app.core.sample_bank.get(3).is_some());
-        assert_eq!(app.core.sample_bank.get(0).unwrap().data.len(), 1000);
-        assert_eq!(app.core.sample_bank.get(0).unwrap().name, "kick_S00");
-        assert_eq!(app.core.sample_bank.get(3).unwrap().name, "kick_S03");
+        // Each slice views a quarter of the shared source buffer.
+        let first = app.core.sample_bank.get(0).unwrap();
+        assert_eq!(first.played_len(), 1000);
+        assert_eq!(first.trim_start, 0);
+        assert_eq!(first.name, "kick_S00");
+        let last = app.core.sample_bank.get(3).unwrap();
+        assert_eq!(last.played_len(), 1000);
+        assert_eq!(last.trim_start, 3000);
+        assert_eq!(last.name, "kick_S03");
 
         // Check instruments are set up
         assert_eq!(app.core.instruments[0].sample_index, Some(0));
@@ -3786,7 +3898,7 @@ mod tests {
         }
         let sample = rtrack_core::sample::Sample {
             name: "breaks".into(),
-            data,
+            data: data.into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -4062,7 +4174,7 @@ mod tests {
         let mut bank = (*app.core.sample_bank).clone();
         bank.samples[2] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "kick".to_string(),
-            data: vec![[0.0; 2]; 100],
+            data: vec![[0.0; 2]; 100].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -4074,7 +4186,7 @@ mod tests {
         }));
         bank.samples[5] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "snare".to_string(),
-            data: vec![[0.0; 2]; 100],
+            data: vec![[0.0; 2]; 100].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -4132,7 +4244,7 @@ mod tests {
 
         bank.samples[3] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "test".to_string(),
-            data: vec![[0.0; 2]; 10],
+            data: vec![[0.0; 2]; 10].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,
@@ -4144,7 +4256,7 @@ mod tests {
         }));
         bank.samples[7] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "test2".to_string(),
-            data: vec![[0.0; 2]; 10],
+            data: vec![[0.0; 2]; 10].into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,

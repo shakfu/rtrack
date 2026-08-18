@@ -466,7 +466,7 @@ mod tests {
             .collect();
         bank.samples[0] = Some(std::sync::Arc::new(super::super::Sample {
             name: "sine".into(),
-            data: sample_data,
+            data: sample_data.into(),
             sample_rate: 44100.0,
             base_note: 60,
             trim_start: 0,

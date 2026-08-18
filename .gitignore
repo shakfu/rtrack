@@ -31,3 +31,5 @@ CLAUDE.md
 AGENTS.md
 GEMINI.md
 
+# Autosave files written next to a song while the editor is running
+*.autosave

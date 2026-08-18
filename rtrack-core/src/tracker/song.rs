@@ -138,10 +138,19 @@ impl SongFile {
     /// only with respect to *ordering*: without the flush, a crash can leave
     /// the directory entry pointing at a file whose contents were never
     /// written, which is worse than no save at all.
+    /// Serialize to the JSON text that [`SongFile::save`] would write.
+    ///
+    /// Split out so callers that need the bytes without touching the
+    /// filesystem -- comparing against a committed file, for instance -- do
+    /// not have to reproduce the formatting.
+    pub fn to_json(&self) -> Result<String> {
+        serde_json::to_string_pretty(self).context("Failed to serialize song file")
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         use std::io::Write;
 
-        let json = serde_json::to_string_pretty(self).context("Failed to serialize song file")?;
+        let json = self.to_json()?;
         let dir = path.parent().unwrap_or(Path::new("."));
         let temp_name = format!(
             ".rtrack_save_{}_{}.tmp",

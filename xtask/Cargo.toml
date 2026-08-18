@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.2"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+description = "Repository maintenance tasks (not part of the shipped workspace)"
+
+[dependencies]
+rtrack-core = { path = "../rtrack-core" }
+anyhow = "1"
