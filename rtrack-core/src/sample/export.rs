@@ -188,18 +188,7 @@ fn render_song(
                 }
             }
 
-            {
-                let mut slices: Vec<(&mut [f32], &mut [f32])> =
-                    Vec::with_capacity(MAX_EFFECT_CHANNELS);
-                for ch in 0..MAX_EFFECT_CHANNELS {
-                    let l = &mut ch_left[ch][..fpt] as *mut [f32];
-                    let r = &mut ch_right[ch][..fpt] as *mut [f32];
-                    unsafe {
-                        slices.push((&mut *l, &mut *r));
-                    }
-                }
-                sample_engine.render_per_channel(bank, &mut slices);
-            }
+            sample_engine.render_per_channel(bank, &mut ch_left, &mut ch_right, 0..fpt);
 
             for bus in send_buses.iter_mut() {
                 bus.ensure_size(fpt);
@@ -412,7 +401,8 @@ mod tests {
     fn test_render_with_synth_note() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -450,7 +440,8 @@ mod tests {
     fn test_render_with_sample() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -518,7 +509,8 @@ mod tests {
         song.speed = 6;
         song.bpm = 120;
         // Row 0: note on
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -531,7 +523,8 @@ mod tests {
             },
         );
         // Row 1: portamento up (1xx with param 0x40 = fast slide)
-        song.set_cell(0,
+        song.set_cell(
+            0,
             1,
             0,
             Cell {
@@ -558,7 +551,8 @@ mod tests {
         let mut song_no_fx = Song::new(1, 4);
         song_no_fx.speed = 6;
         song_no_fx.bpm = 120;
-        song_no_fx.set_cell(0,
+        song_no_fx.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -616,7 +610,8 @@ mod tests {
         song.speed = 6;
         song.bpm = 120;
         // Row 0: note on at full volume
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -629,7 +624,8 @@ mod tests {
             },
         );
         // Row 1: volume slide down (50F = slide down by 15 per tick)
-        song.set_cell(0,
+        song.set_cell(
+            0,
             1,
             0,
             Cell {
@@ -657,7 +653,8 @@ mod tests {
         let mut song_static = Song::new(1, 4);
         song_static.speed = 6;
         song_static.bpm = 120;
-        song_static.set_cell(0,
+        song_static.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -707,7 +704,8 @@ mod tests {
     fn test_render_to_flac() {
         let mut song = Song::new(1, 2);
         song.speed = 2;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {

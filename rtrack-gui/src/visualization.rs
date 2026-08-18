@@ -491,7 +491,7 @@ fn draw_spectrum_bars(painter: &Painter, rect: Rect, spectrum: &[f32]) {
         let y = rect.bottom() - norm * rect.height();
         painter.line_segment(
             [pos2(rect.left(), y), pos2(rect.right(), y)],
-            Stroke::new(0.5, Color32::from_rgba_premultiplied(80, 80, 100, 60)),
+            Stroke::new(0.5_f32, Color32::from_rgba_premultiplied(80, 80, 100, 60)),
         );
     }
 }
@@ -531,7 +531,7 @@ fn draw_meter(painter: &Painter, rect: Rect, level: f32, peak: f32, label: &str)
                 pos2(meter_rect.left() + 1.0, peak_y),
                 pos2(meter_rect.right() - 1.0, peak_y),
             ],
-            Stroke::new(1.5, Color32::WHITE),
+            Stroke::new(1.5_f32, Color32::WHITE),
         );
     }
 
@@ -609,7 +609,7 @@ fn draw_sample_waveform(
         if h > 0.5 {
             painter.line_segment(
                 [pos2(x, mid_y - h), pos2(x, mid_y + h)],
-                Stroke::new(1.0, color),
+                Stroke::new(1.0_f32, color),
             );
         }
     }
@@ -617,7 +617,7 @@ fn draw_sample_waveform(
     // Center line
     painter.line_segment(
         [pos2(rect.left(), mid_y), pos2(rect.right(), mid_y)],
-        Stroke::new(0.5, Color32::from_rgba_premultiplied(80, 80, 100, 80)),
+        Stroke::new(0.5_f32, Color32::from_rgba_premultiplied(80, 80, 100, 80)),
     );
 
     // Slice boundary dividers (from related slots sharing the same source file)
@@ -638,7 +638,7 @@ fn draw_sample_waveform(
             let x = rect.left() + (b as f32 / total_len as f32) * w;
             painter.line_segment(
                 [pos2(x, rect.top()), pos2(x, rect.bottom())],
-                Stroke::new(1.0, slice_color),
+                Stroke::new(1.0_f32, slice_color),
             );
         }
     }
@@ -649,14 +649,14 @@ fn draw_sample_waveform(
         let x = rect.left() + (trim_start as f32 / total_len as f32) * w;
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.5, marker_color_trim),
+            Stroke::new(1.5_f32, marker_color_trim),
         );
     }
     if sample.trim_end > 0 && sample.trim_end < total_len {
         let x = rect.left() + (sample.trim_end as f32 / total_len as f32) * w;
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.5, marker_color_trim),
+            Stroke::new(1.5_f32, marker_color_trim),
         );
     }
 
@@ -667,11 +667,11 @@ fn draw_sample_waveform(
         let le = rect.left() + (sample.effective_loop_end() as f32 / total_len as f32) * w;
         painter.line_segment(
             [pos2(ls, rect.top()), pos2(ls, rect.bottom())],
-            Stroke::new(1.0, loop_color),
+            Stroke::new(1.0_f32, loop_color),
         );
         painter.line_segment(
             [pos2(le, rect.top()), pos2(le, rect.bottom())],
-            Stroke::new(1.0, loop_color),
+            Stroke::new(1.0_f32, loop_color),
         );
     }
 
@@ -683,7 +683,7 @@ fn draw_sample_waveform(
             if x >= rect.left() && x <= rect.right() {
                 painter.line_segment(
                     [pos2(x, rect.top()), pos2(x, rect.bottom())],
-                    Stroke::new(1.0, preview_color),
+                    Stroke::new(1.0_f32, preview_color),
                 );
             }
         }
@@ -703,7 +703,7 @@ fn draw_sample_waveform(
             // Vertical playhead line
             painter.line_segment(
                 [pos2(x, rect.top()), pos2(x, rect.bottom())],
-                Stroke::new(2.0, color),
+                Stroke::new(2.0_f32, color),
             );
             // Small triangle at top
             let tri_size = 4.0;

@@ -6,22 +6,49 @@ All notable changes to rtrack will be documented in this file.
 
 ### Fixed
 
-- `SampleBank::load_directory` now sorts directory entries by filename before loading, ensuring deterministic slot assignment across platforms (`sample/mod.rs`)
-- Export tests (`test_render_empty_song`, etc.) no longer flake due to temp-dir races; switched from `std::env::temp_dir()` to `tempfile::tempdir()` for isolated per-test directories (`sample/export.rs`)
-- GUI frontend now reads `sf2` and `sample_dir` from `~/.config/rtrack/config.toml` at startup and on File > New, matching TUI behavior (`app.rs`, `menu.rs`)
+- **Saving a song no longer destroys pattern reuse.** `save()` rebuilt the pattern list from the derived phrase model, emitting one pattern per order position: a song whose order was `[0, 0, 0]` became three separate patterns after saving, and edits to a shared pattern stopped applying everywhere. The rebuild is gone; saving now serializes the model as it stands (`core.rs`, `tracker/song.rs`)
+- **Per-channel configuration is now persisted.** Channel name, type, volume, pan, MIDI channel, default instrument, per-channel effects, send bus settings and MIDI-learn CC mappings were never written to `.rtrk` files and were silently reset to defaults on load (`types.rs`, `tracker/song.rs`, `core.rs`)
+- Songs containing an instrument with no MIDI program could not be loaded back: `InstrumentDef::midi_program` and `sample_index` had `skip_serializing_if` without a matching `default`, so rtrack wrote files it could not read. `examples/four-on-the-floor.rtrk` was among the affected files (`tracker/song.rs`)
+- Note values spelled `C#`/`F#` by older versions are accepted on load again via serde aliases; `examples/four-on-the-floor.rtrk` had become unloadable (`tracker/pattern.rs`)
+- A panic in the TUI no longer leaves the terminal in raw mode on the alternate screen with its backtrace written where nobody can see it; a panic hook restores the terminal first (`rtrack-tui/src/main.rs`)
+- Malformed or hand-edited song files are repaired on load instead of panicking the editor on the next redraw. `Song::repair()` drops order entries pointing at missing patterns, conforms ragged pattern data to its declared geometry, replaces zero channel/row/speed/bpm values, and drops out-of-range tempo points, reporting what it changed (`tracker/song.rs`, `core.rs`)
+- Render paths no longer index with `[]`. `Song::pattern_at()`/`pattern_at_mut()` are used throughout the TUI pattern editor and matrix and the GUI grid, transport, sidebar, matrix and dialogs (`tracker/song.rs`, both frontends)
+- GUI note entry and note-off panicked when the edit cursor pointed at an out-of-range order position (`rtrack-gui/src/input.rs`)
+- Swing applied the *next* row's timing factor to the current row. `TrackerEngine.row`/`order` are a write pointer that moves past a row as soon as its notes are emitted; timing and the UI playback cursor now use the new `sounding_row`/`sounding_order`. **This changes how swung songs play** (`engine/mod.rs`)
+- `SongFile::save` flushes the temp file to disk before renaming over the target, so a crash can no longer leave the directory entry pointing at unwritten content, and removes the temp file on every failure path instead of leaking it (`tracker/song.rs`)
+- CLAUDE.md stated Rust 1.70+; the workspace requires 1.87
 
 ### Added
 
-- **Song > Chain > Phrase architecture**: Three-tier sequencing model inspired by LSDj and picoTracker. Songs are arranged via a grid of chain references per channel. Each chain is a sequence of phrase references with per-entry semitone transpose. Phrases are single-channel note data, the atomic reusable unit. The engine reads from this model; legacy patterns are kept in sync via a dirty-flag mechanism. Old `.rtrk` files auto-migrate on load. (`tracker/pattern.rs`, `tracker/song.rs`, `engine/mod.rs`, `core.rs`)
-  - New types: `Phrase`, `Chain`, `ChainEntry`
-  - Song accessors: `cell_at()`, `cell_at_mut()`, `set_cell()`, `build_virtual_pattern()`, `chain_transpose_at()`
-  - Arrangement management: `add_arrangement_row()`, `clone_arrangement_row()`, `remove_arrangement_row()`, `set_chain_transpose()`
-  - `Note::transposed()` for applying chain transpose during playback
+- **Sample-accurate note scheduling.** The sequencer runs off the audio device's frame clock rather than the UI thread's frame rate. Audio commands carry the frame they should sound at, and the callback renders each buffer in segments split at those frames. Previously note timing quantised to whichever frontend's loop happened to be running -- roughly 16.7 ms in the GUI against a 20.8 ms tick. Wall-clock timing is retained for headless and MIDI-only runs, where there is no frame clock to schedule against (`audio/mod.rs`, `core.rs`, `constants.rs`)
+  - `TrackerCore::playback_position()` reports the position currently audible rather than the position the sequencer has run ahead to; both frontends follow it
+  - `AudioEngine::frame_clock()`, `note_on_at()`, `note_on_with_params_at()`, `note_off_all_channel_at()`, `sample_note_on_at()`, `sample_note_off_channel_at()`
+- CI (`.github/workflows/ci.yml`): formatting, clippy and tests on Linux and macOS, plus an MSRV build at the declared `rust-version`. `make fmt-check` (non-mutating) and `make ci` added; `make lint` still reformats in place, which is why it could not gate
+- `rtrack_core::error::Error` and `Result`, replacing `Result<String, String>` across `TrackerCore`
+- `rtrack_core::core::LoadReport`, returned by `load_file` and `import_midi_file`, carrying repairs, missing samples and a newer-version flag as data
+- `rtrack_core::keymap`: the two-row piano key layout, previously duplicated verbatim in both frontends
+- `Cell::transpose_note()`, replacing a near-identical `transpose_cell_note` in each frontend
+- `.rtrk` files carry a `version` field (`FORMAT_VERSION`). Files predating it read as version 0; a file claiming a newer version loads but is reported as such
+- `Song::repair()`, `Song::pattern_at()`, `Song::pattern_at_mut()`, `Song::rows_at()`, `Song::order_len()`, `Song::clamp_order_position()`, `Song::add_order_entry()`, `Song::clone_order_entry()`, `Song::remove_order_entry()`, `SongFile::from_song()`
+- `AudioEngine::device_description()` and `take_stream_error()`; `config::load_config_verbose()`
 - `TrackerCoreBuilder`: builder API for `TrackerCore` with `.headless()` (skips MIDI port and Link session creation), `.song_size(ch, rows)`, and `.midi()` / `.midi_input()` / `.link()` injection for tests and offline use (`core.rs`)
+- Test coverage grew from 377 to 455. `rtrack-gui` went from zero tests to 27, via a `RtrackApp::with_core` constructor that needs no window or device; `rtrack-core/tests/persistence.rs` covers save/load round trips, format compatibility and load robustness; new unit tests cover the scheduler, the reclaim queue, the fundsp voice pool and the keymap
 
 ### Changed
 
+- **Removed the Song > Chain > Phrase layer** added earlier in this cycle. `patterns` + `order` is again the single source of truth. The chain model was never reachable from either frontend, was rebuilt from patterns on every edit, doubled the size of saved files, and was the direct cause of the pattern-reuse bug above. Chain transpose goes with it -- every rebuild reset it to zero, so nothing usable is lost. Files containing the old `phrases`/`chains`/`arrangement` blocks still load; the fields are ignored (`tracker/pattern.rs`, `tracker/song.rs`, `engine/mod.rs`, `core.rs`)
+  - Removed: `Phrase`, `Chain`, `ChainEntry`, `build_virtual_pattern()`, `chain_transpose_at()`, `set_chain_transpose()`, the `add_/clone_/remove_arrangement_row()` family, `mark_phrases_dirty()`, `sync_phrases_if_dirty()`, `rebuild_phrases_from_patterns()`, `rebuild_patterns_from_phrases()`
+  - `Note::transposed()` now refuses a transpose that would leave the MIDI range instead of clamping to it; clamping collapsed the extremes of a transposed selection onto a single pitch
+- The audio callback no longer allocates or frees. The `FundspPad` DSP graph is drawn from a pre-built pool and retuned through `Shared` values rather than constructed per note; a reclaim queue returns finished values -- a replaced `SampleBank`, boxed parameter structs -- to the UI thread to be dropped. Per-channel sample rendering takes buffers and a range directly, removing a per-callback allocation and a pointer-aliasing `unsafe` block (`audio/mod.rs`, `audio/synth.rs`, `sample/playback.rs`)
+- Empty cells serialize as `{}` instead of five explicit nulls. Re-saving the bundled examples measured 12% to 70% smaller, the sparser the pattern the larger the saving (`tracker/pattern.rs`)
+- `rtrack-core` no longer writes to stdout or stderr, and no longer formats messages for users. Success values are data (`PathBuf`, counts, `LoadReport`) and diagnostics are returned rather than printed; each frontend does its own wording. `toggle_solo` returns the soloed channel, `toggle_channel_mute` the new muted state, `toggle_midi_clock` a bool (`core.rs`, `config.rs`, `audio/mod.rs`, both frontends)
+- GUI undo/redo application was duplicated between the Edit menu and the keyboard handler; both now call `apply_undo`/`apply_redo`, which skip history entries naming a pattern that no longer exists rather than indexing into it (`rtrack-gui/src/input.rs`, `menu.rs`)
+- `SampleBank::load` refuses files larger than `MAX_SAMPLE_FILE_BYTES` (512 MB), so a mistyped path cannot become a multi-gigabyte allocation (`sample/mod.rs`, `constants.rs`)
+- Cleared all 19 clippy warnings, including 16 `float_literal_f32_fallback` in `rtrack-gui` that were scheduled to become hard errors in a future rustc. `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` both pass
 - `SampleBank` slots are now `Option<Arc<Sample>>` instead of `Option<Sample>`, making bank clones O(256 refcount bumps) instead of O(total audio frames). Mutations use `Arc::make_mut` for copy-on-write semantics (`sample/mod.rs`, `core.rs`, `app/input.rs`, `instrument_editor.rs`)
+- `SampleBank::load_directory` now sorts directory entries by filename before loading, ensuring deterministic slot assignment across platforms (`sample/mod.rs`)
+- Export tests (`test_render_empty_song`, etc.) no longer flake due to temp-dir races; switched from `std::env::temp_dir()` to `tempfile::tempdir()` for isolated per-test directories (`sample/export.rs`)
+- GUI frontend now reads `sf2` and `sample_dir` from `~/.config/rtrack/config.toml` at startup and on File > New, matching TUI behavior (`app.rs`, `menu.rs`)
 
 ## [0.1.2]
 

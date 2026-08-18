@@ -5,7 +5,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use super::{App, ChannelType, Mode, SampleField, SettingsField, SubColumn};
 use rtrack_core::constants::*;
 use rtrack_core::tracker::Note;
-use rtrack_core::tracker::NoteValue;
 
 impl App {
     // -- Song settings dialog --
@@ -225,11 +224,11 @@ impl App {
                         Ok(n) => {
                             self.status_message = Some(format!("Sliced into {} equal segments", n))
                         }
-                        Err(e) => self.status_message = Some(e),
+                        Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
                     },
                     SampleField::SliceTransient => match self.slice_sample(true) {
                         Ok(n) => self.status_message = Some(format!("Sliced at {} transients", n)),
-                        Err(e) => self.status_message = Some(e),
+                        Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
                     },
                     _ => {}
                 }
@@ -269,14 +268,14 @@ impl App {
                     Ok(n) => {
                         self.status_message = Some(format!("Sliced into {} equal segments", n))
                     }
-                    Err(e) => self.status_message = Some(e),
+                    Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
                 }
                 return;
             }
             SampleField::SliceTransient => {
                 match self.slice_sample(true) {
                     Ok(n) => self.status_message = Some(format!("Sliced at {} transients", n)),
-                    Err(e) => self.status_message = Some(e),
+                    Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
                 }
                 return;
             }
@@ -613,10 +612,10 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace => {
-                if self.ch_fx_field == 0 {
-                    self.rename_buf.pop();
-                }
+            // Backspace only edits the name field; other fields are adjusted,
+            // not typed into.
+            KeyCode::Backspace if self.ch_fx_field == 0 => {
+                self.rename_buf.pop();
             }
             _ => {}
         }
@@ -1171,16 +1170,15 @@ impl App {
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    transpose_cell_note(pattern.get_mut(r, c), semitones);
+                    pattern.get_mut(r, c).transpose_note(semitones);
                 }
             }
             self.status_message = Some(format!("Transposed block by {} semitone(s)", semitones));
         } else {
             let pattern = &mut self.core.song.patterns[pattern_idx];
-            transpose_cell_note(
-                pattern.get_mut(self.cursor_row, self.cursor_channel),
-                semitones,
-            );
+            pattern
+                .get_mut(self.cursor_row, self.cursor_channel)
+                .transpose_note(semitones);
         }
     }
 
@@ -1272,9 +1270,6 @@ impl App {
             Mode::FileBrowser => self.handle_file_browser_key(key),
             Mode::RecentFiles => self.handle_recent_files_key(key),
         }
-        // Any key press may have modified patterns; mark phrases dirty
-        // so the engine picks up changes on the next tick.
-        self.core.song.mark_phrases_dirty();
     }
 
     fn handle_common_key(&mut self, key: KeyEvent) -> bool {
@@ -1694,47 +1689,12 @@ impl App {
     }
 
     fn try_enter_note(&mut self, c: char) {
-        // Piano keyboard layout (lowercase):
-        // z=C, s=C#, x=D, d=D#, c=E, v=F, g=F#, b=G, h=G#, n=A, j=A#, m=B
-        // Upper octave:
-        // q=C, 2=C#, w=D, 3=D#, e=E, r=F, 5=F#, t=G, 6=G#, y=A, 7=A#, u=B
-        let (note_val, octave_offset) = match c {
-            'z' => (NoteValue::C, 0),
-            's' => (NoteValue::Cs, 0),
-            'x' => (NoteValue::D, 0),
-            'd' => (NoteValue::Ds, 0),
-            'c' => (NoteValue::E, 0),
-            'v' => (NoteValue::F, 0),
-            'g' => (NoteValue::Fs, 0),
-            'b' => (NoteValue::G, 0),
-            'h' => (NoteValue::Gs, 0),
-            'n' => (NoteValue::A, 0),
-            'j' => (NoteValue::As, 0),
-            'm' => (NoteValue::B, 0),
-            'q' => (NoteValue::C, 1),
-            '2' => (NoteValue::Cs, 1),
-            'w' => (NoteValue::D, 1),
-            '3' => (NoteValue::Ds, 1),
-            'e' => (NoteValue::E, 1),
-            'r' => (NoteValue::F, 1),
-            '5' => (NoteValue::Fs, 1),
-            't' => (NoteValue::G, 1),
-            '6' => (NoteValue::Gs, 1),
-            'y' => (NoteValue::A, 1),
-            '7' => (NoteValue::As, 1),
-            'u' => (NoteValue::B, 1),
-            _ => return,
-        };
-
-        let octave = self.current_octave + octave_offset;
-        if octave > 9 {
+        let Some((value, octave)) =
+            rtrack_core::keymap::piano_key_at_octave(c, self.current_octave)
+        else {
             return;
-        }
-
-        let note = Note::On {
-            value: note_val,
-            octave,
         };
+        let note = Note::On { value, octave };
 
         self.push_undo();
 
@@ -2055,28 +2015,6 @@ impl App {
                 }
             }
             self.status_message = Some("Pasted block".to_string());
-        }
-    }
-}
-
-/// Transpose a single cell's note by the given number of semitones, clamping to valid MIDI range.
-fn transpose_cell_note(cell: &mut rtrack_core::tracker::Cell, semitones: i8) {
-    if let Some(Note::On {
-        ref value,
-        ref octave,
-    }) = cell.note
-    {
-        let semi = SEMITONES_PER_OCTAVE as i16;
-        let midi = (*octave as i16) * semi + value.to_index() as i16 + semitones as i16;
-        if midi >= 0 && midi <= MIDI_MAX_NOTE as i16 {
-            let new_octave = (midi / semi) as u8;
-            let new_note_idx = (midi % semi) as u8;
-            if let Some(nv) = NoteValue::from_index(new_note_idx) {
-                cell.note = Some(Note::On {
-                    value: nv,
-                    octave: new_octave,
-                });
-            }
         }
     }
 }

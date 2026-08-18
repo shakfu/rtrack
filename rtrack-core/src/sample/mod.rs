@@ -105,6 +105,17 @@ impl SampleBank {
         if slot >= self.samples.len() {
             anyhow::bail!("Sample slot {} out of range", slot);
         }
+        if let Ok(meta) = std::fs::metadata(path) {
+            let size = meta.len();
+            if size > crate::constants::MAX_SAMPLE_FILE_BYTES {
+                anyhow::bail!(
+                    "{} is {} MB, over the {} MB sample limit",
+                    path.display(),
+                    size / (1024 * 1024),
+                    crate::constants::MAX_SAMPLE_FILE_BYTES / (1024 * 1024)
+                );
+            }
+        }
         let ext = path
             .extension()
             .and_then(|e| e.to_str())

@@ -70,17 +70,23 @@ impl RtrackApp {
                         // Rows per pattern (current pattern)
                         ui.label("Rows:");
                         let order_pos = if self.core.playing {
-                            self.core.engine.order
+                            self.core.playback_position().0
                         } else {
                             self.edit_order
                         };
-                        let pat_idx = self.core.song.order[order_pos];
-                        let mut rows = self.core.song.patterns[pat_idx].rows;
+                        let mut rows = self
+                            .core
+                            .song
+                            .pattern_at(order_pos)
+                            .map(|p| p.rows)
+                            .unwrap_or(self.core.song.rows_per_pattern);
                         let prev_rows = rows;
                         ui.add(egui::DragValue::new(&mut rows).range(1..=256));
                         if rows != prev_rows {
-                            self.core.song.patterns[pat_idx].resize_rows(rows);
-                            self.core.dirty = true;
+                            if let Some(pattern) = self.core.song.pattern_at_mut(order_pos) {
+                                pattern.resize_rows(rows);
+                                self.core.dirty = true;
+                            }
                         }
                         ui.end_row();
 
@@ -275,13 +281,19 @@ impl RtrackApp {
                                     .show(ui, |ui| {
                                         ui.label("Cutoff:");
                                         ui.add(
-                                            egui::Slider::new(&mut fx.filter_cutoff, 20.0..=20000.0)
-                                                .logarithmic(true)
-                                                .suffix(" Hz"),
+                                            egui::Slider::new(
+                                                &mut fx.filter_cutoff,
+                                                20.0..=20000.0,
+                                            )
+                                            .logarithmic(true)
+                                            .suffix(" Hz"),
                                         );
                                         ui.end_row();
                                         ui.label("Resonance:");
-                                        ui.add(egui::Slider::new(&mut fx.filter_resonance, 0.0..=1.0));
+                                        ui.add(egui::Slider::new(
+                                            &mut fx.filter_resonance,
+                                            0.0..=1.0,
+                                        ));
                                         ui.end_row();
                                     });
                             });
@@ -299,7 +311,10 @@ impl RtrackApp {
                                     .spacing([10.0, 4.0])
                                     .show(ui, |ui| {
                                         ui.label("Drive:");
-                                        ui.add(egui::Slider::new(&mut fx.distortion_drive, 1.0..=20.0));
+                                        ui.add(egui::Slider::new(
+                                            &mut fx.distortion_drive,
+                                            1.0..=20.0,
+                                        ));
                                         ui.end_row();
                                     });
                             });
@@ -350,7 +365,10 @@ impl RtrackApp {
                                         );
                                         ui.end_row();
                                         ui.label("Feedback:");
-                                        ui.add(egui::Slider::new(&mut fx.delay_feedback, 0.0..=0.95));
+                                        ui.add(egui::Slider::new(
+                                            &mut fx.delay_feedback,
+                                            0.0..=0.95,
+                                        ));
                                         ui.end_row();
                                         ui.label("Mix:");
                                         ui.add(egui::Slider::new(&mut fx.delay_mix, 0.0..=1.0));
@@ -696,7 +714,14 @@ impl RtrackApp {
                     // MIDI clock output toggle
                     let mut clock_out = self.core.midi.clock_enabled;
                     if ui.checkbox(&mut clock_out, "Send MIDI clock").changed() {
-                        let msg = self.core.toggle_midi_clock();
+                        let msg = format!(
+                            "MIDI clock {}",
+                            if self.core.toggle_midi_clock() {
+                                "on"
+                            } else {
+                                "off"
+                            }
+                        );
                         self.status_message = Some(msg);
                     }
                 }

@@ -221,15 +221,29 @@ impl SamplePlaybackEngine {
     }
     /// Render sample voices into per-channel buffers.
     /// `channel_bufs` is indexed by tracker channel, each element is (left, right) slices.
+    /// Render active voices into per-channel buffers, writing only the
+    /// sample range `range` of each buffer.
+    ///
+    /// Takes the left and right channel buffers separately rather than a
+    /// slice of `(&mut [f32], &mut [f32])` pairs: building that pair list
+    /// required a heap allocation and a pointer-aliasing `unsafe` block on
+    /// every audio callback.
     pub fn render_per_channel(
         &mut self,
         bank: &SampleBank,
-        channel_bufs: &mut [(&mut [f32], &mut [f32])],
+        channel_left: &mut [Vec<f32>],
+        channel_right: &mut [Vec<f32>],
+        range: std::ops::Range<usize>,
     ) {
         self.voices.retain(|v| v.active);
 
+        let channel_count = channel_left.len().min(channel_right.len());
+        if channel_count == 0 || range.is_empty() {
+            return;
+        }
+
         for voice in &mut self.voices {
-            let ch = (voice.channel as usize).min(channel_bufs.len().saturating_sub(1));
+            let ch = (voice.channel as usize).min(channel_count - 1);
             let sample = match bank.get(voice.sample_index) {
                 Some(s) => s,
                 None => {
@@ -241,9 +255,7 @@ impl SamplePlaybackEngine {
             let end = sample.end() as f64;
             let loop_start = sample.effective_loop_start() as f64;
             let loop_end = sample.effective_loop_end() as f64;
-            let frames = channel_bufs[ch].0.len();
-
-            for i in 0..frames {
+            for i in range.clone() {
                 if !voice.active {
                     break;
                 }
@@ -266,8 +278,8 @@ impl SamplePlaybackEngine {
                 let l = cubic_hermite(fm1[0], f0[0], f1[0], f2[0], frac);
                 let r = cubic_hermite(fm1[1], f0[1], f1[1], f2[1], frac);
 
-                channel_bufs[ch].0[i] += l * voice.velocity * env_level;
-                channel_bufs[ch].1[i] += r * voice.velocity * env_level;
+                channel_left[ch][i] += l * voice.velocity * env_level;
+                channel_right[ch][i] += r * voice.velocity * env_level;
 
                 voice.position += voice.rate;
 

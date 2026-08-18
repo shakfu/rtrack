@@ -111,12 +111,12 @@ impl RtrackApp {
                 RichText::new(format!(
                     "Ord:{:02X} Row:{:02X}",
                     if self.core.playing {
-                        self.core.engine.order
+                        self.core.playback_position().0
                     } else {
                         self.edit_order
                     },
                     if self.core.playing {
-                        self.core.engine.row
+                        self.core.playback_position().1
                     } else {
                         self.cursor_row
                     }
@@ -127,12 +127,12 @@ impl RtrackApp {
 
             // Pattern info
             let order_pos = if self.core.playing {
-                self.core.engine.order
+                self.core.playback_position().0
             } else {
                 self.edit_order
             };
             if order_pos < self.core.song.order.len() {
-                let pat_idx = self.core.song.order[order_pos];
+                let pat_idx = self.core.song.order.get(order_pos).copied().unwrap_or(0);
                 let row_count = if pat_idx < self.core.song.patterns.len() {
                     self.core.song.patterns[pat_idx].rows
                 } else {

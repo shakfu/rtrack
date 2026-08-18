@@ -1,7 +1,7 @@
 use egui::Key;
 use rtrack_core::constants::*;
 use rtrack_core::midi::MidiInputEvent;
-use rtrack_core::tracker::{Cell, Note, NoteValue};
+use rtrack_core::tracker::{Cell, Note};
 use rtrack_core::ChannelType;
 
 use crate::app::RtrackApp;
@@ -408,26 +408,10 @@ impl RtrackApp {
                 self.do_save();
             }
             Action::Undo => {
-                if let Some(edits) = self.history.undo() {
-                    for edit in &edits {
-                        let cell = self.core.song.patterns[edit.pattern_idx]
-                            .get_mut(edit.row, edit.channel);
-                        *cell = edit.old_cell;
-                    }
-                    self.core.dirty = true;
-                    self.status_message = Some("Undo".to_string());
-                }
+                self.apply_undo();
             }
             Action::Redo => {
-                if let Some(edits) = self.history.redo() {
-                    for edit in &edits {
-                        let cell = self.core.song.patterns[edit.pattern_idx]
-                            .get_mut(edit.row, edit.channel);
-                        *cell = edit.new_cell;
-                    }
-                    self.core.dirty = true;
-                    self.status_message = Some("Redo".to_string());
-                }
+                self.apply_redo();
             }
             Action::Copy => {
                 if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
@@ -740,19 +724,30 @@ impl RtrackApp {
                 self.status_message = Some(format!("Recording {}", state));
             }
             Action::ExportMidi => match self.core.export_midi_to_default() {
-                Ok(msg) => self.status_message = Some(msg),
-                Err(msg) => self.status_message = Some(msg),
+                Ok(path) => {
+                    self.status_message = Some(format!("Exported MIDI: {}", path.display()))
+                }
+                Err(e) => self.status_message = Some(format!("MIDI export failed: {}", e)),
             },
             Action::ExportWav => match self.core.export_wav_to_default() {
-                Ok(msg) => self.status_message = Some(msg),
-                Err(msg) => self.status_message = Some(msg),
+                Ok(path) => self.status_message = Some(format!("Exported WAV: {}", path.display())),
+                Err(e) => self.status_message = Some(format!("WAV export failed: {}", e)),
             },
             Action::ExportFlac => match self.core.export_flac_to_default() {
-                Ok(msg) => self.status_message = Some(msg),
-                Err(msg) => self.status_message = Some(msg),
+                Ok(path) => {
+                    self.status_message = Some(format!("Exported FLAC: {}", path.display()))
+                }
+                Err(e) => self.status_message = Some(format!("FLAC export failed: {}", e)),
             },
             Action::ToggleMidiClock => {
-                let msg = self.core.toggle_midi_clock();
+                let msg = format!(
+                    "MIDI clock {}",
+                    if self.core.toggle_midi_clock() {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                );
                 self.status_message = Some(msg);
             }
             Action::ToggleInstrumentList => {
@@ -880,6 +875,40 @@ impl RtrackApp {
         }
     }
 
+    /// Roll one edit group back. Shared by the Edit menu and Ctrl+Z so the
+    /// two entry points cannot drift apart.
+    pub(crate) fn apply_undo(&mut self) {
+        if let Some(edits) = self.history.undo() {
+            for edit in &edits {
+                self.write_recorded_cell(edit.pattern_idx, edit.row, edit.channel, edit.old_cell);
+            }
+            self.core.dirty = true;
+            self.status_message = Some("Undo".to_string());
+        }
+    }
+
+    /// Re-apply one edit group. Counterpart to [`RtrackApp::apply_undo`].
+    pub(crate) fn apply_redo(&mut self) {
+        if let Some(edits) = self.history.redo() {
+            for edit in &edits {
+                self.write_recorded_cell(edit.pattern_idx, edit.row, edit.channel, edit.new_cell);
+            }
+            self.core.dirty = true;
+            self.status_message = Some("Redo".to_string());
+        }
+    }
+
+    /// Write a cell recorded in the history. History entries can outlive the
+    /// pattern they name (a song can be loaded while the stacks still hold
+    /// edits), so an entry that no longer resolves is skipped, not indexed.
+    fn write_recorded_cell(&mut self, pattern_idx: usize, row: usize, channel: usize, cell: Cell) {
+        if let Some(pattern) = self.core.song.patterns.get_mut(pattern_idx) {
+            if row < pattern.rows && channel < pattern.channels {
+                pattern.data[row][channel] = cell;
+            }
+        }
+    }
+
     pub(crate) fn record_cell_edit(
         &mut self,
         pattern_idx: usize,
@@ -898,43 +927,12 @@ impl RtrackApp {
     }
 
     fn try_enter_note(&mut self, c: char) {
-        let (note_val, octave_offset) = match c {
-            'z' => (NoteValue::C, 0),
-            's' => (NoteValue::Cs, 0),
-            'x' => (NoteValue::D, 0),
-            'd' => (NoteValue::Ds, 0),
-            'c' => (NoteValue::E, 0),
-            'v' => (NoteValue::F, 0),
-            'g' => (NoteValue::Fs, 0),
-            'b' => (NoteValue::G, 0),
-            'h' => (NoteValue::Gs, 0),
-            'n' => (NoteValue::A, 0),
-            'j' => (NoteValue::As, 0),
-            'm' => (NoteValue::B, 0),
-            'q' => (NoteValue::C, 1),
-            '2' => (NoteValue::Cs, 1),
-            'w' => (NoteValue::D, 1),
-            '3' => (NoteValue::Ds, 1),
-            'e' => (NoteValue::E, 1),
-            'r' => (NoteValue::F, 1),
-            '5' => (NoteValue::Fs, 1),
-            't' => (NoteValue::G, 1),
-            '6' => (NoteValue::Gs, 1),
-            'y' => (NoteValue::A, 1),
-            '7' => (NoteValue::As, 1),
-            'u' => (NoteValue::B, 1),
-            _ => return,
-        };
-
-        let octave = self.current_octave + octave_offset;
-        if octave > 9 {
+        let Some((value, octave)) =
+            rtrack_core::keymap::piano_key_at_octave(c, self.current_octave)
+        else {
             return;
-        }
-
-        let note = Note::On {
-            value: note_val,
-            octave,
         };
+        let note = Note::On { value, octave };
 
         // Preview
         if let Some(midi_note) = note.to_midi_note() {
@@ -959,7 +957,6 @@ impl RtrackApp {
         }
 
         // Write to pattern
-        let pattern_idx = self.core.song.order[self.edit_order];
         let ch = self.cursor_channel;
         let ch_type = self.core.channels.get(ch).map(|c| c.channel_type);
         let track_inst =
@@ -972,8 +969,17 @@ impl RtrackApp {
                 None
             };
 
-        let old_cell = *self.core.song.patterns[pattern_idx].get(self.cursor_row, ch);
-        let cell = self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, ch);
+        let Some(pattern_idx) = self.current_pattern_idx() else {
+            return;
+        };
+        let Some(cell) = self
+            .core
+            .song
+            .cell_at_mut(self.edit_order, self.cursor_row, ch)
+        else {
+            return;
+        };
+        let old_cell = *cell;
         cell.note = Some(note);
         if let Some(inst) = track_inst {
             cell.instrument = Some(inst);
@@ -1065,11 +1071,17 @@ impl RtrackApp {
     }
 
     fn enter_note_off(&mut self) {
-        let pattern_idx = self.core.song.order[self.edit_order];
-        let old_cell =
-            *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
-        let cell =
-            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+        let Some(pattern_idx) = self.current_pattern_idx() else {
+            return;
+        };
+        let Some(cell) =
+            self.core
+                .song
+                .cell_at_mut(self.edit_order, self.cursor_row, self.cursor_channel)
+        else {
+            return;
+        };
+        let old_cell = *cell;
         cell.note = Some(Note::Off);
         let new_cell = *cell;
         self.record_cell_edit(
@@ -1087,8 +1099,14 @@ impl RtrackApp {
     }
 
     fn current_pattern_rows(&self) -> usize {
-        let pattern_idx = self.core.song.order[self.edit_order];
-        self.core.song.patterns[pattern_idx].rows
+        self.core.song.rows_at(self.edit_order)
+    }
+
+    /// Index of the pattern the edit cursor currently points at, or None if
+    /// the order position does not resolve to one.
+    fn current_pattern_idx(&self) -> Option<usize> {
+        let pattern_idx = *self.core.song.order.get(self.edit_order)?;
+        (pattern_idx < self.core.song.patterns.len()).then_some(pattern_idx)
     }
 
     fn transpose_notes(&mut self, semitones: i8) {
@@ -1102,7 +1120,7 @@ impl RtrackApp {
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    transpose_cell_note(pattern.get_mut(r, c), semitones);
+                    pattern.get_mut(r, c).transpose_note(semitones);
                 }
             }
             self.core.dirty = true;
@@ -1110,7 +1128,7 @@ impl RtrackApp {
         } else {
             let cell =
                 self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-            transpose_cell_note(cell, semitones);
+            cell.transpose_note(semitones);
             self.core.dirty = true;
         }
     }
@@ -1286,23 +1304,263 @@ enum Action {
     CycleTheme,
 }
 
-fn transpose_cell_note(cell: &mut Cell, semitones: i8) {
-    if let Some(Note::On {
-        ref value,
-        ref octave,
-    }) = cell.note
-    {
-        let semi = SEMITONES_PER_OCTAVE as i16;
-        let midi = (*octave as i16) * semi + value.to_index() as i16 + semitones as i16;
-        if midi >= 0 && midi <= MIDI_MAX_NOTE as i16 {
-            let new_octave = (midi / semi) as u8;
-            let new_note_idx = (midi % semi) as u8;
-            if let Some(nv) = NoteValue::from_index(new_note_idx) {
-                cell.note = Some(Note::On {
-                    value: nv,
-                    octave: new_octave,
-                });
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::SubColumn;
+    use rtrack_core::tracker::NoteValue;
+
+    fn app() -> RtrackApp {
+        RtrackApp::headless(4, 16)
+    }
+
+    fn note_at(app: &RtrackApp, row: usize, channel: usize) -> Option<Note> {
+        app.core.song.cell_at(app.edit_order, row, channel).note
+    }
+
+    fn on(value: NoteValue, octave: u8) -> Option<Note> {
+        Some(Note::On { value, octave })
+    }
+
+    // -- Note entry --
+
+    #[test]
+    fn piano_keys_map_to_the_current_octave() {
+        let mut a = app();
+        a.current_octave = 4;
+        a.try_enter_note('z');
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::C, 4));
+
+        a.cursor_row = 0;
+        a.try_enter_note('m');
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::B, 4));
+    }
+
+    #[test]
+    fn upper_row_keys_map_one_octave_higher() {
+        let mut a = app();
+        a.current_octave = 4;
+        a.try_enter_note('q');
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::C, 5));
+    }
+
+    #[test]
+    fn the_full_piano_row_covers_a_chromatic_octave() {
+        let expected = [
+            ('z', NoteValue::C),
+            ('s', NoteValue::Cs),
+            ('x', NoteValue::D),
+            ('d', NoteValue::Ds),
+            ('c', NoteValue::E),
+            ('v', NoteValue::F),
+            ('g', NoteValue::Fs),
+            ('b', NoteValue::G),
+            ('h', NoteValue::Gs),
+            ('n', NoteValue::A),
+            ('j', NoteValue::As),
+            ('m', NoteValue::B),
+        ];
+        for (key, value) in expected {
+            let mut a = app();
+            a.current_octave = 3;
+            a.try_enter_note(key);
+            assert_eq!(note_at(&a, 0, 0), on(value, 3), "key '{key}'");
         }
+    }
+
+    #[test]
+    fn unmapped_keys_do_not_write_a_note() {
+        let mut a = app();
+        a.try_enter_note('k');
+        assert_eq!(note_at(&a, 0, 0), None);
+        assert_eq!(a.cursor_row, 0, "cursor must not advance on a no-op");
+    }
+
+    #[test]
+    fn note_entry_beyond_octave_nine_is_rejected() {
+        let mut a = app();
+        a.current_octave = 9;
+        a.try_enter_note('q'); // would be octave 10
+        assert_eq!(note_at(&a, 0, 0), None);
+    }
+
+    #[test]
+    fn note_entry_advances_the_cursor_by_the_edit_step() {
+        let mut a = app();
+        a.edit_step = 4;
+        a.try_enter_note('z');
+        assert_eq!(a.cursor_row, 4);
+    }
+
+    #[test]
+    fn the_cursor_stops_at_the_last_row() {
+        let mut a = app();
+        a.edit_step = 8;
+        a.cursor_row = 14;
+        a.try_enter_note('z');
+        assert_eq!(a.cursor_row, 15, "16-row pattern, last index is 15");
+    }
+
+    #[test]
+    fn synth_tracks_auto_fill_the_track_instrument() {
+        let mut a = app();
+        a.core.channels[0].channel_type = ChannelType::Synth;
+        a.core.channels[0].default_instrument = Some(7);
+        a.try_enter_note('z');
+        let cell = a.core.song.cell_at(a.edit_order, 0, 0);
+        assert_eq!(cell.instrument, Some(7));
+    }
+
+    #[test]
+    fn midi_tracks_do_not_auto_fill_an_instrument() {
+        let mut a = app();
+        a.core.channels[0].channel_type = ChannelType::Midi;
+        a.core.channels[0].default_instrument = Some(7);
+        a.try_enter_note('z');
+        let cell = a.core.song.cell_at(a.edit_order, 0, 0);
+        assert_eq!(cell.instrument, None);
+    }
+
+    #[test]
+    fn note_off_writes_a_note_off_cell() {
+        let mut a = app();
+        a.enter_note_off();
+        assert_eq!(note_at(&a, 0, 0), Some(Note::Off));
+    }
+
+    #[test]
+    fn editing_marks_the_song_dirty() {
+        let mut a = app();
+        assert!(!a.core.dirty);
+        a.try_enter_note('z');
+        assert!(a.core.dirty);
+    }
+
+    // -- Undo / redo --
+
+    #[test]
+    fn undo_restores_the_previous_cell_and_redo_reapplies_it() {
+        let mut a = app();
+        a.try_enter_note('z');
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::C, 4));
+
+        a.apply_undo();
+        assert_eq!(note_at(&a, 0, 0), None);
+        assert_eq!(a.status_message.as_deref(), Some("Undo"));
+
+        a.apply_redo();
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::C, 4));
+        assert_eq!(a.status_message.as_deref(), Some("Redo"));
+    }
+
+    #[test]
+    fn undo_walks_back_through_several_edits() {
+        let mut a = app();
+        a.try_enter_note('z'); // row 0
+        a.try_enter_note('x'); // row 1
+        a.try_enter_note('c'); // row 2
+
+        a.apply_undo();
+        assert_eq!(note_at(&a, 2, 0), None);
+        assert_eq!(note_at(&a, 1, 0), on(NoteValue::D, 4));
+
+        a.apply_undo();
+        assert_eq!(note_at(&a, 1, 0), None);
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::C, 4));
+
+        a.apply_undo();
+        assert_eq!(note_at(&a, 0, 0), None);
+    }
+
+    #[test]
+    fn undo_with_an_empty_history_is_a_no_op() {
+        let mut a = app();
+        a.apply_undo();
+        assert_eq!(a.status_message, None);
+        assert!(!a.core.dirty);
+    }
+
+    #[test]
+    fn history_entries_naming_a_missing_pattern_are_skipped() {
+        // Loading a smaller song while the undo stack still refers to
+        // patterns from the previous one must not panic.
+        let mut a = app();
+        a.try_enter_note('z');
+        a.record_cell_edit(99, 0, 0, Cell::default(), Cell::default());
+        a.apply_undo();
+        a.apply_undo();
+        // Reached here without panicking; the real edit is still undone.
+        assert_eq!(note_at(&a, 0, 0), None);
+    }
+
+    // -- Transpose --
+
+    #[test]
+    fn transpose_shifts_a_note_up_and_down() {
+        let mut cell = Cell {
+            note: on(NoteValue::C, 4),
+            ..Cell::default()
+        };
+        cell.transpose_note(12);
+        assert_eq!(cell.note, on(NoteValue::C, 5));
+        cell.transpose_note(-13);
+        assert_eq!(cell.note, on(NoteValue::B, 3));
+    }
+
+    #[test]
+    fn transpose_leaves_empty_and_note_off_cells_alone() {
+        let mut empty = Cell::default();
+        empty.transpose_note(5);
+        assert_eq!(empty.note, None);
+
+        let mut off = Cell {
+            note: Some(Note::Off),
+            ..Cell::default()
+        };
+        off.transpose_note(5);
+        assert_eq!(off.note, Some(Note::Off));
+    }
+
+    #[test]
+    fn transpose_past_the_midi_range_is_refused() {
+        let mut low = Cell {
+            note: on(NoteValue::C, 0),
+            ..Cell::default()
+        };
+        low.transpose_note(-1);
+        assert_eq!(low.note, on(NoteValue::C, 0), "would fall below MIDI 0");
+
+        let mut high = Cell {
+            note: on(NoteValue::G, 10),
+            ..Cell::default()
+        };
+        let before = high.note;
+        high.transpose_note(12);
+        assert_eq!(high.note, before, "would exceed MIDI 127");
+    }
+
+    // -- Cursor / sub-column navigation --
+
+    #[test]
+    fn sub_columns_cycle_in_both_directions() {
+        let order = [
+            SubColumn::Note,
+            SubColumn::Instrument,
+            SubColumn::Volume,
+            SubColumn::Effect,
+        ];
+        for (i, sub) in order.iter().enumerate() {
+            assert_eq!(sub.next(), order[(i + 1) % order.len()]);
+            assert_eq!(sub.prev(), order[(i + order.len() - 1) % order.len()]);
+        }
+    }
+
+    #[test]
+    fn editing_an_out_of_range_order_position_does_not_panic() {
+        let mut a = app();
+        a.edit_order = 99;
+        a.try_enter_note('z');
+        a.enter_note_off();
+        assert_eq!(a.current_pattern_rows(), 16, "falls back to song default");
     }
 }

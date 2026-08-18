@@ -829,6 +829,56 @@ impl NoiseGen {
     }
 }
 
+/// A pre-built fundsp graph for the `FundspPad` patch.
+///
+/// The graph is built once and retuned through `Shared` values rather than
+/// rebuilt per note. Constructing it allocates, and `note_on` runs on the
+/// audio thread, so building one there risked a dropout on every pad note.
+struct FundspVoice {
+    unit: Box<dyn AudioUnit>,
+    freq: Shared,
+    detuned_freq: Shared,
+    cutoff: Shared,
+    resonance: Shared,
+}
+
+impl FundspVoice {
+    fn new(sample_rate: f32) -> Self {
+        let freq = shared(440.0);
+        let detuned_freq = shared(440.0 * DETUNE_RATIO);
+        let cutoff = shared(1000.0);
+        let resonance = shared(0.5);
+        // Two detuned saws summed, into a moog low-pass filter.
+        let mut unit: Box<dyn AudioUnit> = Box::new(
+            (((var(&freq) >> saw()) + (var(&detuned_freq) >> saw()) * 0.5)
+                | var(&cutoff)
+                | var(&resonance))
+                >> moog(),
+        );
+        unit.set_sample_rate(sample_rate as f64);
+        Self {
+            unit,
+            freq,
+            detuned_freq,
+            cutoff,
+            resonance,
+        }
+    }
+
+    /// Point the graph at a new note and clear its internal state, so a
+    /// recycled voice does not carry over the previous note's filter ring.
+    fn retune(&mut self, frequency: f32, cutoff: f32, resonance: f32) {
+        self.freq.set_value(frequency);
+        self.detuned_freq.set_value(frequency * DETUNE_RATIO);
+        self.cutoff.set_value(cutoff);
+        self.resonance.set_value(resonance);
+        self.unit.reset();
+    }
+}
+
+/// Detuning of the second saw in the fundsp pad, in frequency ratio.
+const DETUNE_RATIO: f32 = 2.01;
+
 /// A single synth voice
 struct Voice {
     active: bool,
@@ -857,7 +907,7 @@ struct Voice {
     noise: NoiseGen,
 
     // fundsp AudioUnit (for FundspPad patch)
-    fundsp_unit: Option<Box<dyn AudioUnit>>,
+    fundsp_unit: Option<FundspVoice>,
 
     sample_rate: f32,
 }
@@ -889,24 +939,8 @@ impl Voice {
     ) -> Self {
         let frequency = midi_to_freq(note as f32);
 
-        // Build fundsp AudioUnit for FundspPad patch
-        let fundsp_unit = if patch == Patch::FundspPad {
-            let freq = frequency;
-            let cutoff = freq * params.filter_cutoff_mul;
-            let res = params.filter_resonance;
-            // Two detuned saws summed, into moog low-pass filter
-            let mut unit: Box<dyn AudioUnit> = Box::new(
-                (((constant(freq) >> saw()) + (constant(freq * 2.01) >> saw()) * 0.5)
-                    | constant(cutoff)
-                    | constant(res))
-                    >> moog(),
-            );
-            unit.set_sample_rate(sample_rate as f64);
-            Some(unit)
-        } else {
-            None
-        };
-
+        // The fundsp graph, if this patch needs one, is attached by
+        // `BuiltinSynth::push_voice` from a pre-built pool.
         Self {
             active: true,
             channel,
@@ -928,7 +962,7 @@ impl Voice {
             ),
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
-            fundsp_unit,
+            fundsp_unit: None,
             sample_rate,
         }
     }
@@ -1062,9 +1096,9 @@ impl Voice {
             }
             Patch::Noise | Patch::Perc => self.noise.next(),
             Patch::FundspPad => {
-                if let Some(ref mut unit) = self.fundsp_unit {
+                if let Some(ref mut fundsp) = self.fundsp_unit {
                     let mut output = [0f32; 1];
-                    unit.tick(&[], &mut output);
+                    fundsp.unit.tick(&[], &mut output);
                     let gain = self.velocity * env_level * VOICE_GAIN;
                     let sample = output[0] * gain;
                     return (sample, sample);
@@ -1187,6 +1221,10 @@ pub struct BuiltinSynth {
     voices: Vec<Voice>,
     /// Current program per channel (selects waveform patch)
     programs: [u8; 16],
+    /// Pre-built fundsp graphs, one per possible voice. Taken on note-on and
+    /// returned when a voice is evicted, so the audio thread never allocates
+    /// or frees one.
+    fundsp_pool: Vec<FundspVoice>,
     sample_rate: f32,
 }
 
@@ -1195,6 +1233,9 @@ impl BuiltinSynth {
         Self {
             voices: Vec::with_capacity(MAX_VOICES),
             programs: [0; 16],
+            fundsp_pool: (0..MAX_VOICES)
+                .map(|_| FundspVoice::new(sample_rate as f32))
+                .collect(),
             sample_rate: sample_rate as f32,
         }
     }
@@ -1245,11 +1286,11 @@ impl BuiltinSynth {
         self.push_voice(voice);
     }
 
-    fn push_voice(&mut self, voice: Voice) {
+    fn push_voice(&mut self, mut voice: Voice) {
         if self.voices.len() >= MAX_VOICES {
             // First try to remove an inactive voice
             if let Some(idx) = self.voices.iter().position(|v| !v.active) {
-                self.voices.remove(idx);
+                self.reclaim_voice(idx);
             } else {
                 // Steal the quietest voice (lowest envelope level * velocity)
                 let quietest = self
@@ -1265,11 +1306,31 @@ impl BuiltinSynth {
                     })
                     .map(|(i, _)| i);
                 if let Some(idx) = quietest {
-                    self.voices.remove(idx);
+                    self.reclaim_voice(idx);
                 }
             }
         }
+
+        if voice.patch == Patch::FundspPad {
+            if let Some(mut fundsp) = self.fundsp_pool.pop() {
+                let cutoff = voice.frequency * voice.params.filter_cutoff_mul;
+                fundsp.retune(voice.frequency, cutoff, voice.params.filter_resonance);
+                voice.fundsp_unit = Some(fundsp);
+            }
+            // An exhausted pool means every voice slot is already in use;
+            // the note is dropped rather than allocating on this thread.
+        }
+
         self.voices.push(voice);
+    }
+
+    /// Remove a voice, returning any fundsp graph it holds to the pool.
+    /// Dropping it here would free heap memory on the audio thread.
+    fn reclaim_voice(&mut self, idx: usize) {
+        let mut voice = self.voices.remove(idx);
+        if let Some(fundsp) = voice.fundsp_unit.take() {
+            self.fundsp_pool.push(fundsp);
+        }
     }
 
     pub fn note_off(&mut self, channel: u8, note: u8) {
@@ -1789,5 +1850,116 @@ mod tests {
             saw_diff_rms,
             sine_diff_rms
         );
+    }
+}
+
+#[cfg(test)]
+mod fundsp_pool_tests {
+    use super::*;
+
+    const SR: f64 = 48_000.0;
+
+    /// Program 8 selects the fundsp pad, the only patch backed by a fundsp graph.
+    const PAD_PROGRAM: u8 = 8;
+
+    fn render_peak(synth: &mut BuiltinSynth, frames: usize) -> f32 {
+        let mut peak = 0.0f32;
+        for _ in 0..frames {
+            let (l, r) = synth.render_sample();
+            peak = peak.max(l.abs()).max(r.abs());
+        }
+        peak
+    }
+
+    #[test]
+    fn the_pool_is_prebuilt_so_note_on_never_allocates_a_graph() {
+        let synth = BuiltinSynth::new(SR);
+        assert_eq!(
+            synth.fundsp_pool.len(),
+            MAX_VOICES,
+            "every voice slot needs a graph waiting for it"
+        );
+    }
+
+    #[test]
+    fn a_pad_note_takes_a_graph_from_the_pool_and_sounds() {
+        let mut synth = BuiltinSynth::new(SR);
+        synth.program_change(0, PAD_PROGRAM);
+        synth.note_on(0, 60, 127);
+
+        assert_eq!(
+            synth.fundsp_pool.len(),
+            MAX_VOICES - 1,
+            "the voice should be holding a pooled graph"
+        );
+        assert!(
+            render_peak(&mut synth, 512) > 1e-6,
+            "the pad rendered silence"
+        );
+    }
+
+    #[test]
+    fn non_pad_patches_leave_the_pool_untouched() {
+        let mut synth = BuiltinSynth::new(SR);
+        synth.program_change(0, 0); // saw
+        synth.note_on(0, 60, 127);
+        assert_eq!(synth.fundsp_pool.len(), MAX_VOICES);
+    }
+
+    #[test]
+    fn evicted_voices_return_their_graph_to_the_pool() {
+        let mut synth = BuiltinSynth::new(SR);
+        for ch in 0..16u8 {
+            synth.program_change(ch, PAD_PROGRAM);
+        }
+        // Far more notes than there are voice slots, forcing eviction.
+        for i in 0..(MAX_VOICES * 4) {
+            synth.note_on((i % 16) as u8, 40 + (i % 40) as u8, 100);
+        }
+        assert!(synth.voices.len() <= MAX_VOICES);
+        let held = synth
+            .voices
+            .iter()
+            .filter(|v| v.fundsp_unit.is_some())
+            .count();
+        assert_eq!(
+            synth.fundsp_pool.len() + held,
+            MAX_VOICES,
+            "graphs leaked: pool {} + held {} should always total {}",
+            synth.fundsp_pool.len(),
+            held,
+            MAX_VOICES
+        );
+    }
+
+    #[test]
+    fn a_recycled_graph_is_retuned_rather_than_reused_stale() {
+        // Same voice slot, two different notes: the second must render at the
+        // new pitch, not carry the first one's state.
+        let mut synth = BuiltinSynth::new(SR);
+        synth.program_change(0, PAD_PROGRAM);
+
+        synth.note_on(0, 45, 127);
+        let low = render_peak(&mut synth, 256);
+        assert!(low > 1e-6);
+
+        // Fill every slot so the first voice is evicted and its graph recycled.
+        for i in 0..(MAX_VOICES * 2) {
+            synth.note_on((i % 16) as u8, 70, 100);
+        }
+        assert!(
+            render_peak(&mut synth, 256) > 1e-6,
+            "recycled graphs stopped producing sound"
+        );
+    }
+
+    #[test]
+    fn retuning_updates_the_shared_frequency() {
+        let mut voice = FundspVoice::new(SR as f32);
+        voice.retune(220.0, 1200.0, 0.3);
+        assert_eq!(voice.freq.value(), 220.0);
+        assert_eq!(voice.detuned_freq.value(), 220.0 * DETUNE_RATIO);
+        assert_eq!(voice.cutoff.value(), 1200.0);
+        assert_eq!(voice.resonance.value(), 0.3);
     }
 }

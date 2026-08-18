@@ -29,12 +29,13 @@ impl App {
     }
 
     pub fn tick_playback(&mut self) {
-        if self.core.tick_playback() {
-            // Update follow-playback cursor from engine position (post-advance)
-            if self.follow_playback && self.core.engine.tick == 1 {
-                self.cursor_row = self.core.engine.row;
-                self.edit_order = self.core.engine.order;
-            }
+        self.core.tick_playback();
+        // Follow the position the listener is hearing, not the position the
+        // sequencer has run ahead to.
+        if self.follow_playback {
+            let (order, row) = self.core.playback_position();
+            self.cursor_row = row;
+            self.edit_order = order;
         }
     }
 

@@ -476,15 +476,38 @@ impl App {
     pub fn load_sample(&mut self, slot: usize, path: std::path::PathBuf) {
         self.status_message = Some(match self.core.load_sample(slot, &path) {
             Ok(name) => format!("Loaded sample: {}", name),
-            Err(e) => e,
+            Err(e) => format!("Sample load failed: {}", e),
         });
     }
 
     pub fn load_sample_directory(&mut self, dir: &std::path::Path) {
         self.status_message = Some(match self.core.load_sample_directory(dir) {
-            Ok(msg) => msg,
-            Err(e) => e,
+            Ok(count) => format!("Loaded {} sample(s) from {}", count, dir.display()),
+            Err(e) => format!("Sample directory failed: {}", e),
         });
+    }
+
+    /// Render what a load reported into a one-line status message.
+    fn describe_load(report: &rtrack_core::core::LoadReport) -> String {
+        if report.is_clean() {
+            return format!("Loaded: {}", report.path.display());
+        }
+        let mut notes = Vec::new();
+        if report.from_newer_version {
+            notes.push("written by a newer rtrack; some settings may be missing".to_string());
+        }
+        if !report.repairs.is_empty() {
+            notes.push(format!("repaired: {}", report.repairs.join("; ")));
+        }
+        if !report.missing_samples.is_empty() {
+            let names: Vec<&str> = report
+                .missing_samples
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            notes.push(format!("missing samples: {}", names.join(", ")));
+        }
+        format!("Loaded ({}): {}", notes.join(" | "), report.path.display())
     }
 
     pub fn open_synth_editor(&mut self) {
@@ -516,8 +539,10 @@ impl App {
     pub fn on_file_selected(&mut self, path: PathBuf) {
         match self.dialogs.file_browser.action {
             FileBrowserAction::LoadSample(slot) => {
-                let msg = self.core.load_sample_into_slot(slot, &path);
-                self.status_message = Some(msg);
+                self.status_message = Some(match self.core.load_sample_into_slot(slot, &path) {
+                    Ok(()) => format!("Loaded sample into slot {:02X}", slot),
+                    Err(e) => format!("Failed to load: {}", e),
+                });
             }
             FileBrowserAction::OpenSong => {
                 self.load_file(path);
@@ -525,7 +550,7 @@ impl App {
         }
     }
 
-    pub fn slice_sample(&mut self, use_transients: bool) -> Result<usize, String> {
+    pub fn slice_sample(&mut self, use_transients: bool) -> rtrack_core::error::Result<usize> {
         let slot = self.dialogs.sample_editor_slot;
         let count = self.dialogs.sample_slice_count;
         let sensitivity = self.dialogs.sample_slice_sensitivity;
@@ -580,12 +605,29 @@ impl App {
         self.close_port_selector();
     }
 
+    /// Show any error the audio stream reported since the last frame.
+    ///
+    /// The cpal error callback cannot print (it would land on the alternate
+    /// screen) and cannot return, so it records and we poll.
+    pub fn report_audio_errors(&mut self) {
+        if let Some(ref audio) = self.core.audio {
+            if let Some(err) = audio.take_stream_error() {
+                self.status_message = Some(format!("Audio error: {}", err));
+            }
+        }
+    }
+
     pub fn current_order_position(&self) -> usize {
         if self.core.playing {
-            self.core.engine.order
+            self.core.playback_position().0
         } else {
             self.edit_order
         }
+    }
+
+    /// Row currently being heard, for the playback row highlight.
+    pub fn playback_row(&self) -> usize {
+        self.core.playback_position().1
     }
 
     // -- Pattern / Order management --
@@ -631,42 +673,44 @@ impl App {
     }
 
     pub fn toggle_channel_mute(&mut self, channel: usize) {
-        if let Some(msg) = self.core.toggle_channel_mute(channel) {
-            self.status_message = Some(msg);
+        if let Some(muted) = self.core.toggle_channel_mute(channel) {
+            let state = if muted { "muted" } else { "unmuted" };
+            self.status_message = Some(format!("Ch {} {}", channel + 1, state));
         }
     }
 
     pub fn toggle_solo(&mut self, channel: usize) {
-        self.status_message = Some(self.core.toggle_solo(channel));
+        self.status_message = Some(match self.core.toggle_solo(channel) {
+            Some(ch) => format!("Solo ch {}", ch + 1),
+            None => "Solo off".to_string(),
+        });
     }
 
     // -- File I/O --
 
     pub fn save(&mut self) {
         match self.core.save() {
-            Ok(msg) => {
+            Ok(path) => {
                 self.last_autosave = Instant::now();
-                if let Some(path) = self.core.file_path.clone() {
-                    rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
-                    rtrack_core::config::save_recent_files(&self.recent_files);
-                }
-                self.status_message = Some(msg);
+                rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                rtrack_core::config::save_recent_files(&self.recent_files);
+                self.status_message = Some(format!("Saved: {}", path.display()));
             }
-            Err(msg) => {
-                self.status_message = Some(msg);
+            Err(e) => {
+                self.status_message = Some(format!("Save failed: {}", e));
             }
         }
     }
 
     pub fn auto_save(&mut self) {
-        if let Some(msg) = self.core.auto_save(&mut self.last_autosave) {
-            self.status_message = Some(msg);
+        if let Err(e) = self.core.auto_save(&mut self.last_autosave) {
+            self.status_message = Some(format!("Auto-save failed: {}", e));
         }
     }
 
     pub fn load_file(&mut self, path: PathBuf) {
         match self.core.load_file(&path) {
-            Ok(msg) => {
+            Ok(report) => {
                 self.cursor_row = 0;
                 self.cursor_channel = 0;
                 self.cursor_sub = SubColumn::Note;
@@ -676,10 +720,10 @@ impl App {
                 self.history.redo_stack.clear();
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
-                self.status_message = Some(msg);
+                self.status_message = Some(Self::describe_load(&report));
             }
-            Err(msg) => {
-                self.status_message = Some(msg);
+            Err(e) => {
+                self.status_message = Some(format!("Load failed: {}", e));
             }
         }
     }
@@ -766,44 +810,49 @@ impl App {
     // -- MIDI clock toggle --
 
     pub fn toggle_midi_clock(&mut self) {
-        self.status_message = Some(self.core.toggle_midi_clock());
+        let state = if self.core.toggle_midi_clock() {
+            "on"
+        } else {
+            "off"
+        };
+        self.status_message = Some(format!("MIDI clock {}", state));
     }
 
     // -- Export/Import --
 
     pub fn export_wav_file(&mut self) {
         self.status_message = Some(match self.core.export_wav_to_default() {
-            Ok(msg) => msg,
-            Err(msg) => msg,
+            Ok(path) => format!("Exported WAV: {}", path.display()),
+            Err(e) => format!("WAV export failed: {}", e),
         });
     }
 
     pub fn export_flac_file(&mut self) {
         self.status_message = Some(match self.core.export_flac_to_default() {
-            Ok(msg) => msg,
-            Err(msg) => msg,
+            Ok(path) => format!("Exported FLAC: {}", path.display()),
+            Err(e) => format!("FLAC export failed: {}", e),
         });
     }
 
     pub fn export_midi(&mut self) {
         self.status_message = Some(match self.core.export_midi_to_default() {
-            Ok(msg) => msg,
-            Err(msg) => msg,
+            Ok(path) => format!("Exported MIDI: {}", path.display()),
+            Err(e) => format!("MIDI export failed: {}", e),
         });
     }
 
     pub fn import_midi_file(&mut self, path: PathBuf) {
         self.push_undo();
         match self.core.import_midi_file(&path) {
-            Ok(msg) => {
+            Ok(report) => {
                 self.cursor_row = 0;
                 self.cursor_channel = 0;
                 self.cursor_sub = SubColumn::Note;
                 self.edit_order = 0;
-                self.status_message = Some(msg);
+                self.status_message = Some(format!("Imported: {}", report.path.display()));
             }
-            Err(msg) => {
-                self.status_message = Some(msg);
+            Err(e) => {
+                self.status_message = Some(format!("Import failed: {}", e));
             }
         }
     }
@@ -820,41 +869,17 @@ impl App {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rtrack_core::link::LinkEngine;
-    use rtrack_core::midi::MidiInputEngine;
-    use rtrack_core::sample::SampleBank;
     use rtrack_core::tracker::Note;
     use std::sync::Arc;
 
     fn make_app() -> App {
-        let song = Song::new(4, 64);
-        let engine = rtrack_core::engine::TrackerEngine::new(&song, true);
-        let core = rtrack_core::TrackerCore {
-            song,
-            engine,
-            midi: MidiEngine::new(),
-            midi_input: MidiInputEngine::new(),
-            link: LinkEngine::new(120.0),
-            audio: None,
-            sample_bank: Arc::new(SampleBank::new()),
-            playing: false,
-            recording: false,
-            timing: PlaybackTiming::new(),
-            clock_mode: ClockMode::Internal,
-            channels: rtrack_core::default_channel_configs(4),
-            instruments: (0..MAX_INSTRUMENTS)
-                .map(|_| Instrument::default())
-                .collect(),
-            send_bus_params: (0..rtrack_core::audio::effects::MAX_SEND_BUSES)
-                .map(|_| rtrack_core::audio::effects::SendBusParams::default())
-                .collect(),
-            solo_channel: None,
-            file_path: None,
-            dirty: false,
-            midi_cc_mappings: Vec::new(),
-            midi_learn_pending: None,
-            preview_note: None,
-        };
+        // Use the builder rather than a struct literal: it is the supported
+        // way to get a core with no hardware attached, and it does not need
+        // updating every time TrackerCore gains a field.
+        let core = rtrack_core::core::TrackerCoreBuilder::new()
+            .song_size(4, 64)
+            .headless()
+            .build();
         App {
             core,
             mode: Mode::Normal,
@@ -3972,7 +3997,6 @@ mod tests {
         use rtrack_core::tracker::{InstrumentDef, InstrumentEntry, SongFile};
         let song = Song::new(1, 16);
         let song_file = SongFile {
-            song,
             instruments: vec![InstrumentEntry {
                 slot: 0,
                 def: InstrumentDef {
@@ -3983,7 +4007,7 @@ mod tests {
                     pitch_bend_range: Some(7.0),
                 },
             }],
-            sample_refs: vec![],
+            ..SongFile::from_song(song)
         };
         let json = serde_json::to_string(&song_file).unwrap();
         let loaded: SongFile = serde_json::from_str(&json).unwrap();

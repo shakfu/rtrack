@@ -563,11 +563,10 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         .max()
         .unwrap_or(0);
 
-    let total_rows = if tpr > 0 {
-        (max_tick / tpr + 1) as usize
-    } else {
-        1
-    };
+    let total_rows = max_tick
+        .checked_div(tpr)
+        .map(|rows| (rows + 1) as usize)
+        .unwrap_or(1);
 
     let rows_per_pattern = DEFAULT_ROWS_PER_PATTERN;
     let num_patterns = total_rows.div_ceil(rows_per_pattern);
@@ -588,7 +587,7 @@ pub fn import_midi(path: &Path) -> Result<Song> {
                 | ImportEvent::CC { tick, .. }
                 | ImportEvent::ProgramChange { tick, .. } => *tick,
             };
-            let global_row = if tpr > 0 { (tick / tpr) as usize } else { 0 };
+            let global_row = tick.checked_div(tpr).unwrap_or(0) as usize;
             let pat_idx = global_row / rows_per_pattern;
             let row_in_pat = global_row % rows_per_pattern;
             if pat_idx >= patterns.len() {
@@ -672,12 +671,8 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         highlight_bar: 16,
         swing: 50,
         tempo_map,
-        phrases_dirty: false,
-        phrases: Vec::new(),
-        chains: Vec::new(),
-        arrangement: Vec::new(),
     };
-    song.rebuild_phrases_from_patterns();
+    song.repair();
     Ok(song)
 }
 
@@ -817,7 +812,8 @@ mod tests {
         song.speed = 6;
 
         // Place some notes
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -831,7 +827,8 @@ mod tests {
                 effect_value: None,
             },
         );
-        song.set_cell(0,
+        song.set_cell(
+            0,
             4,
             0,
             Cell {
@@ -845,7 +842,8 @@ mod tests {
                 effect_value: None,
             },
         );
-        song.set_cell(0,
+        song.set_cell(
+            0,
             8,
             0,
             Cell {
@@ -857,7 +855,8 @@ mod tests {
             },
         );
         // Second channel
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             1,
             Cell {
@@ -949,7 +948,8 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.speed = 6;
         // Note C-4 with portamento up effect (1xx)
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -980,7 +980,8 @@ mod tests {
     fn test_export_volume_slide_produces_cc7() {
         let mut song = Song::new(1, 16);
         song.speed = 6;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -1008,7 +1009,8 @@ mod tests {
     fn test_export_vibrato_produces_pitch_bend() {
         let mut song = Song::new(1, 16);
         song.speed = 6;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -1034,7 +1036,8 @@ mod tests {
     #[test]
     fn test_export_effects_larger_than_plain() {
         let mut song_plain = Song::new(1, 16);
-        song_plain.set_cell(0,
+        song_plain.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -1051,7 +1054,8 @@ mod tests {
 
         let mut song_fx = Song::new(1, 16);
         song_fx.speed = 6;
-        song_fx.set_cell(0,
+        song_fx.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -1105,7 +1109,8 @@ mod tests {
         let mut song = Song::new(1, 16);
         song.bpm = 120;
         song.speed = 6;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -1119,7 +1124,8 @@ mod tests {
                 effect_value: None,
             },
         );
-        song.set_cell(0,
+        song.set_cell(
+            0,
             4,
             0,
             Cell {
@@ -1168,7 +1174,8 @@ mod tests {
             row: 8,
             bpm: 140.0,
         }];
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {

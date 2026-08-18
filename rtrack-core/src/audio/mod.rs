@@ -5,7 +5,7 @@ pub mod synth;
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -119,6 +119,216 @@ enum AudioCommand {
     },
 }
 
+/// Capacity of the audio-to-UI reclaim queue. Values pushed here are dropped
+/// by the UI thread; see [`Reclaimed`].
+const RECLAIM_QUEUE_CAPACITY: usize = 64;
+
+/// A value the audio thread has finished with, shipped back to the UI thread
+/// to be dropped there.
+///
+/// Freeing memory takes a lock inside the allocator, which the audio callback
+/// cannot afford: dropping a `SampleBank` holding the last reference to a few
+/// megabytes of PCM is exactly the kind of thing that produces an occasional
+/// unexplained click.
+// The payloads are never read: each variant exists purely to carry ownership
+// across the thread boundary so that `drop` runs on the UI side.
+#[allow(dead_code)]
+enum Reclaimed {
+    Bank(Arc<SampleBank>),
+    SynthParams(Box<SynthParams>),
+    ChannelEffects(Box<ChannelEffectsParams>),
+    SendBus(Box<effects::SendBusParams>),
+}
+
+/// A command tagged with the audio-clock frame at which it should take
+/// effect. Frame 0 means "as soon as this callback sees it".
+///
+/// Timestamping is what decouples note timing from the UI frame rate: the
+/// sequencer runs slightly ahead of the audio clock and stamps each event
+/// with its exact target frame, so a late or jittery UI frame still produces
+/// audio at the right instant, as long as it is not later than the lookahead.
+struct TimedCommand {
+    frame: u64,
+    cmd: AudioCommand,
+}
+
+/// Everything the audio thread owns. Bundled into one struct so the callback
+/// can render the buffer in segments, applying commands between them, without
+/// threading a dozen `&mut` parameters through every call.
+struct RenderState {
+    sf2_synth: Option<Synthesizer>,
+    builtin_synth: BuiltinSynth,
+    effects: EffectsChain,
+    channel_effects: Vec<ChannelEffects>,
+    send_buses: Vec<effects::SendBus>,
+    sample_engine: SamplePlaybackEngine,
+    sample_bank: Arc<SampleBank>,
+    has_sf2: bool,
+    sample_rate: f64,
+
+    // Master mix scratch, sized to the largest callback seen so far.
+    scratch_left: Vec<f32>,
+    scratch_right: Vec<f32>,
+    // Per-channel scratch for the channel-effects path.
+    ch_buf_left: Vec<Vec<f32>>,
+    ch_buf_right: Vec<Vec<f32>>,
+}
+
+impl RenderState {
+    /// Build a render state with no SF2 synth, for tests and offline checks.
+    /// Mirrors what `AudioEngine::new` assembles, minus the output device.
+    #[cfg(test)]
+    fn for_test(sample_rate: f64) -> Self {
+        Self {
+            sf2_synth: None,
+            builtin_synth: BuiltinSynth::new(sample_rate),
+            effects: EffectsChain::new(sample_rate),
+            channel_effects: (0..MAX_EFFECT_CHANNELS)
+                .map(|_| ChannelEffects::new(sample_rate))
+                .collect(),
+            send_buses: (0..effects::MAX_SEND_BUSES)
+                .map(|_| effects::SendBus::new(sample_rate))
+                .collect(),
+            sample_engine: SamplePlaybackEngine::new(32),
+            sample_bank: Arc::new(SampleBank::new()),
+            has_sf2: false,
+            sample_rate,
+            scratch_left: vec![0.0f32; MAX_CALLBACK_FRAMES],
+            scratch_right: vec![0.0f32; MAX_CALLBACK_FRAMES],
+            ch_buf_left: (0..MAX_EFFECT_CHANNELS)
+                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                .collect(),
+            ch_buf_right: (0..MAX_EFFECT_CHANNELS)
+                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                .collect(),
+        }
+    }
+
+    /// Grow the scratch buffers if this callback is larger than any so far.
+    /// Allocation on the audio thread is undesirable, hence sizing for
+    /// `MAX_CALLBACK_FRAMES` up front and treating this as a rare fallback.
+    fn ensure_capacity(&mut self, frames: usize) {
+        if self.scratch_left.len() >= frames {
+            return;
+        }
+        self.scratch_left.resize(frames, 0.0);
+        self.scratch_right.resize(frames, 0.0);
+        for ch in 0..MAX_EFFECT_CHANNELS {
+            self.ch_buf_left[ch].resize(frames, 0.0);
+            self.ch_buf_right[ch].resize(frames, 0.0);
+        }
+    }
+
+    /// Render `range` frames of the master mix into the scratch buffers.
+    ///
+    /// Rendering a sub-range rather than the whole callback is what lets the
+    /// caller apply a command exactly at its target sample offset. All the
+    /// DSP here is sample-wise or block-transparent, so splitting a buffer
+    /// into segments produces the same output as rendering it in one go.
+    fn render_segment(&mut self, range: std::ops::Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        let frames = range.len();
+        let (start, end) = (range.start, range.end);
+
+        let left = &mut self.scratch_left[start..end];
+        let right = &mut self.scratch_right[start..end];
+        for s in left.iter_mut() {
+            *s = 0.0;
+        }
+        for s in right.iter_mut() {
+            *s = 0.0;
+        }
+
+        // Render SF2 synth (always to master -- can't separate by channel)
+        if let Some(ref mut sf2) = self.sf2_synth {
+            sf2.render(left, right);
+        }
+
+        let any_ch_fx = self.channel_effects.iter().any(|fx| fx.any_enabled());
+        let any_send_bus = self.send_buses.iter().any(|b| b.params.enabled);
+
+        if any_ch_fx || any_send_bus {
+            // Per-channel path (needed for channel effects or send buses)
+            for ch in 0..MAX_EFFECT_CHANNELS {
+                for s in self.ch_buf_left[ch][start..end].iter_mut() {
+                    *s = 0.0;
+                }
+                for s in self.ch_buf_right[ch][start..end].iter_mut() {
+                    *s = 0.0;
+                }
+            }
+
+            for i in start..end {
+                let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
+                self.builtin_synth.render_sample_per_channel(&mut ch_out);
+                for (ch, out) in ch_out.iter().enumerate() {
+                    self.ch_buf_left[ch][i] += out[0];
+                    self.ch_buf_right[ch][i] += out[1];
+                }
+            }
+
+            self.sample_engine.render_per_channel(
+                &self.sample_bank,
+                &mut self.ch_buf_left,
+                &mut self.ch_buf_right,
+                start..end,
+            );
+
+            for bus in self.send_buses.iter_mut() {
+                bus.ensure_size(frames);
+                bus.clear_inputs(frames);
+            }
+
+            let left = &mut self.scratch_left[start..end];
+            let right = &mut self.scratch_right[start..end];
+            for ch in 0..MAX_EFFECT_CHANNELS {
+                self.channel_effects[ch].process(
+                    &mut self.ch_buf_left[ch][start..end],
+                    &mut self.ch_buf_right[ch][start..end],
+                );
+
+                // Feed send buses (post-channel-effects)
+                let send_levels = self.channel_effects[ch].params.send_levels;
+                for (bus_idx, bus) in self.send_buses.iter_mut().enumerate() {
+                    if bus.params.enabled && send_levels[bus_idx] > 0.0 {
+                        bus.add_send(
+                            &self.ch_buf_left[ch][start..end],
+                            &self.ch_buf_right[ch][start..end],
+                            send_levels[bus_idx],
+                        );
+                    }
+                }
+
+                for i in 0..frames {
+                    left[i] += self.ch_buf_left[ch][start + i];
+                    right[i] += self.ch_buf_right[ch][start + i];
+                }
+            }
+
+            for bus in self.send_buses.iter_mut() {
+                bus.process_to_master(left, right, frames);
+            }
+        } else {
+            // Fast path: no per-channel effects, render directly to master
+            let left = &mut self.scratch_left[start..end];
+            let right = &mut self.scratch_right[start..end];
+            for i in 0..frames {
+                let (l, r) = self.builtin_synth.render_sample();
+                left[i] += l;
+                right[i] += r;
+            }
+            self.sample_engine.render(&self.sample_bank, left, right);
+        }
+
+        // Apply master effects chain
+        let left = &mut self.scratch_left[start..end];
+        let right = &mut self.scratch_right[start..end];
+        self.effects.process(left, right);
+    }
+}
+
 /// Unified audio engine. Supports:
 /// - SF2 playback via RustySynth (when --sf2 is provided)
 /// - Built-in subtractive synth with ADSR + SVF filter (always available)
@@ -129,7 +339,7 @@ enum AudioCommand {
 /// and the audio callback thread owns all synthesis state, draining commands at
 /// the start of each callback. No mutex is held during audio rendering.
 pub struct AudioEngine {
-    producer: Producer<AudioCommand>,
+    producer: Producer<TimedCommand>,
     has_sf2: bool,
     effects_enabled: Arc<AtomicBool>,
     sample_rate: f64,
@@ -140,6 +350,24 @@ pub struct AudioEngine {
     peak_r: Arc<AtomicU32>,
     vis_consumer: Consumer<f32>,
     voice_snapshots: Arc<Mutex<Vec<VoiceSnapshot>>>,
+
+    /// Frames consumed by the device so far. The sequencer schedules against
+    /// this clock instead of wall time, so note timing does not depend on
+    /// when the UI thread last ran.
+    frame_clock: Arc<AtomicU64>,
+
+    /// Values the audio thread has finished with, waiting to be dropped here.
+    reclaim: Consumer<Reclaimed>,
+
+    /// Human-readable summary of the output device, for the caller to show.
+    device_description: String,
+
+    /// Last error reported by the audio stream, if any.
+    ///
+    /// The cpal error callback runs on its own thread at arbitrary times, so
+    /// it records here instead of printing; the UI picks it up on its next
+    /// frame.
+    stream_error: Arc<Mutex<Option<String>>>,
 }
 
 impl AudioEngine {
@@ -160,7 +388,9 @@ impl AudioEngine {
         let channels = config.channels() as usize;
         let sr_f64 = sample_rate as f64;
 
-        eprintln!(
+        // Describe the device for the caller to display. Printing it here
+        // would land on the TUI's alternate screen.
+        let device_description = format!(
             "Audio: {}Hz, {} ch, {:?}",
             sample_rate, channels, sample_format
         );
@@ -219,171 +449,103 @@ impl AudioEngine {
         let voice_snapshots_cb = Arc::clone(&voice_snapshots);
 
         let stream_config: cpal::StreamConfig = config.into();
-        let callback_has_sf2 = has_sf2;
-        let callback_sr = sr_f64;
+
+        // Monotonic count of frames the device has consumed. The UI thread
+        // reads this to schedule events in the audio timebase.
+        let frame_clock = Arc::new(AtomicU64::new(0));
+
+        // Values the audio thread is finished with, drained and dropped by
+        // the UI thread.
+        let (reclaim_producer, reclaim_consumer) = RingBuffer::new(RECLAIM_QUEUE_CAPACITY);
+
+        let stream_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let stream_error_cb = Arc::clone(&stream_error);
 
         let stream = {
-            // All audio state moves into the closure
-            let mut sf2_synth = sf2_synth;
-            let mut builtin_synth = builtin_synth;
-            let mut effects = effects;
-            let mut channel_effects = channel_effects;
-            let mut sample_engine = sample_engine;
-            let mut sample_bank = sample_bank;
-            let mut send_buses = send_buses;
+            let mut state = RenderState {
+                sf2_synth,
+                builtin_synth,
+                effects,
+                channel_effects,
+                send_buses,
+                sample_engine,
+                sample_bank,
+                has_sf2,
+                sample_rate: sr_f64,
+                scratch_left: vec![0.0f32; MAX_CALLBACK_FRAMES],
+                scratch_right: vec![0.0f32; MAX_CALLBACK_FRAMES],
+                ch_buf_left: (0..MAX_EFFECT_CHANNELS)
+                    .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                    .collect(),
+                ch_buf_right: (0..MAX_EFFECT_CHANNELS)
+                    .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                    .collect(),
+            };
             let mut consumer = consumer;
             let mut vis_producer = vis_producer;
-            let mut scratch_left = vec![0.0f32; MAX_CALLBACK_FRAMES];
-            let mut scratch_right = vec![0.0f32; MAX_CALLBACK_FRAMES];
-            // Per-channel scratch buffers for channel effects
-            let mut ch_buf_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
-                .collect();
-            let mut ch_buf_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
-                .collect();
+            // Commands drained from the queue but not yet due. Pre-allocated
+            // so the callback never has to grow it.
+            let mut pending: Vec<TimedCommand> = Vec::with_capacity(COMMAND_QUEUE_CAPACITY);
+            let mut reclaim = reclaim_producer;
+            let frame_clock_cb = Arc::clone(&frame_clock);
 
             device
                 .build_output_stream(
                     &stream_config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let frames = data.len() / channels;
+                        // Frame index of the first sample in this buffer. The
+                        // sequencer stamps commands in this timebase.
+                        let block_start = frame_clock_cb.load(Ordering::Relaxed);
 
-                        // Drain command queue (lock-free, no allocation)
+                        state.ensure_capacity(frames);
+
+                        // Drain the queue into the pending list. Commands are
+                        // kept until their frame falls inside a rendered
+                        // segment, which is what makes note timing independent
+                        // of when the UI thread happened to run.
                         while let Ok(cmd) = consumer.pop() {
-                            process_command(
-                                cmd,
-                                &mut sf2_synth,
-                                &mut builtin_synth,
-                                &mut effects,
-                                &mut channel_effects,
-                                &mut send_buses,
-                                &mut sample_engine,
-                                &mut sample_bank,
-                                callback_has_sf2,
-                                callback_sr,
-                                &effects_flag,
-                            );
-                        }
-
-                        // Grow scratch buffers if needed (rare)
-                        if scratch_left.len() < frames {
-                            scratch_left.resize(frames, 0.0);
-                            scratch_right.resize(frames, 0.0);
-                            for ch in 0..MAX_EFFECT_CHANNELS {
-                                ch_buf_left[ch].resize(frames, 0.0);
-                                ch_buf_right[ch].resize(frames, 0.0);
+                            if pending.len() == pending.capacity() {
+                                // Cannot grow on the audio thread: apply the
+                                // oldest immediately rather than dropping it.
+                                let stale = pending.remove(0);
+                                process_command(&mut state, stale.cmd, &effects_flag, &mut reclaim);
                             }
+                            pending.push(cmd);
                         }
 
-                        let left = &mut scratch_left[..frames];
-                        let right = &mut scratch_right[..frames];
-
-                        // Zero the master scratch buffers
-                        for s in left.iter_mut() {
-                            *s = 0.0;
-                        }
-                        for s in right.iter_mut() {
-                            *s = 0.0;
-                        }
-
-                        // Check if any channel has effects enabled
-                        let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
-
-                        // Render SF2 synth (always to master -- can't separate by channel)
-                        if let Some(ref mut sf2) = sf2_synth {
-                            sf2.render(left, right);
-                        }
-
-                        // Check if any send bus is enabled
-                        let any_send_bus = send_buses.iter().any(|b| b.params.enabled);
-
-                        if any_ch_fx || any_send_bus {
-                            // Per-channel rendering path (needed for channel effects or send buses)
-                            // Zero per-channel buffers
-                            for ch in 0..MAX_EFFECT_CHANNELS {
-                                for s in ch_buf_left[ch][..frames].iter_mut() {
-                                    *s = 0.0;
-                                }
-                                for s in ch_buf_right[ch][..frames].iter_mut() {
-                                    *s = 0.0;
+                        // Render the buffer in segments, applying each command
+                        // at its own sample offset.
+                        let mut pos = 0usize;
+                        while pos < frames {
+                            // Apply everything due at or before this offset.
+                            let due_at = block_start + pos as u64;
+                            let mut i = 0;
+                            while i < pending.len() {
+                                if pending[i].frame <= due_at {
+                                    let cmd = pending.remove(i).cmd;
+                                    process_command(&mut state, cmd, &effects_flag, &mut reclaim);
+                                } else {
+                                    i += 1;
                                 }
                             }
 
-                            // Render built-in synth per-channel
-                            for i in 0..frames {
-                                let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
-                                builtin_synth.render_sample_per_channel(&mut ch_out);
-                                for ch in 0..MAX_EFFECT_CHANNELS {
-                                    ch_buf_left[ch][i] += ch_out[ch][0];
-                                    ch_buf_right[ch][i] += ch_out[ch][1];
-                                }
-                            }
+                            // Render up to the next command boundary.
+                            let next_boundary = pending
+                                .iter()
+                                .map(|c| c.frame)
+                                .filter(|&f| f > due_at)
+                                .min()
+                                .map(|f| (f - block_start) as usize)
+                                .unwrap_or(frames)
+                                .clamp(pos + 1, frames);
 
-                            // Render samples per-channel
-                            {
-                                let mut slices: Vec<(&mut [f32], &mut [f32])> =
-                                    Vec::with_capacity(MAX_EFFECT_CHANNELS);
-                                let (ch_l_slices, ch_r_slices) =
-                                    (&mut ch_buf_left, &mut ch_buf_right);
-                                for ch in 0..MAX_EFFECT_CHANNELS {
-                                    let l = &mut ch_l_slices[ch][..frames] as *mut [f32];
-                                    let r = &mut ch_r_slices[ch][..frames] as *mut [f32];
-                                    // SAFETY: each channel index is unique, no aliasing
-                                    unsafe {
-                                        slices.push((&mut *l, &mut *r));
-                                    }
-                                }
-                                sample_engine.render_per_channel(&sample_bank, &mut slices);
-                            }
-
-                            // Clear send bus inputs
-                            for bus in send_buses.iter_mut() {
-                                bus.ensure_size(frames);
-                                bus.clear_inputs(frames);
-                            }
-
-                            // Apply per-channel effects, feed send buses, sum to master
-                            for ch in 0..MAX_EFFECT_CHANNELS {
-                                channel_effects[ch].process(
-                                    &mut ch_buf_left[ch][..frames],
-                                    &mut ch_buf_right[ch][..frames],
-                                );
-
-                                // Feed send buses (post-channel-effects)
-                                let send_levels = channel_effects[ch].params.send_levels;
-                                for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
-                                    if bus.params.enabled && send_levels[bus_idx] > 0.0 {
-                                        bus.add_send(
-                                            &ch_buf_left[ch][..frames],
-                                            &ch_buf_right[ch][..frames],
-                                            send_levels[bus_idx],
-                                        );
-                                    }
-                                }
-
-                                for i in 0..frames {
-                                    left[i] += ch_buf_left[ch][i];
-                                    right[i] += ch_buf_right[ch][i];
-                                }
-                            }
-
-                            // Process send buses to master
-                            for bus in send_buses.iter_mut() {
-                                bus.process_to_master(left, right, frames);
-                            }
-                        } else {
-                            // Fast path: no per-channel effects, render directly to master
-                            for i in 0..frames {
-                                let (l, r) = builtin_synth.render_sample();
-                                left[i] += l;
-                                right[i] += r;
-                            }
-                            sample_engine.render(&sample_bank, left, right);
+                            state.render_segment(pos..next_boundary);
+                            pos = next_boundary;
                         }
 
-                        // Apply master effects chain
-                        effects.process(left, right);
+                        let left = &state.scratch_left[..frames];
+                        let right = &state.scratch_right[..frames];
 
                         // Interleave into output buffer with soft clamp
                         for i in 0..frames {
@@ -421,7 +583,7 @@ impl AudioEngine {
                         // Snapshot active sample voices for UI (non-blocking)
                         if let Ok(mut snaps) = voice_snapshots_cb.try_lock() {
                             snaps.clear();
-                            for v in &sample_engine.voices {
+                            for v in &state.sample_engine.voices {
                                 if v.active {
                                     snaps.push(VoiceSnapshot {
                                         sample_index: v.sample_index,
@@ -434,8 +596,15 @@ impl AudioEngine {
                                 }
                             }
                         }
+
+                        // Publish the frame position for the next callback.
+                        frame_clock_cb.store(block_start + frames as u64, Ordering::Relaxed);
                     },
-                    |err| eprintln!("Audio stream error: {}", err),
+                    move |err| {
+                        if let Ok(mut slot) = stream_error_cb.lock() {
+                            *slot = Some(err.to_string());
+                        }
+                    },
                     None,
                 )
                 .context("Failed to build audio output stream")?
@@ -453,13 +622,117 @@ impl AudioEngine {
             peak_r,
             vis_consumer,
             voice_snapshots,
+            frame_clock,
+            reclaim: reclaim_consumer,
+            device_description,
+            stream_error,
         })
     }
 
-    /// Send a command to the audio thread. If the queue is full, the command is dropped.
+    /// A one-line description of the output device this engine opened.
+    pub fn device_description(&self) -> &str {
+        &self.device_description
+    }
+
+    /// Take the most recent audio stream error, if one has occurred since
+    /// this was last called.
+    pub fn take_stream_error(&self) -> Option<String> {
+        self.stream_error.lock().ok().and_then(|mut e| e.take())
+    }
+
+    /// Drop everything the audio thread has handed back.
+    ///
+    /// Cheap when there is nothing waiting, so it is safe to call from the
+    /// UI loop every frame. Called automatically whenever a command is sent.
+    pub fn reclaim_garbage(&mut self) {
+        while let Ok(value) = self.reclaim.pop() {
+            drop(value);
+        }
+    }
+
+    /// Send a command to be applied as soon as the audio thread sees it.
+    /// If the queue is full, the command is dropped.
     #[inline]
     fn send(&mut self, cmd: AudioCommand) {
-        let _ = self.producer.push(cmd);
+        self.reclaim_garbage();
+        let _ = self.producer.push(TimedCommand { frame: 0, cmd });
+    }
+
+    /// Send a command to be applied at a specific audio frame. Frames in the
+    /// past are applied immediately; frames beyond the next callback wait in
+    /// the audio thread's pending list until they come due.
+    #[inline]
+    fn send_at(&mut self, frame: u64, cmd: AudioCommand) {
+        self.reclaim_garbage();
+        let _ = self.producer.push(TimedCommand { frame, cmd });
+    }
+
+    /// Frames the output device has consumed so far. Returns 0 before the
+    /// first callback runs.
+    pub fn frame_clock(&self) -> u64 {
+        self.frame_clock.load(Ordering::Relaxed)
+    }
+
+    /// Schedule a note-on at a specific audio frame.
+    pub fn note_on_at(&mut self, frame: u64, channel: u8, note: u8, velocity: u8) {
+        self.send_at(
+            frame,
+            AudioCommand::NoteOn {
+                channel,
+                note,
+                velocity,
+            },
+        );
+    }
+
+    /// Schedule a note-on with explicit synth parameters at a specific frame.
+    pub fn note_on_with_params_at(
+        &mut self,
+        frame: u64,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: &SynthParams,
+    ) {
+        self.send_at(
+            frame,
+            AudioCommand::NoteOnWithParams {
+                channel,
+                note,
+                velocity,
+                params: Box::new(params.clone()),
+            },
+        );
+    }
+
+    /// Schedule "all notes off for this channel" at a specific frame.
+    pub fn note_off_all_channel_at(&mut self, frame: u64, channel: u8) {
+        self.send_at(frame, AudioCommand::NoteOffAllChannel { channel });
+    }
+
+    /// Schedule a sample trigger at a specific frame.
+    pub fn sample_note_on_at(
+        &mut self,
+        frame: u64,
+        sample_index: usize,
+        note: u8,
+        velocity: u8,
+        channel: u8,
+    ) {
+        self.send_at(
+            frame,
+            AudioCommand::SampleNoteOn {
+                sample_index,
+                note,
+                velocity,
+                channel,
+            },
+        );
+    }
+
+    /// Schedule "stop this channel's sample voices" at a specific frame.
+    pub fn sample_note_off_channel_at(&mut self, frame: u64, channel: u8) {
+        self.send_at(frame, AudioCommand::SampleNoteOffChannel { channel });
     }
 
     pub fn has_sf2(&self) -> bool {
@@ -620,18 +893,33 @@ impl AudioEngine {
 /// Process a single command on the audio thread. Called from inside the audio callback.
 #[allow(clippy::too_many_arguments)]
 fn process_command(
+    state: &mut RenderState,
     cmd: AudioCommand,
-    sf2_synth: &mut Option<Synthesizer>,
-    builtin_synth: &mut BuiltinSynth,
-    effects: &mut EffectsChain,
-    channel_effects: &mut [ChannelEffects],
-    send_buses: &mut [effects::SendBus],
-    sample_engine: &mut SamplePlaybackEngine,
-    sample_bank: &mut Arc<SampleBank>,
-    has_sf2: bool,
-    sample_rate: f64,
     effects_flag: &AtomicBool,
+    reclaim: &mut Producer<Reclaimed>,
 ) {
+    // If the reclaim queue is full the value is dropped here instead. That
+    // costs a free on the audio thread, but only when the UI thread has not
+    // drained for 64 commands, and it is preferable to leaking.
+    let mut hand_back = |value: Reclaimed| {
+        let _ = reclaim.push(value);
+    };
+
+    let RenderState {
+        sf2_synth,
+        builtin_synth,
+        effects,
+        channel_effects,
+        send_buses,
+        sample_engine,
+        sample_bank,
+        has_sf2,
+        sample_rate,
+        ..
+    } = state;
+    let has_sf2 = *has_sf2;
+    let sample_rate = *sample_rate;
+
     match cmd {
         AudioCommand::NoteOn {
             channel,
@@ -653,6 +941,7 @@ fn process_command(
             params,
         } => {
             builtin_synth.note_on_with_params(channel, note, velocity, &params);
+            hand_back(Reclaimed::SynthParams(params));
         }
         AudioCommand::NoteOff { channel, note } => {
             if let Some(ref mut sf2) = sf2_synth {
@@ -703,7 +992,10 @@ fn process_command(
             effects_flag.store(effects.enabled, Ordering::Relaxed);
         }
         AudioCommand::SetSampleBank { bank } => {
-            *sample_bank = bank;
+            // The replaced bank may hold the last reference to every loaded
+            // sample, so it must not be dropped here.
+            let previous = std::mem::replace(sample_bank, bank);
+            hand_back(Reclaimed::Bank(previous));
         }
         AudioCommand::SampleNoteOn {
             sample_index,
@@ -769,15 +1061,23 @@ fn process_command(
         }
         AudioCommand::SetChannelEffects { channel, params } => {
             let ch = channel as usize;
+            let mut params = params;
             if ch < channel_effects.len() {
-                channel_effects[ch].params = *params;
+                // Swap rather than assign: assigning would drop the previous
+                // params here.
+                std::mem::swap(&mut channel_effects[ch].params, &mut params);
             }
+            hand_back(Reclaimed::ChannelEffects(params));
         }
         AudioCommand::SetSendBusParams { bus, params } => {
             let idx = bus as usize;
+            let mut params = params;
             if idx < send_buses.len() {
-                send_buses[idx].params = *params;
+                // `SendBusParams` owns a `String` label, so the displaced
+                // value has a heap allocation to free.
+                std::mem::swap(&mut send_buses[idx].params, &mut params);
             }
+            hand_back(Reclaimed::SendBus(params));
         }
     }
 }
@@ -945,5 +1245,383 @@ mod tests {
             "Interleave test: peak={:.4}, avg L-R diff={:.6}",
             peak, avg_diff
         );
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    const SR: f64 = 48_000.0;
+
+    fn flag() -> AtomicBool {
+        AtomicBool::new(true)
+    }
+
+    /// A reclaim queue whose consumer end is dropped: values pushed to it go
+    /// nowhere, which is all these tests need.
+    fn reclaim_sink() -> Producer<Reclaimed> {
+        let (producer, _consumer) = RingBuffer::new(RECLAIM_QUEUE_CAPACITY);
+        producer
+    }
+
+    /// Apply a command to a render state, as the audio callback would.
+    fn apply(state: &mut RenderState, cmd: AudioCommand) {
+        process_command(state, cmd, &flag(), &mut reclaim_sink());
+    }
+
+    /// Render `frames` in one call.
+    fn render_whole(state: &mut RenderState, frames: usize) -> Vec<f32> {
+        state.render_segment(0..frames);
+        state.scratch_left[..frames].to_vec()
+    }
+
+    /// Render `frames` split at the given boundaries.
+    fn render_split(state: &mut RenderState, frames: usize, splits: &[usize]) -> Vec<f32> {
+        let mut pos = 0;
+        for &b in splits {
+            state.render_segment(pos..b);
+            pos = b;
+        }
+        state.render_segment(pos..frames);
+        state.scratch_left[..frames].to_vec()
+    }
+
+    /// The scheduler splits every callback at each command's sample offset.
+    /// If segmented rendering did not match whole-buffer rendering, note
+    /// timing would be bought at the cost of audible seams.
+    #[test]
+    fn segmented_rendering_matches_whole_buffer_rendering() {
+        let frames = 512;
+
+        let mut a = RenderState::for_test(SR);
+        apply(
+            &mut a,
+            AudioCommand::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        );
+        let whole = render_whole(&mut a, frames);
+
+        let mut b = RenderState::for_test(SR);
+        apply(
+            &mut b,
+            AudioCommand::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        );
+        let split = render_split(&mut b, frames, &[1, 17, 200, 201, 511]);
+
+        assert_eq!(whole.len(), split.len());
+        for (i, (w, s)) in whole.iter().zip(split.iter()).enumerate() {
+            assert_eq!(w, s, "sample {i} differs between whole and split render");
+        }
+        assert!(
+            whole.iter().any(|s| s.abs() > 1e-6),
+            "test rendered silence, so it would pass trivially"
+        );
+    }
+
+    #[test]
+    fn segmented_rendering_matches_with_channel_effects_engaged() {
+        // The per-channel path runs channel effects and send buses, which
+        // carry state across segment boundaries.
+        let frames = 512;
+        let params = ChannelEffectsParams {
+            filter_enabled: true,
+            delay_enabled: true,
+            ..ChannelEffectsParams::default()
+        };
+
+        let setup = |state: &mut RenderState| {
+            apply(
+                state,
+                AudioCommand::SetChannelEffects {
+                    channel: 0,
+                    params: Box::new(params.clone()),
+                },
+            );
+            apply(
+                state,
+                AudioCommand::NoteOn {
+                    channel: 0,
+                    note: 55,
+                    velocity: 127,
+                },
+            );
+        };
+
+        let mut a = RenderState::for_test(SR);
+        setup(&mut a);
+        let whole = render_whole(&mut a, frames);
+
+        let mut b = RenderState::for_test(SR);
+        setup(&mut b);
+        let split = render_split(&mut b, frames, &[64, 65, 300]);
+
+        for (i, (w, s)) in whole.iter().zip(split.iter()).enumerate() {
+            assert_eq!(w, s, "sample {i} differs with channel effects engaged");
+        }
+        assert!(whole.iter().any(|s| s.abs() > 1e-6), "rendered silence");
+    }
+
+    #[test]
+    fn segmented_rendering_matches_with_send_buses_engaged() {
+        // Send buses accumulate per-segment input and carry delay/reverb
+        // state across segments; verify that splitting is still transparent.
+        let frames = 512;
+        let mut send_levels = [0.0f32; effects::MAX_SEND_BUSES];
+        send_levels[0] = 0.7;
+        let ch_params = ChannelEffectsParams {
+            send_levels,
+            ..ChannelEffectsParams::default()
+        };
+        let bus_params = effects::SendBusParams {
+            enabled: true,
+            effect_type: effects::SendBusType::Delay,
+            delay_time: 3.0,
+            delay_feedback: 0.5,
+            ..effects::SendBusParams::default()
+        };
+
+        let setup = |state: &mut RenderState| {
+            apply(
+                state,
+                AudioCommand::SetSendBusParams {
+                    bus: 0,
+                    params: Box::new(bus_params.clone()),
+                },
+            );
+            apply(
+                state,
+                AudioCommand::SetChannelEffects {
+                    channel: 0,
+                    params: Box::new(ch_params.clone()),
+                },
+            );
+            apply(
+                state,
+                AudioCommand::NoteOn {
+                    channel: 0,
+                    note: 48,
+                    velocity: 127,
+                },
+            );
+        };
+
+        let mut a = RenderState::for_test(SR);
+        setup(&mut a);
+        let whole = render_whole(&mut a, frames);
+
+        let mut b = RenderState::for_test(SR);
+        setup(&mut b);
+        let split = render_split(&mut b, frames, &[48, 96, 400]);
+
+        for (i, (w, s)) in whole.iter().zip(split.iter()).enumerate() {
+            assert_eq!(w, s, "sample {i} differs with send buses engaged");
+        }
+        assert!(whole.iter().any(|s| s.abs() > 1e-6), "rendered silence");
+    }
+
+    /// A note scheduled part-way through a buffer must be silent before its
+    /// frame and sounding from it. This is the property the whole lookahead
+    /// design exists to provide.
+    #[test]
+    fn a_note_scheduled_mid_buffer_starts_at_that_sample() {
+        let frames = 512;
+        let onset = 300usize;
+
+        let mut state = RenderState::for_test(SR);
+        // Segment 1: nothing scheduled yet.
+        state.render_segment(0..onset);
+        // Command applied exactly at the onset frame.
+        apply(
+            &mut state,
+            AudioCommand::NoteOn {
+                channel: 0,
+                note: 69,
+                velocity: 127,
+            },
+        );
+        state.render_segment(onset..frames);
+
+        let out = &state.scratch_left[..frames];
+        assert!(
+            out[..onset].iter().all(|s| s.abs() < 1e-9),
+            "output before the scheduled frame must be silent"
+        );
+        assert!(
+            out[onset..].iter().any(|s| s.abs() > 1e-6),
+            "output after the scheduled frame must be sounding"
+        );
+    }
+
+    /// Whole-buffer application (the old behaviour) quantises every note to
+    /// a buffer boundary. This documents the difference the refactor makes.
+    #[test]
+    fn without_scheduling_a_note_would_start_at_the_buffer_boundary() {
+        let frames = 512;
+        let mut state = RenderState::for_test(SR);
+        apply(
+            &mut state,
+            AudioCommand::NoteOn {
+                channel: 0,
+                note: 69,
+                velocity: 127,
+            },
+        );
+        state.render_segment(0..frames);
+        assert!(
+            state.scratch_left[..8].iter().any(|s| s.abs() > 1e-9),
+            "applied up front, the note sounds from sample 0"
+        );
+    }
+
+    /// Everything the audio thread finishes with must leave via the reclaim
+    /// queue rather than being freed on the audio thread.
+    #[test]
+    fn finished_values_are_handed_back_instead_of_freed() {
+        let (mut producer, mut consumer) = RingBuffer::new(RECLAIM_QUEUE_CAPACITY);
+        let mut state = RenderState::for_test(SR);
+
+        process_command(
+            &mut state,
+            AudioCommand::SetSampleBank {
+                bank: Arc::new(SampleBank::new()),
+            },
+            &flag(),
+            &mut producer,
+        );
+        process_command(
+            &mut state,
+            AudioCommand::NoteOnWithParams {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+                params: Box::new(SynthParams::from_patch(0)),
+            },
+            &flag(),
+            &mut producer,
+        );
+        process_command(
+            &mut state,
+            AudioCommand::SetChannelEffects {
+                channel: 0,
+                params: Box::new(ChannelEffectsParams::default()),
+            },
+            &flag(),
+            &mut producer,
+        );
+        process_command(
+            &mut state,
+            AudioCommand::SetSendBusParams {
+                bus: 0,
+                params: Box::new(effects::SendBusParams::default()),
+            },
+            &flag(),
+            &mut producer,
+        );
+
+        let mut handed_back = 0;
+        while consumer.pop().is_ok() {
+            handed_back += 1;
+        }
+        assert_eq!(
+            handed_back, 4,
+            "every owning command should hand its value back"
+        );
+    }
+
+    /// An out-of-range target must still hand the value back rather than
+    /// dropping it on the audio thread.
+    #[test]
+    fn values_for_out_of_range_targets_are_still_handed_back() {
+        let (mut producer, mut consumer) = RingBuffer::new(RECLAIM_QUEUE_CAPACITY);
+        let mut state = RenderState::for_test(SR);
+        process_command(
+            &mut state,
+            AudioCommand::SetChannelEffects {
+                channel: 200,
+                params: Box::new(ChannelEffectsParams::default()),
+            },
+            &flag(),
+            &mut producer,
+        );
+        process_command(
+            &mut state,
+            AudioCommand::SetSendBusParams {
+                bus: 200,
+                params: Box::new(effects::SendBusParams::default()),
+            },
+            &flag(),
+            &mut producer,
+        );
+        assert!(consumer.pop().is_ok());
+        assert!(consumer.pop().is_ok());
+    }
+
+    /// The swap must actually install the new parameters, not just move the
+    /// old ones out of the way.
+    #[test]
+    fn handing_back_still_installs_the_new_parameters() {
+        let (mut producer, _consumer) = RingBuffer::new(RECLAIM_QUEUE_CAPACITY);
+        let mut state = RenderState::for_test(SR);
+        let params = ChannelEffectsParams {
+            filter_enabled: true,
+            filter_cutoff: 1234.0,
+            ..ChannelEffectsParams::default()
+        };
+        process_command(
+            &mut state,
+            AudioCommand::SetChannelEffects {
+                channel: 2,
+                params: Box::new(params),
+            },
+            &flag(),
+            &mut producer,
+        );
+        assert!(state.channel_effects[2].params.filter_enabled);
+        assert_eq!(state.channel_effects[2].params.filter_cutoff, 1234.0);
+
+        let bus = effects::SendBusParams {
+            enabled: true,
+            label: "verb".to_string(),
+            ..effects::SendBusParams::default()
+        };
+        process_command(
+            &mut state,
+            AudioCommand::SetSendBusParams {
+                bus: 1,
+                params: Box::new(bus),
+            },
+            &flag(),
+            &mut producer,
+        );
+        assert!(state.send_buses[1].params.enabled);
+        assert_eq!(state.send_buses[1].params.label, "verb");
+    }
+
+    #[test]
+    fn an_empty_segment_renders_nothing_and_does_not_panic() {
+        let mut state = RenderState::for_test(SR);
+        state.render_segment(0..0);
+        state.render_segment(10..10);
+    }
+
+    #[test]
+    fn ensure_capacity_grows_every_scratch_buffer() {
+        let mut state = RenderState::for_test(SR);
+        let big = MAX_CALLBACK_FRAMES + 128;
+        state.ensure_capacity(big);
+        assert!(state.scratch_left.len() >= big);
+        assert!(state.scratch_right.len() >= big);
+        assert!(state.ch_buf_left.iter().all(|b| b.len() >= big));
+        assert!(state.ch_buf_right.iter().all(|b| b.len() >= big));
+        // Rendering the full width must not panic.
+        state.render_segment(0..big);
     }
 }

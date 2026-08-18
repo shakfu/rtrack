@@ -36,6 +36,8 @@ pub mod config;
 pub mod constants;
 pub mod core;
 pub mod engine;
+pub mod error;
+pub mod keymap;
 pub mod link;
 pub mod midi;
 pub mod midi_file;

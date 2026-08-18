@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::MIDI_CLOCKS_PER_BEAT;
 
-use super::{Cell, Chain, ChainEntry, Pattern, Phrase};
+use super::{Cell, Pattern};
+use crate::audio::effects::SendBusParams;
 use crate::audio::synth::SynthParams;
+use crate::types::{ChannelConfig, MidiCcMapping};
 
 /// A tempo change point in the song
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,9 +22,12 @@ pub struct TempoPoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstrumentDef {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Every optional field needs `default` as well as `skip_serializing_if`:
+    // without it, serde treats an omitted field as an error, so a file we
+    // wrote ourselves would fail to load back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi_program: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_index: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synth_params: Option<SynthParams>,
@@ -49,11 +54,17 @@ pub struct SampleRef {
     pub loop_end: usize,
 }
 
-/// Extended song file format that includes instrument and sample info.
+/// Extended song file format that includes instrument, sample, mixer and
+/// MIDI-learn state.
+///
 /// Backwards-compatible: old .rtrk files without these fields still load fine
-/// (serde default kicks in for the optional fields).
+/// (serde default kicks in for the optional fields), and unknown fields
+/// written by newer versions are ignored rather than rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SongFile {
+    /// Format version this file was written with. See [`FORMAT_VERSION`].
+    #[serde(default)]
+    pub version: u32,
     #[serde(flatten)]
     pub song: Song,
     /// Instrument definitions (only non-empty ones are stored)
@@ -62,6 +73,16 @@ pub struct SongFile {
     /// Sample file references with metadata
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sample_refs: Vec<SampleRefEntry>,
+    /// Per-channel mixer state: type, routing, volume, pan, effects.
+    /// Indexed positionally, one entry per song channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels_config: Vec<ChannelConfig>,
+    /// Send/return bus settings, indexed positionally.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub send_buses: Vec<SendBusParams>,
+    /// MIDI CC -> parameter mappings created via MIDI learn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub midi_cc_mappings: Vec<MidiCcMapping>,
 }
 
 /// Instrument entry keyed by slot index (for sparse storage)
@@ -80,10 +101,47 @@ pub struct SampleRefEntry {
     pub sample_ref: SampleRef,
 }
 
+/// Current .rtrk format version, written into every saved file.
+///
+/// Files predating the field deserialize as version 0. Nothing branches on
+/// this yet; it exists so that a future format change has something to
+/// branch on, which is not something that can be added retroactively.
+pub const FORMAT_VERSION: u32 = 1;
+
 impl SongFile {
+    /// True if this file was written by a newer version of rtrack than this
+    /// one understands. Such a file is still loaded -- unknown fields are
+    /// ignored -- but the caller should say so rather than silently dropping
+    /// whatever it could not represent.
+    pub fn is_from_newer_version(&self) -> bool {
+        self.version > FORMAT_VERSION
+    }
+
+    /// Wrap a song with no instrument, sample, mixer or MIDI-learn state.
+    /// Use struct-update syntax to fill in the parts you care about:
+    /// `SongFile { instruments, ..SongFile::from_song(song) }`.
+    pub fn from_song(song: Song) -> Self {
+        Self {
+            version: FORMAT_VERSION,
+            song,
+            instruments: Vec::new(),
+            sample_refs: Vec::new(),
+            channels_config: Vec::new(),
+            send_buses: Vec::new(),
+            midi_cc_mappings: Vec::new(),
+        }
+    }
+
+    /// Write the song, replacing any existing file atomically.
+    ///
+    /// The data is flushed to disk before the rename. A rename is atomic, but
+    /// only with respect to *ordering*: without the flush, a crash can leave
+    /// the directory entry pointing at a file whose contents were never
+    /// written, which is worse than no save at all.
     pub fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+
         let json = serde_json::to_string_pretty(self).context("Failed to serialize song file")?;
-        // Atomic save: write to temp file in same directory, then rename
         let dir = path.parent().unwrap_or(Path::new("."));
         let temp_name = format!(
             ".rtrack_save_{}_{}.tmp",
@@ -91,15 +149,31 @@ impl SongFile {
             path.file_name().and_then(|f| f.to_str()).unwrap_or("song")
         );
         let temp_path = dir.join(temp_name);
-        std::fs::write(&temp_path, &json)
-            .with_context(|| format!("Failed to write temp file {}", temp_path.display()))?;
-        std::fs::rename(&temp_path, path).with_context(|| {
-            format!(
+
+        let write_and_sync = || -> Result<()> {
+            let mut file = std::fs::File::create(&temp_path)
+                .with_context(|| format!("Failed to create {}", temp_path.display()))?;
+            file.write_all(json.as_bytes())
+                .with_context(|| format!("Failed to write {}", temp_path.display()))?;
+            file.sync_all()
+                .with_context(|| format!("Failed to flush {}", temp_path.display()))?;
+            Ok(())
+        };
+
+        // Leaving a stray .tmp behind on failure would litter the user's song
+        // directory, so clean up on every error path.
+        if let Err(e) = write_and_sync() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e);
+        }
+        if let Err(e) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(anyhow::Error::new(e).context(format!(
                 "Failed to rename {} -> {}",
                 temp_path.display(),
                 path.display()
-            )
-        })?;
+            )));
+        }
         Ok(())
     }
 
@@ -137,20 +211,6 @@ pub struct Song {
     /// Tempo automation points (order, row, bpm)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_map: Vec<TempoPoint>,
-
-    // -- Chain/Phrase model (populated from patterns on load/new) --
-    /// True when patterns have been modified and phrases need rebuilding.
-    #[serde(skip)]
-    pub phrases_dirty: bool,
-    /// Pool of single-channel phrases
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub phrases: Vec<Phrase>,
-    /// Pool of chains (each chain = sequence of phrase refs for one channel)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub chains: Vec<Chain>,
-    /// Arrangement grid: arrangement[row][channel] = Option<chain_index>
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub arrangement: Vec<Vec<Option<usize>>>,
 }
 
 fn default_highlight_beat() -> usize {
@@ -166,7 +226,7 @@ fn default_swing() -> u8 {
 impl Song {
     pub fn new(channels: usize, rows_per_pattern: usize) -> Self {
         let initial_pattern = Pattern::new(rows_per_pattern, channels);
-        let mut song = Self {
+        Self {
             title: "Untitled".to_string(),
             bpm: 120,
             speed: 6,
@@ -179,13 +239,7 @@ impl Song {
             highlight_bar: 16,
             swing: 50,
             tempo_map: Vec::new(),
-            phrases_dirty: false,
-            phrases: Vec::new(),
-            chains: Vec::new(),
-            arrangement: Vec::new(),
-        };
-        song.rebuild_phrases_from_patterns();
-        song
+        }
     }
 
     /// Ensure order_repeats matches order length (for backwards compat with old files)
@@ -201,7 +255,6 @@ impl Song {
         let idx = self.patterns.len();
         self.patterns
             .push(Pattern::new(self.rows_per_pattern, self.channels));
-        self.phrases_dirty = true;
         idx
     }
 
@@ -280,169 +333,55 @@ impl Song {
     }
 
     // -------------------------------------------------------------------
-    // Chain/Phrase model
+    // Cell access
+    //
+    // `patterns` + `order` is the single source of truth. An "order index"
+    // addresses a position in the song arrangement; it is resolved through
+    // `order` to a pattern, which owns the cells.
     // -------------------------------------------------------------------
 
-    /// Returns true if the chain/phrase model is populated.
-    pub fn has_chain_data(&self) -> bool {
-        !self.phrases.is_empty()
+    /// Number of positions in the order list.
+    pub fn order_len(&self) -> usize {
+        self.order.len()
     }
 
-    /// Mark phrases as needing rebuild (call after modifying patterns directly).
-    pub fn mark_phrases_dirty(&mut self) {
-        self.phrases_dirty = true;
+    /// Row count of the pattern at an order position. Falls back to
+    /// `rows_per_pattern` for out-of-range positions, and never returns 0
+    /// so that callers can safely compute `rows - 1`.
+    pub fn rows_at(&self, order_idx: usize) -> usize {
+        let rows = self
+            .order
+            .get(order_idx)
+            .and_then(|&p| self.patterns.get(p))
+            .map(|p| p.rows)
+            .unwrap_or(self.rows_per_pattern);
+        rows.max(1)
     }
 
-    /// Rebuild phrases from patterns if they've been marked dirty.
-    pub fn sync_phrases_if_dirty(&mut self) {
-        if self.phrases_dirty {
-            self.rebuild_phrases_from_patterns();
-            self.phrases_dirty = false;
-        }
+    /// The pattern played at an order position, if that position resolves.
+    /// Prefer this over `song.patterns[song.order[i]]`: both indexes can be
+    /// out of range for a file that was hand-edited or written by another
+    /// version, and a panic in a draw loop takes the whole editor down.
+    pub fn pattern_at(&self, order_idx: usize) -> Option<&Pattern> {
+        let pattern_idx = *self.order.get(order_idx)?;
+        self.patterns.get(pattern_idx)
     }
 
-    /// Populate phrases, chains, and arrangement from the existing patterns
-    /// and order list. Each pattern channel becomes a phrase; each pattern
-    /// becomes a set of chains (one per channel); each order entry becomes
-    /// an arrangement row.
-    pub fn rebuild_phrases_from_patterns(&mut self) {
-        self.phrases.clear();
-        self.chains.clear();
-        self.arrangement.clear();
-
-        // For each pattern, create one phrase per channel and one chain per channel.
-        // chain_base[pattern_idx][channel] = chain index
-        let mut chain_base: Vec<Vec<usize>> = Vec::new();
-
-        for pattern in &self.patterns {
-            let mut chains_for_pattern = Vec::new();
-            for ch in 0..pattern.channels {
-                let phrase_idx = self.phrases.len();
-                let mut phrase = Phrase::new(pattern.rows);
-                for row in 0..pattern.rows {
-                    phrase.data[row] = pattern.data[row][ch];
-                }
-                self.phrases.push(phrase);
-
-                let chain_idx = self.chains.len();
-                self.chains.push(Chain {
-                    entries: vec![ChainEntry {
-                        phrase: phrase_idx,
-                        transpose: 0,
-                    }],
-                });
-                chains_for_pattern.push(chain_idx);
-            }
-            chain_base.push(chains_for_pattern);
-        }
-
-        // Build arrangement from order list
-        for &pattern_idx in &self.order {
-            if pattern_idx < chain_base.len() {
-                let row: Vec<Option<usize>> = chain_base[pattern_idx]
-                    .iter()
-                    .map(|&ci| Some(ci))
-                    .collect();
-                self.arrangement.push(row);
-            }
-        }
+    /// Mutable counterpart to [`Song::pattern_at`].
+    pub fn pattern_at_mut(&mut self, order_idx: usize) -> Option<&mut Pattern> {
+        let pattern_idx = *self.order.get(order_idx)?;
+        self.patterns.get_mut(pattern_idx)
     }
 
-    /// Sync the legacy patterns/order fields from the chain/phrase model.
-    /// Call this before saving to maintain backwards compatibility.
-    pub fn rebuild_patterns_from_phrases(&mut self) {
-        if !self.has_chain_data() {
-            return;
-        }
-        self.patterns.clear();
-        self.order.clear();
-
-        for (arr_row, arr_channels) in self.arrangement.iter().enumerate() {
-            let rows = self.phrase_rows_at(arr_row);
-            let mut pattern = Pattern::new(rows, self.channels);
-            for (ch, chain_opt) in arr_channels.iter().enumerate() {
-                if let Some(&chain_idx) = chain_opt.as_ref() {
-                    if let Some(chain) = self.chains.get(chain_idx) {
-                        if let Some(entry) = chain.entries.first() {
-                            if let Some(phrase) = self.phrases.get(entry.phrase) {
-                                for row in 0..rows.min(phrase.rows) {
-                                    pattern.data[row][ch] = phrase.data[row];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            let pattern_idx = self.patterns.len();
-            self.patterns.push(pattern);
-            self.order.push(pattern_idx);
-        }
-        self.order_repeats.resize(self.order.len(), 1);
+    /// Clamp an order position to a valid index. Returns 0 for an empty
+    /// order list, which `repair` guarantees cannot happen after a load.
+    pub fn clamp_order_position(&self, order_idx: usize) -> usize {
+        order_idx.min(self.order.len().saturating_sub(1))
     }
 
-    /// Get the number of rows for an arrangement row (from the first
-    /// non-empty phrase found, or rows_per_pattern as fallback).
-    pub fn phrase_rows_at(&self, arrangement_row: usize) -> usize {
-        if let Some(arr) = self.arrangement.get(arrangement_row) {
-            for chain_idx in arr.iter().flatten() {
-                if let Some(chain) = self.chains.get(*chain_idx) {
-                    if let Some(entry) = chain.entries.first() {
-                        if let Some(phrase) = self.phrases.get(entry.phrase) {
-                            return phrase.rows;
-                        }
-                    }
-                }
-            }
-        }
-        self.rows_per_pattern
-    }
-
-    /// Get the chain transpose (in semitones) for a channel at an arrangement row.
-    pub fn chain_transpose_at(&self, arrangement_row: usize, channel: usize) -> i8 {
-        if let Some(arr) = self.arrangement.get(arrangement_row) {
-            if let Some(Some(chain_idx)) = arr.get(channel) {
-                if let Some(chain) = self.chains.get(*chain_idx) {
-                    if let Some(entry) = chain.entries.first() {
-                        return entry.transpose;
-                    }
-                }
-            }
-        }
-        0
-    }
-
-    /// Read a cell from the chain/phrase model. Falls back to patterns
-    /// if chain data is not populated.
-    pub fn cell_at(&self, arrangement_row: usize, row: usize, channel: usize) -> &Cell {
-        if self.has_chain_data() {
-            if let Some(arr) = self.arrangement.get(arrangement_row) {
-                if let Some(Some(chain_idx)) = arr.get(channel) {
-                    if let Some(chain) = self.chains.get(*chain_idx) {
-                        if let Some(entry) = chain.entries.first() {
-                            if let Some(phrase) = self.phrases.get(entry.phrase) {
-                                if row < phrase.rows {
-                                    return &phrase.data[row];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            static EMPTY: Cell = Cell {
-                note: None,
-                instrument: None,
-                volume: None,
-                effect: None,
-                effect_value: None,
-            };
-            return &EMPTY;
-        }
-        // Legacy fallback
-        if let Some(&pattern_idx) = self.order.get(arrangement_row) {
-            if let Some(pattern) = self.patterns.get(pattern_idx) {
-                return pattern.get(row, channel);
-            }
-        }
+    /// Read a cell by order position. Returns an empty cell for any
+    /// out-of-range coordinate rather than panicking.
+    pub fn cell_at(&self, order_idx: usize, row: usize, channel: usize) -> &Cell {
         static EMPTY: Cell = Cell {
             note: None,
             instrument: None,
@@ -450,202 +389,181 @@ impl Song {
             effect: None,
             effect_value: None,
         };
-        &EMPTY
+        self.order
+            .get(order_idx)
+            .and_then(|&p| self.patterns.get(p))
+            .filter(|p| row < p.rows && channel < p.channels)
+            .map(|p| p.get(row, channel))
+            .unwrap_or(&EMPTY)
     }
 
-    /// Write a cell in the chain/phrase model. Creates phrases/chains on
-    /// the fly for empty arrangement slots.
+    /// Mutable cell access by order position. Returns None if the
+    /// coordinate does not resolve to a pattern cell.
     pub fn cell_at_mut(
         &mut self,
-        arrangement_row: usize,
+        order_idx: usize,
         row: usize,
         channel: usize,
-    ) -> &mut Cell {
-        self.ensure_arrangement_slot(arrangement_row, channel);
-
-        let chain_idx = self.arrangement[arrangement_row][channel].unwrap();
-        let phrase_idx = self.chains[chain_idx].entries[0].phrase;
-        &mut self.phrases[phrase_idx].data[row]
+    ) -> Option<&mut Cell> {
+        let pattern_idx = *self.order.get(order_idx)?;
+        let pattern = self.patterns.get_mut(pattern_idx)?;
+        if row >= pattern.rows || channel >= pattern.channels {
+            return None;
+        }
+        Some(&mut pattern.data[row][channel])
     }
 
-    /// Ensure an arrangement slot has a valid chain+phrase. Creates them
-    /// if the slot is None.
-    fn ensure_arrangement_slot(&mut self, arrangement_row: usize, channel: usize) {
-        // Ensure arrangement has enough rows
-        while self.arrangement.len() <= arrangement_row {
-            self.arrangement.push(vec![None; self.channels]);
-        }
-        // Ensure row has enough channels
-        let arr_row = &mut self.arrangement[arrangement_row];
-        while arr_row.len() <= channel {
-            arr_row.push(None);
-        }
-        // Create phrase + chain if missing
-        if arr_row[channel].is_none() {
-            let phrase_idx = self.phrases.len();
-            self.phrases.push(Phrase::new(self.rows_per_pattern));
-            let chain_idx = self.chains.len();
-            self.chains.push(Chain {
-                entries: vec![ChainEntry {
-                    phrase: phrase_idx,
-                    transpose: 0,
-                }],
-            });
-            arr_row[channel] = Some(chain_idx);
-        }
-    }
-
-    /// Build a virtual Pattern from an arrangement row (for rendering).
-    /// Assembles data from each channel's chain/phrase into a multi-channel Pattern.
-    pub fn build_virtual_pattern(&self, arrangement_row: usize) -> Pattern {
-        let rows = self.phrase_rows_at(arrangement_row);
-        let mut pattern = Pattern::new(rows, self.channels);
-        for ch in 0..self.channels {
-            let cell_data_iter = (0..rows).map(|r| *self.cell_at(arrangement_row, r, ch));
-            for (r, cell) in cell_data_iter.enumerate() {
-                pattern.data[r][ch] = cell;
-            }
-        }
-        pattern
-    }
-
-    /// Number of arrangement rows (equivalent to old order length).
-    pub fn arrangement_len(&self) -> usize {
-        if self.has_chain_data() {
-            self.arrangement.len()
-        } else {
-            self.order.len()
-        }
-    }
-
-    /// Set a cell, writing to both the phrase (new model) and the legacy
-    /// pattern (for backwards compat). Use this instead of directly
-    /// modifying `patterns[idx].set_cell()`.
+    /// Write a cell by order position. Out-of-range coordinates are ignored.
     pub fn set_cell(&mut self, order_idx: usize, row: usize, channel: usize, cell: Cell) {
-        // Write to legacy pattern
-        if let Some(&pattern_idx) = self.order.get(order_idx) {
-            if let Some(pattern) = self.patterns.get_mut(pattern_idx) {
-                if row < pattern.rows && channel < pattern.channels {
-                    pattern.data[row][channel] = cell;
-                }
-            }
-        }
-        // Write to phrase
-        if self.has_chain_data() {
-            *self.cell_at_mut(order_idx, row, channel) = cell;
+        if let Some(slot) = self.cell_at_mut(order_idx, row, channel) {
+            *slot = cell;
         }
     }
 
     // -------------------------------------------------------------------
-    // Arrangement management
+    // Order list management
     // -------------------------------------------------------------------
 
-    /// Add a new empty arrangement row (all channels get fresh empty phrases).
-    /// Also adds a corresponding legacy pattern and order entry.
-    /// Returns the index of the new arrangement row.
-    pub fn add_arrangement_row(&mut self) -> usize {
-        let idx = self.arrangement.len();
-        let mut row = Vec::with_capacity(self.channels);
-        for _ in 0..self.channels {
-            let phrase_idx = self.phrases.len();
-            self.phrases.push(Phrase::new(self.rows_per_pattern));
-            let chain_idx = self.chains.len();
-            self.chains.push(Chain {
-                entries: vec![ChainEntry {
-                    phrase: phrase_idx,
-                    transpose: 0,
-                }],
-            });
-            row.push(Some(chain_idx));
-        }
-        self.arrangement.push(row);
-        // Keep legacy in sync
-        let pat_idx = self.patterns.len();
-        self.patterns
-            .push(Pattern::new(self.rows_per_pattern, self.channels));
-        self.order.push(pat_idx);
+    /// Append a fresh pattern and a matching order entry.
+    /// Returns the new order position.
+    pub fn add_order_entry(&mut self) -> usize {
+        let pattern_idx = self.add_pattern();
+        self.order.push(pattern_idx);
         self.order_repeats.push(1);
-        idx
+        self.order.len() - 1
     }
 
-    /// Clone an arrangement row: deep-copies all chains and phrases.
-    /// Returns the index of the new row.
-    pub fn clone_arrangement_row(&mut self, src_row: usize) -> usize {
-        let idx = self.arrangement.len();
-        let src = match self.arrangement.get(src_row) {
-            Some(r) => r.clone(),
-            None => return self.add_arrangement_row(),
+    /// Duplicate the pattern referenced at `src` into a new pattern and
+    /// append an order entry pointing at it. Returns the new order position.
+    pub fn clone_order_entry(&mut self, src: usize) -> usize {
+        let pattern = match self.order.get(src).and_then(|&p| self.patterns.get(p)) {
+            Some(p) => p.clone(),
+            None => return self.add_order_entry(),
         };
-        let mut new_row = Vec::with_capacity(src.len());
-        for chain_opt in &src {
-            match chain_opt {
-                Some(chain_idx) => {
-                    if let Some(chain) = self.chains.get(*chain_idx).cloned() {
-                        // Deep-clone: copy each phrase
-                        let mut new_entries = Vec::new();
-                        for entry in &chain.entries {
-                            let new_phrase_idx = self.phrases.len();
-                            if let Some(phrase) = self.phrases.get(entry.phrase).cloned() {
-                                self.phrases.push(phrase);
-                            } else {
-                                self.phrases.push(Phrase::new(self.rows_per_pattern));
-                            }
-                            new_entries.push(ChainEntry {
-                                phrase: new_phrase_idx,
-                                transpose: entry.transpose,
-                            });
-                        }
-                        let new_chain_idx = self.chains.len();
-                        self.chains.push(Chain {
-                            entries: new_entries,
-                        });
-                        new_row.push(Some(new_chain_idx));
-                    } else {
-                        new_row.push(None);
-                    }
-                }
-                None => new_row.push(None),
-            }
-        }
-        self.arrangement.push(new_row);
-        // Keep legacy in sync
-        self.phrases_dirty = true;
-        idx
+        let pattern_idx = self.patterns.len();
+        self.patterns.push(pattern);
+        self.order.push(pattern_idx);
+        self.order_repeats.push(1);
+        self.order.len() - 1
     }
 
-    /// Set the chain transpose for a specific channel at an arrangement row.
-    pub fn set_chain_transpose(
-        &mut self,
-        arrangement_row: usize,
-        channel: usize,
-        transpose: i8,
-    ) {
-        if let Some(arr) = self.arrangement.get(arrangement_row) {
-            if let Some(Some(chain_idx)) = arr.get(channel) {
-                if let Some(chain) = self.chains.get_mut(*chain_idx) {
-                    if let Some(entry) = chain.entries.first_mut() {
-                        entry.transpose = transpose;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Remove an arrangement row. Returns true if removed.
-    pub fn remove_arrangement_row(&mut self, row: usize) -> bool {
-        if row >= self.arrangement.len() || self.arrangement.len() <= 1 {
+    /// Remove an order position. The pattern itself is left in place so
+    /// that other order entries referencing it are unaffected. Refuses to
+    /// empty the order list. Returns true if removed.
+    pub fn remove_order_entry(&mut self, order_idx: usize) -> bool {
+        if order_idx >= self.order.len() || self.order.len() <= 1 {
             return false;
         }
-        self.arrangement.remove(row);
-        // Keep legacy in sync
-        if row < self.order.len() {
-            self.order.remove(row);
-            if row < self.order_repeats.len() {
-                self.order_repeats.remove(row);
-            }
+        self.order.remove(order_idx);
+        if order_idx < self.order_repeats.len() {
+            self.order_repeats.remove(order_idx);
         }
-        self.phrases_dirty = true;
         true
+    }
+
+    // -------------------------------------------------------------------
+    // Validation
+    // -------------------------------------------------------------------
+
+    /// Repair structurally invalid data loaded from disk. Returns a list of
+    /// human-readable descriptions of what was changed, empty if the song
+    /// was already well-formed.
+    ///
+    /// A song file is user-editable text and may also have been written by
+    /// an older version, so loading must never leave the song in a state
+    /// that can panic the editor or the engine.
+    pub fn repair(&mut self) -> Vec<String> {
+        let mut repairs = Vec::new();
+
+        if self.channels == 0 {
+            self.channels = 1;
+            repairs.push("channel count was 0, set to 1".to_string());
+        }
+        if self.rows_per_pattern == 0 {
+            self.rows_per_pattern = 64;
+            repairs.push("rows per pattern was 0, set to 64".to_string());
+        }
+        if self.speed == 0 {
+            self.speed = 6;
+            repairs.push("speed was 0, set to 6".to_string());
+        }
+        if self.bpm == 0 {
+            self.bpm = 120;
+            repairs.push("bpm was 0, set to 120".to_string());
+        }
+
+        // Every pattern must have a non-zero geometry matching its own
+        // declared dimensions, and must cover all song channels.
+        for (i, pattern) in self.patterns.iter_mut().enumerate() {
+            let declared_rows = pattern.rows.max(1);
+            let declared_channels = pattern.channels.max(self.channels).max(1);
+            if pattern.rows != declared_rows || pattern.channels != declared_channels {
+                repairs.push(format!(
+                    "pattern {} resized from {}x{} to {}x{}",
+                    i, pattern.rows, pattern.channels, declared_rows, declared_channels
+                ));
+            }
+            if pattern.data.len() != declared_rows
+                || pattern.data.iter().any(|r| r.len() != declared_channels)
+            {
+                repairs.push(format!("pattern {} had ragged cell data", i));
+            }
+            pattern.conform(declared_rows, declared_channels);
+        }
+
+        if self.patterns.is_empty() {
+            self.patterns
+                .push(Pattern::new(self.rows_per_pattern, self.channels));
+            repairs.push("song had no patterns, added an empty one".to_string());
+        }
+
+        // Order entries must reference existing patterns.
+        let pattern_count = self.patterns.len();
+        let mut dropped = 0;
+        self.order.retain(|&p| {
+            let ok = p < pattern_count;
+            if !ok {
+                dropped += 1;
+            }
+            ok
+        });
+        if dropped > 0 {
+            repairs.push(format!(
+                "dropped {} order {} referencing missing patterns",
+                dropped,
+                if dropped == 1 { "entry" } else { "entries" }
+            ));
+        }
+        if self.order.is_empty() {
+            self.order.push(0);
+            repairs.push("order list was empty, added pattern 0".to_string());
+        }
+        self.sync_order_repeats();
+
+        // Tempo automation must point at real positions.
+        let order_len = self.order.len();
+        let before = self.tempo_map.len();
+        self.tempo_map
+            .retain(|tp| tp.order < order_len && tp.bpm > 0.0);
+        if self.tempo_map.len() != before {
+            repairs.push(format!(
+                "dropped {} out-of-range tempo point(s)",
+                before - self.tempo_map.len()
+            ));
+        }
+
+        if self.highlight_beat == 0 {
+            self.highlight_beat = default_highlight_beat();
+        }
+        if self.highlight_bar == 0 {
+            self.highlight_bar = default_highlight_bar();
+        }
+        if self.swing > 100 {
+            self.swing = default_swing();
+            repairs.push("swing out of range, reset to 50".to_string());
+        }
+
+        repairs
     }
 }
 
@@ -689,7 +607,8 @@ mod tests {
         song.title = "RoundtripTest".to_string();
         song.bpm = 155;
         song.speed = 3;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             0,
             0,
             Cell {
@@ -736,7 +655,6 @@ mod tests {
         song.title = "WithInstruments".to_string();
 
         let song_file = SongFile {
-            song,
             instruments: vec![
                 InstrumentEntry {
                     slot: 0,
@@ -772,6 +690,7 @@ mod tests {
                     loop_end: 0,
                 },
             }],
+            ..SongFile::from_song(song)
         };
 
         let tmp = std::env::temp_dir().join("rtrack_songfile_roundtrip.rtrk");
@@ -818,63 +737,197 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_transpose_at() {
+    fn test_add_order_entry() {
         let mut song = Song::new(2, 4);
-        song.set_chain_transpose(0, 0, 5);
-        assert_eq!(song.chain_transpose_at(0, 0), 5);
-        assert_eq!(song.chain_transpose_at(0, 1), 0); // unmodified channel
-    }
-
-    #[test]
-    fn test_add_arrangement_row() {
-        let mut song = Song::new(2, 4);
-        assert_eq!(song.arrangement_len(), 1);
-        let idx = song.add_arrangement_row();
+        assert_eq!(song.order_len(), 1);
+        let idx = song.add_order_entry();
         assert_eq!(idx, 1);
-        assert_eq!(song.arrangement_len(), 2);
-        assert_eq!(song.order.len(), 2);
+        assert_eq!(song.order_len(), 2);
+        assert_eq!(song.patterns.len(), 2);
+        assert_eq!(song.order, vec![0, 1]);
     }
 
     #[test]
-    fn test_clone_arrangement_row() {
+    fn test_clone_order_entry_copies_cells_into_a_new_pattern() {
         let mut song = Song::new(2, 4);
-        song.set_cell(0, 0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::C, octave: 4 }),
-            ..Cell::default()
-        });
-        let idx = song.clone_arrangement_row(0);
-        // Cloned row should have same cell data
-        let cell = song.cell_at(idx, 0, 0);
-        assert!(cell.note.is_some());
-        // But different phrase indices (deep clone)
-        let chain_a = song.arrangement[0][0].unwrap();
-        let chain_b = song.arrangement[idx][0].unwrap();
-        assert_ne!(chain_a, chain_b);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        let idx = song.clone_order_entry(0);
+        assert!(song.cell_at(idx, 0, 0).note.is_some());
+        // Distinct patterns: editing the clone must not touch the original.
+        assert_ne!(song.order[0], song.order[idx]);
+        song.set_cell(idx, 0, 0, Cell::default());
+        assert!(song.cell_at(0, 0, 0).note.is_some());
+        assert!(song.cell_at(idx, 0, 0).note.is_none());
     }
 
     #[test]
-    fn test_remove_arrangement_row() {
+    fn test_remove_order_entry_keeps_pattern_for_other_users() {
         let mut song = Song::new(2, 4);
-        song.add_arrangement_row();
-        assert_eq!(song.arrangement_len(), 2);
-        assert!(song.remove_arrangement_row(0));
-        assert_eq!(song.arrangement_len(), 1);
-        // Can't remove last row
-        assert!(!song.remove_arrangement_row(0));
+        // Two order positions pointing at the same pattern.
+        song.order = vec![0, 0];
+        song.sync_order_repeats();
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        assert!(song.remove_order_entry(1));
+        assert_eq!(song.order_len(), 1);
+        assert_eq!(song.patterns.len(), 1);
+        assert!(song.cell_at(0, 0, 0).note.is_some());
+        // Refuses to empty the order list.
+        assert!(!song.remove_order_entry(0));
     }
 
     #[test]
-    fn test_rebuild_roundtrip() {
+    fn test_pattern_reuse_survives_a_save_load_cycle() {
+        // The same pattern used at three order positions must stay one
+        // pattern: shared editing is the point of an order list.
         let mut song = Song::new(2, 4);
-        song.set_cell(0, 0, 0, Cell {
-            note: Some(Note::On { value: NoteValue::E, octave: 5 }),
-            instrument: Some(3),
-            ..Cell::default()
-        });
-        // Rebuild patterns from phrases (simulating save)
-        song.rebuild_patterns_from_phrases();
-        let cell = song.patterns[0].get(0, 0);
-        assert_eq!(cell.note, Some(Note::On { value: NoteValue::E, octave: 5 }));
-        assert_eq!(cell.instrument, Some(3));
+        song.order = vec![0, 0, 0];
+        song.sync_order_repeats();
+        song.set_cell(
+            1,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::E,
+                    octave: 5,
+                }),
+                ..Cell::default()
+            },
+        );
+
+        let tmp = std::env::temp_dir().join("rtrack_reuse_roundtrip.rtrk");
+        let file = SongFile::from_song(song.clone());
+        file.save(&tmp).unwrap();
+        let loaded = SongFile::load(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(loaded.song.patterns.len(), 1, "pattern reuse was lost");
+        assert_eq!(loaded.song.order, vec![0, 0, 0]);
+        // The edit is visible from every position that shares the pattern.
+        for pos in 0..3 {
+            assert_eq!(
+                loaded.song.cell_at(pos, 0, 0).note,
+                Some(Note::On {
+                    value: NoteValue::E,
+                    octave: 5
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_cell_access_is_bounds_safe() {
+        let mut song = Song::new(2, 4);
+        // Out-of-range reads yield an empty cell rather than panicking.
+        assert!(song.cell_at(99, 0, 0).is_empty());
+        assert!(song.cell_at(0, 99, 0).is_empty());
+        assert!(song.cell_at(0, 0, 99).is_empty());
+        // Out-of-range writes are ignored.
+        song.set_cell(
+            99,
+            99,
+            99,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        assert!(song.cell_at_mut(99, 0, 0).is_none());
+    }
+
+    #[test]
+    fn test_rows_at_never_returns_zero() {
+        let mut song = Song::new(2, 4);
+        assert_eq!(song.rows_at(0), 4);
+        // Unknown position falls back to the song default.
+        assert_eq!(song.rows_at(99), 4);
+        song.patterns[0].conform(0, 2);
+        assert_eq!(song.rows_at(0), 1, "callers compute rows - 1");
+    }
+
+    #[test]
+    fn test_repair_drops_dangling_order_entries() {
+        let mut song = Song::new(2, 4);
+        song.order = vec![0, 99, 7];
+        song.order_repeats = vec![1, 1, 1];
+        let repairs = song.repair();
+        assert!(!repairs.is_empty());
+        assert_eq!(song.order, vec![0]);
+        assert_eq!(song.order_repeats.len(), 1);
+    }
+
+    #[test]
+    fn test_repair_rebuilds_a_degenerate_song() {
+        let mut song = Song::new(2, 4);
+        song.channels = 0;
+        song.rows_per_pattern = 0;
+        song.speed = 0;
+        song.bpm = 0;
+        song.patterns.clear();
+        song.order.clear();
+        let repairs = song.repair();
+        assert!(repairs.len() >= 5, "{repairs:?}");
+        assert_eq!(song.channels, 1);
+        assert_eq!(song.speed, 6);
+        assert_eq!(song.bpm, 120);
+        assert_eq!(song.patterns.len(), 1);
+        assert_eq!(song.order, vec![0]);
+        // The repaired song must be safe to read from.
+        assert!(song.cell_at(0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn test_repair_conforms_ragged_pattern_data() {
+        let mut song = Song::new(2, 4);
+        song.patterns[0].data.truncate(1);
+        song.patterns[0].data[0].clear();
+        let repairs = song.repair();
+        assert!(!repairs.is_empty());
+        assert_eq!(song.patterns[0].data.len(), 4);
+        assert!(song.patterns[0].data.iter().all(|r| r.len() == 2));
+    }
+
+    #[test]
+    fn test_repair_drops_out_of_range_tempo_points() {
+        let mut song = Song::new(2, 4);
+        song.tempo_map = vec![
+            TempoPoint {
+                order: 0,
+                row: 0,
+                bpm: 140.0,
+            },
+            TempoPoint {
+                order: 42,
+                row: 0,
+                bpm: 140.0,
+            },
+        ];
+        song.repair();
+        assert_eq!(song.tempo_map.len(), 1);
     }
 }

@@ -39,13 +39,15 @@ impl RtrackApp {
                 if name.is_empty() {
                     format!("Ch{}", i + 1)
                 } else {
-                    name.chars().take(rtrack_core::constants::MAX_CHANNEL_NAME).collect()
+                    name.chars()
+                        .take(rtrack_core::constants::MAX_CHANNEL_NAME)
+                        .collect()
                 }
             })
             .collect();
 
         let playback_order = if self.core.playing {
-            Some(self.core.engine.order)
+            Some(self.core.playback_position().0)
         } else {
             None
         };
@@ -82,7 +84,7 @@ impl RtrackApp {
 
                 // Rows
                 for ord_idx in 0..order_len {
-                    let pat_idx = self.core.song.order[ord_idx];
+                    let pat_idx = self.core.song.order.get(ord_idx).copied().unwrap_or(0);
                     let repeat = self
                         .core
                         .song

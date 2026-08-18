@@ -16,7 +16,7 @@ impl RtrackApp {
         ui.add_space(4.0);
 
         let active_order = if self.core.playing {
-            self.core.engine.order
+            self.core.playback_position().0
         } else {
             self.edit_order
         };
@@ -28,7 +28,7 @@ impl RtrackApp {
             .max_height(ui.available_height() * 0.5)
             .show(ui, |ui| {
                 for i in 0..order_len {
-                    let pat_idx = self.core.song.order[i];
+                    let pat_idx = self.core.song.order.get(i).copied().unwrap_or(0);
                     let label = format!("{:02X}: P{:02X}", i, pat_idx);
                     let is_active = i == active_order;
 
@@ -51,7 +51,13 @@ impl RtrackApp {
         ui.horizontal(|ui| {
             if ui.button("+").on_hover_text("New empty pattern").clicked() {
                 let new_pat_idx = self.core.song.patterns.len();
-                let rows = self.core.song.patterns[0].rows;
+                let rows = self
+                    .core
+                    .song
+                    .patterns
+                    .first()
+                    .map(|p| p.rows)
+                    .unwrap_or(self.core.song.rows_per_pattern);
                 let channels = self.core.song.channels;
                 self.core
                     .song
@@ -180,12 +186,16 @@ impl RtrackApp {
 
         // Apply toggles after iteration
         if let Some(ch) = mute_toggle {
-            if let Some(msg) = self.core.toggle_channel_mute(ch) {
+            if let Some(muted) = self.core.toggle_channel_mute(ch) {
+                let msg = format!("Ch {} {}", ch + 1, if muted { "muted" } else { "unmuted" });
                 self.status_message = Some(msg);
             }
         }
         if let Some(ch) = solo_toggle {
-            let msg = self.core.toggle_solo(ch);
+            let msg = match self.core.toggle_solo(ch) {
+                Some(soloed) => format!("Solo ch {}", soloed + 1),
+                None => "Solo off".to_string(),
+            };
             self.status_message = Some(msg);
         }
     }

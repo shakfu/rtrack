@@ -527,14 +527,10 @@ impl RtrackApp {
             }
             if ui.button("Load Directory...").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    match self.core.load_sample_directory(&dir) {
-                        Ok(msg) => {
-                            self.status_message = Some(msg);
-                        }
-                        Err(msg) => {
-                            self.status_message = Some(msg);
-                        }
-                    }
+                    self.status_message = Some(match self.core.load_sample_directory(&dir) {
+                        Ok(count) => format!("Loaded {} sample(s) from {}", count, dir.display()),
+                        Err(e) => format!("Sample directory failed: {}", e),
+                    });
                 }
             }
         });
@@ -616,7 +612,7 @@ impl RtrackApp {
                         let h = peak * half_h;
                         painter.line_segment(
                             [egui::pos2(x, mid_y - h), egui::pos2(x, mid_y + h)],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 180, 255)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(80, 180, 255)),
                         );
                     }
 
@@ -628,7 +624,7 @@ impl RtrackApp {
                                 egui::pos2(trim_x, rect.top()),
                                 egui::pos2(trim_x, rect.bottom()),
                             ],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 60)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 200, 60)),
                         );
                     }
                     if init_trim_end > 0 && init_trim_end < sample_len {
@@ -638,7 +634,7 @@ impl RtrackApp {
                                 egui::pos2(trim_x, rect.top()),
                                 egui::pos2(trim_x, rect.bottom()),
                             ],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 60)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 200, 60)),
                         );
                     }
 
@@ -648,11 +644,11 @@ impl RtrackApp {
                         let le = rect.left() + (init_loop_end as f32 / sample_len as f32) * w;
                         painter.line_segment(
                             [egui::pos2(ls, rect.top()), egui::pos2(ls, rect.bottom())],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 255, 100)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 255, 100)),
                         );
                         painter.line_segment(
                             [egui::pos2(le, rect.top()), egui::pos2(le, rect.bottom())],
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 255, 100)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 255, 100)),
                         );
                     }
                 }

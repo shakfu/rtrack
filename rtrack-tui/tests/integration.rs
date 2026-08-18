@@ -261,7 +261,6 @@ fn test_multi_pattern_song_renders() {
     // Add pattern 1 with a different note
     song.add_pattern();
     song.order = vec![0, 1];
-    song.rebuild_phrases_from_patterns();
     song.set_cell(
         1,
         0,
@@ -318,7 +317,8 @@ fn test_multi_pattern_song_renders() {
 fn test_channel_effects_in_render() {
     let mut song = Song::new(1, 4);
     song.speed = 2;
-    song.set_cell(0,
+    song.set_cell(
+        0,
         0,
         0,
         Cell {
@@ -402,7 +402,8 @@ fn test_channel_effects_in_render() {
 fn test_send_bus_in_render() {
     let mut song = Song::new(1, 4);
     song.speed = 2;
-    song.set_cell(0,
+    song.set_cell(
+        0,
         0,
         0,
         Cell {
@@ -531,7 +532,8 @@ fn test_generate_sliced_amen() {
 
     for i in 0..num_slices {
         let row = i * 4;
-        song.set_cell(0,
+        song.set_cell(
+            0,
             row,
             0,
             Cell {
@@ -577,9 +579,9 @@ fn test_generate_sliced_amen() {
         .collect();
 
     let song_file = SongFile {
-        song,
         instruments,
         sample_refs,
+        ..SongFile::from_song(song)
     };
 
     let out_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/sliced-amen.rtrk");

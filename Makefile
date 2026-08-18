@@ -1,4 +1,4 @@
-.PHONY: build run gui test test-unit test-integration fmt clippy lint clean \
+.PHONY: build run gui test test-unit test-integration fmt fmt-check clippy lint ci clean \
        publish-dry publish publish-core publish-tui publish-gui
 
 build:
@@ -22,10 +22,19 @@ test-integration:
 fmt:
 	cargo fmt --all
 
+# Non-mutating counterpart to `fmt`, suitable for gating.
+fmt-check:
+	cargo fmt --all -- --check
+
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
+# Reformats in place, then lints. Use `ci` if you need a check that fails
+# rather than rewrites.
 lint: fmt clippy
+
+# What CI runs.
+ci: fmt-check clippy test
 
 clean:
 	cargo clean

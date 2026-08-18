@@ -17,25 +17,39 @@ pub struct Config {
 }
 
 /// Load configuration from the standard path, returning defaults on any error.
+///
+/// A bad config is not fatal, but the user should be told rather than left
+/// wondering why their settings were ignored. See [`load_config_verbose`] to
+/// get that explanation; this shorthand discards it.
 pub fn load_config() -> Config {
+    load_config_verbose().0
+}
+
+/// Load configuration, along with any warnings about why parts of it were
+/// ignored.
+///
+/// The warnings are returned rather than printed: a library that writes to
+/// stderr corrupts the TUI's alternate screen, and the caller is the only
+/// one that knows where a message should go.
+pub fn load_config_verbose() -> (Config, Vec<String>) {
     let Some(path) = config_path() else {
-        return Config::default();
+        return (Config::default(), Vec::new());
     };
     if !path.exists() {
-        return Config::default();
+        return (Config::default(), Vec::new());
     }
     match std::fs::read_to_string(&path) {
         Ok(contents) => match toml::from_str(&contents) {
-            Ok(config) => config,
-            Err(e) => {
-                eprintln!("Warning: failed to parse {}: {}", path.display(), e);
-                Config::default()
-            }
+            Ok(config) => (config, Vec::new()),
+            Err(e) => (
+                Config::default(),
+                vec![format!("failed to parse {}: {}", path.display(), e)],
+            ),
         },
-        Err(e) => {
-            eprintln!("Warning: failed to read {}: {}", path.display(), e);
-            Config::default()
-        }
+        Err(e) => (
+            Config::default(),
+            vec![format!("failed to read {}: {}", path.display(), e)],
+        ),
     }
 }
 

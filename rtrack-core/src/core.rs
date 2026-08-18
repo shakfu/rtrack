@@ -15,11 +15,38 @@ use crate::tracker::{
     InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song, SongFile,
 };
 
+use crate::error::{Error, Result};
 use crate::types::{
     autosave_path_for, default_channel_configs, make_relative, resolve_relative, ChannelConfig,
     ChannelType, ClockMode, Instrument, LearnableParam, MidiCcMapping, PlaybackTiming,
-    AUTOSAVE_INTERVAL_SECS,
+    ScheduledPosition, AUTOSAVE_INTERVAL_SECS,
 };
+
+/// What a load produced, beyond the song itself.
+///
+/// A load can succeed while still having something to say -- samples that
+/// could not be found, structural damage that was repaired, a file from a
+/// newer version. The caller decides how much of that to show and how to
+/// word it.
+#[derive(Debug, Clone, Default)]
+pub struct LoadReport {
+    /// The file that was loaded.
+    pub path: PathBuf,
+    /// Structural problems `Song::repair` corrected, one description each.
+    pub repairs: Vec<String>,
+    /// Samples referenced by the song that could not be loaded, as
+    /// (name, reason) pairs.
+    pub missing_samples: Vec<(String, String)>,
+    /// The file declares a format version this build does not know.
+    pub from_newer_version: bool,
+}
+
+impl LoadReport {
+    /// True if the load was completely clean.
+    pub fn is_clean(&self) -> bool {
+        self.repairs.is_empty() && self.missing_samples.is_empty() && !self.from_newer_version
+    }
+}
 
 /// Headless tracker core. Owns all non-UI state: song data, playback engine,
 /// audio/MIDI I/O, channel configuration, instruments, and samples.
@@ -57,6 +84,12 @@ pub struct TrackerCore {
 
     // -- Preview --
     pub preview_note: Option<(u8, u8, Instant)>,
+
+    /// Audio frame the tick currently being dispatched should sound at.
+    /// `None` for anything triggered outside the sequencer (note preview,
+    /// live MIDI input), which is applied as soon as the audio thread
+    /// sees it.
+    scheduled_frame: Option<u64>,
 }
 
 impl TrackerCore {
@@ -104,6 +137,7 @@ impl TrackerCore {
             midi_cc_mappings: Vec::new(),
             midi_learn_pending: None,
             preview_note: None,
+            scheduled_frame: None,
         }
     }
 }
@@ -231,6 +265,7 @@ impl TrackerCoreBuilder {
             midi_cc_mappings: Vec::new(),
             midi_learn_pending: None,
             preview_note: None,
+            scheduled_frame: None,
         }
     }
 }
@@ -300,6 +335,28 @@ impl TrackerCore {
         self.channels.get(channel).is_none_or(|c| !c.muted)
     }
 
+    /// Push every channel's effects parameters to the audio engine. Used
+    /// after loading a song, when all channel state changes at once.
+    pub fn push_all_channel_effects(&mut self) {
+        if let Some(ref mut audio) = self.audio {
+            for (ch, cfg) in self.channels.iter().enumerate() {
+                if ch >= crate::audio::channel_effects::MAX_EFFECT_CHANNELS {
+                    break;
+                }
+                audio.set_channel_effects(ch as u8, &cfg.effects_params);
+            }
+        }
+    }
+
+    /// Push every send bus's parameters to the audio engine.
+    pub fn push_all_send_bus_params(&mut self) {
+        if let Some(ref mut audio) = self.audio {
+            for (bus, params) in self.send_bus_params.iter().enumerate() {
+                audio.set_send_bus_params(bus as u8, params);
+            }
+        }
+    }
+
     /// Collect per-channel effects parameters for all channels (used by export).
     pub fn channel_effects_params_slice(
         &self,
@@ -359,11 +416,17 @@ impl TrackerCore {
     /// Start playback from the given order and row position.
     pub fn play(&mut self, start_order: usize, start_row: usize) {
         self.playing = true;
-        self.song.rebuild_phrases_from_patterns();
         self.engine.reset(&self.song, start_order, start_row);
         self.sync_engine_channel_info();
         self.timing.reset();
         self.timing.last_tick = Some(Instant::now());
+        // Anchor the scheduler to the device clock so the first tick sounds
+        // at the next callback rather than being treated as overdue.
+        if let Some(ref audio) = self.audio {
+            let now_frame = audio.frame_clock();
+            self.timing.next_tick_frame = now_frame;
+            self.timing.last_clock_frame = now_frame;
+        }
         if self.link.is_enabled() {
             self.timing.last_link_beat = self.link.beat_at_time_now();
             self.link.request_play();
@@ -375,6 +438,10 @@ impl TrackerCore {
     pub fn stop(&mut self) {
         self.playing = false;
         self.timing.last_tick = None;
+        // Anything already queued ahead of the audio clock must not sound
+        // after the transport has stopped.
+        self.timing.scheduled_positions.clear();
+        self.scheduled_frame = None;
         for ch in 0..self.engine.channel_states.len() {
             let midi_ch = self.midi_channel_for(ch);
             self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
@@ -428,52 +495,102 @@ impl TrackerCore {
             return false;
         }
 
-        let mut ticked = false;
-
         // Link beat-timeline mode
         if self.link.is_enabled() {
-            let beat = self.link.beat_at_time_now();
-            let link_ticks = beat * MIDI_CLOCKS_PER_BEAT;
-            let last_ticks = self.timing.last_link_beat * MIDI_CLOCKS_PER_BEAT;
-            let delta_ticks = link_ticks - last_ticks;
-            if delta_ticks > 0.0 {
-                let spt = self.engine.seconds_per_tick(&self.song);
-                let ticks_per_second = 1.0 / spt;
-                let tracker_ticks = delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0)
-                    * ticks_per_second;
-                self.timing.tick_accumulator += tracker_ticks * spt;
-                self.timing.playback_elapsed +=
-                    delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0);
-            }
-            self.timing.last_link_beat = beat;
-
-            let spt = self.engine.seconds_per_tick(&self.song);
-            while self.timing.tick_accumulator >= spt {
-                self.timing.tick_accumulator -= spt;
-                self.process_tick();
-                ticked = true;
-            }
-            return ticked;
+            return self.tick_playback_link();
         }
 
+        // Audio-clock mode: schedule ticks against the device's frame counter
+        // and stamp each event with the frame it should sound at. Playback
+        // timing then depends on the audio device, not on how often the UI
+        // thread happens to call this.
+        if self.audio.is_some() {
+            return self.tick_playback_audio_clock();
+        }
+
+        // Wall-clock fallback: no audio device, so there is no frame counter
+        // to schedule against. Used for MIDI-only playback and headless runs.
+        self.tick_playback_wall_clock()
+    }
+
+    /// Frames between two ticks at the given tick length and sample rate.
+    ///
+    /// Always at least one frame: a zero advance would spin the scheduler
+    /// loop forever at absurd tempos.
+    pub fn frames_per_tick(seconds_per_tick: f64, sample_rate: f64) -> u64 {
+        (seconds_per_tick * sample_rate).round().max(1.0) as u64
+    }
+
+    /// Drive playback from the audio device's frame clock.
+    fn tick_playback_audio_clock(&mut self) -> bool {
+        let (now_frame, sample_rate) = match self.audio {
+            Some(ref audio) => (audio.frame_clock(), audio.sample_rate()),
+            None => return false,
+        };
+        if sample_rate <= 0.0 {
+            return false;
+        }
+
+        // Elapsed time since the last call, measured in frames actually
+        // consumed by the device.
+        let elapsed_frames = now_frame.saturating_sub(self.timing.last_clock_frame);
+        self.timing.last_clock_frame = now_frame;
+        let elapsed = elapsed_frames as f64 / sample_rate;
+        self.timing.playback_elapsed += elapsed;
+        self.emit_midi_clock(elapsed);
+
+        // Never schedule into the past: if the device ran on while we were
+        // stalled, catch up to now rather than firing a burst of late events.
+        if self.timing.next_tick_frame < now_frame {
+            self.timing.next_tick_frame = now_frame;
+        }
+
+        let horizon = now_frame + (SCHEDULER_LOOKAHEAD_SECS * sample_rate) as u64;
+        let mut ticked = false;
+        while self.timing.next_tick_frame <= horizon {
+            let frame = self.timing.next_tick_frame;
+            self.scheduled_frame = Some(frame);
+            let is_row_start = self.engine.tick == 0;
+            self.process_tick();
+            self.scheduled_frame = None;
+
+            if is_row_start {
+                // `sounding_*` names the row just triggered; `order`/`row`
+                // have already moved on to the next one.
+                self.record_scheduled_position(
+                    frame,
+                    self.engine.sounding_order,
+                    self.engine.sounding_row,
+                );
+            }
+
+            // Read the tick length after processing: a speed or tempo effect
+            // on this tick applies from here on.
+            let spt = self.engine.seconds_per_tick(&self.song);
+            let advance = Self::frames_per_tick(spt, sample_rate);
+            self.timing.next_tick_frame = frame + advance;
+            ticked = true;
+        }
+
+        self.expire_scheduled_positions(now_frame);
+        ticked
+    }
+
+    /// Drive playback from wall-clock deltas. Used when no audio device is
+    /// available, where there is nothing to be sample-accurate against.
+    fn tick_playback_wall_clock(&mut self) -> bool {
+        let mut ticked = false;
         let now = Instant::now();
         if let Some(last) = self.timing.last_tick {
             let elapsed = now.duration_since(last).as_secs_f64();
             self.timing.tick_accumulator += elapsed;
             self.timing.playback_elapsed += elapsed;
+            self.emit_midi_clock(elapsed);
 
-            if self.midi.clock_enabled {
-                self.timing.clock_tick_accumulator += elapsed;
-                let clock_interval = 60.0 / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT);
-                while self.timing.clock_tick_accumulator >= clock_interval {
-                    self.timing.clock_tick_accumulator -= clock_interval;
-                    let _ = self.midi.send_clock();
-                }
-            }
-
-            let spt = self.engine.seconds_per_tick(&self.song);
-            while self.timing.tick_accumulator >= spt {
-                self.timing.tick_accumulator -= spt;
+            // Recompute the tick length each iteration: a speed or tempo
+            // change mid-loop must take effect on the following tick.
+            while self.timing.tick_accumulator >= self.engine.seconds_per_tick(&self.song) {
+                self.timing.tick_accumulator -= self.engine.seconds_per_tick(&self.song);
                 self.process_tick();
                 ticked = true;
             }
@@ -482,9 +599,96 @@ impl TrackerCore {
         ticked
     }
 
+    /// Drive playback from the Ableton Link beat timeline.
+    fn tick_playback_link(&mut self) -> bool {
+        let mut ticked = false;
+        let beat = self.link.beat_at_time_now();
+        let link_ticks = beat * MIDI_CLOCKS_PER_BEAT;
+        let last_ticks = self.timing.last_link_beat * MIDI_CLOCKS_PER_BEAT;
+        let delta_ticks = link_ticks - last_ticks;
+        if delta_ticks > 0.0 {
+            let spt = self.engine.seconds_per_tick(&self.song);
+            let ticks_per_second = 1.0 / spt;
+            let tracker_ticks =
+                delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0) * ticks_per_second;
+            self.timing.tick_accumulator += tracker_ticks * spt;
+            self.timing.playback_elapsed +=
+                delta_ticks / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT / 60.0);
+        }
+        self.timing.last_link_beat = beat;
+
+        while self.timing.tick_accumulator >= self.engine.seconds_per_tick(&self.song) {
+            self.timing.tick_accumulator -= self.engine.seconds_per_tick(&self.song);
+            self.process_tick();
+            ticked = true;
+        }
+        ticked
+    }
+
+    /// Emit outgoing MIDI clock pulses for a span of elapsed seconds.
+    fn emit_midi_clock(&mut self, elapsed: f64) {
+        if !self.midi.clock_enabled {
+            return;
+        }
+        self.timing.clock_tick_accumulator += elapsed;
+        let clock_interval = 60.0 / (self.engine.bpm * MIDI_CLOCKS_PER_BEAT);
+        if clock_interval <= 0.0 {
+            return;
+        }
+        while self.timing.clock_tick_accumulator >= clock_interval {
+            self.timing.clock_tick_accumulator -= clock_interval;
+            let _ = self.midi.send_clock();
+        }
+    }
+
+    /// Remember where the song will be when `frame` becomes audible.
+    fn record_scheduled_position(&mut self, frame: u64, order: usize, row: usize) {
+        self.timing
+            .scheduled_positions
+            .push_back(ScheduledPosition { frame, order, row });
+        while self.timing.scheduled_positions.len() > MAX_SCHEDULED_POSITIONS {
+            self.timing.scheduled_positions.pop_front();
+        }
+    }
+
+    /// Drop positions the listener has already passed, keeping the most
+    /// recent one so `playback_position` always has an answer.
+    fn expire_scheduled_positions(&mut self, now_frame: u64) {
+        while self.timing.scheduled_positions.len() > 1
+            && self.timing.scheduled_positions[1].frame <= now_frame
+        {
+            self.timing.scheduled_positions.pop_front();
+        }
+    }
+
+    /// The song position the listener is currently hearing.
+    ///
+    /// With lookahead scheduling the engine runs ahead of the audio output,
+    /// so `engine.order` / `engine.row` describe notes that have been queued
+    /// but are not audible yet. UI that follows playback should use this.
+    pub fn playback_position(&self) -> (usize, usize) {
+        if let Some(ref audio) = self.audio {
+            let now_frame = audio.frame_clock();
+            let audible = self
+                .timing
+                .scheduled_positions
+                .iter()
+                .rev()
+                .find(|p| p.frame <= now_frame);
+            if let Some(p) = audible {
+                return (p.order, p.row);
+            }
+            if let Some(p) = self.timing.scheduled_positions.front() {
+                // Nothing audible yet: report the first queued position
+                // rather than a row that has not been reached.
+                return (p.order, p.row);
+            }
+        }
+        (self.engine.sounding_order, self.engine.sounding_row)
+    }
+
     /// Process a single sub-tick: drive engine and dispatch events.
     pub fn process_tick(&mut self) {
-        self.song.sync_phrases_if_dirty();
         self.engine.process_tick(&self.song);
         let events = self.engine.drain_events();
         self.dispatch_engine_events(events);
@@ -619,9 +823,13 @@ impl TrackerCore {
 
     /// Send a note-on to both MIDI output and the audio engine.
     pub fn send_note_on(&mut self, channel: u8, note: u8, velocity: u8) {
+        let at = self.scheduled_frame;
         let _ = self.midi.note_on(channel, note, velocity);
         if let Some(ref mut audio) = self.audio {
-            audio.note_on(channel, note, velocity);
+            match at {
+                Some(frame) => audio.note_on_at(frame, channel, note, velocity),
+                None => audio.note_on(channel, note, velocity),
+            }
         }
     }
 
@@ -636,13 +844,19 @@ impl TrackerCore {
     ) {
         let inst_idx = instrument.unwrap_or(0) as usize;
         let inst = self.instruments.get(inst_idx);
+        // Sequencer-driven notes carry the frame they should sound at;
+        // anything else (preview, live MIDI) sounds immediately.
+        let at = self.scheduled_frame;
 
         // Route 1: sample engine
         if let Some(sid) = inst.and_then(|i| i.sample_index) {
             if self.sample_bank.get(sid).is_some() {
                 let _ = self.midi.note_on(channel, note, velocity);
                 if let Some(ref mut audio) = self.audio {
-                    audio.sample_note_on(sid, note, velocity, channel);
+                    match at {
+                        Some(frame) => audio.sample_note_on_at(frame, sid, note, velocity, channel),
+                        None => audio.sample_note_on(sid, note, velocity, channel),
+                    }
                 }
                 return;
             }
@@ -650,9 +864,15 @@ impl TrackerCore {
 
         // Route 2: custom synth params
         if let Some(params) = inst.and_then(|i| i.synth_params.as_ref()) {
+            let params = params.clone();
             let _ = self.midi.note_on(channel, note, velocity);
             if let Some(ref mut audio) = self.audio {
-                audio.note_on_with_params(channel, note, velocity, params);
+                match at {
+                    Some(frame) => {
+                        audio.note_on_with_params_at(frame, channel, note, velocity, &params)
+                    }
+                    None => audio.note_on_with_params(channel, note, velocity, &params),
+                }
             }
             return;
         }
@@ -662,7 +882,12 @@ impl TrackerCore {
             let params = crate::audio::synth::SynthParams::from_patch(inst_idx as u8);
             let _ = self.midi.note_on(channel, note, velocity);
             if let Some(ref mut audio) = self.audio {
-                audio.note_on_with_params(channel, note, velocity, &params);
+                match at {
+                    Some(frame) => {
+                        audio.note_on_with_params_at(frame, channel, note, velocity, &params)
+                    }
+                    None => audio.note_on_with_params(channel, note, velocity, &params),
+                }
             }
             return;
         }
@@ -673,10 +898,19 @@ impl TrackerCore {
 
     /// Send note-off for all active notes on a MIDI channel.
     pub fn send_channel_note_off(&mut self, channel: u8) {
+        let at = self.scheduled_frame;
         let _ = self.midi.channel_note_off(channel);
         if let Some(ref mut audio) = self.audio {
-            audio.note_off_all_channel(channel);
-            audio.sample_note_off_channel(channel);
+            match at {
+                Some(frame) => {
+                    audio.note_off_all_channel_at(frame, channel);
+                    audio.sample_note_off_channel_at(frame, channel);
+                }
+                None => {
+                    audio.note_off_all_channel(channel);
+                    audio.sample_note_off_channel(channel);
+                }
+            }
         }
     }
 
@@ -720,6 +954,11 @@ impl TrackerCore {
                 self.send_channel_note_off(ch);
                 self.preview_note = None;
             }
+        }
+        // Both frontends call this every UI frame, which makes it the natural
+        // place to free whatever the audio thread has handed back.
+        if let Some(ref mut audio) = self.audio {
+            audio.reclaim_garbage();
         }
     }
 
@@ -777,7 +1016,7 @@ impl TrackerCore {
             Some(v) => v,
             None => return false,
         };
-        if order >= self.song.arrangement_len() {
+        if order >= self.song.order_len() {
             return false;
         }
         let tracker_note = Note::On {
@@ -809,7 +1048,7 @@ impl TrackerCore {
 
     /// Record a note-off at the given position (punch-in recording).
     pub fn record_note_off_at(&mut self, order: usize, row: usize, channel: usize) {
-        if order >= self.song.arrangement_len() {
+        if order >= self.song.order_len() {
             return;
         }
         let mut cell = *self.song.cell_at(order, row, channel);
@@ -871,44 +1110,43 @@ impl TrackerCore {
     // -----------------------------------------------------------------------
 
     /// Toggle mute on a channel. Returns a status message.
-    pub fn toggle_channel_mute(&mut self, channel: usize) -> Option<String> {
-        if let Some(ch_cfg) = self.channels.get_mut(channel) {
-            self.solo_channel = None;
-            ch_cfg.muted = !ch_cfg.muted;
-            let muted = ch_cfg.muted;
-            let state = if muted { "muted" } else { "unmuted" };
-            if muted {
-                let midi_ch = self.midi_channel_for(channel);
-                self.send_channel_note_off(midi_ch);
-            }
-            Some(format!("Ch {} {}", channel + 1, state))
-        } else {
-            None
+    /// Toggle mute on a channel, clearing any solo.
+    ///
+    /// Returns the channel's new muted state, or `None` if the index is out
+    /// of range. Wording for the status bar is the frontend's business.
+    pub fn toggle_channel_mute(&mut self, channel: usize) -> Option<bool> {
+        let ch_cfg = self.channels.get_mut(channel)?;
+        self.solo_channel = None;
+        ch_cfg.muted = !ch_cfg.muted;
+        let muted = ch_cfg.muted;
+        if muted {
+            let midi_ch = self.midi_channel_for(channel);
+            self.send_channel_note_off(midi_ch);
         }
+        Some(muted)
     }
 
-    /// Toggle solo on a channel. Returns a status message.
-    pub fn toggle_solo(&mut self, channel: usize) -> String {
+    /// Toggle solo on a channel. Returns the soloed channel, or `None` if
+    /// solo was turned off.
+    pub fn toggle_solo(&mut self, channel: usize) -> Option<usize> {
         if self.solo_channel == Some(channel) {
             self.solo_channel = None;
-            "Solo off".to_string()
-        } else {
-            self.solo_channel = Some(channel);
-            for ch in 0..self.channels.len() {
-                if ch != channel {
-                    let midi_ch = self.midi_channel_for(ch);
-                    self.send_channel_note_off(midi_ch);
-                }
-            }
-            format!("Solo ch {}", channel + 1)
+            return None;
         }
+        self.solo_channel = Some(channel);
+        for ch in 0..self.channels.len() {
+            if ch != channel {
+                let midi_ch = self.midi_channel_for(ch);
+                self.send_channel_note_off(midi_ch);
+            }
+        }
+        Some(channel)
     }
 
-    /// Toggle outgoing MIDI clock transmission. Returns a status message.
-    pub fn toggle_midi_clock(&mut self) -> String {
+    /// Toggle outgoing MIDI clock transmission. Returns whether it is now on.
+    pub fn toggle_midi_clock(&mut self) -> bool {
         self.midi.clock_enabled = !self.midi.clock_enabled;
-        let state = if self.midi.clock_enabled { "on" } else { "off" };
-        format!("MIDI clock {}", state)
+        self.midi.clock_enabled
     }
 
     /// Map aftertouch pressure to filter cutoff and push to audio engine.
@@ -932,7 +1170,7 @@ impl TrackerCore {
     // -----------------------------------------------------------------------
 
     /// Load a sample file into a bank slot. Returns Ok(name) or Err(message).
-    pub fn load_sample(&mut self, slot: usize, path: &std::path::Path) -> Result<String, String> {
+    pub fn load_sample(&mut self, slot: usize, path: &std::path::Path) -> Result<String> {
         let mut bank = (*self.sample_bank).clone();
         match bank.load(slot, path) {
             Ok(()) => {
@@ -953,17 +1191,20 @@ impl TrackerCore {
                 }
                 Ok(name)
             }
-            Err(e) => Err(format!("Sample load error: {}", e)),
+            Err(e) => Err(Error::Sample { slot, source: e }),
         }
     }
 
-    /// Load samples from a directory. Returns Ok(message) or Err(message).
-    pub fn load_sample_directory(&mut self, dir: &std::path::Path) -> Result<String, String> {
+    /// Load samples from a directory named `<slot>-<name>.wav`.
+    /// Returns how many slots were filled.
+    pub fn load_sample_directory(&mut self, dir: &std::path::Path) -> Result<usize> {
         let mut bank = (*self.sample_bank).clone();
         match bank.load_directory(dir) {
             Ok(meta) => {
+                let mut loaded = 0;
                 for (i, sample) in bank.samples.iter().enumerate() {
                     if let Some(s) = sample {
+                        loaded += 1;
                         if i < self.instruments.len() {
                             self.instruments[i].sample_index = Some(i);
                             if self.instruments[i].name.is_empty() {
@@ -982,14 +1223,15 @@ impl TrackerCore {
                         self.link.set_tempo(bpm as f64);
                     }
                 }
-                Ok(format!("Loaded samples from: {}", dir.display()))
+                Ok(loaded)
             }
-            Err(e) => Err(format!("Sample dir error: {}", e)),
+            Err(e) => Err(Error::file(dir, e)),
         }
     }
 
-    /// Load a sample via file browser into a slot. Returns status message.
-    pub fn load_sample_into_slot(&mut self, slot: usize, path: &std::path::Path) -> String {
+    /// Load a sample into a slot, also making it that track's default
+    /// instrument if the track does not have one yet.
+    pub fn load_sample_into_slot(&mut self, slot: usize, path: &std::path::Path) -> Result<()> {
         let mut bank = (*self.sample_bank).clone();
         match bank.load(slot, path) {
             Ok(()) => {
@@ -1012,9 +1254,9 @@ impl TrackerCore {
                 if let Some(ref mut audio) = self.audio {
                     audio.set_sample_bank(Arc::clone(&self.sample_bank));
                 }
-                format!("Loaded sample into slot {:02X}", slot)
+                Ok(())
             }
-            Err(e) => format!("Failed to load: {}", e),
+            Err(e) => Err(Error::Sample { slot, source: e }),
         }
     }
 
@@ -1025,10 +1267,9 @@ impl TrackerCore {
         count: usize,
         sensitivity: f32,
         use_transients: bool,
-    ) -> Result<usize, String> {
-        let sample = match self.sample_bank.get(slot) {
-            Some(s) => s,
-            None => return Err("No sample loaded in this slot".to_string()),
+    ) -> Result<usize> {
+        let Some(sample) = self.sample_bank.get(slot) else {
+            return Err(Error::NoSampleInSlot { slot });
         };
 
         let slices = if use_transients {
@@ -1039,16 +1280,16 @@ impl TrackerCore {
         };
 
         if slices.is_empty() {
-            return Err("Sample too short to slice".to_string());
+            return Err(Error::SampleTooShort { slot });
         }
 
         let slice_count = slices.len();
         let end_slot = slot + slice_count;
-        if end_slot > 256 {
-            return Err(format!(
-                "Not enough sample slots (need {} from slot {:02X})",
-                slice_count, slot
-            ));
+        if end_slot > MAX_INSTRUMENTS {
+            return Err(Error::NotEnoughSlots {
+                needed: slice_count,
+                from_slot: slot,
+            });
         }
 
         // Collect names before consuming slices
@@ -1102,7 +1343,7 @@ impl TrackerCore {
 
     /// Export the song to a WAV file at the given path.
     #[allow(dead_code)]
-    pub fn export_wav(&self, path: &std::path::Path) -> Result<(), String> {
+    pub fn export_wav(&self, path: &std::path::Path) -> Result<()> {
         crate::sample::export::render_to_wav(
             path,
             &self.song,
@@ -1112,11 +1353,11 @@ impl TrackerCore {
             &self.send_bus_params,
             self.export_sample_rate(),
         )
-        .map_err(|e| format!("{}", e))
+        .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a WAV file alongside the song file (or in the current directory).
-    pub fn export_wav_to_default(&self) -> Result<String, String> {
+    pub fn export_wav_to_default(&self) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -1136,12 +1377,12 @@ impl TrackerCore {
             &self.send_bus_params,
             sample_rate,
         )
-        .map(|()| format!("Exported WAV: {}", path.display()))
-        .map_err(|e| format!("WAV export failed: {}", e))
+        .map(|()| path)
+        .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a FLAC file alongside the song file (or in the current directory).
-    pub fn export_flac_to_default(&self) -> Result<String, String> {
+    pub fn export_flac_to_default(&self) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -1161,12 +1402,12 @@ impl TrackerCore {
             &self.send_bus_params,
             sample_rate,
         )
-        .map(|()| format!("Exported FLAC: {}", path.display()))
-        .map_err(|e| format!("FLAC export failed: {}", e))
+        .map(|()| path)
+        .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a standard MIDI file alongside the song file.
-    pub fn export_midi_to_default(&self) -> Result<String, String> {
+    pub fn export_midi_to_default(&self) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -1175,9 +1416,8 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.mid", name))
             });
-        crate::midi_file::export_midi(&self.song, &path)
-            .map(|()| format!("Exported: {}", path.display()))
-            .map_err(|e| format!("Export failed: {}", e))
+        crate::midi_file::export_midi(&self.song, &path).map_err(|e| Error::file(&path, e))?;
+        Ok(path)
     }
 
     // -----------------------------------------------------------------------
@@ -1244,41 +1484,38 @@ impl TrackerCore {
             .collect();
 
         SongFile {
+            version: crate::tracker::FORMAT_VERSION,
             song: self.song.clone(),
             instruments,
             sample_refs,
+            channels_config: self.channels.clone(),
+            send_buses: self.send_bus_params.clone(),
+            midi_cc_mappings: self.midi_cc_mappings.clone(),
         }
     }
 
     /// Save the song. Returns Ok(message) or Err(message).
-    pub fn save(&mut self) -> Result<String, String> {
-        // Ensure both representations are in sync before saving
-        self.song.sync_phrases_if_dirty();
-        self.song.rebuild_patterns_from_phrases();
+    pub fn save(&mut self) -> Result<PathBuf> {
         let path = self.file_path.clone().unwrap_or_else(|| {
             let name = self.song.title.replace(' ', "_").to_lowercase();
             PathBuf::from(format!("{}.rtrk", name))
         });
         let song_file = self.build_song_file(&path);
-        match song_file.save(&path) {
-            Ok(()) => {
-                self.file_path = Some(path.clone());
-                self.dirty = false;
-                let _ = std::fs::remove_file(autosave_path_for(&path));
-                Ok(format!("Saved: {}", path.display()))
-            }
-            Err(e) => Err(format!("Save failed: {}", e)),
-        }
+        song_file.save(&path).map_err(|e| Error::file(&path, e))?;
+        self.file_path = Some(path.clone());
+        self.dirty = false;
+        let _ = std::fs::remove_file(autosave_path_for(&path));
+        Ok(path)
     }
 
-    /// Auto-save to a temporary file if dirty and enough time has elapsed.
-    /// Returns Ok(()) if saved, Err(msg) on failure, or Ok(()) if skipped.
-    pub fn auto_save(&mut self, last_autosave: &mut Instant) -> Option<String> {
+    /// Auto-save to a temporary file if the song is dirty and enough time has
+    /// elapsed. Doing nothing is success; only a failed write is an error.
+    pub fn auto_save(&mut self, last_autosave: &mut Instant) -> Result<()> {
         if !self.dirty {
-            return None;
+            return Ok(());
         }
         if last_autosave.elapsed().as_secs() < AUTOSAVE_INTERVAL_SECS {
-            return None;
+            return Ok(());
         }
         *last_autosave = Instant::now();
         let path = match &self.file_path {
@@ -1290,10 +1527,9 @@ impl TrackerCore {
         };
         let autosave = autosave_path_for(&path);
         let song_file = self.build_song_file(&path);
-        if let Err(e) = song_file.save(&autosave) {
-            return Some(format!("Auto-save failed: {}", e));
-        }
-        None
+        song_file
+            .save(&autosave)
+            .map_err(|e| Error::file(&autosave, e))
     }
 
     /// Remove the auto-save temp file.
@@ -1311,17 +1547,32 @@ impl TrackerCore {
 
     /// Load a song file. Restores core state (song, instruments, samples).
     /// The caller is responsible for resetting UI state (cursor, history, etc.).
-    pub fn load_file(&mut self, path: &std::path::Path) -> Result<String, String> {
+    pub fn load_file(&mut self, path: &std::path::Path) -> Result<LoadReport> {
         match SongFile::load(path) {
             Ok(song_file) => {
-                let song = song_file.song;
-                self.channels = default_channel_configs(song.channels);
+                let from_newer = song_file.is_from_newer_version();
+                let mut song = song_file.song;
+                let repairs = song.repair();
                 self.solo_channel = None;
                 self.song = song;
-                self.song.sync_order_repeats();
-                if !self.song.has_chain_data() {
-                    self.song.rebuild_phrases_from_patterns();
+
+                // Restore mixer state. Files written before channel state was
+                // persisted carry no entries, so fall back to defaults and
+                // pad any channels the file did not describe.
+                self.channels = default_channel_configs(self.song.channels);
+                for (i, cfg) in song_file.channels_config.into_iter().enumerate() {
+                    if i < self.channels.len() {
+                        self.channels[i] = cfg;
+                    }
                 }
+                for (i, bus) in song_file.send_buses.into_iter().enumerate() {
+                    if i < self.send_bus_params.len() {
+                        self.send_bus_params[i] = bus;
+                    }
+                }
+                self.midi_cc_mappings = song_file.midi_cc_mappings;
+                self.push_all_channel_effects();
+                self.push_all_send_bus_params();
 
                 // Restore instruments
                 self.instruments = (0..MAX_INSTRUMENTS)
@@ -1340,7 +1591,7 @@ impl TrackerCore {
                 // Reload samples from file references
                 let load_dir = path.parent().unwrap_or(std::path::Path::new("."));
                 let mut bank = SampleBank::new();
-                let mut sample_errors = Vec::new();
+                let mut sample_errors: Vec<(String, String)> = Vec::new();
                 for entry in &song_file.sample_refs {
                     if entry.slot >= bank.samples.len() {
                         continue;
@@ -1360,7 +1611,7 @@ impl TrackerCore {
                             }
                         }
                         Err(e) => {
-                            sample_errors.push(format!("{}: {}", entry.sample_ref.name, e));
+                            sample_errors.push((entry.sample_ref.name.clone(), e.to_string()));
                         }
                     }
                 }
@@ -1371,30 +1622,30 @@ impl TrackerCore {
 
                 self.file_path = Some(path.to_path_buf());
                 self.dirty = false;
-                if sample_errors.is_empty() {
-                    Ok(format!("Loaded: {}", path.display()))
-                } else {
-                    Ok(format!(
-                        "Loaded (missing samples: {}): {}",
-                        sample_errors.join(", "),
-                        path.display()
-                    ))
-                }
+                Ok(LoadReport {
+                    path: path.to_path_buf(),
+                    repairs,
+                    missing_samples: sample_errors,
+                    from_newer_version: from_newer,
+                })
             }
-            Err(e) => Err(format!("Load failed: {}", e)),
+            Err(e) => Err(Error::file(path, e)),
         }
     }
 
     /// Import a MIDI file. Returns Ok(song) or Err(message).
-    pub fn import_midi_file(&mut self, path: &std::path::Path) -> Result<String, String> {
+    pub fn import_midi_file(&mut self, path: &std::path::Path) -> Result<LoadReport> {
         match crate::midi_file::import_midi(path) {
             Ok(song) => {
                 self.channels = default_channel_configs(song.channels);
                 self.solo_channel = None;
                 self.song = song;
-                Ok(format!("Imported: {}", path.display()))
+                Ok(LoadReport {
+                    path: path.to_path_buf(),
+                    ..LoadReport::default()
+                })
             }
-            Err(e) => Err(format!("Import failed: {}", e)),
+            Err(e) => Err(Error::file(path, e)),
         }
     }
 }
@@ -1442,5 +1693,125 @@ mod tests {
         let midi = MidiEngine::default();
         let core = TrackerCoreBuilder::new().headless().midi(midi).build();
         assert!(!core.midi.is_connected());
+    }
+
+    // -- Scheduler --
+
+    #[test]
+    fn frames_per_tick_matches_the_tick_rate() {
+        // 120 BPM, 24 ticks per beat -> 48 ticks/sec -> 1000 frames at 48kHz.
+        let spt = 1.0 / 48.0;
+        assert_eq!(TrackerCore::frames_per_tick(spt, 48_000.0), 1000);
+        assert_eq!(TrackerCore::frames_per_tick(spt, 44_100.0), 919); // 918.75 rounded
+    }
+
+    #[test]
+    fn frames_per_tick_never_returns_zero() {
+        // An absurd tempo must not produce a zero advance, which would spin
+        // the scheduler loop forever.
+        assert_eq!(TrackerCore::frames_per_tick(0.0, 48_000.0), 1);
+        assert_eq!(TrackerCore::frames_per_tick(1e-9, 48_000.0), 1);
+    }
+
+    #[test]
+    fn ticks_accumulate_to_the_right_rate_over_a_bar() {
+        // Four beats at 120 BPM is two seconds; at 24 ticks per beat that is
+        // 96 ticks, and the frame advances must sum to two seconds of audio.
+        let spt = 1.0 / 48.0;
+        let sr = 48_000.0;
+        let total: u64 = (0..96).map(|_| TrackerCore::frames_per_tick(spt, sr)).sum();
+        assert_eq!(total, 96_000, "96 ticks at 48kHz should span 2 seconds");
+    }
+
+    #[test]
+    fn playback_position_falls_back_to_the_engine_without_audio() {
+        // A headless core has no frame clock, so nothing is scheduled ahead
+        // and the engine position is the audible position.
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(2, 16)
+            .headless()
+            .build();
+        core.engine.sounding_order = 0;
+        core.engine.sounding_row = 7;
+        assert_eq!(core.playback_position(), (0, 7));
+    }
+
+    #[test]
+    fn wall_clock_playback_still_advances_without_an_audio_device() {
+        // MIDI-only and headless runs keep the original timing path.
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        core.play(0, 0);
+        assert!(core.is_playing());
+        // Two calls: the first only records a baseline timestamp.
+        core.tick_playback();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        core.tick_playback();
+        assert!(
+            core.timing.playback_elapsed > 0.0,
+            "wall-clock path did not advance"
+        );
+    }
+
+    #[test]
+    fn stopping_discards_positions_queued_ahead_of_the_clock() {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        core.timing
+            .scheduled_positions
+            .push_back(ScheduledPosition {
+                frame: 1000,
+                order: 0,
+                row: 3,
+            });
+        core.play(0, 0);
+        core.stop();
+        assert!(
+            core.timing.scheduled_positions.is_empty(),
+            "queued positions must not outlive the transport"
+        );
+    }
+
+    #[test]
+    fn scheduled_positions_are_capped() {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        for i in 0..(MAX_SCHEDULED_POSITIONS + 50) {
+            core.record_scheduled_position(i as u64, 0, i);
+        }
+        assert_eq!(
+            core.timing.scheduled_positions.len(),
+            MAX_SCHEDULED_POSITIONS
+        );
+        // The newest entries are the ones kept.
+        assert_eq!(
+            core.timing.scheduled_positions.back().map(|p| p.row),
+            Some(MAX_SCHEDULED_POSITIONS + 49)
+        );
+    }
+
+    #[test]
+    fn expiring_positions_keeps_the_most_recent_audible_one() {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        for (frame, row) in [(0u64, 0usize), (100, 1), (200, 2), (300, 3)] {
+            core.record_scheduled_position(frame, 0, row);
+        }
+        // The listener is at frame 250: rows 0 and 1 are history, row 2 is
+        // what is being heard, row 3 is still queued.
+        core.expire_scheduled_positions(250);
+        assert_eq!(
+            core.timing.scheduled_positions.front().map(|p| p.row),
+            Some(2)
+        );
+        assert_eq!(core.timing.scheduled_positions.len(), 2);
     }
 }

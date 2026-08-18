@@ -933,12 +933,18 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("    Cutoff      ", style_for(fx_off + 1)),
-            Span::styled(format!("{:.0} Hz", params.filter_cutoff), style_for(fx_off + 1)),
+            Span::styled(
+                format!("{:.0} Hz", params.filter_cutoff),
+                style_for(fx_off + 1),
+            ),
             cc_label(1),
         ]));
         lines.push(Line::from(vec![
             Span::styled("    Resonance   ", style_for(fx_off + 2)),
-            Span::styled(format!("{:.2}", params.filter_resonance), style_for(fx_off + 2)),
+            Span::styled(
+                format!("{:.2}", params.filter_resonance),
+                style_for(fx_off + 2),
+            ),
             cc_label(2),
         ]));
         lines.push(Line::from(""));
@@ -950,7 +956,10 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("    Drive       ", style_for(fx_off + 4)),
-            Span::styled(format!("{:.1}", params.distortion_drive), style_for(fx_off + 4)),
+            Span::styled(
+                format!("{:.1}", params.distortion_drive),
+                style_for(fx_off + 4),
+            ),
             cc_label(4),
         ]));
         lines.push(Line::from(""));
@@ -962,7 +971,10 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("    Rate        ", style_for(fx_off + 6)),
-            Span::styled(format!("{:.1} Hz", params.chorus_rate), style_for(fx_off + 6)),
+            Span::styled(
+                format!("{:.1} Hz", params.chorus_rate),
+                style_for(fx_off + 6),
+            ),
             cc_label(6),
         ]));
         lines.push(Line::from(vec![
@@ -984,12 +996,18 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("    Time        ", style_for(fx_off + 10)),
-            Span::styled(format!("{:.0} ms", params.delay_time), style_for(fx_off + 10)),
+            Span::styled(
+                format!("{:.0} ms", params.delay_time),
+                style_for(fx_off + 10),
+            ),
             cc_label(10),
         ]));
         lines.push(Line::from(vec![
             Span::styled("    Feedback    ", style_for(fx_off + 11)),
-            Span::styled(format!("{:.2}", params.delay_feedback), style_for(fx_off + 11)),
+            Span::styled(
+                format!("{:.2}", params.delay_feedback),
+                style_for(fx_off + 11),
+            ),
             cc_label(11),
         ]));
         lines.push(Line::from(vec![
@@ -1326,9 +1344,9 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         if y >= inner.y + inner.height {
             break;
         }
-        let pat_idx = app.core.song.order[ord_idx];
+        let pat_idx = app.core.song.order.get(ord_idx).copied().unwrap_or(0);
         let is_cursor = ord_idx == app.matrix_cursor;
-        let is_playing = app.core.playing && ord_idx == app.core.engine.order;
+        let is_playing = app.core.playing && ord_idx == app.current_order_position();
 
         // Row label: " 0: [00] x01 |"
         let repeat = app

@@ -35,7 +35,7 @@ impl RtrackApp {
                             .pick_file()
                         {
                             match self.core.load_file(&path) {
-                                Ok(msg) => {
+                                Ok(report) => {
                                     self.reset_cursor_state();
                                     self.history.clear();
                                     self.clipboard = None;
@@ -44,10 +44,10 @@ impl RtrackApp {
                                         &path,
                                     );
                                     rtrack_core::config::save_recent_files(&self.recent_files);
-                                    self.status_message = Some(msg);
+                                    self.status_message = Some(Self::describe_load(&report));
                                 }
-                                Err(msg) => {
-                                    self.status_message = Some(msg);
+                                Err(e) => {
+                                    self.status_message = Some(format!("Load failed: {}", e));
                                 }
                             }
                         }
@@ -77,10 +77,13 @@ impl RtrackApp {
                     if ui.button("Load Sample Dir...").clicked() {
                         ui.close_menu();
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            match self.core.load_sample_directory(&dir) {
-                                Ok(msg) => self.status_message = Some(msg),
-                                Err(msg) => self.status_message = Some(msg),
-                            }
+                            self.status_message =
+                                Some(match self.core.load_sample_directory(&dir) {
+                                    Ok(count) => {
+                                        format!("Loaded {} sample(s) from {}", count, dir.display())
+                                    }
+                                    Err(e) => format!("Sample directory failed: {}", e),
+                                });
                         }
                     }
 
@@ -93,14 +96,16 @@ impl RtrackApp {
                                     path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                                 if ui.button(label).clicked() {
                                     match self.core.load_file(path) {
-                                        Ok(msg) => {
+                                        Ok(report) => {
                                             self.reset_cursor_state();
                                             self.history.clear();
                                             self.clipboard = None;
-                                            self.status_message = Some(msg);
+                                            self.status_message =
+                                                Some(Self::describe_load(&report));
                                         }
-                                        Err(msg) => {
-                                            self.status_message = Some(msg);
+                                        Err(e) => {
+                                            self.status_message =
+                                                Some(format!("Load failed: {}", e));
                                         }
                                     }
                                     ui.close_menu();
@@ -113,24 +118,24 @@ impl RtrackApp {
 
                     if ui.button("Export WAV").clicked() {
                         ui.close_menu();
-                        match self.core.export_wav_to_default() {
-                            Ok(msg) => self.status_message = Some(msg),
-                            Err(msg) => self.status_message = Some(msg),
-                        }
+                        self.status_message = Some(match self.core.export_wav_to_default() {
+                            Ok(path) => format!("Exported WAV: {}", path.display()),
+                            Err(e) => format!("WAV export failed: {}", e),
+                        });
                     }
                     if ui.button("Export FLAC").clicked() {
                         ui.close_menu();
-                        match self.core.export_flac_to_default() {
-                            Ok(msg) => self.status_message = Some(msg),
-                            Err(msg) => self.status_message = Some(msg),
-                        }
+                        self.status_message = Some(match self.core.export_flac_to_default() {
+                            Ok(path) => format!("Exported FLAC: {}", path.display()),
+                            Err(e) => format!("FLAC export failed: {}", e),
+                        });
                     }
                     if ui.button("Export MIDI").clicked() {
                         ui.close_menu();
-                        match self.core.export_midi_to_default() {
-                            Ok(msg) => self.status_message = Some(msg),
-                            Err(msg) => self.status_message = Some(msg),
-                        }
+                        self.status_message = Some(match self.core.export_midi_to_default() {
+                            Ok(path) => format!("Exported MIDI: {}", path.display()),
+                            Err(e) => format!("MIDI export failed: {}", e),
+                        });
                     }
 
                     ui.separator();
@@ -150,15 +155,7 @@ impl RtrackApp {
                         .add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)"))
                         .clicked()
                     {
-                        if let Some(edits) = self.history.undo() {
-                            for edit in &edits {
-                                let cell = self.core.song.patterns[edit.pattern_idx]
-                                    .get_mut(edit.row, edit.channel);
-                                *cell = edit.old_cell;
-                            }
-                            self.core.dirty = true;
-                            self.status_message = Some("Undo".to_string());
-                        }
+                        self.apply_undo();
                         ui.close_menu();
                     }
                     if ui
@@ -168,15 +165,7 @@ impl RtrackApp {
                         )
                         .clicked()
                     {
-                        if let Some(edits) = self.history.redo() {
-                            for edit in &edits {
-                                let cell = self.core.song.patterns[edit.pattern_idx]
-                                    .get_mut(edit.row, edit.channel);
-                                *cell = edit.new_cell;
-                            }
-                            self.core.dirty = true;
-                            self.status_message = Some("Redo".to_string());
-                        }
+                        self.apply_redo();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -299,15 +288,13 @@ impl RtrackApp {
 
     pub fn do_save(&mut self) {
         match self.core.save() {
-            Ok(msg) => {
-                if let Some(ref path) = self.core.file_path {
-                    rtrack_core::config::push_recent_file(&mut self.recent_files, path);
-                    rtrack_core::config::save_recent_files(&self.recent_files);
-                }
-                self.status_message = Some(msg);
+            Ok(path) => {
+                rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                rtrack_core::config::save_recent_files(&self.recent_files);
+                self.status_message = Some(format!("Saved: {}", path.display()));
             }
-            Err(msg) => {
-                self.status_message = Some(msg);
+            Err(e) => {
+                self.status_message = Some(format!("Save failed: {}", e));
             }
         }
     }

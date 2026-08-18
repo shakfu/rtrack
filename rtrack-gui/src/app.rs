@@ -75,32 +75,10 @@ pub struct RtrackApp {
 }
 
 impl RtrackApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let config = rtrack_core::config::load_config();
-        let mut core = TrackerCore::with_song_size(8, 64);
-
-        // Try to start audio engine with SF2 from config
-        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
-            Ok(engine) => {
-                core.audio = Some(engine);
-            }
-            Err(e) => {
-                eprintln!("Audio warning: {}", e);
-            }
-        }
-
-        // Load sample directory from config
-        if let Some(ref dir) = config.sample_dir {
-            if dir.is_dir() {
-                let bank = std::sync::Arc::make_mut(&mut core.sample_bank);
-                if let Err(e) = bank.load_directory(dir) {
-                    eprintln!("Sample dir warning: {}", e);
-                }
-            }
-        }
-
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
-
+    /// Build the app around an already-constructed core. Split out from
+    /// `new` so that tests can drive the editor with a headless core, with
+    /// no window, audio device or MIDI port involved.
+    fn with_core(core: TrackerCore) -> Self {
         Self {
             core,
             cursor_row: 0,
@@ -140,6 +118,72 @@ impl RtrackApp {
         }
     }
 
+    /// Render what a load reported into a one-line status message.
+    pub(crate) fn describe_load(report: &rtrack_core::core::LoadReport) -> String {
+        if report.is_clean() {
+            return format!("Loaded: {}", report.path.display());
+        }
+        let mut notes = Vec::new();
+        if report.from_newer_version {
+            notes.push("written by a newer rtrack; some settings may be missing".to_string());
+        }
+        if !report.repairs.is_empty() {
+            notes.push(format!("repaired: {}", report.repairs.join("; ")));
+        }
+        if !report.missing_samples.is_empty() {
+            let names: Vec<&str> = report
+                .missing_samples
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            notes.push(format!("missing samples: {}", names.join(", ")));
+        }
+        format!("Loaded ({}): {}", notes.join(" | "), report.path.display())
+    }
+
+    /// A test instance with no hardware attached.
+    #[cfg(test)]
+    pub fn headless(channels: usize, rows: usize) -> Self {
+        Self::with_core(
+            rtrack_core::core::TrackerCoreBuilder::new()
+                .song_size(channels, rows)
+                .headless()
+                .build(),
+        )
+    }
+
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let (config, mut startup_notes) = rtrack_core::config::load_config_verbose();
+        let mut core = TrackerCore::with_song_size(8, 64);
+
+        // Try to start audio engine with SF2 from config
+        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
+            Ok(engine) => {
+                startup_notes.push(engine.device_description().to_string());
+                core.audio = Some(engine);
+            }
+            Err(e) => {
+                startup_notes.push(format!("No audio: {}", e));
+            }
+        }
+
+        // Load sample directory from config
+        if let Some(ref dir) = config.sample_dir {
+            if dir.is_dir() {
+                let bank = std::sync::Arc::make_mut(&mut core.sample_bank);
+                if let Err(e) = bank.load_directory(dir) {
+                    eprintln!("Sample dir warning: {}", e);
+                }
+            }
+        }
+
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+
+        let mut app = Self::with_core(core);
+        app.status_message = startup_notes.last().cloned();
+        app
+    }
+
     pub fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
         self.theme = theme;
         self.grid_colors = GridColors::for_theme(theme);
@@ -151,7 +195,7 @@ impl RtrackApp {
 
     pub(crate) fn current_order_position(&self) -> usize {
         if self.core.playing {
-            self.core.engine.order
+            self.core.playback_position().0
         } else {
             self.edit_order
         }
@@ -177,7 +221,7 @@ impl RtrackApp {
             if ext == rtrk_ext {
                 // Load as project file
                 match self.core.load_file(&path) {
-                    Ok(_msg) => {
+                    Ok(report) => {
                         self.cursor_row = 0;
                         self.cursor_channel = 0;
                         self.edit_order = 0;
@@ -185,7 +229,7 @@ impl RtrackApp {
                         self.history = EditHistory::new(100);
                         rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                         rtrack_core::config::save_recent_files(&self.recent_files);
-                        self.status_message = Some(format!("Loaded {}", path.display()));
+                        self.status_message = Some(Self::describe_load(&report));
                     }
                     Err(e) => {
                         self.status_message =
@@ -245,19 +289,23 @@ impl RtrackApp {
 
 impl eframe::App for RtrackApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Sync pattern edits to phrases before ticking the engine
-        self.core.song.mark_phrases_dirty();
         // Tick playback
         self.core.sync_link();
         if self.core.is_playing() {
-            if self.core.tick_playback() {
-                // Follow playback cursor
-                if self.follow_playback && self.core.engine.tick == 1 {
-                    self.cursor_row = self.core.engine.row;
-                    self.edit_order = self.core.engine.order;
-                }
+            self.core.tick_playback();
+            // Follow the position being heard, not the one the sequencer has
+            // run ahead to.
+            if self.follow_playback {
+                let (order, row) = self.core.playback_position();
+                self.cursor_row = row;
+                self.edit_order = order;
             }
             ctx.request_repaint();
+        }
+        if let Some(ref audio) = self.core.audio {
+            if let Some(err) = audio.take_stream_error() {
+                self.status_message = Some(format!("Audio error: {}", err));
+            }
         }
         self.core.expire_preview_note();
 
@@ -273,8 +321,8 @@ impl eframe::App for RtrackApp {
         }
 
         // Auto-save
-        if let Some(err) = self.core.auto_save(&mut self.last_autosave) {
-            self.status_message = Some(err);
+        if let Err(e) = self.core.auto_save(&mut self.last_autosave) {
+            self.status_message = Some(format!("Auto-save failed: {}", e));
         }
 
         // Handle dropped files (drag-and-drop sample loading)
@@ -375,8 +423,9 @@ impl eframe::App for RtrackApp {
             // Pattern grid
             egui::CentralPanel::default().show(ctx, |ui| {
                 let order_pos = self.current_order_position();
-                let pattern_idx = self.core.song.order[order_pos];
-                let pattern = &self.core.song.patterns[pattern_idx];
+                let Some(pattern) = self.core.song.pattern_at(order_pos) else {
+                    return;
+                };
 
                 let muted: Vec<bool> = self.core.channels.iter().map(|c| c.muted).collect();
                 let names: Vec<String> =
@@ -404,8 +453,8 @@ impl eframe::App for RtrackApp {
                     cursor_sub: self.cursor_sub,
                     mode: self.mode,
                     playing: self.core.playing,
-                    playback_row: self.core.engine.row,
-                    playback_order: self.core.engine.order,
+                    playback_row: self.core.playback_position().1,
+                    playback_order: self.core.playback_position().0,
                     edit_order: self.edit_order,
                     highlight_beat: self.core.song.highlight_beat,
                     highlight_bar: self.core.song.highlight_bar,

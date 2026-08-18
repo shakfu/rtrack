@@ -79,3 +79,26 @@ pub const MAX_CHANNEL_NAME: usize = 8;
 
 /// Preview note auto-off timeout in milliseconds.
 pub const PREVIEW_NOTE_TIMEOUT_MS: u64 = 250;
+
+/// How far ahead of the audio clock the sequencer schedules note events,
+/// in seconds.
+///
+/// Events are stamped with the audio frame at which they should sound, so
+/// this only has to cover the worst-case gap between two `tick_playback`
+/// calls: roughly one display refresh in the GUI (~16.7ms at 60Hz). Larger
+/// values absorb more UI stalls at the cost of a longer delay before a
+/// transport change (start, stop, tempo edit) is heard.
+pub const SCHEDULER_LOOKAHEAD_SECS: f64 = 0.025;
+
+/// Upper bound on scheduled-but-not-yet-audible positions retained for the
+/// UI playback cursor. One entry per row is pushed, and a row is never
+/// shorter than a tick, so a handful covers any realistic lookahead.
+pub const MAX_SCHEDULED_POSITIONS: usize = 64;
+
+/// Largest audio file that will be loaded into a sample slot, in bytes.
+///
+/// Samples are decoded into memory in full as stereo `f32`, so a file this
+/// size can occupy several times as much RAM. The limit is a guard against
+/// a mistyped path or a corrupt header, not a judgement about what makes a
+/// reasonable sample.
+pub const MAX_SAMPLE_FILE_BYTES: u64 = 512 * 1024 * 1024;

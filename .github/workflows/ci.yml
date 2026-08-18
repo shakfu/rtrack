@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Note: warnings are denied via the clippy step's `-- -D warnings`, which
+  # applies only to workspace crates. Setting RUSTFLAGS globally would apply
+  # it to dependencies too and fail the build on third-party code.
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux audio and MIDI headers
+        if: runner.os == 'Linux'
+        # cpal and midir both bind to ALSA; rusty_link needs CMake to build
+        # its C++ sources.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        # Clippy drives rustc, so this denies ordinary rustc warnings
+        # (unused imports and friends) in workspace crates as well.
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        # No audio device or MIDI port exists on a CI runner. The suite is
+        # built to run headless, so this must pass without one.
+        run: cargo test --workspace
+
+  msrv:
+    name: MSRV (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux audio and MIDI headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev cmake
+
+      - uses: dtolnay/rust-toolchain@1.87.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Verifies the rust-version declared in Cargo.toml is honest.
+      - name: Build
+        run: cargo build --workspace

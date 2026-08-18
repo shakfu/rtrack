@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 use crate::audio::channel_effects::ChannelEffectsParams;
 
 /// Auto-save interval in seconds
@@ -25,6 +27,25 @@ pub struct PlaybackTiming {
     pub ext_clock_count: u32,
     /// Last polled Ableton Link beat position.
     pub last_link_beat: f64,
+
+    /// Audio frame at which the next tick should sound. Only used when the
+    /// sequencer is running off the audio clock.
+    pub next_tick_frame: u64,
+    /// Audio frame observed at the previous `tick_playback` call, used to
+    /// derive elapsed time without consulting the wall clock.
+    pub last_clock_frame: u64,
+    /// Row positions already scheduled but not yet audible, oldest first.
+    /// Lets the UI show the row the listener is actually hearing rather than
+    /// the row the sequencer has run ahead to.
+    pub scheduled_positions: std::collections::VecDeque<ScheduledPosition>,
+}
+
+/// A song position paired with the audio frame at which it becomes audible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduledPosition {
+    pub frame: u64,
+    pub order: usize,
+    pub row: usize,
 }
 
 impl PlaybackTiming {
@@ -37,6 +58,9 @@ impl PlaybackTiming {
             playback_elapsed: 0.0,
             ext_clock_count: 0,
             last_link_beat: 0.0,
+            next_tick_frame: 0,
+            last_clock_frame: 0,
+            scheduled_positions: std::collections::VecDeque::new(),
         }
     }
 }
@@ -56,6 +80,9 @@ impl PlaybackTiming {
         self.playback_elapsed = 0.0;
         self.ext_clock_count = 0;
         self.last_link_beat = 0.0;
+        self.next_tick_frame = 0;
+        self.last_clock_frame = 0;
+        self.scheduled_positions.clear();
     }
 }
 
@@ -63,7 +90,7 @@ impl PlaybackTiming {
 pub use crate::engine::ChannelState;
 
 /// The sound source type for a tracker channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelType {
     /// Route notes to an external MIDI device.
     Midi,
@@ -103,7 +130,7 @@ impl ChannelType {
 }
 
 /// A channel effects parameter that can be targeted by MIDI learn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LearnableParam {
     /// Low-pass filter cutoff frequency (20-20000 Hz, exponential).
     FilterCutoff,
@@ -209,7 +236,7 @@ impl LearnableParam {
 }
 
 /// A single MIDI CC -> parameter mapping, created via MIDI learn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MidiCcMapping {
     /// MIDI CC number (0-127).
     pub cc: u8,
@@ -228,17 +255,38 @@ pub enum ClockMode {
 }
 
 /// Per-channel configuration (audio routing, effects, naming).
+///
+/// Serialized into the .rtrk file so that mixer state survives a save/load
+/// cycle. Every field carries a serde default so that files written by
+/// earlier versions, which stored no channel data at all, still load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelConfig {
+    #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
     pub name: String,
+    #[serde(default = "default_channel_type")]
     pub channel_type: ChannelType,
     /// Default instrument for this track (Synth tracks auto-fill on note entry)
+    #[serde(default)]
     pub default_instrument: Option<u8>,
+    #[serde(default = "default_channel_volume")]
     pub volume: f32,
+    #[serde(default)]
     pub pan: f32,
+    #[serde(default)]
     pub effects_params: ChannelEffectsParams,
     /// MIDI channel this tracker channel maps to (0-15)
+    #[serde(default)]
     pub midi_channel: u8,
+}
+
+fn default_channel_type() -> ChannelType {
+    ChannelType::Midi
+}
+
+fn default_channel_volume() -> f32 {
+    1.0
 }
 
 impl ChannelConfig {

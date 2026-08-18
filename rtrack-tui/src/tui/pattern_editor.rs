@@ -33,8 +33,12 @@ pub fn channel_total_width(num_channels: usize) -> u16 {
 pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let buf = f.buffer_mut();
 
-    let pattern_idx = app.core.song.order[app.current_order_position()];
-    let pattern = &app.core.song.patterns[pattern_idx];
+    let pattern = match app.core.song.pattern_at(app.current_order_position()) {
+        Some(p) => p,
+        // A song with no resolvable pattern at the cursor has nothing to
+        // draw. Bail out rather than panicking inside the draw loop.
+        None => return,
+    };
 
     // Draw column headers on the first row
     let header_y = area.y;
@@ -157,7 +161,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     // Determine which rows to display, centered on cursor/playback position
     let focus_row = if app.core.is_playing() {
-        app.core.engine.row
+        app.playback_row()
     } else {
         app.cursor_row
     };
@@ -176,7 +180,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
 
         let is_cursor_row = !app.core.is_playing() && row_idx == app.cursor_row;
-        let is_playback_row = app.core.is_playing() && row_idx == app.core.engine.row;
+        let is_playback_row = app.core.is_playing() && row_idx == app.playback_row();
         let beat_interval = app.core.song.highlight_beat.max(1);
         let bar_interval = app.core.song.highlight_bar.max(1);
         let is_beat = row_idx % beat_interval == 0;

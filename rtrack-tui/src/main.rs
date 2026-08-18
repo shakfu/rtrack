@@ -52,7 +52,10 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = rtrack_core::config::load_config();
+    let (config, config_warnings) = rtrack_core::config::load_config_verbose();
+    for warning in &config_warnings {
+        eprintln!("Config warning: {}", warning);
+    }
 
     // CLI args take precedence over config file
     let sf2 = cli.sf2.or(config.sf2);
@@ -100,7 +103,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Setup terminal
+    // Setup terminal. Install the panic hook first: a panic after raw mode is
+    // enabled would otherwise leave the terminal unusable and print its
+    // message onto the alternate screen, where nobody can read it.
+    install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -110,12 +116,7 @@ fn main() -> Result<()> {
     let result = run_app(&mut terminal, cli.file, sf2, cli.samples, sample_dir);
 
     // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    restore_terminal();
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -123,6 +124,25 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Put the terminal back into a usable state. Safe to call more than once and
+/// from a panic handler, so every error is deliberately ignored.
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+}
+
+/// Restore the terminal before the default panic handler prints anything.
+/// Without this a panic inside the draw loop leaves the shell in raw mode on
+/// the alternate screen, with the backtrace written to a screen the user
+/// never sees.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
 }
 
 fn setup_app(
@@ -135,10 +155,11 @@ fn setup_app(
 
     match rtrack_core::audio::AudioEngine::new(sf2_path.as_deref()) {
         Ok(engine) => {
+            app.status_message = Some(engine.device_description().to_string());
             app.core.audio = Some(engine);
         }
         Err(e) => {
-            eprintln!("Audio warning: {}", e);
+            app.status_message = Some(format!("No audio: {}", e));
         }
     }
 
@@ -277,9 +298,6 @@ fn run_app(
     sample_dir: Option<PathBuf>,
 ) -> Result<()> {
     let mut app = setup_app(sf2_path, samples, sample_dir, file)?;
-    if app.core.audio.is_some() {
-        app.status_message = Some("Built-in synth active".to_string());
-    }
 
     loop {
         terminal.draw(|f| tui::draw(f, &app))?;
@@ -309,6 +327,7 @@ fn run_app(
             app.tick_playback();
         }
 
+        app.report_audio_errors();
         app.core.expire_preview_note();
         app.vis.update(&mut app.core.audio);
         app.auto_save();
