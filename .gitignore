@@ -25,6 +25,8 @@ target
 .*_cache/
 .cache/
 
+REVIEW.md
+
 # agents
 .claude
 CLAUDE.md

@@ -1814,7 +1814,17 @@ impl TrackerCore {
                     if entry.slot >= bank.samples.len() {
                         continue;
                     }
-                    let sample_path = resolve_relative(load_dir, &entry.sample_ref.path);
+                    // A path the song cannot legitimately name is reported
+                    // like a missing file rather than resolved to something
+                    // else: loading the wrong sample silently is worse than
+                    // loading none.
+                    let sample_path = match resolve_relative(load_dir, &entry.sample_ref.path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            sample_errors.push((entry.sample_ref.name.clone(), e.to_string()));
+                            continue;
+                        }
+                    };
                     let source = match decoded.get(&sample_path) {
                         Some(s) => Ok(Arc::clone(s)),
                         None => {

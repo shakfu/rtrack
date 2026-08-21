@@ -3476,23 +3476,18 @@ mod tests {
     fn test_resolve_relative_blocks_traversal() {
         let base = std::path::Path::new("/home/user/songs");
         // Normal relative path
-        let normal = resolve_relative(base, "samples/kick.wav");
+        let normal = resolve_relative(base, "samples/kick.wav").expect("plain relative path");
         assert_eq!(
             normal,
             std::path::PathBuf::from("/home/user/songs/samples/kick.wav")
         );
-        // Path traversal -- `..` components should be stripped
-        let traversal = resolve_relative(base, "../../etc/passwd");
-        assert_eq!(
-            traversal,
-            std::path::PathBuf::from("/home/user/songs/etc/passwd")
-        );
-        // Absolute path -- should be reduced to just the filename under base
-        let absolute = resolve_relative(base, "/etc/passwd");
-        assert_eq!(
-            absolute,
-            std::path::PathBuf::from("/home/user/songs/passwd")
-        );
+        // Path traversal -- rejected, not silently rewritten into a path
+        // under the base that may name a real, unrelated file.
+        assert!(resolve_relative(base, "../../etc/passwd").is_err());
+        // An absolute path is what `make_relative` writes for a sample from a
+        // library outside the song directory, so it resolves unchanged.
+        let absolute = resolve_relative(base, "/srv/samples/kick.wav").expect("absolute path");
+        assert_eq!(absolute, std::path::PathBuf::from("/srv/samples/kick.wav"));
     }
 
     /// Helper: enter command mode and execute a command via :cmd<Enter>

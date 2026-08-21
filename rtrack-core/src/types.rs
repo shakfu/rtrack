@@ -342,22 +342,154 @@ pub fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String
     target.to_string_lossy().to_string()
 }
 
-/// Resolve a (possibly relative) path against a base directory.
-/// Rejects path traversal (`..` components) and absolute paths to prevent
-/// a malicious .rtrk file from referencing files outside the song directory.
-pub fn resolve_relative(base: &std::path::Path, rel: &str) -> PathBuf {
+/// Resolve a sample path recorded in a `.rtrk` file against the song directory.
+///
+/// Two shapes reach this function, matching what [`make_relative`] writes:
+///
+/// * A relative path, for a sample that lives under the song directory. It is
+///   resolved against `base` and must stay there: a `..` component, a root, or
+///   a Windows prefix is rejected rather than silently stripped. Stripping was
+///   the old behaviour and it turned `../../etc/passwd` into a *valid* path
+///   under `base` -- a file that may well exist and is not the one named.
+/// * An absolute path, for a sample from a library outside the song
+///   directory. It is returned unchanged. Rewriting it as `base/<file_name>`
+///   (the old behaviour) lost the directory it named and could load a
+///   same-named file that happened to sit next to the song.
+///
+/// So a song is free to name any file its own user can read, exactly as if
+/// they had opened it: the loader only ever decodes the result as audio. What
+/// this rules out is a *relative* reference that claims to stay inside the
+/// song directory and does not.
+pub fn resolve_relative(base: &std::path::Path, rel: &str) -> crate::error::Result<PathBuf> {
+    use std::path::Component;
+
     let p = std::path::Path::new(rel);
-    if p.is_absolute() {
-        return base.join(p.file_name().unwrap_or_default());
+    if rel.is_empty() {
+        return Err(crate::error::Error::file(
+            base,
+            anyhow::anyhow!("sample path is empty"),
+        ));
     }
-    let sanitized: PathBuf = p
-        .components()
-        .filter(|c| !matches!(c, std::path::Component::ParentDir))
-        .collect();
-    base.join(sanitized)
+    if p.is_absolute() {
+        return Ok(p.to_path_buf());
+    }
+
+    let mut sanitized = PathBuf::new();
+    for component in p.components() {
+        match component {
+            Component::Normal(part) => sanitized.push(part),
+            // `./x` names `x`; nothing is lost by dropping it.
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(crate::error::Error::file(
+                    p,
+                    anyhow::anyhow!("sample path leaves the song directory"),
+                ))
+            }
+            // `p` is relative, so a root or prefix here means something like
+            // a Windows `C:foo` read on another platform. Refuse to guess.
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(crate::error::Error::file(
+                    p,
+                    anyhow::anyhow!("sample path is not a plain relative path"),
+                ))
+            }
+        }
+    }
+    if sanitized.as_os_str().is_empty() {
+        return Err(crate::error::Error::file(
+            p,
+            anyhow::anyhow!("sample path names no file"),
+        ));
+    }
+    Ok(base.join(sanitized))
 }
 
 /// Create default channel configs for N channels.
 pub fn default_channel_configs(n: usize) -> Vec<ChannelConfig> {
     (0..n).map(|i| ChannelConfig::new(i as u8)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn plain_relative_paths_resolve_under_the_base() {
+        let base = Path::new("/songs/set");
+        assert_eq!(
+            resolve_relative(base, "samples/kick.wav").expect("relative"),
+            PathBuf::from("/songs/set/samples/kick.wav")
+        );
+        // `./` is noise, not a directory.
+        assert_eq!(
+            resolve_relative(base, "./kick.wav").expect("cur dir"),
+            PathBuf::from("/songs/set/kick.wav")
+        );
+    }
+
+    #[test]
+    fn traversal_is_rejected_rather_than_stripped() {
+        let base = Path::new("/songs/set");
+        // Stripping `..` used to turn this into /songs/set/etc/passwd, a path
+        // the song never named and one that can exist.
+        assert!(resolve_relative(base, "../../etc/passwd").is_err());
+        // Even a `..` that would cancel out: `make_relative` never writes one,
+        // so its presence says the reference was not produced by a save.
+        assert!(resolve_relative(base, "a/../b.wav").is_err());
+        assert!(resolve_relative(base, "..").is_err());
+    }
+
+    #[test]
+    fn absolute_paths_are_kept_as_written() {
+        // The counterpart of `make_relative` falling back to an absolute path
+        // for a sample outside the song directory. Rewriting it as
+        // base/<file_name> lost the directory and could load a same-named
+        // neighbour of the song file instead.
+        let base = Path::new("/songs/set");
+        assert_eq!(
+            resolve_relative(base, "/srv/library/kick.wav").expect("absolute"),
+            PathBuf::from("/srv/library/kick.wav")
+        );
+    }
+
+    #[test]
+    fn paths_that_name_nothing_are_errors() {
+        let base = Path::new("/songs/set");
+        // An entry with no path at all, as written for a sample with no
+        // source file. It must not resolve to the song directory itself.
+        assert!(resolve_relative(base, "").is_err());
+        assert!(resolve_relative(base, ".").is_err());
+    }
+
+    #[test]
+    fn a_saved_path_round_trips() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let base = dir.path();
+        let sample = base.join("samples/kick.wav");
+        std::fs::create_dir_all(sample.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&sample, b"riff").expect("write");
+
+        let rel = make_relative(base, &sample);
+        let resolved = resolve_relative(base, &rel).expect("round trip");
+        // Canonicalized on both sides: a temp dir can sit behind a symlink
+        // (macOS /var -> /private/var), which is not what this is testing.
+        assert_eq!(
+            std::fs::canonicalize(&resolved).expect("canonical"),
+            std::fs::canonicalize(&sample).expect("canonical")
+        );
+
+        // A sample outside the song directory: `make_relative` gives an
+        // absolute path, which must resolve back to the same file.
+        let outside = tempfile::tempdir().expect("temp dir");
+        let far = outside.path().join("snare.wav");
+        std::fs::write(&far, b"riff").expect("write");
+        let rel = make_relative(base, &far);
+        let resolved = resolve_relative(base, &rel).expect("round trip");
+        assert_eq!(
+            std::fs::canonicalize(&resolved).expect("canonical"),
+            std::fs::canonicalize(&far).expect("canonical")
+        );
+    }
 }
