@@ -33,6 +33,14 @@ pub enum Error {
     SampleTooShort { slot: usize },
     /// Slicing would need more slots than the bank has.
     NotEnoughSlots { needed: usize, from_slot: usize },
+    /// Slicing would have written over instruments that are not its own
+    /// output. Retry allowing overwrites to go ahead anyway.
+    SlotsOccupied {
+        /// First slot in the way.
+        first: usize,
+        /// How many of the slots to be written hold unrelated instruments.
+        count: usize,
+    },
     /// Rendering or encoding audio failed.
     Export { source: anyhow::Error },
     /// The operation needs a file path and the song has never been saved.
@@ -61,6 +69,13 @@ impl fmt::Display for Error {
                 f,
                 "not enough sample slots: need {needed} starting at {from_slot:02X}"
             ),
+            Error::SlotsOccupied { first, count } => {
+                if *count == 1 {
+                    write!(f, "slot {first:02X} holds another instrument")
+                } else {
+                    write!(f, "{count} slots from {first:02X} hold other instruments")
+                }
+            }
             Error::Export { source } => write!(f, "export failed: {source}"),
             Error::NoFilePath => write!(f, "song has no file path"),
         }

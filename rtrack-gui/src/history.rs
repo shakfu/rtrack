@@ -1,3 +1,4 @@
+use rtrack_core::core::SampleSnapshot;
 use rtrack_core::tracker::Cell;
 
 #[derive(Clone)]
@@ -9,9 +10,30 @@ pub struct CellEdit {
     pub new_cell: Cell,
 }
 
+/// A sample-bank change, as the state either side of it.
+///
+/// Slicing rewrites a run of slots and renames their instruments, so there
+/// is little to be saved by recording which; and a snapshot cannot drift out
+/// of step with what it describes. Cheap regardless -- slots are
+/// `Arc<Sample>`, so no audio is copied.
+#[derive(Clone)]
+pub struct BankEdit {
+    pub before: SampleSnapshot,
+    pub after: SampleSnapshot,
+}
+
+/// One undoable step.
+#[derive(Clone)]
+pub enum Edit {
+    /// Pattern cells, recorded as a before/after pair per cell.
+    Cells(Vec<CellEdit>),
+    /// The sample bank and instrument table.
+    Bank(Box<BankEdit>),
+}
+
 pub struct EditHistory {
-    undo_stack: Vec<Vec<CellEdit>>,
-    redo_stack: Vec<Vec<CellEdit>>,
+    undo_stack: Vec<Edit>,
+    redo_stack: Vec<Edit>,
     max_history: usize,
 }
 
@@ -28,8 +50,17 @@ impl EditHistory {
         if edits.is_empty() {
             return;
         }
+        self.push_edit(Edit::Cells(edits));
+    }
+
+    /// Record a sample-bank change: slicing, which overwrites whole slots.
+    pub fn push_bank(&mut self, before: SampleSnapshot, after: SampleSnapshot) {
+        self.push_edit(Edit::Bank(Box::new(BankEdit { before, after })));
+    }
+
+    fn push_edit(&mut self, edit: Edit) {
         self.redo_stack.clear();
-        self.undo_stack.push(edits);
+        self.undo_stack.push(edit);
         if self.undo_stack.len() > self.max_history {
             self.undo_stack.remove(0);
         }
@@ -37,18 +68,20 @@ impl EditHistory {
 
     /// Pop the most recent edit group from the undo stack.
     /// Returns the edits so the caller can apply old_cell values.
-    pub fn undo(&mut self) -> Option<Vec<CellEdit>> {
-        let edits = self.undo_stack.pop()?;
-        self.redo_stack.push(edits.clone());
-        Some(edits)
+    /// Move the most recent step onto the redo stack and hand it back, for
+    /// the caller to apply the "before" side of.
+    pub fn undo(&mut self) -> Option<Edit> {
+        let edit = self.undo_stack.pop()?;
+        self.redo_stack.push(edit.clone());
+        Some(edit)
     }
 
-    /// Pop the most recent edit group from the redo stack.
-    /// Returns the edits so the caller can apply new_cell values.
-    pub fn redo(&mut self) -> Option<Vec<CellEdit>> {
-        let edits = self.redo_stack.pop()?;
-        self.undo_stack.push(edits.clone());
-        Some(edits)
+    /// Counterpart to [`EditHistory::undo`]: hand back the step to re-apply
+    /// the "after" side of.
+    pub fn redo(&mut self) -> Option<Edit> {
+        let edit = self.redo_stack.pop()?;
+        self.undo_stack.push(edit.clone());
+        Some(edit)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -68,6 +101,14 @@ impl EditHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cell edits of a step, for tests that only deal in cell edits.
+    fn cells(edit: Edit) -> Vec<CellEdit> {
+        match edit {
+            Edit::Cells(edits) => edits,
+            Edit::Bank(_) => panic!("expected a cell edit, got a bank edit"),
+        }
+    }
     use rtrack_core::tracker::{Note, NoteValue};
 
     fn edit(row: usize, new: Option<Note>) -> CellEdit {
@@ -103,13 +144,13 @@ mod tests {
         h.push(vec![edit(0, c4())]);
         assert!(h.can_undo());
 
-        let undone = h.undo().expect("undo available");
+        let undone = cells(h.undo().expect("undo available"));
         assert_eq!(undone.len(), 1);
         assert_eq!(undone[0].new_cell.note, c4());
         assert!(!h.can_undo());
         assert!(h.can_redo());
 
-        let redone = h.redo().expect("redo available");
+        let redone = cells(h.redo().expect("redo available"));
         assert_eq!(redone[0].new_cell.note, c4());
         assert!(h.can_undo());
         assert!(!h.can_redo());
@@ -140,8 +181,8 @@ mod tests {
         }
         // Only the last three survive: rows 4, 3, 2 in undo order.
         let mut seen = Vec::new();
-        while let Some(edits) = h.undo() {
-            seen.push(edits[0].row);
+        while let Some(edit) = h.undo() {
+            seen.push(cells(edit)[0].row);
         }
         assert_eq!(seen, vec![4, 3, 2]);
     }
@@ -150,7 +191,7 @@ mod tests {
     fn multi_cell_groups_undo_as_one_step() {
         let mut h = EditHistory::new(10);
         h.push(vec![edit(0, c4()), edit(1, c4()), edit(2, c4())]);
-        let undone = h.undo().expect("undo available");
+        let undone = cells(h.undo().expect("undo available"));
         assert_eq!(undone.len(), 3, "a block edit is one undo step");
         assert!(!h.can_undo());
     }

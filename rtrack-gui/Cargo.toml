@@ -21,3 +21,6 @@ eframe = "0.31"
 egui = "0.31"
 rfd = "0.15"
 rustfft = "6"
+
+[dev-dependencies]
+tempfile = "3"

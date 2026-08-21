@@ -7,6 +7,40 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use dasp::Sample as DaspSample;
 
+/// Which part of a sample a slicing operation divides.
+///
+/// A slice is a span of a shared buffer, so "slice this slot into N" is two
+/// different requests depending on what the span means. Re-running a slice
+/// action with a new count should re-derive from the sample; deliberately
+/// subdividing a slice should stay inside it. Conflating them means a second
+/// pass at a different count silently discards everything outside the first
+/// slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceRange {
+    /// The whole buffer, ignoring the slot's current span. Applying this
+    /// repeatedly at different counts always divides the same audio, which
+    /// is what a slice-count control needs.
+    ///
+    /// Note that this also ignores a trim the user set by hand on an
+    /// unsliced sample; see `Span` for the other reading.
+    Source,
+    /// The slot's own span, so subdividing a slice nests inside it.
+    Span,
+}
+
+/// Whether a slice action may write over instruments that are not its own.
+///
+/// Slicing writes into consecutive slots from its target, which is what makes
+/// a sliced break playable by walking instrument numbers up a pattern. That
+/// makes it destructive, and it is not undoable, so it asks first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceOverwrite {
+    /// Stop and report if anything unrelated is in the way. The default.
+    Refuse,
+    /// Go ahead -- the user has seen what would be overwritten and said yes.
+    Allow,
+}
+
 /// A loaded audio sample stored as stereo f32 frames.
 ///
 /// A sample is a *view* of a frame buffer: `data` holds the frames and
@@ -64,6 +98,14 @@ impl Sample {
         self.loop_start
             .max(self.trim_start)
             .min(end.saturating_sub(1))
+    }
+
+    /// The frame range a slicing operation covers, per [`SliceRange`].
+    pub fn slice_bounds(&self, range: SliceRange) -> (usize, usize) {
+        match range {
+            SliceRange::Source => (0, self.data.len()),
+            SliceRange::Span => (self.trim_start, self.end()),
+        }
     }
 
     /// Get a stereo frame at the given index, or silence if out of bounds
@@ -482,17 +524,49 @@ fn to_stereo_frames(samples: &[f32], channels: usize) -> Vec<[f32; 2]> {
     frames
 }
 
+/// Strip trailing `_Sxx` slice suffixes from a sample name.
+///
+/// Used when a slice action re-derives from the whole sample: the old
+/// numbering describes a division that no longer exists, so `amen_S03`
+/// sliced again is `amen_S00`.. rather than `amen_S03_S00`..
+pub fn strip_slice_suffix(name: &str) -> &str {
+    let mut s = name;
+    while s.len() >= 4 {
+        let tail = &s[s.len() - 4..];
+        if tail.starts_with("_S") && tail[2..].chars().all(|c| c.is_ascii_digit()) {
+            s = &s[..s.len() - 4];
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+/// The name sub-slices of `sample` are numbered under.
+///
+/// Re-deriving from the source discards the old numbering, since the
+/// division it referred to is being replaced. Subdividing keeps it: the
+/// pieces of `amen_S07` are `amen_S07_S00` and `amen_S07_S01`, which says
+/// where they came from and, more practically, does not collide with the
+/// `amen_S00` that is still sitting in another slot.
+fn slice_base_name(sample: &Sample, range: SliceRange) -> String {
+    match range {
+        SliceRange::Source => strip_slice_suffix(&sample.name).to_string(),
+        SliceRange::Span => sample.name.clone(),
+    }
+}
+
 /// Slice a sample into `num_slices` equal-length segments.
 /// Returns a Vec of new Sample objects, each named `<original>_S00`, `_S01`, etc.
-pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
+pub fn slice_equal(sample: &Sample, num_slices: usize, range: SliceRange) -> Vec<Sample> {
     if num_slices == 0 {
         return Vec::new();
     }
-    let start = sample.trim_start;
-    let end = sample.end();
+    let (start, end) = sample.slice_bounds(range);
     if end <= start {
         return Vec::new();
     }
+    let base_name = slice_base_name(sample, range);
     let total = end - start;
     let slice_len = total / num_slices;
     if slice_len == 0 {
@@ -507,7 +581,7 @@ pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
                 s + slice_len
             };
             Sample {
-                name: format!("{}_S{:02}", sample.name, i),
+                name: format!("{base_name}_S{i:02}"),
                 // Share the source buffer and bound this slice with the trim
                 // range. Copying the frames instead would leave the slice
                 // with no record of where it came from, and saving -- which
@@ -653,11 +727,12 @@ pub fn detect_transients_range(
 
 /// Slice a sample at the given frame positions.
 /// Each slice runs from points[i] to points[i+1] (last slice runs to sample end).
-pub fn slice_at_points(sample: &Sample, points: &[usize]) -> Vec<Sample> {
+pub fn slice_at_points(sample: &Sample, points: &[usize], range: SliceRange) -> Vec<Sample> {
     if points.is_empty() {
         return Vec::new();
     }
-    let end = sample.end();
+    let (_, end) = sample.slice_bounds(range);
+    let base_name = slice_base_name(sample, range);
     let mut slices = Vec::with_capacity(points.len());
     for (i, &p) in points.iter().enumerate() {
         let slice_end = if i + 1 < points.len() {
@@ -670,7 +745,7 @@ pub fn slice_at_points(sample: &Sample, points: &[usize]) -> Vec<Sample> {
         }
         let actual_end = slice_end.min(sample.data.len());
         slices.push(Sample {
-            name: format!("{}_S{:02}", sample.name, i),
+            name: format!("{base_name}_S{i:02}"),
             // Shared buffer plus a span; see `slice_equal`.
             data: Arc::clone(&sample.data),
             sample_rate: sample.sample_rate,
@@ -782,6 +857,69 @@ mod tests {
             loop_end: 0,
             source_path: None,
         }
+    }
+
+    #[test]
+    fn test_slice_bounds() {
+        let slice = slice_of(1000, 400, 700);
+        assert_eq!(slice.slice_bounds(SliceRange::Source), (0, 1000));
+        assert_eq!(slice.slice_bounds(SliceRange::Span), (400, 700));
+
+        // An untrimmed sample reads the same either way.
+        let whole = slice_of(1000, 0, 0);
+        assert_eq!(
+            whole.slice_bounds(SliceRange::Source),
+            whole.slice_bounds(SliceRange::Span)
+        );
+    }
+
+    #[test]
+    fn test_slice_equal_source_ignores_the_span() {
+        let slice = slice_of(1000, 400, 700);
+        let pieces = slice_equal(&slice, 4, SliceRange::Source);
+        assert_eq!(pieces.len(), 4);
+        assert_eq!(pieces[0].trim_start, 0);
+        assert_eq!(pieces[3].end(), 1000);
+    }
+
+    #[test]
+    fn test_slice_equal_span_stays_inside_it() {
+        let slice = slice_of(1000, 400, 700);
+        let pieces = slice_equal(&slice, 3, SliceRange::Span);
+        assert_eq!(pieces.len(), 3);
+        assert_eq!(pieces[0].trim_start, 400);
+        assert_eq!(pieces[2].end(), 700);
+    }
+
+    #[test]
+    fn test_strip_slice_suffix() {
+        assert_eq!(strip_slice_suffix("amen"), "amen");
+        assert_eq!(strip_slice_suffix("amen_S03"), "amen");
+        assert_eq!(strip_slice_suffix("amen_S00_S01"), "amen");
+        assert_eq!(strip_slice_suffix("_S01"), "");
+        assert_eq!(strip_slice_suffix("kick_Sxx"), "kick_Sxx");
+    }
+
+    #[test]
+    fn test_re_slicing_from_source_does_not_stack_name_suffixes() {
+        let source = slice_of(1000, 0, 0);
+        let first = slice_equal(&source, 4, SliceRange::Source);
+        assert_eq!(first[1].name, "slice_S01");
+        // The old numbering described a division that no longer exists.
+        let second = slice_equal(&first[1], 2, SliceRange::Source);
+        assert_eq!(second[0].name, "slice_S00");
+        assert_eq!(second[1].name, "slice_S01");
+    }
+
+    #[test]
+    fn test_subdividing_keeps_the_parent_in_the_name() {
+        // The pieces of slice 1 have to be tellable from slice 1 and slice 2,
+        // which are still in their own slots.
+        let source = slice_of(1000, 0, 0);
+        let first = slice_equal(&source, 4, SliceRange::Source);
+        let second = slice_equal(&first[1], 2, SliceRange::Span);
+        assert_eq!(second[0].name, "slice_S01_S00");
+        assert_eq!(second[1].name, "slice_S01_S01");
     }
 
     #[test]
@@ -1039,7 +1177,7 @@ mod tests {
     #[test]
     fn test_slice_equal_basic() {
         let sample = make_slice_sample(1000);
-        let slices = slice_equal(&sample, 4);
+        let slices = slice_equal(&sample, 4, SliceRange::Source);
         assert_eq!(slices.len(), 4);
         // Slices are spans of the shared buffer, so it is the played length
         // that is a quarter of the source, not the buffer length.
@@ -1057,7 +1195,7 @@ mod tests {
         let mut sample = make_slice_sample(1000);
         sample.base_note = 48;
         sample.sample_rate = 48000.0;
-        let slices = slice_equal(&sample, 2);
+        let slices = slice_equal(&sample, 2, SliceRange::Source);
         assert_eq!(slices[0].base_note, 48);
         assert_eq!(slices[0].sample_rate, 48000.0);
     }
@@ -1067,7 +1205,7 @@ mod tests {
         let mut sample = make_slice_sample(1000);
         sample.trim_start = 100;
         sample.trim_end = 500;
-        let slices = slice_equal(&sample, 4);
+        let slices = slice_equal(&sample, 4, SliceRange::Span);
         assert_eq!(slices.len(), 4);
         // (500-100)/4 = 100 frames each, positioned within the trimmed range
         assert_eq!(slices[0].played_len(), 100);
@@ -1079,7 +1217,7 @@ mod tests {
     #[test]
     fn test_slice_equal_last_gets_remainder() {
         let sample = make_slice_sample(1003);
-        let slices = slice_equal(&sample, 4);
+        let slices = slice_equal(&sample, 4, SliceRange::Source);
         assert_eq!(slices.len(), 4);
         // 1003/4 = 250 per slice, last gets remainder
         assert_eq!(slices[0].played_len(), 250);
@@ -1095,13 +1233,13 @@ mod tests {
     #[test]
     fn test_slice_equal_zero() {
         let sample = make_slice_sample(100);
-        assert!(slice_equal(&sample, 0).is_empty());
+        assert!(slice_equal(&sample, 0, SliceRange::Source).is_empty());
     }
 
     #[test]
     fn test_slice_equal_one() {
         let sample = make_slice_sample(100);
-        let slices = slice_equal(&sample, 1);
+        let slices = slice_equal(&sample, 1, SliceRange::Source);
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].data.len(), 100);
     }
@@ -1197,7 +1335,7 @@ mod tests {
     fn test_slice_at_points() {
         let sample = make_slice_sample(1000);
         let points = vec![0, 250, 500, 750];
-        let slices = slice_at_points(&sample, &points);
+        let slices = slice_at_points(&sample, &points, SliceRange::Source);
         assert_eq!(slices.len(), 4);
         assert_eq!(slices[0].played_len(), 250);
         assert_eq!(slices[3].played_len(), 250); // 750..1000
@@ -1208,13 +1346,13 @@ mod tests {
     #[test]
     fn test_slice_at_points_empty() {
         let sample = make_slice_sample(100);
-        assert!(slice_at_points(&sample, &[]).is_empty());
+        assert!(slice_at_points(&sample, &[], SliceRange::Source).is_empty());
     }
 
     #[test]
     fn test_slice_at_points_single() {
         let sample = make_slice_sample(100);
-        let slices = slice_at_points(&sample, &[0]);
+        let slices = slice_at_points(&sample, &[0], SliceRange::Source);
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].played_len(), 100);
     }

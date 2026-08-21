@@ -4,7 +4,7 @@ use rtrack_core::midi::MidiInputEvent;
 use rtrack_core::tracker::{Cell, Note};
 
 use crate::app::RtrackApp;
-use crate::history::CellEdit;
+use crate::history::{CellEdit, Edit};
 use crate::state::{Mode, SubColumn};
 
 impl RtrackApp {
@@ -877,9 +877,14 @@ impl RtrackApp {
     /// Roll one edit group back. Shared by the Edit menu and Ctrl+Z so the
     /// two entry points cannot drift apart.
     pub(crate) fn apply_undo(&mut self) {
-        if let Some(edits) = self.history.undo() {
-            for edit in &edits {
-                self.write_recorded_cell(edit.pattern_idx, edit.row, edit.channel, edit.old_cell);
+        if let Some(edit) = self.history.undo() {
+            match edit {
+                Edit::Cells(edits) => {
+                    for e in &edits {
+                        self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.old_cell);
+                    }
+                }
+                Edit::Bank(bank) => self.core.restore_samples(bank.before),
             }
             self.core.dirty = true;
             self.status_message = Some("Undo".to_string());
@@ -888,9 +893,14 @@ impl RtrackApp {
 
     /// Re-apply one edit group. Counterpart to [`RtrackApp::apply_undo`].
     pub(crate) fn apply_redo(&mut self) {
-        if let Some(edits) = self.history.redo() {
-            for edit in &edits {
-                self.write_recorded_cell(edit.pattern_idx, edit.row, edit.channel, edit.new_cell);
+        if let Some(edit) = self.history.redo() {
+            match edit {
+                Edit::Cells(edits) => {
+                    for e in &edits {
+                        self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.new_cell);
+                    }
+                }
+                Edit::Bank(bank) => self.core.restore_samples(bank.after),
             }
             self.core.dirty = true;
             self.status_message = Some("Redo".to_string());

@@ -7,6 +7,7 @@
 //! into N copies of the same break.
 
 use rtrack_core::core::TrackerCoreBuilder;
+use rtrack_core::sample::{SliceOverwrite, SliceRange};
 use std::path::PathBuf;
 
 /// Copy the shared amen fixture into its own directory, so a song saved
@@ -33,7 +34,9 @@ fn slices_survive_a_save_and_reload() {
         .headless()
         .build();
     core.load_sample(0, &wav).unwrap();
-    let count = core.slice_sample(0, 8, 0.5, false).unwrap();
+    let count = core
+        .slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
     assert_eq!(count, 8);
 
     // What the slices look like in memory.
@@ -95,7 +98,8 @@ fn slices_share_one_buffer_rather_than_copying_it() {
         .build();
     core.load_sample(0, &wav).unwrap();
     let source_frames = core.sample_bank.get(0).unwrap().len();
-    core.slice_sample(0, 8, 0.5, false).unwrap();
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
 
     for slot in 0..8 {
         let s = core.sample_bank.get(slot).unwrap();
@@ -119,7 +123,9 @@ fn transient_slices_also_survive_a_save_and_reload() {
         .headless()
         .build();
     core.load_sample(0, &wav).unwrap();
-    let count = core.slice_sample(0, 0, 0.5, true).unwrap();
+    let count = core
+        .slice_sample(0, 0, 0.5, true, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
     assert!(count > 1, "transient detection found nothing to slice");
 
     let before: Vec<(usize, usize)> = (0..count)
@@ -148,9 +154,9 @@ fn transient_slices_also_survive_a_save_and_reload() {
 }
 
 #[test]
-fn re_slicing_a_slice_stays_within_its_bounds() {
-    // Slices are spans, so slicing one again must subdivide that span rather
-    // than restart from the beginning of the shared buffer.
+fn subdividing_a_slice_stays_within_its_bounds() {
+    // `Span` treats a slice as the thing being divided, so subdividing one
+    // nests inside it rather than restarting from the shared buffer.
     let (dir, wav) = workspace_with_amen("reslice");
 
     let mut core = TrackerCoreBuilder::new()
@@ -158,13 +164,15 @@ fn re_slicing_a_slice_stays_within_its_bounds() {
         .headless()
         .build();
     core.load_sample(0, &wav).unwrap();
-    core.slice_sample(0, 4, 0.5, false).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
 
     let second = core.sample_bank.get(1).unwrap();
     let (outer_start, outer_end) = (second.trim_start, second.end());
     assert!(outer_start > 0);
 
-    core.slice_sample(1, 2, 0.5, false).unwrap();
+    core.slice_sample(1, 2, 0.5, false, SliceRange::Span, SliceOverwrite::Allow)
+        .unwrap();
     for slot in 1..=2 {
         let s = core.sample_bank.get(slot).unwrap();
         assert!(
@@ -190,7 +198,8 @@ fn reloaded_slices_still_share_one_buffer() {
         .headless()
         .build();
     core.load_sample(0, &wav).unwrap();
-    core.slice_sample(0, 8, 0.5, false).unwrap();
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
 
     let song = dir.join("song.rtrk");
     core.file_path = Some(song.clone());
@@ -223,7 +232,8 @@ fn spans_are_clamped_when_the_source_file_shrinks() {
         .headless()
         .build();
     core.load_sample(0, &wav).unwrap();
-    core.slice_sample(0, 4, 0.5, false).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
     let song = dir.join("song.rtrk");
     core.file_path = Some(song.clone());
     core.save().unwrap();
@@ -254,6 +264,205 @@ fn spans_are_clamped_when_the_source_file_shrinks() {
             s.len()
         );
     }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn re_slicing_from_source_re_derives_from_the_whole_sample() {
+    // What a slice-count control does: apply, change the count, apply again.
+    // The second pass must divide the sample, not the first slice -- slicing
+    // the span instead left the eight new slices covering an eighth of the
+    // break, and every further change quartered what was left.
+    let (dir, wav) = workspace_with_amen("reslice_source");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    let total = core.sample_bank.get(0).unwrap().len();
+
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+
+    let first = core.sample_bank.get(0).unwrap();
+    let last = core.sample_bank.get(7).unwrap();
+    assert_eq!(first.trim_start, 0, "slicing did not start at the sample");
+    assert_eq!(last.end(), total, "slicing did not reach the end");
+    for slot in 1..8 {
+        let prev = core.sample_bank.get(slot - 1).unwrap().end();
+        assert_eq!(
+            core.sample_bank.get(slot).unwrap().trim_start,
+            prev,
+            "slice {slot} is not contiguous with the one before it"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn slicing_from_source_is_idempotent() {
+    // Applying the same count twice must not change anything, or a control
+    // that re-applies on every redraw would walk the boundaries.
+    let (dir, wav) = workspace_with_amen("reslice_idempotent");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+
+    let spans = |c: &rtrack_core::core::TrackerCore| -> Vec<(usize, usize)> {
+        (0..8)
+            .map(|slot| {
+                let s = c.sample_bank.get(slot).unwrap();
+                (s.trim_start, s.end())
+            })
+            .collect()
+    };
+
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    let once = spans(&core);
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    assert_eq!(
+        once,
+        spans(&core),
+        "re-applying the same count moved the slices"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn transient_slicing_from_source_also_re_derives() {
+    let (dir, wav) = workspace_with_amen("reslice_transient_source");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    let total = core.sample_bank.get(0).unwrap().len();
+
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    let count = core
+        .slice_sample(0, 0, 0.5, true, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+
+    assert_eq!(core.sample_bank.get(0).unwrap().trim_start, 0);
+    assert_eq!(core.sample_bank.get(count - 1).unwrap().end(), total);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn slicing_refuses_to_overwrite_unrelated_instruments() {
+    // Slicing writes into consecutive slots and cannot be undone, so it must
+    // not quietly eat an instrument it did not put there.
+    let (dir, wav) = workspace_with_amen("occupied");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.instruments[3].name = "Bass".to_string();
+
+    let err = core
+        .slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .expect_err("slicing over an instrument should have been refused");
+    match err {
+        rtrack_core::error::Error::SlotsOccupied { first, count } => {
+            assert_eq!(first, 3);
+            assert_eq!(count, 1);
+        }
+        other => panic!("wrong error: {other}"),
+    }
+    // Nothing was written.
+    assert_eq!(core.instruments[3].name, "Bass");
+    assert!(
+        core.sample_bank.get(1).is_none(),
+        "slot 1 was written anyway"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn slicing_may_replace_its_own_slices() {
+    // Re-cutting a kit from 4 pieces to 8 is the operation working, so the
+    // guard has to stay out of its way.
+    let (dir, wav) = workspace_with_amen("own_output");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+    let again = core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse);
+    assert!(
+        again.is_ok(),
+        "re-slicing its own output was refused: {:?}",
+        again.err().map(|e| e.to_string())
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn allowing_overwrites_goes_ahead() {
+    let (dir, wav) = workspace_with_amen("forced");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.instruments[3].name = "Bass".to_string();
+
+    let made = core
+        .slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .expect("an allowed overwrite should go ahead");
+    assert_eq!(made, 8);
+    assert_eq!(core.instruments[3].name, "amen_S03");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn subdividing_refuses_to_eat_the_next_slice_of_another_sample() {
+    // The neighbouring slots of a slice set are the same source, so
+    // subdividing may replace them; a different sample next door may not.
+    let (dir, wav) = workspace_with_amen("subdivide_guard");
+    let other = dir.join("other.wav");
+    std::fs::copy(&wav, &other).unwrap();
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+    // A different file lands in slot 2, where subdividing slice 1 would spill.
+    core.load_sample(2, &other).unwrap();
+
+    let err = core
+        .slice_sample(1, 2, 0.5, false, SliceRange::Span, SliceOverwrite::Refuse)
+        .expect_err("subdividing over a different sample should have been refused");
+    assert!(matches!(
+        err,
+        rtrack_core::error::Error::SlotsOccupied { first: 2, count: 1 }
+    ));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

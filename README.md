@@ -7,7 +7,7 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 ### Highlights
 
 - **Built-in synthesizer** -- 30 patches (saw, square, FM bell, acid, chiptune, etc.) with ADSR, SVF filter, sub-oscillator, FM synthesis, and per-channel effects (distortion, filter, chorus, delay, reverb)
-- **Sample engine** -- WAV/AIFF loading, pitch-shifted playback, loop points, transient-based slicing, up to 32 simultaneous voices with voice stealing
+- **Sample engine** -- WAV/AIFF loading, pitch-shifted playback, loop points, transient-based slicing, up to 32 simultaneous voices with de-clicked voice stealing
 - **MIDI I/O** -- virtual ports, hardware routing, step and punch-in recording, aftertouch-to-filter, MIDI learn for CC mapping, clock output/input
 - **Ableton Link** -- bidirectional tempo and transport sync with any Link-enabled application
 - **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 16 effect commands
@@ -48,7 +48,7 @@ Once running, open a song with `Ctrl+O` (or `:open`), reopen a recent one with `
 rtrack-gui                               # launch GUI frontend
 ```
 
-Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI program), interactive sample slicing (equal or transient detection with live preview), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
+Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI program), interactive sample slicing (equal or transient detection with live preview, dividing either the whole sample or one slice), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
 
 ### CLI (Headless)
 
@@ -171,8 +171,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 
 - 256 instrument slots with per-instrument synth parameters or sample assignment
 - Sample loading from WAV/AIFF files with pitch-shifted playback (cubic hermite interpolation)
-- Sample slicing: equal segments or transient detection (RMS energy derivative, configurable sensitivity)
-- Up to 32 simultaneous voices with ADSR envelopes and smart voice stealing
+- Sample slicing: equal segments or transient detection (log-energy onset detection against a local average, configurable sensitivity). Either divides the whole sample -- so changing the count re-derives from it -- or subdivides a single slice, selected with the Divide control. Slices land in consecutive slots; slicing over instruments it did not create asks first, and is undoable
+- Up to 32 simultaneous voices with ADSR envelopes. A voice that is stolen, or that reaches the end of a one-shot, fades over a few milliseconds rather than stopping dead -- a slice ends at an arbitrary frame, so cutting it leaves an audible step
 - Configurable pitch bend range per instrument (default +/-2 semitones)
 
 ### Sample Directory
@@ -353,7 +353,7 @@ rtrack-gui/                 GUI frontend (binary: rtrack-gui)
     pattern_matrix.rs       Full-screen pattern matrix with channel data indicators
     visualization.rs        FFT spectrum analyzer, level meters, sample waveform viewer
     dialogs.rs              Song settings, track config, MIDI ports, help
-    history.rs              CellEdit + EditHistory (dual-stack undo/redo, max 100)
+    history.rs              EditHistory (dual-stack undo/redo, max 100) over cell edits and sample-bank snapshots
 ```
 
 ## License

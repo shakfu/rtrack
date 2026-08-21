@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use rtrack_core::constants::SEMITONES_PER_OCTAVE;
-use rtrack_core::sample::{self, Sample};
+use rtrack_core::sample::{self, Sample, SliceRange};
 
 use crate::app::{App, SampleField};
 
@@ -246,6 +246,14 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
                 format!("{:.0}%", app.dialogs.sample_slice_sensitivity * 100.0),
             ),
             (
+                SampleField::SliceRange,
+                "Divide",
+                match app.dialogs.sample_slice_range {
+                    SliceRange::Source => "whole sample".to_string(),
+                    SliceRange::Span => "this slice only".to_string(),
+                },
+            ),
+            (
                 SampleField::SliceEqual,
                 "[Equal]",
                 "Enter to slice".to_string(),
@@ -306,6 +314,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
                 &app.dialogs.sample_editor_field,
                 app.dialogs.sample_slice_count,
                 app.dialogs.sample_slice_sensitivity,
+                app.dialogs.sample_slice_range,
             );
 
             // Find related slot boundaries (other samples sharing same source path)
@@ -357,18 +366,27 @@ fn compute_slice_preview(
     field: &SampleField,
     count: usize,
     sensitivity: f32,
+    range: SliceRange,
 ) -> Vec<usize> {
+    // The markers have to describe the range the action will actually
+    // divide, or the preview promises boundaries that slicing will not
+    // produce.
+    let (start, end) = sample.slice_bounds(range);
+    if end <= start {
+        return Vec::new();
+    }
+    let span = end - start;
+
     // Only show preview when user is focused on slice-related fields
     match field {
-        SampleField::SliceCount | SampleField::SliceEqual => {
+        SampleField::SliceCount | SampleField::SliceRange | SampleField::SliceEqual => {
             if count <= 1 {
                 return Vec::new();
             }
-            let total = sample.data.len();
-            (1..count).map(|i| i * total / count).collect()
+            (1..count).map(|i| start + i * span / count).collect()
         }
         SampleField::SliceSensitivity | SampleField::SliceTransient => {
-            sample::detect_transients(sample, sensitivity)
+            sample::detect_transients_range(sample, sensitivity, start, end)
         }
         _ => Vec::new(),
     }

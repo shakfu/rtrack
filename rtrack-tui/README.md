@@ -26,11 +26,11 @@ Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout),
 - Modal editing (Normal/Insert modes) with piano keyboard note entry
 - Pattern editor with sub-column cursor (Note/Instrument/Volume/Effect)
 - 30 built-in synth patches, per-channel effects, send/return buses
-- Sample loading, waveform editing, transient-based slicing
+- Sample loading, waveform editing, transient-based slicing (of the whole sample or of a single slice)
 - MIDI I/O with virtual ports and MIDI learn
 - Ableton Link tempo/transport sync
 - Export to WAV, FLAC, and standard MIDI files
-- Undo/redo, clipboard, autosave
+- Undo/redo (pattern edits and slicing), clipboard, autosave
 - Color themes: dark (default), light, monokai (F8 to cycle)
 
 ### Note Entry
@@ -152,6 +152,31 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Type chars | Edit instrument name |
 | Backspace | Delete character from name |
 | Esc / F7 | Close |
+
+### Sample Editor (Enter on an instrument)
+
+Tab and Shift+Tab move between fields; Up/Down adjust by one, Right/Left by ten.
+
+| Field | Meaning |
+|---------|--------|
+| Base Note | MIDI note at which the sample plays at its original pitch |
+| Trim Start / End | The part of the buffer that plays. For a slice, its span of the shared source |
+| Loop / Loop Start / End | Loop points, clamped into the trimmed span |
+| Slices | How many pieces `[Equal]` cuts |
+| Sensitivity | Onset threshold for `[Transient]`: higher finds more |
+| Divide | What gets cut -- `whole sample` or `this slice only` |
+| `[Equal]` / `[Transient]` | Enter to slice |
+
+`Divide` is the difference between re-cutting and subdividing. With `whole
+sample`, slicing again at a different count re-derives from the sample, so
+changing your mind about 8 versus 16 replaces the previous result. With
+`this slice only`, the slot being edited is subdivided and its pieces are
+named after it -- `amen_S03_S00`, `amen_S03_S01`.
+
+Slices land in consecutive slots starting at the one being sliced. If that
+would write over instruments the slicing did not itself create, the first
+Enter refuses and says what is in the way; a second Enter goes ahead. Either
+way `Ctrl+Z` puts back what was there.
 
 ### Pattern Matrix (`:p`)
 

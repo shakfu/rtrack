@@ -30,3 +30,4 @@ serde_json = "1"
 
 [dev-dependencies]
 hound = "3.5"
+tempfile = "3"

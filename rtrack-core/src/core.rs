@@ -68,6 +68,18 @@ pub struct PreviewNote {
 
 /// Headless tracker core. Owns all non-UI state: song data, playback engine,
 /// audio/MIDI I/O, channel configuration, instruments, and samples.
+/// The sample side of the editor, captured for undo.
+///
+/// Holds the whole bank and instrument table rather than a diff: slicing
+/// rewrites a run of slots and renames their instruments, so there is little
+/// to be saved by recording which, and a snapshot cannot drift out of step
+/// with what it describes.
+#[derive(Clone)]
+pub struct SampleSnapshot {
+    bank: Arc<SampleBank>,
+    instruments: Vec<Instrument>,
+}
+
 pub struct TrackerCore {
     // -- Song & engine --
     pub song: Song,
@@ -1377,22 +1389,92 @@ impl TrackerCore {
     }
 
     /// Slice a sample. Returns Ok(count) or Err(message).
+    /// The sample bank and instrument table as they stand, for undo.
+    ///
+    /// Slicing rewrites consecutive slots, so an editor needs to be able to
+    /// put back what was there. Cheap despite the size: slots are
+    /// `Arc<Sample>`, so no audio is copied.
+    pub fn snapshot_samples(&self) -> SampleSnapshot {
+        SampleSnapshot {
+            bank: Arc::clone(&self.sample_bank),
+            instruments: self.instruments.clone(),
+        }
+    }
+
+    /// Put back a snapshot taken by [`TrackerCore::snapshot_samples`].
+    pub fn restore_samples(&mut self, snapshot: SampleSnapshot) {
+        self.sample_bank = snapshot.bank;
+        self.instruments = snapshot.instruments;
+        if let Some(ref mut audio) = self.audio {
+            audio.set_sample_bank(Arc::clone(&self.sample_bank));
+        }
+        self.dirty = true;
+    }
+
+    /// Slots in `slot..end` holding something this slicing did not produce.
+    ///
+    /// Re-slicing its own output is the operation working, not destruction:
+    /// a kit re-cut from 8 pieces to 16 has to be free to replace the 8. Only
+    /// material from elsewhere -- another sample, a synth patch, a name
+    /// somebody typed -- is worth stopping for.
+    pub fn unrelated_slots(&self, slot: usize, end: usize) -> Vec<usize> {
+        let source = self
+            .sample_bank
+            .get(slot)
+            .and_then(|s| s.source_path.clone());
+
+        (slot..end.min(MAX_INSTRUMENTS))
+            .filter(|&i| {
+                if i == slot {
+                    return false; // the sample being sliced
+                }
+                if let Some(sample) = self.sample_bank.get(i) {
+                    // Another slice of the same file is our own output.
+                    return sample.source_path != source || source.is_none();
+                }
+                match self.instruments.get(i) {
+                    Some(inst) => {
+                        inst.synth_params.is_some()
+                            || inst.midi_program.is_some()
+                            || !inst.name.is_empty()
+                    }
+                    None => false,
+                }
+            })
+            .collect()
+    }
+
+    /// Slice a slot into `count` pieces (or at detected transients).
+    ///
+    /// `range` decides what gets divided: [`SliceRange::Source`] re-derives
+    /// from the whole sample, so running this again at a different count
+    /// replaces the previous slicing rather than eating into it, while
+    /// [`SliceRange::Span`] subdivides the slot's own span.
+    ///
+    /// Slices land in consecutive slots from `slot`, overwriting what is
+    /// there. `overwrite` decides whether that is allowed to happen to
+    /// instruments this slicing did not itself produce; with
+    /// [`SliceOverwrite::Refuse`] such a request fails with
+    /// [`Error::SlotsOccupied`] and nothing is written.
     pub fn slice_sample(
         &mut self,
         slot: usize,
         count: usize,
         sensitivity: f32,
         use_transients: bool,
+        range: crate::sample::SliceRange,
+        overwrite: crate::sample::SliceOverwrite,
     ) -> Result<usize> {
         let Some(sample) = self.sample_bank.get(slot) else {
             return Err(Error::NoSampleInSlot { slot });
         };
 
         let slices = if use_transients {
-            let points = crate::sample::detect_transients(sample, sensitivity);
-            crate::sample::slice_at_points(sample, &points)
+            let (start, end) = sample.slice_bounds(range);
+            let points = crate::sample::detect_transients_range(sample, sensitivity, start, end);
+            crate::sample::slice_at_points(sample, &points, range)
         } else {
-            crate::sample::slice_equal(sample, count)
+            crate::sample::slice_equal(sample, count, range)
         };
 
         if slices.is_empty() {
@@ -1406,6 +1488,16 @@ impl TrackerCore {
                 needed: slice_count,
                 from_slot: slot,
             });
+        }
+
+        if overwrite == crate::sample::SliceOverwrite::Refuse {
+            let occupied = self.unrelated_slots(slot, end_slot);
+            if let Some(&first) = occupied.first() {
+                return Err(Error::SlotsOccupied {
+                    first,
+                    count: occupied.len(),
+                });
+            }
         }
 
         // Collect names before consuming slices

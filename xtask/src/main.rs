@@ -99,7 +99,15 @@ fn build_sliced_amen(root: &Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("failed to load {}: {e}", amen.display()))?;
 
     let made = core
-        .slice_sample(0, SLICES, 0.5, false)
+        .slice_sample(
+            0,
+            SLICES,
+            0.5,
+            false,
+            rtrack_core::sample::SliceRange::Source,
+            // A fresh bank: nothing to overwrite.
+            rtrack_core::sample::SliceOverwrite::Refuse,
+        )
         .map_err(|e| anyhow::anyhow!("slicing failed: {e}"))?;
     if made != SLICES {
         bail!("expected {SLICES} slices, got {made}");

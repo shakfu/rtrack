@@ -36,7 +36,8 @@
 - [ ] Add `fmt-check` Makefile target (`cargo fmt --all -- --check`) -- current `make lint` mutates files via `cargo fmt --all`, unsuitable for CI
 - [x] GUI: read audio/SF2 device config from `config.toml` before initializing `AudioEngine` -- currently hardcodes `None` in `RtrackApp::new`
 - [x] Replace eager `Sample`/`SampleBank` clones with `Arc<Sample>` per slot -- prerequisite for live sample editing and reduces undo/clone allocation cost
-- [ ] Extract shared editor state (cursor, undo/redo, clipboard, block selection) from TUI and GUI into a common crate to prevent drift
+- [ ] Extract shared editor state (cursor, undo/redo, clipboard, block selection) from TUI and GUI into a common crate to prevent drift -- the two undo implementations have now diverged further: the TUI snapshots the whole song plus an optional `SampleSnapshot`, the GUI keeps an `Edit` enum of cell diffs or bank snapshots
+- [ ] Put the rest of the sample bank under undo. Slicing is covered; loading a sample over an occupied slot, and the trim/loop/base-note fields in the sample editor, are not. The fields are the awkward ones -- one undo step per arrow key would swamp the stack, so they need coalescing while a field is held
 
 ## TUI - Low Priority (nice-to-have or high effort)
 
@@ -44,6 +45,8 @@
 - [ ] Keybinding customization (config file with tracker presets)
 - [ ] UI snapshot tests (ratatui TestBackend)
 - [ ] Fuzz testing for MIDI file parser, AIFF parser, .rtrk deserializer
+
+- [ ] Decide whether slicing should respect a trim the user set by hand. `SliceRange::Source` ignores it and divides the whole file, which is right for a slice (whose span is a slicing artifact) and wrong for a sample someone trimmed to the part they wanted. Telling the two apart needs provenance on `Sample` -- the span a slot was cut out of -- persisted in `.rtrk`, not just a range argument. `SliceRange::Span` is the workaround in the meantime: it divides exactly the trimmed region.
 
 ## Ambitious (significant effort, transformative)
 

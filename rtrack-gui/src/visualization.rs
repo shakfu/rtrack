@@ -4,7 +4,7 @@ use egui::{pos2, Color32, Painter, Rect, Stroke, Ui, Vec2};
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use rtrack_core::audio::{AudioEngine, VoiceSnapshot};
-use rtrack_core::sample::SampleBank;
+use rtrack_core::sample::{SampleBank, SliceOverwrite, SliceRange};
 
 /// FFT size for spectrum analysis (must be power of 2).
 const FFT_SIZE: usize = 2048;
@@ -42,6 +42,8 @@ pub struct SliceAction {
     pub mode: SliceMode,
     pub count: usize,
     pub sensitivity: f32,
+    pub range: SliceRange,
+    pub overwrite: SliceOverwrite,
 }
 
 /// State for the spectrum analyzer, level meters, and sample viewer.
@@ -69,13 +71,18 @@ pub struct VisualizationState {
     pub slice_mode: SliceMode,
     pub slice_count: usize,
     pub slice_sensitivity: f32,
+    /// Whether a slice divides the whole sample or subdivides one slice.
+    pub slice_range: SliceRange,
+    /// Set by the app when a slice was refused because slots were occupied,
+    /// and cleared when the settings change. Drives the "Slice anyway" button.
+    pub slice_blocked: Option<String>,
     preview_slice_points: Vec<usize>,
     /// Set when parameters change (consumed by app to commit slices).
     pub pending_slice_action: Option<SliceAction>,
     /// The base slot slicing operates on (first slot of the sample, not the viewed slot).
     slice_source_slot: Option<usize>,
     // Change tracking for auto-apply (mode, count, sensitivity_bits -- NOT slot)
-    last_applied: Option<(SliceMode, usize, u32)>,
+    last_applied: Option<(SliceMode, usize, u32, SliceRange)>,
 }
 
 impl VisualizationState {
@@ -102,6 +109,8 @@ impl VisualizationState {
             slice_mode: SliceMode::Equal,
             slice_count: 8,
             slice_sensitivity: 0.5,
+            slice_range: SliceRange::Source,
+            slice_blocked: None,
             preview_slice_points: Vec::new(),
             pending_slice_action: None,
             slice_source_slot: None,
@@ -365,6 +374,18 @@ impl VisualizationState {
                     );
                 }
             }
+            ui.separator();
+            ui.label("Divide:");
+            ui.selectable_value(&mut self.slice_range, SliceRange::Source, "Whole sample")
+                .on_hover_text(
+                    "Divide the whole sample. Changing the count re-derives from it, \
+                     replacing the previous slices.",
+                );
+            ui.selectable_value(&mut self.slice_range, SliceRange::Span, "This slice")
+                .on_hover_text(
+                    "Subdivide the slice being viewed, writing the pieces into the \
+                     slots that follow it.",
+                );
             let num = self.preview_slice_points.len() + 1;
             ui.label(
                 egui::RichText::new(format!("({} slices)", num))
@@ -390,27 +411,34 @@ impl VisualizationState {
         };
 
         // Use the source slot's sample for slicing (always has full data)
-        let source_sample = sample_bank.get(source_slot).unwrap_or(sample);
-        let full_len = source_sample.len();
-
-        // Compute preview slice positions over full data range
+        // `Source` replaces the whole slice set, so it starts from the slot
+        // that set begins at; `Span` subdivides the slice being looked at.
+        let target_slot = match self.slice_range {
+            SliceRange::Source => source_slot,
+            SliceRange::Span => slot,
+        };
+        let source_sample = sample_bank.get(target_slot).unwrap_or(sample);
+        let (span_start, span_end) = source_sample.slice_bounds(self.slice_range);
+        let span_len = span_end.saturating_sub(span_start);
+        // Preview the range the pending action will divide, so the markers
+        // cannot promise boundaries that slicing will not produce.
         self.preview_slice_points.clear();
-        if full_len > 0 {
+        if span_len > 0 {
             match self.slice_mode {
                 SliceMode::Equal => {
                     for i in 1..self.slice_count {
                         self.preview_slice_points
-                            .push((i * full_len) / self.slice_count);
+                            .push(span_start + (i * span_len) / self.slice_count);
                     }
                 }
                 SliceMode::Transient => {
                     let pts = rtrack_core::sample::detect_transients_range(
                         source_sample,
                         self.slice_sensitivity,
-                        0,
-                        full_len,
+                        span_start,
+                        span_end,
                     );
-                    // Skip the first point (always 0)
+                    // Skip the first point (always the span start)
                     for &p in pts.iter().skip(1) {
                         self.preview_slice_points.push(p);
                     }
@@ -418,19 +446,52 @@ impl VisualizationState {
             }
         }
 
-        // Auto-apply: emit action when slice PARAMETERS change (not when view slot changes)
+        // Apply when the slice settings change -- but not while a drag is
+        // still in progress. Slicing overwrites consecutive slots and cannot
+        // be undone, so a slider dragged from 2 to 32 must be one destructive
+        // write on release, not thirty on the way there. The preview above
+        // still follows the drag live.
         let current_key = (
             self.slice_mode,
             self.slice_count,
             self.slice_sensitivity.to_bits(),
+            self.slice_range,
         );
-        if self.last_applied != Some(current_key) {
+        let settings_changed = self.last_applied != Some(current_key);
+        if settings_changed {
+            self.slice_blocked = None;
+        }
+        if settings_changed && !ui.ctx().is_using_pointer() {
             self.last_applied = Some(current_key);
             self.pending_slice_action = Some(SliceAction {
-                slot: source_slot,
+                slot: target_slot,
                 mode: self.slice_mode,
                 count: self.slice_count,
                 sensitivity: self.slice_sensitivity,
+                range: self.slice_range,
+                overwrite: SliceOverwrite::Refuse,
+            });
+        }
+
+        // Refused for want of free slots: say what is in the way and offer
+        // to go ahead, rather than having quietly done it.
+        if let Some(reason) = self.slice_blocked.clone() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Will not overwrite: {reason}"))
+                        .color(Color32::from_rgb(255, 180, 80)),
+                );
+                if ui.button("Slice anyway").clicked() {
+                    self.slice_blocked = None;
+                    self.pending_slice_action = Some(SliceAction {
+                        slot: target_slot,
+                        mode: self.slice_mode,
+                        count: self.slice_count,
+                        sensitivity: self.slice_sensitivity,
+                        range: self.slice_range,
+                        overwrite: SliceOverwrite::Allow,
+                    });
+                }
             });
         }
 

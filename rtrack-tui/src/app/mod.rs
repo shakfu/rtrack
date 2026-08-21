@@ -28,6 +28,11 @@ pub struct DialogState {
     pub sample_editor_field: SampleField,
     pub sample_slice_count: usize,
     pub sample_slice_sensitivity: f32,
+    /// Whether a slice action divides the whole sample or just this slot.
+    pub sample_slice_range: rtrack_core::sample::SliceRange,
+    /// Set when a slice was refused for want of free slots: the next Enter
+    /// on the same action goes ahead anyway.
+    pub sample_slice_overwrite_armed: bool,
     pub synth_editor_slot: usize,
     pub synth_editor_field: SynthField,
     pub midi_port_list: Vec<String>,
@@ -47,6 +52,8 @@ impl DialogState {
             sample_editor_field: SampleField::BaseNote,
             sample_slice_count: 8,
             sample_slice_sensitivity: 0.5,
+            sample_slice_range: rtrack_core::sample::SliceRange::Source,
+            sample_slice_overwrite_armed: false,
             synth_editor_slot: 0,
             synth_editor_field: SynthField::Waveform,
             midi_port_list: Vec::new(),
@@ -58,10 +65,21 @@ impl DialogState {
     }
 }
 
+/// One undoable step.
+///
+/// The song is always captured. `samples` is present only for edits that
+/// touched the sample bank -- slicing rewrites a run of slots and cannot
+/// otherwise be taken back -- so ordinary pattern edits stay as cheap as
+/// they were.
+pub struct EditSnapshot {
+    pub song: Song,
+    pub samples: Option<rtrack_core::core::SampleSnapshot>,
+}
+
 /// Undo/redo and clipboard state.
 pub struct EditHistory {
-    pub undo_stack: VecDeque<Song>,
-    pub redo_stack: Vec<Song>,
+    pub undo_stack: VecDeque<EditSnapshot>,
+    pub redo_stack: Vec<EditSnapshot>,
     pub clipboard: Option<Vec<rtrack_core::tracker::Cell>>,
     pub block_clipboard: Option<Vec<Vec<rtrack_core::tracker::Cell>>>,
     pub block_anchor: Option<(usize, usize)>,
@@ -275,6 +293,7 @@ pub enum SampleField {
     LoopEnd,
     SliceCount,
     SliceSensitivity,
+    SliceRange,
     SliceEqual,
     SliceTransient,
 }
@@ -289,7 +308,8 @@ impl SampleField {
             Self::LoopStart => Self::LoopEnd,
             Self::LoopEnd => Self::SliceCount,
             Self::SliceCount => Self::SliceSensitivity,
-            Self::SliceSensitivity => Self::SliceEqual,
+            Self::SliceSensitivity => Self::SliceRange,
+            Self::SliceRange => Self::SliceEqual,
             Self::SliceEqual => Self::SliceTransient,
             Self::SliceTransient => Self::BaseNote,
         }
@@ -305,7 +325,8 @@ impl SampleField {
             Self::LoopEnd => Self::LoopStart,
             Self::SliceCount => Self::LoopEnd,
             Self::SliceSensitivity => Self::SliceCount,
-            Self::SliceEqual => Self::SliceSensitivity,
+            Self::SliceRange => Self::SliceSensitivity,
+            Self::SliceEqual => Self::SliceRange,
             Self::SliceTransient => Self::SliceEqual,
         }
     }
@@ -577,12 +598,42 @@ impl App {
         }
     }
 
+    /// Word a slice failure, including what a second Enter would do.
+    pub(crate) fn describe_slice_error(&self, e: &rtrack_core::error::Error) -> String {
+        match e {
+            rtrack_core::error::Error::SlotsOccupied { .. } => {
+                format!("{e}; Enter again to overwrite")
+            }
+            _ => format!("Slice failed: {e}"),
+        }
+    }
+
     pub fn slice_sample(&mut self, use_transients: bool) -> rtrack_core::error::Result<usize> {
         let slot = self.dialogs.sample_editor_slot;
         let count = self.dialogs.sample_slice_count;
         let sensitivity = self.dialogs.sample_slice_sensitivity;
-        self.core
-            .slice_sample(slot, count, sensitivity, use_transients)
+        // Recorded before the write, so Ctrl+Z puts back whatever the
+        // slices landed on.
+        self.push_undo_with_samples();
+        let range = self.dialogs.sample_slice_range;
+        // Slicing overwrites consecutive slots and cannot be undone, so the
+        // first attempt refuses when anything unrelated is in the way; the
+        // arming flag is what a second Enter sets.
+        let overwrite = if self.dialogs.sample_slice_overwrite_armed {
+            rtrack_core::sample::SliceOverwrite::Allow
+        } else {
+            rtrack_core::sample::SliceOverwrite::Refuse
+        };
+        let result =
+            self.core
+                .slice_sample(slot, count, sensitivity, use_transients, range, overwrite);
+        self.dialogs.sample_slice_overwrite_armed =
+            matches!(result, Err(rtrack_core::error::Error::SlotsOccupied { .. }));
+        if result.is_err() {
+            // Nothing was written, so there is nothing to undo.
+            self.history.undo_stack.pop_back();
+        }
+        result
     }
 
     // -- MIDI port selection --
@@ -758,7 +809,21 @@ impl App {
     // -- Undo/Redo --
 
     pub fn push_undo(&mut self) {
-        self.history.undo_stack.push_back(self.core.song.clone());
+        self.push_snapshot(None);
+    }
+
+    /// Record a step that also changes the sample bank, so undo can put the
+    /// overwritten slots back.
+    pub fn push_undo_with_samples(&mut self) {
+        let samples = self.core.snapshot_samples();
+        self.push_snapshot(Some(samples));
+    }
+
+    fn push_snapshot(&mut self, samples: Option<rtrack_core::core::SampleSnapshot>) {
+        self.history.undo_stack.push_back(EditSnapshot {
+            song: self.core.song.clone(),
+            samples,
+        });
         self.history.redo_stack.clear();
         if self.history.undo_stack.len() > MAX_UNDO_HISTORY {
             self.history.undo_stack.pop_front();
@@ -766,18 +831,34 @@ impl App {
         self.core.dirty = true;
     }
 
+    /// Swap the editor's state for `prev`, handing back what was replaced so
+    /// the caller can push it onto the opposite stack.
+    fn swap_state(&mut self, prev: EditSnapshot) -> EditSnapshot {
+        // Only capture the samples if the step being undone changed them;
+        // otherwise the counterpart entry has nothing to put back either.
+        let current = EditSnapshot {
+            song: self.core.song.clone(),
+            samples: prev.samples.as_ref().map(|_| self.core.snapshot_samples()),
+        };
+        self.core.song = prev.song;
+        if let Some(samples) = prev.samples {
+            self.core.restore_samples(samples);
+        }
+        current
+    }
+
     pub fn undo(&mut self) {
         if let Some(prev) = self.history.undo_stack.pop_back() {
-            self.history.redo_stack.push(self.core.song.clone());
-            self.core.song = prev;
+            let current = self.swap_state(prev);
+            self.history.redo_stack.push(current);
             self.status_message = Some("Undo".to_string());
         }
     }
 
     pub fn redo(&mut self) {
         if let Some(next) = self.history.redo_stack.pop() {
-            self.history.undo_stack.push_back(self.core.song.clone());
-            self.core.song = next;
+            let current = self.swap_state(next);
+            self.history.undo_stack.push_back(current);
             self.status_message = Some("Redo".to_string());
         }
     }
@@ -933,6 +1014,8 @@ mod tests {
                 sample_editor_field: SampleField::BaseNote,
                 sample_slice_count: 8,
                 sample_slice_sensitivity: 0.5,
+                sample_slice_range: rtrack_core::sample::SliceRange::Source,
+                sample_slice_overwrite_armed: false,
                 synth_editor_slot: 0,
                 synth_editor_field: SynthField::Waveform,
                 help_scroll: 0,
@@ -2081,6 +2164,185 @@ mod tests {
         // Tick 2: note-off triggers
         app.core.process_tick();
         assert_eq!(app.core.engine.channel_states[0].note, None);
+    }
+
+    fn app_with_amen() -> (App, tempfile::TempDir) {
+        // A private directory per test: these run in parallel, and a shared
+        // path had one test deleting the fixture another was loading.
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("amen.wav");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("examples/data/amen.wav"),
+            &wav,
+        )
+        .expect("fixture missing");
+
+        let mut app = make_app();
+        app.core.load_sample(0, &wav).unwrap();
+        (app, dir)
+    }
+
+    fn slot_span(app: &App, slot: usize) -> (usize, usize) {
+        let s = app.core.sample_bank.get(slot).unwrap();
+        (s.trim_start, s.end())
+    }
+
+    #[test]
+    fn test_slice_range_field_is_reachable_by_tabbing() {
+        // Both directions, or the field exists but cannot be got at.
+        let mut f = SampleField::SliceSensitivity;
+        f = f.next();
+        assert_eq!(f, SampleField::SliceRange);
+        assert_eq!(f.next(), SampleField::SliceEqual);
+        assert_eq!(SampleField::SliceEqual.prev(), SampleField::SliceRange);
+        assert_eq!(
+            SampleField::SliceRange.prev(),
+            SampleField::SliceSensitivity
+        );
+    }
+
+    #[test]
+    fn test_slicing_the_source_re_derives_from_the_whole_sample() {
+        // Bound, not dropped: the directory lives until the test ends.
+        let (mut app, _dir) = app_with_amen();
+        let total = app.core.sample_bank.get(0).unwrap().len();
+        app.dialogs.sample_slice_range = rtrack_core::sample::SliceRange::Source;
+
+        app.dialogs.sample_slice_count = 4;
+        app.slice_sample(false).unwrap();
+        app.dialogs.sample_slice_count = 8;
+        app.slice_sample(false).unwrap();
+
+        assert_eq!(slot_span(&app, 0).0, 0);
+        assert_eq!(slot_span(&app, 7).1, total, "the second pass lost the tail");
+    }
+
+    #[test]
+    fn test_subdividing_a_slice_stays_inside_it() {
+        // Bound, not dropped: the directory lives until the test ends.
+        let (mut app, _dir) = app_with_amen();
+
+        app.dialogs.sample_slice_range = rtrack_core::sample::SliceRange::Source;
+        app.dialogs.sample_slice_count = 4;
+        app.slice_sample(false).unwrap();
+        let (outer_start, outer_end) = slot_span(&app, 1);
+        assert!(outer_start > 0);
+
+        // Subdividing slice 1 writes its pieces into slots 1 and 2.
+        app.dialogs.sample_editor_slot = 1;
+        app.dialogs.sample_slice_range = rtrack_core::sample::SliceRange::Span;
+        app.dialogs.sample_slice_count = 2;
+        app.slice_sample(false).unwrap();
+
+        assert_eq!(slot_span(&app, 1).0, outer_start);
+        assert_eq!(slot_span(&app, 2).1, outer_end);
+        assert!(
+            slot_span(&app, 1).1 < outer_end,
+            "the slice was not actually divided"
+        );
+    }
+
+    #[test]
+    fn test_slicing_over_an_instrument_needs_a_second_enter() {
+        let (mut app, _dir) = app_with_amen();
+        app.core.instruments[3].name = "Bass".to_string();
+        app.dialogs.sample_slice_count = 8;
+
+        // First attempt refuses, and arms the confirmation.
+        let first = app.slice_sample(false);
+        assert!(first.is_err(), "the first attempt should have been refused");
+        assert!(app.dialogs.sample_slice_overwrite_armed);
+        assert_eq!(app.core.instruments[3].name, "Bass");
+
+        // Second goes ahead, and disarms again.
+        let second = app.slice_sample(false);
+        assert!(second.is_ok(), "the second attempt should have gone ahead");
+        assert!(!app.dialogs.sample_slice_overwrite_armed);
+        assert_eq!(app.core.instruments[3].name, "amen_S03");
+    }
+
+    #[test]
+    fn test_moving_off_the_slice_action_disarms_the_confirmation() {
+        let (mut app, _dir) = app_with_amen();
+        app.core.instruments[3].name = "Bass".to_string();
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_field = SampleField::SliceEqual;
+        let _ = app.slice_sample(false);
+        assert!(app.dialogs.sample_slice_overwrite_armed);
+
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Tab,
+        ));
+        assert!(
+            !app.dialogs.sample_slice_overwrite_armed,
+            "tabbing away left the overwrite armed"
+        );
+    }
+
+    #[test]
+    fn test_undo_puts_back_what_slicing_overwrote() {
+        let (mut app, _dir) = app_with_amen();
+        app.core.instruments[3].name = "Bass".to_string();
+        app.dialogs.sample_slice_count = 8;
+        app.dialogs.sample_slice_overwrite_armed = true; // user confirmed
+
+        app.slice_sample(false).unwrap();
+        assert_eq!(app.core.instruments[3].name, "amen_S03");
+        assert!(app.core.sample_bank.get(3).is_some());
+
+        app.undo();
+        assert_eq!(
+            app.core.instruments[3].name, "Bass",
+            "undo did not restore the overwritten instrument"
+        );
+        assert!(
+            app.core.sample_bank.get(3).is_none(),
+            "undo left a slice in a slot that had none"
+        );
+
+        app.redo();
+        assert_eq!(app.core.instruments[3].name, "amen_S03");
+        assert!(app.core.sample_bank.get(3).is_some());
+    }
+
+    #[test]
+    fn test_a_refused_slice_leaves_no_undo_step() {
+        let (mut app, _dir) = app_with_amen();
+        app.core.instruments[3].name = "Bass".to_string();
+        let before = app.history.undo_stack.len();
+
+        assert!(app.slice_sample(false).is_err());
+        assert_eq!(
+            app.history.undo_stack.len(),
+            before,
+            "a slice that wrote nothing should not be undoable"
+        );
+    }
+
+    #[test]
+    fn test_pattern_undo_does_not_disturb_the_sample_bank() {
+        // A cell edit records no samples, so undoing it must leave the bank
+        // where it is rather than reverting to some earlier snapshot.
+        let (mut app, _dir) = app_with_amen();
+        app.dialogs.sample_slice_count = 4;
+        app.slice_sample(false).unwrap();
+        let sliced: Vec<_> = (0..4)
+            .map(|s| app.core.sample_bank.get(s).map(|x| (x.trim_start, x.end())))
+            .collect();
+
+        app.push_undo();
+        app.core
+            .song
+            .set_cell(0, 0, 0, rtrack_core::tracker::Cell::default());
+        app.undo();
+
+        let after: Vec<_> = (0..4)
+            .map(|s| app.core.sample_bank.get(s).map(|x| (x.trim_start, x.end())))
+            .collect();
+        assert_eq!(sliced, after, "a pattern undo changed the sample bank");
     }
 
     #[test]
@@ -3712,8 +3974,6 @@ mod tests {
         // Backspace goes up
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         assert_eq!(app.dialogs.file_browser.dir, dir);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3744,8 +4004,6 @@ mod tests {
         assert!(names.contains(&"sample.wav"));
         assert!(names.contains(&"beat.aiff"));
         assert!(!names.contains(&"notes.txt"));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3795,8 +4053,6 @@ mod tests {
         // Loading a sample should auto-set default_instrument so preview routes correctly
         assert_eq!(app.core.channels[5].default_instrument, Some(5));
         assert_ne!(app.mode, Mode::FileBrowser);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3827,8 +4083,6 @@ mod tests {
                 assert!(dir_idx < file_idx, "Directories should sort before files");
             }
         }
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

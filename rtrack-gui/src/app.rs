@@ -395,8 +395,15 @@ impl eframe::App for RtrackApp {
                     .position(|i| i.sample_index == Some(action.slot))
                     .unwrap_or(action.slot);
                 match action.mode {
-                    SliceMode::Equal => self.do_equal_slice(inst_idx, action.slot),
-                    SliceMode::Transient => self.do_transient_slice(inst_idx, action.slot),
+                    SliceMode::Equal => {
+                        self.do_equal_slice(inst_idx, action.slot, action.range, action.overwrite)
+                    }
+                    SliceMode::Transient => self.do_transient_slice(
+                        inst_idx,
+                        action.slot,
+                        action.range,
+                        action.overwrite,
+                    ),
                 }
             }
         }

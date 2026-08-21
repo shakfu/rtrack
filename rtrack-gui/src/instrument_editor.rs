@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use rtrack_core::audio::synth::{FilterType, Patch, SynthParams};
 use rtrack_core::constants::MAX_INSTRUMENTS;
+use rtrack_core::sample::{SliceOverwrite, SliceRange};
 use rtrack_core::Instrument;
 
 use crate::app::RtrackApp;
@@ -795,132 +796,72 @@ impl RtrackApp {
         None
     }
 
-    pub(crate) fn do_equal_slice(&mut self, _inst_idx: usize, slot: usize) {
-        let num_slices = self.slice_count;
-        let (base_name, data_len) = {
-            let sample = match self.core.sample_bank.get(slot) {
-                Some(s) => s,
-                None => return,
-            };
-            (
-                strip_slice_suffix(&sample.name).to_string(),
-                sample.data.len(),
-            )
-        };
-        if data_len == 0 || num_slices == 0 {
-            self.status_message = Some("Cannot slice: empty sample".to_string());
-            return;
-        }
-        let slice_len = data_len / num_slices;
-        if slice_len == 0 {
-            self.status_message = Some("Slices too small".to_string());
-            return;
-        }
-
-        // Always slice the full data range (non-destructive)
-        let mut points = Vec::with_capacity(num_slices + 1);
-        for i in 0..num_slices {
-            points.push(i * slice_len);
-        }
-        points.push(data_len);
-
-        self.apply_trim_slices(slot, &base_name, &points);
+    pub(crate) fn do_equal_slice(
+        &mut self,
+        _inst_idx: usize,
+        slot: usize,
+        range: SliceRange,
+        overwrite: SliceOverwrite,
+    ) {
+        let count = self.slice_count;
+        self.apply_slice(slot, count, false, range, overwrite);
     }
 
-    pub(crate) fn do_transient_slice(&mut self, _inst_idx: usize, slot: usize) {
+    pub(crate) fn do_transient_slice(
+        &mut self,
+        _inst_idx: usize,
+        slot: usize,
+        range: SliceRange,
+        overwrite: SliceOverwrite,
+    ) {
+        self.apply_slice(slot, 0, true, range, overwrite);
+    }
+
+    /// Slice a slot through the core, which is also what the TUI drives.
+    ///
+    /// The GUI used to cut its own boundaries, duplicating the core's
+    /// slicing so that one gesture gave two different answers depending on
+    /// the frontend. It slices `Source` because the count control re-applies
+    /// on every change: subdividing the slot's span instead would carve up
+    /// the previous first slice each time the count moved.
+    fn apply_slice(
+        &mut self,
+        slot: usize,
+        count: usize,
+        use_transients: bool,
+        range: SliceRange,
+        overwrite: SliceOverwrite,
+    ) {
         let sensitivity = self.slice_sensitivity;
-        let (base_name, data_len, points) = {
-            let sample = match self.core.sample_bank.get(slot) {
-                Some(s) => s,
-                None => return,
-            };
-            // Always detect transients over the full data range (non-destructive)
-            let pts = rtrack_core::sample::detect_transients_range(
-                sample,
-                sensitivity,
-                0,
-                sample.data.len(),
-            );
-            let base = strip_slice_suffix(&sample.name);
-            (base.to_string(), sample.data.len(), pts)
-        };
-
-        if points.is_empty() {
-            self.status_message = Some("No transients detected".to_string());
-            return;
-        }
-
-        // Build boundary list: detected points + end of full data
-        let mut boundaries = points;
-        boundaries.push(data_len);
-
-        self.apply_trim_slices(slot, &base_name, &boundaries);
-    }
-
-    /// Apply slices using trim bounds on the full sample data (no data copying).
-    /// `boundaries` contains N+1 frame positions: [slice0_start, slice1_start, ..., last_slice_end].
-    fn apply_trim_slices(&mut self, start_slot: usize, base_name: &str, boundaries: &[usize]) {
-        if boundaries.len() < 2 {
-            self.status_message = Some("No slices produced".to_string());
-            return;
-        }
-        let num_slices = boundaries.len() - 1;
-        let mut bank = (*self.core.sample_bank).clone();
-        let max_slot = bank.samples.len();
-
-        // Clone the source sample data (Arc clone is cheap; we need owned copies for slices)
-        let full_sample = match bank.samples[start_slot].as_deref().cloned() {
-            Some(s) => s,
-            None => return,
-        };
-
-        for i in 0..num_slices {
-            let target_slot = start_slot + i;
-            if target_slot >= max_slot {
-                break;
+        // Captured before the write so undo can put back whatever the
+        // slices landed on. Only recorded if the slice actually happens.
+        let before = self.core.snapshot_samples();
+        match self
+            .core
+            .slice_sample(slot, count, sensitivity, use_transients, range, overwrite)
+        {
+            Ok(created) => {
+                self.core.dirty = true;
+                self.vis.slice_blocked = None;
+                let after = self.core.snapshot_samples();
+                self.history.push_bank(before, after);
+                let what = match range {
+                    SliceRange::Source => "sample",
+                    SliceRange::Span => "slice",
+                };
+                self.status_message = Some(format!(
+                    "Divided the {what} into {created} slices from slot {slot:02X}"
+                ));
             }
-            let slice_name = format!("{}_S{:02}", base_name, i);
-
-            // Each slot gets the full sample data with trim bounds for its slice
-            let mut slot_sample = full_sample.clone();
-            slot_sample.name = slice_name.clone();
-            slot_sample.trim_start = boundaries[i];
-            slot_sample.trim_end = boundaries[i + 1];
-            slot_sample.loop_enabled = false;
-            bank.samples[target_slot] = Some(Arc::new(slot_sample));
-
-            if target_slot < self.core.instruments.len() {
-                let inst = &mut self.core.instruments[target_slot];
-                inst.name = slice_name;
-                inst.sample_index = Some(target_slot);
+            // Not an error the user made: say what stands in the way and let
+            // the panel offer to go ahead.
+            Err(e @ rtrack_core::error::Error::SlotsOccupied { .. }) => {
+                self.vis.slice_blocked = Some(e.to_string());
+                self.status_message = Some(e.to_string());
             }
-        }
-
-        self.core.sample_bank = Arc::new(bank);
-        if let Some(ref mut audio) = self.core.audio {
-            audio.set_sample_bank(self.core.sample_bank.clone());
-        }
-        self.core.dirty = true;
-        self.status_message = Some(format!(
-            "Created {} slices starting at slot {:02X}",
-            num_slices, start_slot
-        ));
-    }
-}
-
-/// Strip existing _Sxx slice suffixes from a sample name to get the base name.
-/// e.g., "amen_S00_S01" -> "amen", "amen_S03" -> "amen", "amen" -> "amen"
-fn strip_slice_suffix(name: &str) -> &str {
-    let mut s = name;
-    while s.len() >= 4 {
-        let tail = &s[s.len() - 4..];
-        if tail.starts_with("_S") && tail[2..].chars().all(|c| c.is_ascii_digit()) {
-            s = &s[..s.len() - 4];
-        } else {
-            break;
+            Err(e) => self.status_message = Some(e.to_string()),
         }
     }
-    s
 }
 
 /// Downsample stereo audio data to peak values for waveform display.
@@ -944,4 +885,109 @@ fn downsample_peaks(data: &[[f32; 2]], num_bins: usize) -> Vec<f32> {
         peaks.push(max_val);
     }
     peaks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::RtrackApp;
+
+    fn app_with_amen() -> (RtrackApp, tempfile::TempDir) {
+        // A private directory per test: these run in parallel, and a shared
+        // path had one test deleting the fixture another was loading.
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("amen.wav");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("examples/data/amen.wav"),
+            &wav,
+        )
+        .expect("fixture missing");
+
+        let mut app = RtrackApp::headless(4, 16);
+        app.core.load_sample(0, &wav).unwrap();
+        (app, dir)
+    }
+
+    fn span(app: &RtrackApp, slot: usize) -> (usize, usize) {
+        let s = app.core.sample_bank.get(slot).unwrap();
+        (s.trim_start, s.end())
+    }
+
+    #[test]
+    fn slicing_the_source_re_derives_from_the_whole_sample() {
+        // Bound, not dropped: the directory lives until the test ends.
+        let (mut app, _dir) = app_with_amen();
+        let total = app.core.sample_bank.get(0).unwrap().len();
+
+        app.slice_count = 4;
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+        app.slice_count = 8;
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+
+        assert_eq!(span(&app, 0).0, 0);
+        assert_eq!(span(&app, 7).1, total, "the second pass lost the tail");
+    }
+
+    #[test]
+    fn undo_puts_back_what_slicing_overwrote() {
+        let (mut app, _dir) = app_with_amen();
+        app.core.instruments[3].name = "Bass".to_string();
+
+        app.slice_count = 8;
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+        assert_eq!(app.core.instruments[3].name, "amen_S03");
+
+        app.apply_undo();
+        assert_eq!(
+            app.core.instruments[3].name, "Bass",
+            "undo did not restore the overwritten instrument"
+        );
+        assert!(
+            app.core.sample_bank.get(3).is_none(),
+            "undo left a slice in a slot that had none"
+        );
+
+        app.apply_redo();
+        assert_eq!(app.core.instruments[3].name, "amen_S03");
+        assert!(app.core.sample_bank.get(3).is_some());
+    }
+
+    #[test]
+    fn a_refused_slice_leaves_no_undo_step() {
+        let (mut app, _dir) = app_with_amen();
+        app.core.instruments[3].name = "Bass".to_string();
+        app.slice_count = 8;
+
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Refuse);
+        assert!(
+            !app.history.can_undo(),
+            "a slice that wrote nothing should not be undoable"
+        );
+        assert!(app.vis.slice_blocked.is_some(), "no warning was raised");
+    }
+
+    #[test]
+    fn subdividing_a_slice_stays_inside_it() {
+        // Bound, not dropped: the directory lives until the test ends.
+        let (mut app, _dir) = app_with_amen();
+
+        app.slice_count = 4;
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+        let (outer_start, outer_end) = span(&app, 1);
+        assert!(outer_start > 0);
+
+        // Subdivide slice 1, which writes its pieces into slots 1 and 2.
+        app.slice_count = 2;
+        app.do_equal_slice(0, 1, SliceRange::Span, SliceOverwrite::Allow);
+
+        assert_eq!(span(&app, 1).0, outer_start);
+        assert_eq!(span(&app, 2).1, outer_end);
+        assert!(
+            span(&app, 1).1 < outer_end,
+            "the slice was not actually divided"
+        );
+    }
 }

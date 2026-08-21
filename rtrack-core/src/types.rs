@@ -309,7 +309,7 @@ impl ChannelConfig {
 ///
 /// Each instrument can route to one of: a loaded sample (via `sample_index`),
 /// custom synth parameters, a MIDI program number, or the default built-in synth.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Instrument {
     /// Display name shown in the instrument list.
     pub name: String,

@@ -213,23 +213,29 @@ impl App {
             }
             KeyCode::Tab => {
                 self.dialogs.sample_editor_field = self.dialogs.sample_editor_field.next();
+                self.dialogs.sample_slice_overwrite_armed = false;
             }
             KeyCode::BackTab => {
                 self.dialogs.sample_editor_field = self.dialogs.sample_editor_field.prev();
+                self.dialogs.sample_slice_overwrite_armed = false;
             }
             KeyCode::Enter => {
                 // Execute slice actions on Enter
                 match self.dialogs.sample_editor_field {
-                    SampleField::SliceEqual => match self.slice_sample(false) {
-                        Ok(n) => {
-                            self.status_message = Some(format!("Sliced into {} equal segments", n))
-                        }
-                        Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
-                    },
-                    SampleField::SliceTransient => match self.slice_sample(true) {
-                        Ok(n) => self.status_message = Some(format!("Sliced at {} transients", n)),
-                        Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
-                    },
+                    SampleField::SliceEqual => {
+                        let msg = match self.slice_sample(false) {
+                            Ok(n) => format!("Sliced into {} equal segments", n),
+                            Err(e) => self.describe_slice_error(&e),
+                        };
+                        self.status_message = Some(msg);
+                    }
+                    SampleField::SliceTransient => {
+                        let msg = match self.slice_sample(true) {
+                            Ok(n) => format!("Sliced at {} transients", n),
+                            Err(e) => self.describe_slice_error(&e),
+                        };
+                        self.status_message = Some(msg);
+                    }
                     _ => {}
                 }
             }
@@ -263,20 +269,28 @@ impl App {
                     (self.dialogs.sample_slice_sensitivity + step).clamp(0.0, 1.0);
                 return;
             }
+            SampleField::SliceRange => {
+                use rtrack_core::sample::SliceRange;
+                self.dialogs.sample_slice_range = match self.dialogs.sample_slice_range {
+                    SliceRange::Source => SliceRange::Span,
+                    SliceRange::Span => SliceRange::Source,
+                };
+                return;
+            }
             SampleField::SliceEqual => {
-                match self.slice_sample(false) {
-                    Ok(n) => {
-                        self.status_message = Some(format!("Sliced into {} equal segments", n))
-                    }
-                    Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
-                }
+                let msg = match self.slice_sample(false) {
+                    Ok(n) => format!("Sliced into {} equal segments", n),
+                    Err(e) => self.describe_slice_error(&e),
+                };
+                self.status_message = Some(msg);
                 return;
             }
             SampleField::SliceTransient => {
-                match self.slice_sample(true) {
-                    Ok(n) => self.status_message = Some(format!("Sliced at {} transients", n)),
-                    Err(e) => self.status_message = Some(format!("Slice failed: {}", e)),
-                }
+                let msg = match self.slice_sample(true) {
+                    Ok(n) => format!("Sliced at {} transients", n),
+                    Err(e) => self.describe_slice_error(&e),
+                };
+                self.status_message = Some(msg);
                 return;
             }
             _ => {}
@@ -325,6 +339,7 @@ impl App {
                 }
                 SampleField::SliceCount
                 | SampleField::SliceSensitivity
+                | SampleField::SliceRange
                 | SampleField::SliceEqual
                 | SampleField::SliceTransient => unreachable!(),
             }

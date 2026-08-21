@@ -515,7 +515,11 @@ fn test_sliced_sample_song_round_trips() {
     let num_slices: usize = 8;
     let total_frames = sample.end();
     let slice_len = total_frames / num_slices;
-    let slices = rtrack_core::sample::slice_equal(sample, num_slices);
+    let slices = rtrack_core::sample::slice_equal(
+        sample,
+        num_slices,
+        rtrack_core::sample::SliceRange::Source,
+    );
     assert_eq!(slices.len(), num_slices);
 
     // Calculate trim points within the original sample for each slice

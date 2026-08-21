@@ -3660,6 +3660,7 @@ dependencies = [
  "rfd",
  "rtrack-core",
  "rustfft",
+ "tempfile",
 ]
 
 [[package]]
@@ -3674,6 +3675,7 @@ dependencies = [
  "rtrack-core",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

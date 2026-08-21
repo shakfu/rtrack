@@ -6,7 +6,9 @@ Analysis of LSDj (Game Boy tracker) and picoTracker (Xiphonics) for ideas applic
 
 **Source:** Both LSDj and picoTracker.
 **Priority:** High -- foundational change that unlocks composition power.
-**Status:** Core implementation complete. Data model, engine migration, chain transpose, arrangement management, dirty-flag sync, and dual-write all working. 377 tests pass. Remaining: dedicated Chain/Phrase editing screens in TUI/GUI, per-channel independent playback, full frontend read migration.
+**Status:** Implemented, then removed. The chain model was never reachable from either frontend, was rebuilt from patterns on every edit, doubled the size of saved files, and caused a bug where saving a song split shared patterns into separate copies. `patterns` + `order` is again the single source of truth; files containing the old `phrases`/`chains`/`arrangement` blocks still load, with those fields ignored. See the CHANGELOG entry under Unreleased > Changed.
+
+The problem below is real and unsolved -- this records the design and what went wrong with the first attempt at it, not work in progress.
 
 ### Problem
 
