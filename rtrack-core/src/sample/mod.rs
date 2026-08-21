@@ -46,17 +46,24 @@ impl Sample {
 
     /// Effective loop end (loop_end or end())
     pub fn effective_loop_end(&self) -> usize {
-        if self.loop_end == 0 || self.loop_end > self.end() {
+        if self.loop_end <= self.trim_start || self.loop_end > self.end() {
             self.end()
         } else {
             self.loop_end
         }
     }
 
-    /// Effective loop start (clamped to < loop_end)
+    /// Effective loop start, clamped into the part of the buffer that plays.
+    ///
+    /// A slice is a span of a larger buffer, so a loop point below
+    /// `trim_start` would send playback into audio belonging to the
+    /// neighbouring slice -- with the default `loop_start` of 0, back to the
+    /// beginning of the whole file.
     pub fn effective_loop_start(&self) -> usize {
+        let end = self.effective_loop_end();
         self.loop_start
-            .min(self.effective_loop_end().saturating_sub(1))
+            .max(self.trim_start)
+            .min(end.saturating_sub(1))
     }
 
     /// Get a stereo frame at the given index, or silence if out of bounds
@@ -520,7 +527,7 @@ pub fn slice_equal(sample: &Sample, num_slices: usize) -> Vec<Sample> {
         .collect()
 }
 
-/// Detect transient onsets in a sample using energy envelope derivative.
+/// Detect transient onsets in a sample.
 /// `sensitivity` ranges from 0.0 (fewer slices) to 1.0 (more slices).
 /// Returns frame indices of detected transients (always includes the start frame).
 /// Uses the sample's trim region as the detection range.
@@ -529,21 +536,35 @@ pub fn detect_transients(sample: &Sample, sensitivity: f32) -> Vec<usize> {
 }
 
 /// Like `detect_transients`, but with an explicit frame range.
+///
+/// The range is clamped to the buffer, so an out-of-range request yields
+/// fewer onsets rather than panicking.
+///
+/// Detection runs on the *logarithmic* energy envelope: a rise from -60 dB
+/// to -50 dB and one from -20 dB to -10 dB are equally likely to be heard as
+/// hits, but in linear terms the second is three hundred times the change,
+/// so a linear detector finds only the loudest part of a break. Each rise is
+/// compared against a local average rather than the loudest rise in the
+/// whole sample, for the same reason -- one loud hit should not hide the
+/// rest -- and only local peaks are kept, so a single onset does not fire on
+/// every window of its attack.
 pub fn detect_transients_range(
     sample: &Sample,
     sensitivity: f32,
     start: usize,
     end: usize,
 ) -> Vec<usize> {
+    let start = start.min(sample.data.len());
+    let end = end.min(sample.data.len());
     if end <= start {
-        return vec![0];
+        return vec![start];
     }
 
     // Window size for energy calculation (in frames). Smaller = more responsive.
     let window = (sample.sample_rate as usize / 200).max(16); // ~5ms window
-    let hop = window / 2;
+    let hop = (window / 2).max(1);
 
-    // Calculate RMS energy per window
+    // Log-domain energy envelope, one value per window.
     let mut energies: Vec<f32> = Vec::new();
     let mut pos = start;
     while pos + window <= end {
@@ -553,40 +574,77 @@ pub fn detect_transients_range(
             let mono = (frame[0] + frame[1]) * 0.5;
             sum += mono * mono;
         }
-        energies.push((sum / window as f32).sqrt());
+        let rms = (sum / window as f32).sqrt();
+        // Floored at -120 dB so silence does not produce -inf deltas.
+        energies.push(20.0 * rms.max(1e-6).log10());
         pos += hop;
     }
 
-    if energies.len() < 2 {
+    if energies.len() < 3 {
         return vec![start];
     }
 
-    // Compute the positive derivative (energy increase) between consecutive windows
-    let mut deltas: Vec<f32> = Vec::with_capacity(energies.len());
-    deltas.push(0.0);
+    // Spectral-flux-style detection function: rise in dB between windows.
+    let mut flux: Vec<f32> = Vec::with_capacity(energies.len());
+    flux.push(0.0);
     for i in 1..energies.len() {
-        deltas.push((energies[i] - energies[i - 1]).max(0.0));
+        flux.push((energies[i] - energies[i - 1]).max(0.0));
     }
 
-    // Find the maximum delta for threshold scaling
-    let max_delta = deltas.iter().cloned().fold(0.0f32, f32::max);
-    if max_delta <= 0.0 {
-        return vec![start];
-    }
+    // Higher sensitivity lowers both the relative and absolute thresholds.
+    let sens = sensitivity.clamp(0.0, 1.0);
+    let quiet = (1.0 - sens) * (1.0 - sens);
+    let alpha = 1.0 + 3.0 * quiet;
+    let floor_db = 1.0 + 12.0 * quiet;
 
-    // Threshold: higher sensitivity = lower threshold = more transients detected
-    let threshold = max_delta * (1.0 - sensitivity.clamp(0.0, 1.0)) * 0.8 + max_delta * 0.02;
+    // Local average window for the adaptive threshold (~100ms either side).
+    let avg_half = ((sample.sample_rate as usize / 10) / hop).max(2);
 
     // Minimum gap between transients (50ms worth of frames)
     let min_gap = (sample.sample_rate as usize / 20).max(1);
+    // How far an onset may be pulled back to a quieter frame (~one window).
+    let backtrack = window;
 
     let mut points = vec![start];
-    for (i, &d) in deltas.iter().enumerate() {
-        if d >= threshold {
-            let frame = start + i * hop;
-            if frame > *points.last().unwrap() + min_gap && frame < end {
-                points.push(frame);
-            }
+    for i in 1..flux.len() - 1 {
+        let f = flux[i];
+        if f < floor_db {
+            continue;
+        }
+        // Peak picking: only the crest of a rise counts as one onset.
+        if f < flux[i - 1] || f < flux[i + 1] {
+            continue;
+        }
+        let lo = i.saturating_sub(avg_half);
+        let hi = (i + avg_half + 1).min(flux.len());
+        let local_mean = flux[lo..hi].iter().sum::<f32>() / (hi - lo) as f32;
+        if f < local_mean * alpha {
+            continue;
+        }
+
+        let frame = start + i * hop;
+        let previous = *points.last().unwrap();
+        if frame <= previous + min_gap || frame >= end {
+            continue;
+        }
+        // Move the boundary back to the quietest nearby frame, so the slice
+        // starts in the dip before the hit rather than partway up its
+        // attack -- which both clips the transient and starts the slice on a
+        // large sample value.
+        let limit = frame.saturating_sub(backtrack).max(previous + 1).max(start);
+        let onset = (limit..=frame)
+            .min_by(|&a, &b| {
+                let amp = |i: usize| {
+                    let fr = sample.data[i];
+                    (fr[0] + fr[1]).abs() * 0.5
+                };
+                amp(a)
+                    .partial_cmp(&amp(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(frame);
+        if onset > previous + min_gap / 2 {
+            points.push(onset);
         }
     }
 
@@ -709,6 +767,91 @@ mod tests {
             source_path: None,
         };
         assert_eq!(sample.end(), 50);
+    }
+
+    fn slice_of(len: usize, trim_start: usize, trim_end: usize) -> Sample {
+        Sample {
+            name: "slice".into(),
+            data: vec![[0.0; 2]; len].into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start,
+            trim_end,
+            loop_enabled: true,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        }
+    }
+
+    #[test]
+    fn test_loop_points_clamped_to_the_slice() {
+        // Default loop points (0, 0) on a slice must mean "this slice",
+        // not "the whole source buffer".
+        let slice = slice_of(1000, 400, 700);
+        assert_eq!(slice.effective_loop_start(), 400);
+        assert_eq!(slice.effective_loop_end(), 700);
+    }
+
+    #[test]
+    fn test_loop_points_outside_the_slice_are_pulled_in() {
+        let mut slice = slice_of(1000, 400, 700);
+        slice.loop_start = 100; // before the slice
+        slice.loop_end = 900; // after it
+        assert_eq!(slice.effective_loop_start(), 400);
+        assert_eq!(slice.effective_loop_end(), 700);
+    }
+
+    #[test]
+    fn test_loop_points_inside_the_slice_are_kept() {
+        let mut slice = slice_of(1000, 400, 700);
+        slice.loop_start = 500;
+        slice.loop_end = 600;
+        assert_eq!(slice.effective_loop_start(), 500);
+        assert_eq!(slice.effective_loop_end(), 600);
+    }
+
+    #[test]
+    fn test_detect_transients_range_beyond_the_buffer() {
+        // Callers pass frame numbers; a stale or mistaken one must not
+        // bring down the audio thread.
+        let sample = slice_of(1000, 0, 0);
+        let points = detect_transients_range(&sample, 0.5, 0, 50_000);
+        assert!(!points.is_empty());
+        assert!(points.iter().all(|&p| p <= 1000));
+
+        let points = detect_transients_range(&sample, 0.5, 50_000, 60_000);
+        assert_eq!(points, vec![1000]);
+    }
+
+    #[test]
+    fn test_detect_transients_empty_range_returns_its_start() {
+        let sample = slice_of(1000, 0, 0);
+        assert_eq!(detect_transients_range(&sample, 0.5, 500, 500), vec![500]);
+    }
+
+    #[test]
+    fn test_detect_transients_finds_hits_below_the_loudest() {
+        // Two hits, the second 30 dB quieter. A detector that scales its
+        // threshold to the loudest rise in the sample finds only the first.
+        let sr = 44100.0;
+        let mut data = vec![[0.0f32; 2]; 44100];
+        for (i, amp) in [(2000usize, 1.0f32), (22050, 0.03)] {
+            for k in 0..4000 {
+                let decay = 1.0 - (k as f32 / 4000.0);
+                let v = amp * decay * ((k as f32 * 0.3).sin());
+                data[i + k] = [v, v];
+            }
+        }
+        let mut sample = slice_of(1, 0, 0);
+        sample.data = data.into();
+        sample.sample_rate = sr;
+
+        let points = detect_transients(&sample, 0.5);
+        assert!(
+            points.iter().any(|&p| (20_000..24_000).contains(&p)),
+            "quiet second hit was missed: {points:?}"
+        );
     }
 
     #[test]

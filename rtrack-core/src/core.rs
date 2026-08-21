@@ -10,7 +10,8 @@ use crate::constants::*;
 use crate::engine::{TrackerEngine, TrackerEvent};
 use crate::link::LinkEngine;
 use crate::midi::{MidiEngine, MidiInputEngine};
-use crate::sample::SampleBank;
+use crate::sample::playback::NewNoteAction;
+use crate::sample::{Sample, SampleBank};
 use crate::tracker::{
     InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song, SongFile,
 };
@@ -871,8 +872,25 @@ impl TrackerCore {
                 let _ = self.midi.note_on(channel, note, velocity);
                 if let Some(ref mut audio) = self.audio {
                     match at {
-                        Some(frame) => audio.sample_note_on_at(frame, sid, note, velocity, channel),
-                        None => audio.sample_note_on(sid, note, velocity, channel),
+                        // A note from a pattern row takes the channel over,
+                        // the way a tracker channel has always worked.
+                        Some(frame) => audio.sample_note_on_at(
+                            frame,
+                            sid,
+                            note,
+                            velocity,
+                            channel,
+                            NewNoteAction::Cut,
+                        ),
+                        // Previews and live MIDI are not pattern rows, so
+                        // they stack and a chord stays a chord.
+                        None => audio.sample_note_on(
+                            sid,
+                            note,
+                            velocity,
+                            channel,
+                            NewNoteAction::Continue,
+                        ),
                     }
                 }
                 return;
@@ -1693,23 +1711,46 @@ impl TrackerCore {
                 let load_dir = path.parent().unwrap_or(std::path::Path::new("."));
                 let mut bank = SampleBank::new();
                 let mut sample_errors: Vec<(String, String)> = Vec::new();
+                // Slices of one source are stored as one path repeated with
+                // different spans, so decoding per entry would read the file
+                // once per slice and leave each slot holding its own copy of
+                // the audio -- the memory the shared buffer exists to avoid.
+                // Each distinct path is decoded once and the buffer shared.
+                let mut decoded: std::collections::HashMap<std::path::PathBuf, Arc<Sample>> =
+                    std::collections::HashMap::new();
                 for entry in &song_file.sample_refs {
                     if entry.slot >= bank.samples.len() {
                         continue;
                     }
                     let sample_path = resolve_relative(load_dir, &entry.sample_ref.path);
-                    match bank.load(entry.slot, &sample_path) {
-                        Ok(()) => {
-                            if let Some(ref mut arc) = bank.samples[entry.slot] {
-                                let sample = Arc::make_mut(arc);
-                                sample.name = entry.sample_ref.name.clone();
-                                sample.base_note = entry.sample_ref.base_note;
-                                sample.trim_start = entry.sample_ref.trim_start;
-                                sample.trim_end = entry.sample_ref.trim_end;
-                                sample.loop_enabled = entry.sample_ref.loop_enabled;
-                                sample.loop_start = entry.sample_ref.loop_start;
-                                sample.loop_end = entry.sample_ref.loop_end;
-                            }
+                    let source = match decoded.get(&sample_path) {
+                        Some(s) => Ok(Arc::clone(s)),
+                        None => {
+                            let mut scratch = SampleBank::new();
+                            scratch.load(0, &sample_path).map(|()| {
+                                let loaded = scratch.samples[0].take().expect("load filled slot 0");
+                                decoded.insert(sample_path.clone(), Arc::clone(&loaded));
+                                loaded
+                            })
+                        }
+                    };
+                    match source {
+                        Ok(source) => {
+                            let mut sample = (*source).clone();
+                            sample.name = entry.sample_ref.name.clone();
+                            sample.base_note = entry.sample_ref.base_note;
+                            // The file on disk may have been replaced since
+                            // the song was saved. A span past the end of a
+                            // shorter file would play nothing at all, with
+                            // no indication why, so clamp it to the audio
+                            // that is actually there.
+                            let frames = sample.data.len();
+                            sample.trim_start = entry.sample_ref.trim_start.min(frames);
+                            sample.trim_end = entry.sample_ref.trim_end.min(frames);
+                            sample.loop_enabled = entry.sample_ref.loop_enabled;
+                            sample.loop_start = entry.sample_ref.loop_start.min(frames);
+                            sample.loop_end = entry.sample_ref.loop_end.min(frames);
+                            bank.samples[entry.slot] = Some(Arc::new(sample));
                         }
                         Err(e) => {
                             sample_errors.push((entry.sample_ref.name.clone(), e.to_string()));

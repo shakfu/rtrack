@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use dasp::Sample as DaspSample;
 
-use super::playback::SamplePlaybackEngine;
+use super::playback::{NewNoteAction, SamplePlaybackEngine};
 use super::SampleBank;
 use crate::audio::channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::{self, EffectsChain};
@@ -126,8 +126,15 @@ fn render_song(
                     if has_sample {
                         let sample_idx = inst.unwrap().sample_index.unwrap();
                         let sample = bank.get(sample_idx).unwrap();
-                        sample_engine
-                            .note_on(sample_idx, *midi_note, *velocity, midi_ch, sample, sr);
+                        sample_engine.note_on(
+                            sample_idx,
+                            *midi_note,
+                            *velocity,
+                            midi_ch,
+                            sample,
+                            sr,
+                            NewNoteAction::Cut,
+                        );
                     } else if let Some(sp) = inst.and_then(|i| i.synth_params.as_ref()) {
                         synth.note_on_with_params(midi_ch, *midi_note, *velocity, sp);
                     } else {

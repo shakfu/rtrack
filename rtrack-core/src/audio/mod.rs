@@ -14,9 +14,7 @@ use cpal::Stream;
 use rtrb::{Consumer, Producer, RingBuffer};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
-use crate::audio::envelope::Envelope;
-use crate::constants::{MIDI_MAX_VALUE, SEMITONES_PER_OCTAVE};
-use crate::sample::playback::{SamplePlaybackEngine, SampleVoice};
+use crate::sample::playback::{NewNoteAction, SamplePlaybackEngine};
 use crate::sample::SampleBank;
 
 use channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
@@ -100,6 +98,7 @@ enum AudioCommand {
         note: u8,
         velocity: u8,
         channel: u8,
+        action: NewNoteAction,
     },
     SampleNoteOff {
         channel: u8,
@@ -718,6 +717,7 @@ impl AudioEngine {
         note: u8,
         velocity: u8,
         channel: u8,
+        action: NewNoteAction,
     ) {
         self.send_at(
             frame,
@@ -726,6 +726,7 @@ impl AudioEngine {
                 note,
                 velocity,
                 channel,
+                action,
             },
         );
     }
@@ -812,12 +813,20 @@ impl AudioEngine {
     }
 
     /// Trigger a sample voice
-    pub fn sample_note_on(&mut self, sample_index: usize, note: u8, velocity: u8, channel: u8) {
+    pub fn sample_note_on(
+        &mut self,
+        sample_index: usize,
+        note: u8,
+        velocity: u8,
+        channel: u8,
+        action: NewNoteAction,
+    ) {
         self.send(AudioCommand::SampleNoteOn {
             sample_index,
             note,
             velocity,
             channel,
+            action,
         });
     }
 
@@ -1002,52 +1011,22 @@ fn process_command(
             note,
             velocity,
             channel,
+            action,
         } => {
+            // Same path as the offline renderer takes, rather than a copy of
+            // it: voice allocation, de-clicking and loop handling only stay
+            // in step between live playback and export if there is one
+            // implementation of them.
             if let Some(sample) = sample_bank.get(sample_index) {
-                let base_note = sample.base_note;
-                let sr = sample.sample_rate;
-                let trim_start = sample.trim_start;
-                let pitch_ratio =
-                    2.0_f64.powf((note as f64 - base_note as f64) / SEMITONES_PER_OCTAVE as f64);
-                let rate_ratio = sr / sample_rate;
-                let rate = pitch_ratio * rate_ratio;
-                let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
-
-                sample_engine.note_off(channel, note);
-
-                // Evict quietest voice if at capacity
-                if sample_engine.voices.len() >= sample_engine.max_voices {
-                    if let Some(idx) = sample_engine.voices.iter().position(|v| !v.active) {
-                        sample_engine.voices.remove(idx);
-                    } else {
-                        let quietest = sample_engine
-                            .voices
-                            .iter()
-                            .enumerate()
-                            .min_by(|(_, a), (_, b)| {
-                                let a_level = a.envelope.level * a.velocity;
-                                let b_level = b.envelope.level * b.velocity;
-                                a_level
-                                    .partial_cmp(&b_level)
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .map(|(i, _)| i);
-                        if let Some(idx) = quietest {
-                            sample_engine.voices.remove(idx);
-                        }
-                    }
-                }
-
-                sample_engine.voices.push(SampleVoice {
+                sample_engine.note_on(
                     sample_index,
-                    position: trim_start as f64,
-                    rate,
-                    velocity: vel,
-                    channel,
                     note,
-                    active: true,
-                    envelope: Envelope::sample_default(sample_rate as f32),
-                });
+                    velocity,
+                    channel,
+                    sample,
+                    sample_rate,
+                    action,
+                );
             }
         }
         AudioCommand::SampleNoteOff { channel, note } => {

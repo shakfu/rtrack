@@ -110,3 +110,17 @@ pub const MAX_SAMPLE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// `PREVIEW_NOTE_TIMEOUT_MS`. This is only an upper bound on how long the
 /// core remembers that a preview happened.
 pub const PREVIEW_ONE_SHOT_MAX_MS: u64 = 10_000;
+
+/// Length of the de-click ramp applied to a sample voice, in seconds.
+///
+/// A slice begins and ends at an arbitrary frame, so its first and last
+/// frames are almost never at a zero crossing. Stopping a voice by simply
+/// dropping it leaves a step in the output -- a full-scale one for a loud
+/// slice -- which is heard as a click. Voices therefore fade over this
+/// window instead: at the end of a one-shot, and when a voice is stolen to
+/// make room for a new one.
+pub const SAMPLE_DECLICK_SECS: f32 = 0.005;
+
+/// Envelope level below which a voice is inaudible and can be dropped
+/// outright rather than faded.
+pub const SAMPLE_INAUDIBLE_LEVEL: f32 = 0.001;

@@ -177,3 +177,83 @@ fn re_slicing_a_slice_stays_within_its_bounds() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn reloaded_slices_still_share_one_buffer() {
+    // Slices are stored as one path repeated with different spans. Decoding
+    // that path once per slot would read the file N times and leave N copies
+    // of the audio in memory -- exactly what spans exist to avoid.
+    let (dir, wav) = workspace_with_amen("reload_sharing");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 8, 0.5, false).unwrap();
+
+    let song = dir.join("song.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+
+    let mut reloaded = TrackerCoreBuilder::new().headless().build();
+    reloaded.load_file(&song).unwrap();
+
+    let first = reloaded.sample_bank.get(0).unwrap().data.clone();
+    for slot in 1..8 {
+        let other = &reloaded.sample_bank.get(slot).unwrap().data;
+        assert!(
+            std::sync::Arc::ptr_eq(&first, other),
+            "slot {slot} holds its own copy of the source audio after reload"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spans_are_clamped_when_the_source_file_shrinks() {
+    // The path in a .rtrk file can point at different audio by the time the
+    // song is opened again. A span past the end of the new file would leave
+    // the slot silent with nothing to explain it.
+    let (dir, wav) = workspace_with_amen("shrunk");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 4, 0.5, false).unwrap();
+    let song = dir.join("song.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+
+    // Replace the source with a much shorter file.
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 44100,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+    for i in 0..1000 {
+        writer.write_sample((i as i16).wrapping_mul(17)).unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let mut reloaded = TrackerCoreBuilder::new().headless().build();
+    reloaded.load_file(&song).unwrap();
+
+    for slot in 0..4 {
+        let s = reloaded.sample_bank.get(slot).unwrap();
+        assert!(
+            s.trim_start <= s.len() && s.end() <= s.len(),
+            "slot {slot} span {}..{} is outside the {}-frame file",
+            s.trim_start,
+            s.end(),
+            s.len()
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
