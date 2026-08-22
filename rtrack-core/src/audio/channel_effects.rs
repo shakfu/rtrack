@@ -410,39 +410,23 @@ impl ChannelEffects {
         self.svf_ic2eq_l = 0.0;
         self.svf_ic1eq_r = 0.0;
         self.svf_ic2eq_r = 0.0;
-        for s in &mut self.chorus_buffer_l {
-            *s = 0.0;
-        }
-        for s in &mut self.chorus_buffer_r {
-            *s = 0.0;
-        }
+        self.chorus_buffer_l.fill(0.0);
+        self.chorus_buffer_r.fill(0.0);
         self.chorus_write_pos = 0;
         self.chorus_phase = 0.0;
-        for s in &mut self.delay_buffer_l {
-            *s = 0.0;
-        }
-        for s in &mut self.delay_buffer_r {
-            *s = 0.0;
-        }
+        self.delay_buffer_l.fill(0.0);
+        self.delay_buffer_r.fill(0.0);
         self.delay_write_pos = 0;
         for i in 0..REVERB_COMBS {
-            for s in &mut self.comb_buffers_l[i] {
-                *s = 0.0;
-            }
-            for s in &mut self.comb_buffers_r[i] {
-                *s = 0.0;
-            }
+            self.comb_buffers_l[i].fill(0.0);
+            self.comb_buffers_r[i].fill(0.0);
         }
         self.comb_pos = [0; REVERB_COMBS];
         self.comb_filter_state_l = [0.0; REVERB_COMBS];
         self.comb_filter_state_r = [0.0; REVERB_COMBS];
         for i in 0..REVERB_ALLPASSES {
-            for s in &mut self.allpass_buffers_l[i] {
-                *s = 0.0;
-            }
-            for s in &mut self.allpass_buffers_r[i] {
-                *s = 0.0;
-            }
+            self.allpass_buffers_l[i].fill(0.0);
+            self.allpass_buffers_r[i].fill(0.0);
         }
         self.allpass_pos = [0; REVERB_ALLPASSES];
     }

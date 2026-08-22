@@ -121,7 +121,7 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 
 ## Build requirements
 
-- Rust 1.87+
+- Rust 1.89+
 - CMake 3.14+ (required by Ableton Link)
 
 ## License

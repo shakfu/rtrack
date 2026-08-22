@@ -197,7 +197,7 @@ way `Ctrl+Z` puts back what was there.
 
 ## Build requirements
 
-- Rust 1.87+
+- Rust 1.89+
 - CMake 3.14+ (required by Ableton Link)
 
 ## License
