@@ -549,3 +549,98 @@ fn an_oversized_sample_file_is_refused_rather_than_loaded() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// A song and its samples do not have to live in the same directory. When
+/// they do not, `make_relative` records an absolute path, and loading has to
+/// resolve it as written -- it used to be rewritten as
+/// `<song_dir>/<file_name>`, which named a file that was usually not there
+/// and occasionally was, and the wrong one.
+#[test]
+fn a_sample_outside_the_song_directory_survives_a_round_trip() {
+    let root = std::env::temp_dir().join("rtrack_persistence_tests");
+    let library = root.join("external_library");
+    let songs = root.join("external_songs");
+    let _ = std::fs::remove_dir_all(&library);
+    let _ = std::fs::remove_dir_all(&songs);
+    std::fs::create_dir_all(&library).unwrap();
+    std::fs::create_dir_all(&songs).unwrap();
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/data/amen.wav");
+    let wav = library.join("amen.wav");
+    std::fs::copy(&fixture, &wav).expect("fixture missing");
+
+    let mut core = headless(1, 16);
+    core.load_sample(0, &wav).unwrap();
+    let frames = core.sample_bank.get(0).unwrap().len();
+
+    let song = songs.join("external.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+
+    // The path recorded is absolute, since the sample is not under the song
+    // directory. This is the case the loader has to handle.
+    let saved = std::fs::read_to_string(&song).unwrap();
+    let file: SongFile = serde_json::from_str(&saved).unwrap();
+    let recorded = Path::new(&file.sample_refs[0].sample_ref.path);
+    assert!(
+        recorded.is_absolute(),
+        "expected an absolute reference, got {}",
+        recorded.display()
+    );
+
+    let mut reloaded = TrackerCoreBuilder::new().headless().build();
+    let report = reloaded.load_file(&song).unwrap();
+    assert!(
+        report.missing_samples.is_empty(),
+        "the external sample did not reload: {:?}",
+        report.missing_samples
+    );
+    assert_eq!(reloaded.sample_bank.get(0).unwrap().len(), frames);
+}
+
+/// A hand-written or hostile file can name a sample outside the song
+/// directory by walking up out of it. Such a reference is reported like a
+/// file that could not be read; it is not quietly resolved to a real file
+/// under the song directory, which is what stripping the `..` used to do.
+#[test]
+fn a_sample_path_that_walks_out_of_the_song_directory_is_reported() {
+    let root = std::env::temp_dir().join("rtrack_persistence_tests");
+    let songs = root.join("traversal_songs");
+    let _ = std::fs::remove_dir_all(&songs);
+    std::fs::create_dir_all(&songs).unwrap();
+
+    // A real file at the path the traversal would land on once `..` is
+    // stripped, so the test fails if the old behaviour comes back rather
+    // than merely failing to find anything.
+    let decoy_dir = songs.join("data");
+    std::fs::create_dir_all(&decoy_dir).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("examples/data/amen.wav");
+    std::fs::copy(&fixture, decoy_dir.join("amen.wav")).expect("fixture missing");
+
+    let mut core = headless(1, 16);
+    core.load_sample(0, &decoy_dir.join("amen.wav")).unwrap();
+    let song = songs.join("traversal.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+
+    // Rewrite the reference to walk up and back down to the same file.
+    let saved = std::fs::read_to_string(&song).unwrap();
+    let mut file: SongFile = serde_json::from_str(&saved).unwrap();
+    file.sample_refs[0].sample_ref.path = "../traversal_songs/data/amen.wav".to_string();
+    std::fs::write(&song, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+
+    let mut reloaded = TrackerCoreBuilder::new().headless().build();
+    let report = reloaded.load_file(&song).unwrap();
+    assert_eq!(
+        report.missing_samples.len(),
+        1,
+        "the traversal was resolved instead of reported"
+    );
+    assert!(reloaded.sample_bank.get(0).is_none());
+}

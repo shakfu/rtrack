@@ -252,21 +252,39 @@ impl SampleBank {
                     if slot < self.samples.len() {
                         self.load(slot, &path)?;
 
-                        // Apply per-sample metadata if available
+                        // Apply per-sample metadata if available. `samples.json`
+                        // is hand-written and can outlive the audio it
+                        // describes, so its loop points are clamped to the
+                        // frames actually present -- the same normalisation
+                        // `TrackerCore::load_file` does for a `.rtrk`, which
+                        // this path used to skip.
                         if let Some(sample_meta) = meta.samples.get(slot_str) {
                             if let Some(arc) = self.samples[slot].as_mut() {
                                 let sample = Arc::make_mut(arc);
+                                let frames = sample.data.len();
                                 if let Some(base) = sample_meta.base_note {
                                     sample.base_note = base;
                                 }
                                 if let Some(ls) = sample_meta.loop_start {
-                                    sample.loop_start = ls;
+                                    sample.loop_start = ls.min(frames);
                                 }
                                 if let Some(le) = sample_meta.loop_end {
-                                    sample.loop_end = le;
+                                    sample.loop_end = le.min(frames);
                                 }
+                                // A loop needs somewhere to go. Points that
+                                // clamped down to an empty or backwards range
+                                // would leave playback wrapping on a single
+                                // frame, which is a buzz rather than a loop,
+                                // so the loop is left off instead. A zero end
+                                // still means "to the end of the audio", as
+                                // it does everywhere else.
                                 if sample_meta.loop_enabled.unwrap_or(false) {
-                                    sample.loop_enabled = true;
+                                    let end = if sample.loop_end == 0 {
+                                        frames
+                                    } else {
+                                        sample.loop_end
+                                    };
+                                    sample.loop_enabled = end > sample.loop_start;
                                 }
                             }
                         }
@@ -1066,6 +1084,22 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
     }
 
+    /// A mono 16-bit WAV of `frames` rising samples, for tests that only
+    /// care about how metadata is applied to it.
+    fn write_test_wav(path: &std::path::Path, frames: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..frames {
+            writer.write_sample((i * 100) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
     #[test]
     fn test_load_directory_with_wav() {
         let dir = std::env::temp_dir().join("rtrack_test_sample_dir");
@@ -1097,6 +1131,82 @@ mod tests {
         assert_eq!(bank.get(0).unwrap().name, "0-kick");
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `samples.json` is hand-written and can outlive the audio it describes.
+    /// Loop points past the end of the file used to be applied as given; a
+    /// `.rtrk` load clamped them, so the same sample set behaved differently
+    /// depending on which path loaded it.
+    #[test]
+    fn test_load_directory_clamps_out_of_range_loop_points() {
+        let dir = std::env::temp_dir().join("rtrack_test_loop_clamp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_test_wav(&dir.join("0-kick.wav"), 100);
+
+        let meta_json = r#"{ "samples": { "0": {
+            "loop_enabled": true, "loop_start": 5000, "loop_end": 6000 } } }"#;
+        std::fs::write(dir.join("samples.json"), meta_json).unwrap();
+
+        let mut bank = SampleBank::new();
+        bank.load_directory(&dir).unwrap();
+        let sample = bank.get(0).unwrap();
+
+        assert!(sample.loop_start <= 100, "loop start past the audio");
+        assert!(sample.loop_end <= 100, "loop end past the audio");
+        // Both points clamp onto the last frame, leaving nothing to loop over.
+        assert!(
+            !sample.loop_enabled,
+            "a loop with no frames in it was left enabled"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clamping must not cost the ordinary case: a loop over the whole file,
+    /// written as an enabled loop with no points, still loops.
+    #[test]
+    fn test_load_directory_keeps_a_whole_file_loop() {
+        let dir = std::env::temp_dir().join("rtrack_test_loop_whole");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_test_wav(&dir.join("0-kick.wav"), 100);
+
+        let meta_json = r#"{ "samples": { "0": { "loop_enabled": true } } }"#;
+        std::fs::write(dir.join("samples.json"), meta_json).unwrap();
+
+        let mut bank = SampleBank::new();
+        bank.load_directory(&dir).unwrap();
+        let sample = bank.get(0).unwrap();
+
+        assert!(sample.loop_enabled);
+        assert_eq!(sample.effective_loop_start(), 0);
+        assert_eq!(sample.effective_loop_end(), 100);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Points that fit the audio are left exactly as written.
+    #[test]
+    fn test_load_directory_keeps_loop_points_that_fit() {
+        let dir = std::env::temp_dir().join("rtrack_test_loop_fits");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_test_wav(&dir.join("0-kick.wav"), 100);
+
+        let meta_json = r#"{ "samples": { "0": {
+            "loop_enabled": true, "loop_start": 20, "loop_end": 80 } } }"#;
+        std::fs::write(dir.join("samples.json"), meta_json).unwrap();
+
+        let mut bank = SampleBank::new();
+        bank.load_directory(&dir).unwrap();
+        let sample = bank.get(0).unwrap();
+
+        assert!(sample.loop_enabled);
+        assert_eq!(sample.loop_start, 20);
+        assert_eq!(sample.loop_end, 80);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -37,6 +37,7 @@ pub mod constants;
 pub mod core;
 pub mod engine;
 pub mod error;
+pub(crate) mod fs;
 pub mod keymap;
 pub mod link;
 pub mod midi;

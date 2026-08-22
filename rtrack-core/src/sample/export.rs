@@ -32,26 +32,191 @@ pub fn render_to_wav(
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
-    let (left, right) = render_song(
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec)
+        .with_context(|| format!("Failed to create WAV: {}", path.display()))?;
+
+    // Each block is written as it is rendered, so the whole song is never
+    // held in memory at once.
+    render_song_streaming(
         song,
         bank,
         instruments,
         channel_fx_params,
         send_bus_params,
         sample_rate,
+        &mut |left, right| write_block(&mut writer, left, right),
     )?;
-    write_wav(path, &left, &right, sample_rate)
+
+    writer.finalize().context("Failed to finalize WAV file")?;
+    Ok(())
 }
 
-/// Render an entire song to stereo f32 buffers (offline, non-real-time).
-fn render_song(
+/// Append one rendered block to an open WAV writer.
+fn write_block<W: std::io::Write + std::io::Seek>(
+    writer: &mut hound::WavWriter<W>,
+    left: &[f32],
+    right: &[f32],
+) -> Result<()> {
+    for i in 0..left.len() {
+        let l = left[i].clamp(-1.0, 1.0);
+        let r = right[i].clamp(-1.0, 1.0);
+        writer
+            .write_sample(l.to_sample::<i16>())
+            .context("Failed to write WAV sample")?;
+        writer
+            .write_sample(r.to_sample::<i16>())
+            .context("Failed to write WAV sample")?;
+    }
+    Ok(())
+}
+
+/// Where each rendered block goes. Called once per block, in order.
+type BlockSink<'a> = dyn FnMut(&[f32], &[f32]) -> Result<()> + 'a;
+
+/// Buffers the offline renderer reuses from block to block.
+///
+/// Rendering used to allocate these inside the tick loop: two master buffers
+/// plus, with channel effects or send buses engaged, one pair per effect
+/// channel -- thirty-four `Vec<f32>`s per tick, zeroed and dropped. A tick at
+/// 170bpm is about 15ms, so a five-minute export spent well over a million
+/// allocations on buffers whose size barely changes.
+struct RenderScratch {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    ch_left: Vec<Vec<f32>>,
+    ch_right: Vec<Vec<f32>>,
+}
+
+impl RenderScratch {
+    fn new() -> Self {
+        Self {
+            left: Vec::new(),
+            right: Vec::new(),
+            ch_left: (0..MAX_EFFECT_CHANNELS).map(|_| Vec::new()).collect(),
+            ch_right: (0..MAX_EFFECT_CHANNELS).map(|_| Vec::new()).collect(),
+        }
+    }
+
+    /// Size every buffer to `frames` and clear it. Tempo changes move the
+    /// frames-per-tick around, so the length is set per block rather than
+    /// once; only a block longer than any before it allocates.
+    fn prepare(&mut self, frames: usize, per_channel: bool) {
+        prepare_buffer(&mut self.left, frames);
+        prepare_buffer(&mut self.right, frames);
+        if per_channel {
+            for ch in 0..MAX_EFFECT_CHANNELS {
+                prepare_buffer(&mut self.ch_left[ch], frames);
+                prepare_buffer(&mut self.ch_right[ch], frames);
+            }
+        }
+    }
+}
+
+fn prepare_buffer(buf: &mut Vec<f32>, frames: usize) {
+    buf.clear();
+    buf.resize(frames, 0.0);
+}
+
+/// Render `frames` frames of the mix into `scratch.left`/`scratch.right`.
+///
+/// The song body and the release tail differ only in how long they are and
+/// in whether notes are still being started, so they share this.
+#[allow(clippy::too_many_arguments)]
+fn render_block(
+    scratch: &mut RenderScratch,
+    frames: usize,
+    per_channel: bool,
+    synth: &mut BuiltinSynth,
+    sample_engine: &mut SamplePlaybackEngine,
+    bank: &SampleBank,
+    channel_effects: &mut [ChannelEffects],
+    send_buses: &mut [effects::SendBus],
+    master_fx: &mut EffectsChain,
+) {
+    scratch.prepare(frames, per_channel);
+
+    if per_channel {
+        for i in 0..frames {
+            let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
+            synth.render_sample_per_channel(&mut ch_out);
+            for (ch, out) in ch_out.iter().enumerate() {
+                scratch.ch_left[ch][i] += out[0];
+                scratch.ch_right[ch][i] += out[1];
+            }
+        }
+
+        sample_engine.render_per_channel(
+            bank,
+            &mut scratch.ch_left,
+            &mut scratch.ch_right,
+            0..frames,
+        );
+
+        for bus in send_buses.iter_mut() {
+            bus.ensure_size(frames);
+            bus.clear_inputs(frames);
+        }
+
+        for (ch, fx) in channel_effects
+            .iter_mut()
+            .enumerate()
+            .take(MAX_EFFECT_CHANNELS)
+        {
+            fx.process(&mut scratch.ch_left[ch], &mut scratch.ch_right[ch]);
+            let send_levels = fx.params.send_levels;
+            for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
+                if bus.params.enabled && send_levels[bus_idx] > 0.0 {
+                    bus.add_send(
+                        &scratch.ch_left[ch],
+                        &scratch.ch_right[ch],
+                        send_levels[bus_idx],
+                    );
+                }
+            }
+            for i in 0..frames {
+                scratch.left[i] += scratch.ch_left[ch][i];
+                scratch.right[i] += scratch.ch_right[ch][i];
+            }
+        }
+
+        for bus in send_buses.iter_mut() {
+            bus.process_to_master(&mut scratch.left, &mut scratch.right, frames);
+        }
+    } else {
+        for i in 0..frames {
+            let (l, r) = synth.render_sample();
+            scratch.left[i] += l;
+            scratch.right[i] += r;
+        }
+        sample_engine.render(bank, &mut scratch.left, &mut scratch.right);
+    }
+
+    master_fx.process(&mut scratch.left, &mut scratch.right);
+}
+
+/// Render an entire song, handing each rendered block to `sink` as it is
+/// produced.
+///
+/// Streaming rather than returning the whole song lets a caller that can
+/// write incrementally -- WAV -- keep only one block in memory instead of
+/// the entire render, which for five stereo minutes at 44.1kHz was about
+/// 105MB of `f32` before encoding even started.
+#[allow(clippy::too_many_arguments)]
+fn render_song_streaming(
     song: &Song,
     bank: &SampleBank,
     instruments: &[ExportInstrument],
     channel_fx_params: &[ChannelEffectsParams],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
-) -> Result<(Vec<f32>, Vec<f32>)> {
+    sink: &mut BlockSink<'_>,
+) -> Result<()> {
     let sr = sample_rate as f64;
 
     // Create offline audio components
@@ -80,8 +245,8 @@ fn render_song(
     let any_send_bus = send_buses.iter().any(|b| b.params.enabled);
     let any_ch_fx = channel_effects.iter().any(|fx| fx.any_enabled());
 
-    let mut all_left = Vec::new();
-    let mut all_right = Vec::new();
+    let per_channel = any_ch_fx || any_send_bus;
+    let mut scratch = RenderScratch::new();
 
     // Drive playback via TrackerEngine (no wrap = stop at end)
     let mut engine = TrackerEngine::new(song, false);
@@ -174,117 +339,67 @@ fn render_song(
         }
 
         // Render audio for this tick
-        let fpt = frames_per_tick;
-        let mut left = vec![0.0f32; fpt];
-        let mut right = vec![0.0f32; fpt];
-
-        if any_ch_fx || any_send_bus {
-            let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-                .map(|_| vec![0.0f32; fpt])
-                .collect();
-            let mut ch_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-                .map(|_| vec![0.0f32; fpt])
-                .collect();
-
-            for i in 0..fpt {
-                let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
-                synth.render_sample_per_channel(&mut ch_out);
-                for ch in 0..MAX_EFFECT_CHANNELS {
-                    ch_left[ch][i] += ch_out[ch][0];
-                    ch_right[ch][i] += ch_out[ch][1];
-                }
-            }
-
-            sample_engine.render_per_channel(bank, &mut ch_left, &mut ch_right, 0..fpt);
-
-            for bus in send_buses.iter_mut() {
-                bus.ensure_size(fpt);
-                bus.clear_inputs(fpt);
-            }
-
-            for ch in 0..MAX_EFFECT_CHANNELS {
-                channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
-                let send_levels = channel_effects[ch].params.send_levels;
-                for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
-                    if bus.params.enabled && send_levels[bus_idx] > 0.0 {
-                        bus.add_send(&ch_left[ch], &ch_right[ch], send_levels[bus_idx]);
-                    }
-                }
-                for i in 0..fpt {
-                    left[i] += ch_left[ch][i];
-                    right[i] += ch_right[ch][i];
-                }
-            }
-
-            for bus in send_buses.iter_mut() {
-                bus.process_to_master(&mut left, &mut right, fpt);
-            }
-        } else {
-            for i in 0..fpt {
-                let (l, r) = synth.render_sample();
-                left[i] += l;
-                right[i] += r;
-            }
-            sample_engine.render(bank, &mut left, &mut right);
-        }
-
-        master_fx.process(&mut left, &mut right);
-        all_left.extend_from_slice(&left);
-        all_right.extend_from_slice(&right);
+        render_block(
+            &mut scratch,
+            frames_per_tick,
+            per_channel,
+            &mut synth,
+            &mut sample_engine,
+            bank,
+            &mut channel_effects,
+            &mut send_buses,
+            &mut master_fx,
+        );
+        sink(&scratch.left, &scratch.right)?;
     }
 
     // Turn off all remaining notes and render a short tail for reverb/release
     synth.note_off_all();
     sample_engine.note_off_all();
     let tail_frames = (sr * 2.0) as usize;
-    let mut tail_left = vec![0.0f32; tail_frames];
-    let mut tail_right = vec![0.0f32; tail_frames];
-    if any_ch_fx || any_send_bus {
-        let mut ch_left: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-            .map(|_| vec![0.0f32; tail_frames])
-            .collect();
-        let mut ch_right: Vec<Vec<f32>> = (0..MAX_EFFECT_CHANNELS)
-            .map(|_| vec![0.0f32; tail_frames])
-            .collect();
-        for i in 0..tail_frames {
-            let mut ch_out = [[0.0f32; 2]; MAX_EFFECT_CHANNELS];
-            synth.render_sample_per_channel(&mut ch_out);
-            for ch in 0..MAX_EFFECT_CHANNELS {
-                ch_left[ch][i] += ch_out[ch][0];
-                ch_right[ch][i] += ch_out[ch][1];
-            }
-        }
-        for bus in send_buses.iter_mut() {
-            bus.ensure_size(tail_frames);
-            bus.clear_inputs(tail_frames);
-        }
-        for ch in 0..MAX_EFFECT_CHANNELS {
-            channel_effects[ch].process(&mut ch_left[ch], &mut ch_right[ch]);
-            let send_levels = channel_effects[ch].params.send_levels;
-            for (bus_idx, bus) in send_buses.iter_mut().enumerate() {
-                if bus.params.enabled && send_levels[bus_idx] > 0.0 {
-                    bus.add_send(&ch_left[ch], &ch_right[ch], send_levels[bus_idx]);
-                }
-            }
-            for i in 0..tail_frames {
-                tail_left[i] += ch_left[ch][i];
-                tail_right[i] += ch_right[ch][i];
-            }
-        }
-        for bus in send_buses.iter_mut() {
-            bus.process_to_master(&mut tail_left, &mut tail_right, tail_frames);
-        }
-    } else {
-        for i in 0..tail_frames {
-            let (l, r) = synth.render_sample();
-            tail_left[i] += l;
-            tail_right[i] += r;
-        }
-    }
-    master_fx.process(&mut tail_left, &mut tail_right);
-    all_left.extend_from_slice(&tail_left);
-    all_right.extend_from_slice(&tail_right);
+    render_block(
+        &mut scratch,
+        tail_frames,
+        per_channel,
+        &mut synth,
+        &mut sample_engine,
+        bank,
+        &mut channel_effects,
+        &mut send_buses,
+        &mut master_fx,
+    );
+    sink(&scratch.left, &scratch.right)?;
 
+    Ok(())
+}
+
+/// Render an entire song to stereo f32 buffers (offline, non-real-time).
+///
+/// For callers that need the whole render at once; FLAC encoding does,
+/// since the encoder takes its input as a single source.
+fn render_song(
+    song: &Song,
+    bank: &SampleBank,
+    instruments: &[ExportInstrument],
+    channel_fx_params: &[ChannelEffectsParams],
+    send_bus_params: &[effects::SendBusParams],
+    sample_rate: u32,
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    let mut all_left = Vec::new();
+    let mut all_right = Vec::new();
+    render_song_streaming(
+        song,
+        bank,
+        instruments,
+        channel_fx_params,
+        send_bus_params,
+        sample_rate,
+        &mut |left, right| {
+            all_left.extend_from_slice(left);
+            all_right.extend_from_slice(right);
+            Ok(())
+        },
+    )?;
     Ok((all_left, all_right))
 }
 
@@ -298,31 +413,6 @@ fn to_interleaved_i16(left: &[f32], right: &[f32]) -> Vec<i16> {
         samples.push(r.to_sample::<i16>());
     }
     samples
-}
-
-fn write_wav(path: &Path, left: &[f32], right: &[f32], sample_rate: u32) -> Result<()> {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(path, spec)
-        .with_context(|| format!("Failed to create WAV: {}", path.display()))?;
-
-    for i in 0..left.len() {
-        let l = left[i].clamp(-1.0, 1.0);
-        let r = right[i].clamp(-1.0, 1.0);
-        writer
-            .write_sample(l.to_sample::<i16>())
-            .context("Failed to write WAV sample")?;
-        writer
-            .write_sample(r.to_sample::<i16>())
-            .context("Failed to write WAV sample")?;
-    }
-    writer.finalize().context("Failed to finalize WAV file")?;
-
-    Ok(())
 }
 
 /// Render an entire song to a FLAC file (offline, non-real-time).

@@ -92,7 +92,18 @@ pub fn load_recent_files() -> Vec<PathBuf> {
 }
 
 /// Save recent file paths to `<config_dir>/recent.json`.
-/// Deduplicates, limits to MAX_RECENT_FILES, and skips on any I/O error.
+///
+/// Deduplicates, limits to MAX_RECENT_FILES, and skips on any I/O error --
+/// losing the recent list is not worth interrupting the user over.
+///
+/// The write replaces the file atomically. A plain write truncates first, so
+/// a crash or a full disk part-way through left an empty or half-written
+/// list where a complete older one had been.
+///
+/// What this stores: absolute, canonicalized paths to songs the user has
+/// opened, in plain text, under `$XDG_CONFIG_HOME/rtrack` (or
+/// `~/.config/rtrack`). Anyone who can read that directory can see where the
+/// user keeps their work.
 pub fn save_recent_files(files: &[PathBuf]) {
     let Some(dir) = config_dir() else {
         return;
@@ -100,7 +111,7 @@ pub fn save_recent_files(files: &[PathBuf]) {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("recent.json");
     if let Ok(json) = serde_json::to_string(files) {
-        let _ = std::fs::write(&path, json);
+        let _ = crate::fs::write_atomic(&path, json.as_bytes());
     }
 }
 

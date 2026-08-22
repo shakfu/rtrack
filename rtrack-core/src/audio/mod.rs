@@ -33,13 +33,44 @@ fn soft_clip(x: f32) -> f32 {
     }
 }
 
-/// Maximum number of frames per audio callback buffer.
-/// CoreAudio on macOS typically uses 512-1024 frames; we allocate enough for 4096.
+/// Frames of scratch space to allocate per render buffer when the backend
+/// will not say how large a callback it intends to deliver.
+///
+/// CoreAudio on macOS typically uses 512-1024 frames. ALSA has been seen
+/// handing over 4410 -- a tenth of a second at 44.1kHz -- which is why this
+/// is a floor rather than a limit: [`render_buffer_frames`] takes the
+/// device's own figure when there is one, and [`fill_output`] splits
+/// anything larger than whatever was allocated.
 const MAX_CALLBACK_FRAMES: usize = 4096;
+
+/// Ceiling on scratch sizing, however large a buffer the backend claims it
+/// may ask for. A backend reporting an implausible maximum should not be
+/// able to talk rtrack into allocating for it; splitting the callback costs
+/// almost nothing, so the fallback is cheap.
+const MAX_RENDER_BUFFER_FRAMES: usize = 16384;
+
+// The ceiling is a ceiling: `render_buffer_frames` clamps into this range and
+// would panic on an inverted one.
+const _: () = assert!(MAX_RENDER_BUFFER_FRAMES >= MAX_CALLBACK_FRAMES);
 
 // `fill_output` renders in blocks of this size, so a zero would not divide a
 // callback into anything and the loop would never advance.
 const _: () = assert!(MAX_CALLBACK_FRAMES > 0);
+
+/// How many frames of scratch to allocate for a device with this buffer-size
+/// range.
+///
+/// Sizing to what the device actually asks for keeps the common callback a
+/// single block. When the backend reports no range -- or an implausible one
+/// -- the default is used and oversized callbacks are split instead.
+fn render_buffer_frames(buffer_size: &cpal::SupportedBufferSize) -> usize {
+    match buffer_size {
+        cpal::SupportedBufferSize::Range { max, .. } => {
+            (*max as usize).clamp(MAX_CALLBACK_FRAMES, MAX_RENDER_BUFFER_FRAMES)
+        }
+        cpal::SupportedBufferSize::Unknown => MAX_CALLBACK_FRAMES,
+    }
+}
 
 /// Ring buffer capacity for audio commands. Must be large enough to hold all
 /// commands between audio callbacks (~5-10ms at typical buffer sizes).
@@ -473,6 +504,7 @@ impl AudioEngine {
             .default_output_config()
             .context("Failed to get default audio output config")?;
 
+        let render_frames = render_buffer_frames(config.buffer_size());
         let sample_format = config.sample_format();
         let sample_rate = config.sample_rate().0 as i32;
         let channels = config.channels() as usize;
@@ -565,13 +597,13 @@ impl AudioEngine {
                 sample_bank,
                 has_sf2,
                 sample_rate: sr_f64,
-                scratch_left: vec![0.0f32; MAX_CALLBACK_FRAMES],
-                scratch_right: vec![0.0f32; MAX_CALLBACK_FRAMES],
+                scratch_left: vec![0.0f32; render_frames],
+                scratch_right: vec![0.0f32; render_frames],
                 ch_buf_left: (0..MAX_EFFECT_CHANNELS)
-                    .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                    .map(|_| vec![0.0f32; render_frames])
                     .collect(),
                 ch_buf_right: (0..MAX_EFFECT_CHANNELS)
-                    .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                    .map(|_| vec![0.0f32; render_frames])
                     .collect(),
             };
             let mut consumer = consumer;
@@ -1760,6 +1792,37 @@ mod scheduler_tests {
         let mut state = RenderState::for_test(SR);
         state.render_segment(0..0);
         state.render_segment(10..10);
+    }
+
+    /// Scratch is sized to what the device says it may ask for, so the
+    /// ordinary callback is one block. ALSA on a test machine asked for 4410
+    /// frames against a 4096 default, which split every callback in two.
+    #[test]
+    fn render_buffers_are_sized_from_the_device_buffer_range() {
+        let asked = cpal::SupportedBufferSize::Range { min: 64, max: 4410 };
+        assert_eq!(render_buffer_frames(&asked), 4410);
+    }
+
+    /// A backend that reports nothing, or a maximum too small to be worth
+    /// shrinking to, gets the default; one reporting an implausible maximum
+    /// is capped rather than believed. Splitting handles the rest.
+    #[test]
+    fn implausible_or_absent_buffer_ranges_fall_back() {
+        assert_eq!(
+            render_buffer_frames(&cpal::SupportedBufferSize::Unknown),
+            MAX_CALLBACK_FRAMES
+        );
+        assert_eq!(
+            render_buffer_frames(&cpal::SupportedBufferSize::Range { min: 16, max: 256 }),
+            MAX_CALLBACK_FRAMES
+        );
+        assert_eq!(
+            render_buffer_frames(&cpal::SupportedBufferSize::Range {
+                min: 64,
+                max: u32::MAX
+            }),
+            MAX_RENDER_BUFFER_FRAMES
+        );
     }
 
     /// A visualisation queue whose consumer end is dropped.
