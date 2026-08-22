@@ -7,13 +7,21 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 ### Highlights
 
 - **Built-in synthesizer** -- 30 patches (saw, square, FM bell, acid, chiptune, etc.) with ADSR, SVF filter, sub-oscillator, FM synthesis, and per-channel effects (distortion, filter, chorus, delay, reverb)
+
 - **Sample engine** -- WAV/AIFF loading, pitch-shifted playback, loop points, transient-based slicing, up to 32 simultaneous voices with de-clicked voice stealing
+
 - **MIDI I/O** -- virtual ports, hardware routing, step and punch-in recording, aftertouch-to-filter, MIDI learn for CC mapping, clock output/input
+
 - **Ableton Link** -- bidirectional tempo and transport sync with any Link-enabled application
+
 - **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 16 effect commands
+
 - **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects
+
 - **Export** -- offline render to WAV/FLAC (no audio device needed), standard MIDI file import/export
+
 - **Two frontends** -- terminal UI ([ratatui](https://ratatui.rs)) and native GUI ([egui](https://docs.rs/egui)) sharing the same headless core
+
 - **SoundFont support** -- optional GM playback via .sf2 files
 
 ## Install
@@ -170,9 +178,13 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 ### Instruments & Samples
 
 - 256 instrument slots with per-instrument synth parameters or sample assignment
+
 - Sample loading from WAV/AIFF files with pitch-shifted playback (cubic hermite interpolation)
+
 - Sample slicing: equal segments or transient detection (log-energy onset detection against a local average, configurable sensitivity). Either divides the whole sample -- so changing the count re-derives from it -- or subdivides a single slice, selected with the Divide control. Slices land in consecutive slots; slicing over instruments it did not create asks first, and is undoable
+
 - Up to 32 simultaneous voices with ADSR envelopes. A voice that is stolen, or that reaches the end of a one-shot, fades over a few milliseconds rather than stopping dead -- a slice ends at an arbitrary frame, so cutting it leaves an audible step
+
 - Configurable pitch bend range per instrument (default +/-2 semitones)
 
 ### Sample Directory
@@ -202,33 +214,49 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 ### MIDI
 
 - Virtual output port `RTRACK_MIDI` (macOS/Linux) -- visible to any DAW
+
 - Virtual input port `RTRACK_MIDI_IN` -- play notes from external controllers
+
 - Step recording: MIDI input writes notes to the pattern with velocity and instrument auto-fill
+
 - Punch-in recording: arm recording during playback to capture MIDI in real time
+
 - Aftertouch: channel pressure and polyphonic key pressure modulate filter cutoff
+
 - MIDI learn: map any CC to channel effects parameters
+
 - MIDI clock output at 24 ppqn with start/stop messages
+
 - External MIDI clock input for slaving to incoming clock
+
 - Per-channel MIDI channel mapping
 
 ### Sync
 
 - [Ableton Link](https://www.ableton.com/en/link/): bidirectional BPM and transport sync with Link-enabled apps
+
 - Link beat-timeline mode: playback timing driven from Link's beat position, eliminating drift
 
 ### Timing & Groove
 
 - **Swing**: configurable groove amount (0-100%, 50% = straight)
+
 - **Tempo automation**: BPM changes via `Fxx` effect or `tempo_map` in the song file
+
 - **Configurable row highlighting**: beat and bar intervals supporting time signatures like 3/4, 6/8, 5/4
+
 - **Auto-save**: periodic save to temp file every 60 seconds when unsaved changes exist
 
 ### Import / Export
 
 - Save/load songs as `.rtrk` (JSON) -- includes instrument definitions and sample file references
+
 - Atomic save -- writes to temp file then renames, preventing corruption on crash
+
 - Import from standard MIDI files (`.mid`) with CC and program change preservation
+
 - Export to MIDI, WAV (offline render with synth, samples, and effects), and FLAC
+
 - CLI offline render (`--render song.rtrk -o out.wav`) -- no audio device needed
 
 ## File Format
@@ -261,8 +289,11 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 ```
 
 - **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment, synth params)
+
 - **Synth params**: optional per-instrument synthesis parameters. When present, overrides the channel's default patch. New fields use serde defaults for backwards compatibility.
+
 - **Sample refs**: file paths stored relative to the `.rtrk` file, plus metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
+
 - **Backwards compatible**: old `.rtrk` files without newer fields load fine via serde defaults.
 
 ## Examples
@@ -290,8 +321,11 @@ rtrack examples/chord-progression.rtrk
 ## Requirements
 
 - Rust 1.89+
+
 - CMake 3.14+ (builds Ableton Link C++ dependency)
+
 - macOS/Linux: virtual MIDI ports created automatically
+
 - Windows: requires a third-party virtual MIDI driver (e.g., [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
 
 ## Configuration
