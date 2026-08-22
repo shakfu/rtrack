@@ -599,6 +599,10 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("  :link        ", key_style),
             Span::styled("Toggle Ableton Link", text_style),
         ]),
+        Line::from(vec![
+            Span::styled("  :audio       ", key_style),
+            Span::styled("Dropped/rescheduled audio commands", text_style),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "  [Up/Down] scroll | [Esc/F1] close",

@@ -336,6 +336,14 @@ impl TrackerCore {
         self.audio.as_ref().is_some_and(|a| a.has_sf2())
     }
 
+    /// Counts of audio commands dropped or applied ahead of their frame, and
+    /// of callbacks too large for the render buffers. `None` when there is no
+    /// audio engine. All three are silent under load by necessity, so this is
+    /// the only way to tell a scheduling problem from a timing illusion.
+    pub fn audio_stats(&self) -> Option<crate::audio::AudioStats> {
+        self.audio.as_ref().map(|a| a.stats())
+    }
+
     /// Returns true if per-channel audio effects are enabled.
     pub fn audio_effects_enabled(&self) -> bool {
         self.audio.as_ref().is_some_and(|a| a.effects_enabled())

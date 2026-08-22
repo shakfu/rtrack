@@ -3,6 +3,7 @@ pub mod effects;
 pub mod envelope;
 pub mod synth;
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -227,7 +228,7 @@ impl RenderState {
         &mut self,
         frames: usize,
         block_start: u64,
-        pending: &mut Vec<TimedCommand>,
+        pending: &mut VecDeque<TimedCommand>,
         effects_flag: &AtomicBool,
         reclaim: &mut Producer<Reclaimed>,
     ) {
@@ -240,25 +241,19 @@ impl RenderState {
 
         let mut pos = 0usize;
         while pos < frames {
-            // Apply everything due at or before this offset.
+            // Apply everything due at or before this offset. `pending` is
+            // ordered by frame, so the due ones are exactly the front of it.
             let due_at = block_start + pos as u64;
-            let mut i = 0;
-            while i < pending.len() {
-                if pending[i].frame <= due_at {
-                    let cmd = pending.remove(i).cmd;
-                    process_command(self, cmd, effects_flag, reclaim);
-                } else {
-                    i += 1;
-                }
+            while pending.front().is_some_and(|c| c.frame <= due_at) {
+                let cmd = pending.pop_front().expect("front was just read").cmd;
+                process_command(self, cmd, effects_flag, reclaim);
             }
 
-            // Render up to the next command boundary.
+            // Render up to the next command boundary, which is now whatever
+            // is left at the front rather than a scan for the minimum.
             let next_boundary = pending
-                .iter()
-                .map(|c| c.frame)
-                .filter(|&f| f > due_at)
-                .min()
-                .map(|f| f.saturating_sub(block_start) as usize)
+                .front()
+                .map(|c| c.frame.saturating_sub(block_start) as usize)
                 .unwrap_or(frames)
                 .clamp(pos + 1, frames);
 
@@ -377,6 +372,49 @@ impl RenderState {
     }
 }
 
+/// Events the audio path handles silently, counted so they can be seen.
+///
+/// Each of these is a decision taken under a deadline, where the alternative
+/// -- blocking, allocating, or waiting for the UI thread -- would cost a
+/// dropout. That makes them the right decisions and the wrong things to leave
+/// invisible: a note that never sounds and a note that sounds early are both
+/// heard as the sequencer being wrong, with nothing in the program to say
+/// otherwise.
+///
+/// The audio thread only ever increments these, relaxed: a `fetch_add` on an
+/// `AtomicU64` is lock-free and allocation-free everywhere rtrack builds, and
+/// nothing here is ordered against other state.
+#[derive(Debug, Default)]
+struct Counters {
+    commands_dropped: AtomicU64,
+    commands_applied_early: AtomicU64,
+    oversized_callbacks: AtomicU64,
+}
+
+/// A reading of the audio path's silent-event counters, taken by
+/// [`AudioEngine::stats`]. All counts are cumulative since the stream started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AudioStats {
+    /// Commands the UI thread could not queue because the ring buffer was
+    /// full, and therefore dropped. A note-on lost this way never sounds.
+    pub commands_dropped: u64,
+    /// Commands the audio thread applied ahead of their scheduled frame to
+    /// make room in its pending list. These sound, but early.
+    pub commands_applied_early: u64,
+    /// Callbacks larger than the scratch buffers, rendered in several blocks
+    /// rather than by growing the buffers on the audio thread. Harmless in
+    /// itself; a nonzero count says the backend ignores the buffer size that
+    /// was asked for, which is worth knowing before tuning it.
+    pub oversized_callbacks: u64,
+}
+
+impl AudioStats {
+    /// True when nothing has been dropped or rescheduled.
+    pub fn all_clear(&self) -> bool {
+        self.commands_dropped == 0 && self.commands_applied_early == 0
+    }
+}
+
 /// Unified audio engine. Supports:
 /// - SF2 playback via RustySynth (when --sf2 is provided)
 /// - Built-in subtractive synth with ADSR + SVF filter (always available)
@@ -409,6 +447,10 @@ pub struct AudioEngine {
 
     /// Human-readable summary of the output device, for the caller to show.
     device_description: String,
+
+    /// Counts of commands dropped or rescheduled, and of callbacks too large
+    /// for the scratch buffers. Written by the audio thread, read here.
+    counters: Arc<Counters>,
 
     /// Last error reported by the audio stream, if any.
     ///
@@ -509,6 +551,9 @@ impl AudioEngine {
         let stream_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let stream_error_cb = Arc::clone(&stream_error);
 
+        let counters = Arc::new(Counters::default());
+        let counters_cb = Arc::clone(&counters);
+
         let stream = {
             let mut state = RenderState {
                 sf2_synth,
@@ -533,7 +578,8 @@ impl AudioEngine {
             let mut vis_producer = vis_producer;
             // Commands drained from the queue but not yet due. Pre-allocated
             // so the callback never has to grow it.
-            let mut pending: Vec<TimedCommand> = Vec::with_capacity(COMMAND_QUEUE_CAPACITY);
+            let mut pending: VecDeque<TimedCommand> =
+                VecDeque::with_capacity(COMMAND_QUEUE_CAPACITY);
             let mut reclaim = reclaim_producer;
             let frame_clock_cb = Arc::clone(&frame_clock);
 
@@ -556,6 +602,7 @@ impl AudioEngine {
                             &effects_flag,
                             &mut reclaim,
                             &mut vis_producer,
+                            &counters_cb,
                         );
                         peak_l_cb.store(pl.to_bits(), Ordering::Relaxed);
                         peak_r_cb.store(pr.to_bits(), Ordering::Relaxed);
@@ -605,6 +652,7 @@ impl AudioEngine {
             frame_clock,
             reclaim: reclaim_consumer,
             device_description,
+            counters,
             stream_error,
         })
     }
@@ -631,11 +679,10 @@ impl AudioEngine {
     }
 
     /// Send a command to be applied as soon as the audio thread sees it.
-    /// If the queue is full, the command is dropped.
+    /// If the queue is full, the command is dropped and counted.
     #[inline]
     fn send(&mut self, cmd: AudioCommand) {
-        self.reclaim_garbage();
-        let _ = self.producer.push(TimedCommand { frame: 0, cmd });
+        self.send_at(0, cmd);
     }
 
     /// Send a command to be applied at a specific audio frame. Frames in the
@@ -644,7 +691,22 @@ impl AudioEngine {
     #[inline]
     fn send_at(&mut self, frame: u64, cmd: AudioCommand) {
         self.reclaim_garbage();
-        let _ = self.producer.push(TimedCommand { frame, cmd });
+        queue_command(
+            &mut self.producer,
+            &self.counters,
+            TimedCommand { frame, cmd },
+        );
+    }
+
+    /// Read the audio path's silent-event counters.
+    ///
+    /// Cheap enough to poll every UI frame: three relaxed atomic loads.
+    pub fn stats(&self) -> AudioStats {
+        AudioStats {
+            commands_dropped: self.counters.commands_dropped.load(Ordering::Relaxed),
+            commands_applied_early: self.counters.commands_applied_early.load(Ordering::Relaxed),
+            oversized_callbacks: self.counters.oversized_callbacks.load(Ordering::Relaxed),
+        }
     }
 
     /// Frames the output device has consumed so far. Returns 0 before the
@@ -880,6 +942,41 @@ impl AudioEngine {
     }
 }
 
+/// Hand a command to the audio thread, counting it if the queue is full.
+///
+/// Dropping is the only option left -- the audio thread cannot be made to
+/// wait, and the UI thread cannot grow a lock-free ring -- but a lost note-on
+/// is silence the user has no way to explain, so it is at least counted. See
+/// [`AudioEngine::stats`].
+fn queue_command(producer: &mut Producer<TimedCommand>, counters: &Counters, cmd: TimedCommand) {
+    if producer.push(cmd).is_err() {
+        counters.commands_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Insert a command into the audio thread's pending list, keeping it ordered
+/// by frame.
+///
+/// Order is what lets the render loop take the next due command and the next
+/// segment boundary from the front of the list instead of scanning it, which
+/// it did once per segment -- and a callback has as many segments as it has
+/// commands. Equal frames keep their arrival order, so a note-off and the
+/// note-on that replaces it on the same frame still happen in the order the
+/// sequencer sent them.
+///
+/// The sequencer stamps frames as it walks forward in time, so the ordinary
+/// case is an append. A command that sorts earlier -- a live preview note,
+/// stamped for "now", arriving while scheduled notes wait -- costs a shift,
+/// bounded by the list's fixed capacity.
+fn schedule(pending: &mut VecDeque<TimedCommand>, cmd: TimedCommand) {
+    if pending.back().is_none_or(|last| last.frame <= cmd.frame) {
+        pending.push_back(cmd);
+    } else {
+        let at = pending.partition_point(|c| c.frame <= cmd.frame);
+        pending.insert(at, cmd);
+    }
+}
+
 /// Fill one output callback buffer, returning the peak level of each side.
 ///
 /// Split out of the stream closure so that what the callback does -- above
@@ -891,25 +988,33 @@ fn fill_output(
     channels: usize,
     block_start: u64,
     state: &mut RenderState,
-    pending: &mut Vec<TimedCommand>,
+    pending: &mut VecDeque<TimedCommand>,
     consumer: &mut Consumer<TimedCommand>,
     effects_flag: &AtomicBool,
     reclaim: &mut Producer<Reclaimed>,
     vis: &mut Producer<f32>,
+    counters: &Counters,
 ) -> (f32, f32) {
     let frames = data.len() / channels;
+    if frames > state.capacity() {
+        counters.oversized_callbacks.fetch_add(1, Ordering::Relaxed);
+    }
 
     // Drain the queue into the pending list. Commands are kept until their
     // frame falls inside a rendered segment, which is what makes note timing
     // independent of when the UI thread happened to run.
     while let Ok(cmd) = consumer.pop() {
-        if pending.len() == pending.capacity() {
-            // Cannot grow on the audio thread: apply the oldest immediately
-            // rather than dropping it.
-            let stale = pending.remove(0);
-            process_command(state, stale.cmd, effects_flag, reclaim);
+        if pending.len() == COMMAND_QUEUE_CAPACITY {
+            // Cannot grow on the audio thread: apply the one closest to being
+            // due immediately rather than dropping it.
+            if let Some(stale) = pending.pop_front() {
+                process_command(state, stale.cmd, effects_flag, reclaim);
+                counters
+                    .commands_applied_early
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
-        pending.push(cmd);
+        schedule(pending, cmd);
     }
 
     // Render in blocks the scratch buffers can hold. A host is free to hand
@@ -1672,11 +1777,23 @@ mod scheduler_tests {
         block_start: u64,
         queued: Vec<TimedCommand>,
     ) -> Vec<f32> {
+        callback_counting(state, frames, block_start, queued, &Counters::default())
+    }
+
+    /// As [`callback`], but with the counters the audio thread writes to
+    /// visible to the caller.
+    fn callback_counting(
+        state: &mut RenderState,
+        frames: usize,
+        block_start: u64,
+        queued: Vec<TimedCommand>,
+        counters: &Counters,
+    ) -> Vec<f32> {
         let (mut producer, mut consumer) = RingBuffer::new(COMMAND_QUEUE_CAPACITY);
         for cmd in queued {
             assert!(producer.push(cmd).is_ok(), "test queued more than fits");
         }
-        let mut pending: Vec<TimedCommand> = Vec::with_capacity(COMMAND_QUEUE_CAPACITY);
+        let mut pending: VecDeque<TimedCommand> = VecDeque::with_capacity(COMMAND_QUEUE_CAPACITY);
         let mut data = vec![0.0f32; frames * 2];
         fill_output(
             &mut data,
@@ -1688,6 +1805,7 @@ mod scheduler_tests {
             &flag(),
             &mut reclaim_sink(),
             &mut vis_sink(),
+            counters,
         );
         data
     }
@@ -1764,6 +1882,206 @@ mod scheduler_tests {
             one_pass.iter().any(|s| s.abs() > 1e-6),
             "test rendered silence, so it would pass trivially"
         );
+    }
+
+    /// The pending list is kept in frame order, so the render loop can take
+    /// the next due command and the next segment boundary from its front.
+    /// Commands stamped for the same frame keep the order they arrived in --
+    /// a note-off and the note-on replacing it are not interchangeable.
+    #[test]
+    fn the_pending_list_is_ordered_by_frame_and_stable_within_a_frame() {
+        let mut pending: VecDeque<TimedCommand> = VecDeque::with_capacity(COMMAND_QUEUE_CAPACITY);
+        for (frame, note) in [(10, 60), (5, 61), (10, 62), (1, 63)] {
+            schedule(
+                &mut pending,
+                TimedCommand {
+                    frame,
+                    cmd: note_on(0, note),
+                },
+            );
+        }
+
+        let order: Vec<(u64, u8)> = pending
+            .iter()
+            .map(|c| {
+                let note = match c.cmd {
+                    AudioCommand::NoteOn { note, .. } => note,
+                    _ => unreachable!("only note-ons were scheduled"),
+                };
+                (c.frame, note)
+            })
+            .collect();
+        assert_eq!(order, vec![(1, 63), (5, 61), (10, 60), (10, 62)]);
+    }
+
+    /// Two commands that come due in the same segment are applied in the
+    /// order they were stamped for, not the order they were pushed. Scanning
+    /// the list applied them by arrival, so a note-off sent after the note-on
+    /// it precedes in time silenced a note that should have sounded.
+    #[test]
+    fn commands_due_together_are_applied_in_frame_order() {
+        let mut state = RenderState::for_test(SR);
+
+        // Both frames are behind the start of the buffer, so both come due in
+        // the first segment. Arrival order is the reverse of frame order.
+        let data = callback(
+            &mut state,
+            512,
+            10,
+            vec![
+                TimedCommand {
+                    frame: 5,
+                    cmd: note_on(0, 60),
+                },
+                TimedCommand {
+                    frame: 2,
+                    cmd: AudioCommand::NoteOffAllChannel { channel: 0 },
+                },
+            ],
+        );
+
+        assert!(
+            peak(&data, 0..512) > 1e-6,
+            "the note-off was applied after the note-on it precedes"
+        );
+    }
+
+    /// A command that sorts before ones already queued still sounds on its
+    /// own frame rather than being pushed to the back of the list.
+    #[test]
+    fn a_command_inserted_out_of_order_lands_on_its_own_frame() {
+        let mut state = RenderState::for_test(SR);
+
+        let data = callback(
+            &mut state,
+            512,
+            0,
+            vec![
+                TimedCommand {
+                    frame: 300,
+                    cmd: note_on(0, 48),
+                },
+                TimedCommand {
+                    frame: 100,
+                    cmd: note_on(0, 60),
+                },
+            ],
+        );
+
+        assert!(
+            peak(&data, 0..100) < 1e-9,
+            "a note sounded before either command was due"
+        );
+        assert!(
+            peak(&data, 100..300) > 1e-6,
+            "the earlier note never sounded"
+        );
+    }
+
+    /// A command that will not fit is dropped, and the drop is counted: this
+    /// is the one silent failure that removes sound rather than moving it.
+    #[test]
+    fn commands_that_do_not_fit_the_queue_are_counted() {
+        let counters = Counters::default();
+        let (mut producer, _consumer) = RingBuffer::new(2);
+
+        for _ in 0..2 {
+            queue_command(
+                &mut producer,
+                &counters,
+                TimedCommand {
+                    frame: 0,
+                    cmd: note_on(0, 60),
+                },
+            );
+        }
+        assert_eq!(counters.commands_dropped.load(Ordering::Relaxed), 0);
+
+        queue_command(
+            &mut producer,
+            &counters,
+            TimedCommand {
+                frame: 0,
+                cmd: note_on(0, 60),
+            },
+        );
+        assert_eq!(counters.commands_dropped.load(Ordering::Relaxed), 1);
+    }
+
+    /// An oversized callback is counted, so a backend that ignores the
+    /// buffer size asked for can be told apart from one that honours it.
+    #[test]
+    fn an_oversized_callback_is_counted() {
+        let mut state = RenderState::for_test(SR);
+        let counters = Counters::default();
+
+        callback_counting(&mut state, 256, 0, Vec::new(), &counters);
+        assert_eq!(counters.oversized_callbacks.load(Ordering::Relaxed), 0);
+
+        callback_counting(
+            &mut state,
+            MAX_CALLBACK_FRAMES + 1,
+            0,
+            Vec::new(),
+            &counters,
+        );
+        assert_eq!(counters.oversized_callbacks.load(Ordering::Relaxed), 1);
+    }
+
+    /// The pending list cannot grow on the audio thread, so a callback that
+    /// receives more commands than it holds applies the oldest ahead of their
+    /// frame. They sound early rather than not at all, and the count is what
+    /// says so afterwards.
+    #[test]
+    fn commands_applied_ahead_of_their_frame_are_counted() {
+        let mut state = RenderState::for_test(SR);
+        let counters = Counters::default();
+
+        // Every command is stamped past the end of the buffer, so none is due
+        // within it: anything applied was applied early to make room.
+        let queued: Vec<TimedCommand> = (0..COMMAND_QUEUE_CAPACITY)
+            .map(|i| TimedCommand {
+                frame: 100_000 + i as u64,
+                cmd: note_on(0, 60),
+            })
+            .collect();
+        callback_counting(&mut state, 256, 0, queued, &counters);
+
+        // The list holds COMMAND_QUEUE_CAPACITY, and the queue delivered that
+        // many, so the last push is the only one that had to make room.
+        assert_eq!(counters.commands_applied_early.load(Ordering::Relaxed), 0);
+
+        // A second callback's worth on top of a list that is already full.
+        let queued: Vec<TimedCommand> = (0..8)
+            .map(|i| TimedCommand {
+                frame: 200_000 + i as u64,
+                cmd: note_on(0, 60),
+            })
+            .collect();
+        let (mut producer, mut consumer) = RingBuffer::new(COMMAND_QUEUE_CAPACITY);
+        for cmd in queued {
+            assert!(producer.push(cmd).is_ok());
+        }
+        let mut pending: VecDeque<TimedCommand> = (0..COMMAND_QUEUE_CAPACITY)
+            .map(|i| TimedCommand {
+                frame: 100_000 + i as u64,
+                cmd: note_on(0, 60),
+            })
+            .collect();
+        let mut data = vec![0.0f32; 256 * 2];
+        fill_output(
+            &mut data,
+            2,
+            0,
+            &mut state,
+            &mut pending,
+            &mut consumer,
+            &flag(),
+            &mut reclaim_sink(),
+            &mut vis_sink(),
+            &counters,
+        );
+        assert_eq!(counters.commands_applied_early.load(Ordering::Relaxed), 8);
     }
 
     /// A command stamped for a frame in a later block still lands on that

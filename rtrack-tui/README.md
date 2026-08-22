@@ -128,6 +128,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:load` | Open file browser to load a sample |
 | `:open` | Open file browser to load a song (same as Ctrl+O) |
 | `:recent` | Open recent files list (last 3 songs) |
+| `:audio` / `:astat` | Report dropped or rescheduled audio commands |
 
 ### Track Config (Enter on channel)
 

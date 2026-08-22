@@ -1144,6 +1144,22 @@ impl App {
             "recent" => {
                 self.open_recent_files();
             }
+            "audio" | "astat" => {
+                self.mode = Mode::Normal;
+                self.status_message = Some(match self.core.audio_stats() {
+                    Some(stats) if stats.all_clear() => format!(
+                        "Audio OK: nothing dropped or rescheduled ({} oversized callbacks)",
+                        stats.oversized_callbacks
+                    ),
+                    Some(stats) => format!(
+                        "Audio: {} commands dropped, {} applied early, {} oversized callbacks",
+                        stats.commands_dropped,
+                        stats.commands_applied_early,
+                        stats.oversized_callbacks
+                    ),
+                    None => "No audio engine".to_string(),
+                });
+            }
             _ => {
                 self.mode = self.prev_mode;
                 self.status_message = Some(format!("Unknown command: {}", cmd));

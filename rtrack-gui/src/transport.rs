@@ -195,6 +195,31 @@ impl RtrackApp {
                 );
             }
 
+            // Commands the audio path could not schedule as asked. Both are
+            // handled silently under load -- there is nothing better to do on
+            // a deadline -- so without an indicator they read as the sequencer
+            // being wrong. Shown only when there is something to report.
+            if let Some(stats) = self.core.audio_stats() {
+                if !stats.all_clear() {
+                    ui.label(
+                        RichText::new(format!(
+                            "!{}",
+                            stats.commands_dropped + stats.commands_applied_early
+                        ))
+                        .monospace()
+                        .size(12.0)
+                        .color(Color32::from_rgb(220, 100, 100)),
+                    )
+                    .on_hover_text(format!(
+                        "{} audio commands dropped (never sounded), {} applied early\n\
+                         {} callbacks larger than the render buffers",
+                        stats.commands_dropped,
+                        stats.commands_applied_early,
+                        stats.oversized_callbacks
+                    ));
+                }
+            }
+
             // MIDI status indicator (clickable -- opens MIDI ports dialog)
             {
                 let midi_out = self.core.midi.is_connected();
