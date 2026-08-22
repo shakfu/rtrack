@@ -717,8 +717,23 @@ mod tests {
 
     #[test]
     fn test_list_ports() {
-        // Should not panic even if no MIDI devices are present
-        let result = MidiEngine::list_ports();
-        assert!(result.is_ok());
+        // Two different "no MIDI" situations exist and only one of them is an
+        // empty list. A machine whose MIDI backend works but has nothing
+        // plugged in returns `Ok(vec![])`; a headless container with no ALSA
+        // sequencer cannot open the backend at all and returns midir's
+        // `InitError`. Both are valid here -- what must hold is that the call
+        // returns rather than panicking, and that any names it does report are
+        // usable.
+        match MidiEngine::list_ports() {
+            Ok(names) => assert!(
+                names.iter().all(|n| !n.is_empty()),
+                "port names must be non-empty: {names:?}"
+            ),
+            Err(e) => assert!(
+                e.downcast_ref::<midir::InitError>().is_some(),
+                "listing ports failed for a reason other than an unavailable \
+                 MIDI backend: {e:?}"
+            ),
+        }
     }
 }
