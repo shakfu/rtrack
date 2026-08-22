@@ -12,9 +12,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: read
+        # Read once here rather than in every matrix job, so the build and
+        # bundle artifacts cannot end up stamped with different versions, and
+        # so Windows does not need a second implementation in PowerShell. The
+        # workspace crates share a version; the TUI's stands for the project.
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+            | jq -er '.packages[] | select(.name == "rtrack-tui") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "building rtrack $v"
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    needs: version
     strategy:
       # One platform failing should not hide whether the others produced
       # usable binaries.
@@ -61,7 +82,7 @@ jobs:
         # action's own zip does not carry the executable bit, so a downloaded
         # binary would need a chmod before it would run.
         run: |
-          staging="rtrack-${{ matrix.name }}"
+          staging="rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}"
           mkdir -p "$staging"
           cp target/release/rtrack target/release/rtrack-gui "$staging/"
           cp README.md LICENSE "$staging/"
@@ -71,18 +92,63 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $staging = "rtrack-${{ matrix.name }}"
+          $staging = "rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item target/release/rtrack.exe, target/release/rtrack-gui.exe $staging
           Copy-Item README.md, LICENSE $staging
 
       - uses: actions/upload-artifact@v7
         with:
-          name: rtrack-${{ matrix.name }}
+          name: rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}
           path: |
-            rtrack-${{ matrix.name }}.tar.gz
-            rtrack-${{ matrix.name }}/*.exe
-            rtrack-${{ matrix.name }}/README.md
-            rtrack-${{ matrix.name }}/LICENSE
+            rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}.tar.gz
+            rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}/*.exe
+            rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}/README.md
+            rtrack-${{ needs.version.outputs.version }}-${{ matrix.name }}/LICENSE
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    name: bundle
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    # `needs` alone would skip this whenever any platform fails. The matrix
+    # does not fail fast, so bundle whatever did build and leave the failed
+    # job to be the thing that reports the failure.
+    if: ${{ !cancelled() && needs.version.result == 'success' }}
+
+    steps:
+      - name: Collect the per-platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: rtrack-${{ needs.version.outputs.version }}-*
+          path: downloads
+
+      - name: Repack as one archive per platform
+        # Each platform arrives in its own directory: Unix as the tarball the
+        # build job made, Windows as loose files. Zipping the latter gives the
+        # bundle a uniform "one archive per platform" shape, and keeps the
+        # tarballs sealed so their executable bits survive the artifact zip.
+        run: |
+          mkdir -p dist
+          for dir in downloads/*/; do
+            name=$(basename "$dir")
+            if compgen -G "$dir"*.tar.gz > /dev/null; then
+              mv "$dir"*.tar.gz dist/
+            else
+              (cd "$dir" && zip -qr "$GITHUB_WORKSPACE/dist/$name.zip" .)
+            fi
+          done
+          # Written outside dist and moved in, so the checksum file cannot
+          # end up listing itself.
+          (cd dist && sha256sum ./* > ../SHA256SUMS)
+          mv SHA256SUMS dist/
+          ls -l dist
+
+      - name: Upload the combined bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: rtrack-${{ needs.version.outputs.version }}-all-platforms
+          path: dist/
           if-no-files-found: error
           retention-days: 14
