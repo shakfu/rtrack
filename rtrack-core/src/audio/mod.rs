@@ -36,6 +36,10 @@ fn soft_clip(x: f32) -> f32 {
 /// CoreAudio on macOS typically uses 512-1024 frames; we allocate enough for 4096.
 const MAX_CALLBACK_FRAMES: usize = 4096;
 
+// `fill_output` renders in blocks of this size, so a zero would not divide a
+// callback into anything and the loop would never advance.
+const _: () = assert!(MAX_CALLBACK_FRAMES > 0);
+
 /// Ring buffer capacity for audio commands. Must be large enough to hold all
 /// commands between audio callbacks (~5-10ms at typical buffer sizes).
 const COMMAND_QUEUE_CAPACITY: usize = 256;
@@ -203,18 +207,63 @@ impl RenderState {
         }
     }
 
-    /// Grow the scratch buffers if this callback is larger than any so far.
-    /// Allocation on the audio thread is undesirable, hence sizing for
-    /// `MAX_CALLBACK_FRAMES` up front and treating this as a rare fallback.
-    fn ensure_capacity(&mut self, frames: usize) {
-        if self.scratch_left.len() >= frames {
-            return;
-        }
-        self.scratch_left.resize(frames, 0.0);
-        self.scratch_right.resize(frames, 0.0);
-        for ch in 0..MAX_EFFECT_CHANNELS {
-            self.ch_buf_left[ch].resize(frames, 0.0);
-            self.ch_buf_right[ch].resize(frames, 0.0);
+    /// Frames the scratch buffers can hold. A block larger than this has to
+    /// be rendered in more than one call.
+    fn capacity(&self) -> usize {
+        self.scratch_left.len()
+    }
+
+    /// Render `frames` frames of output into the scratch buffers, applying
+    /// every command in `pending` that comes due within them at its own
+    /// sample offset.
+    ///
+    /// `frames` must not exceed [`RenderState::capacity`]. Growing the
+    /// buffers to fit instead -- what this used to do -- allocates on the
+    /// audio thread, which can block it for as long as the allocator needs
+    /// and produce the dropout the buffer exists to prevent. The caller
+    /// splits an oversized callback into blocks rather than resizing, so the
+    /// hard case is bounded work rather than a rare surprise.
+    fn render_block(
+        &mut self,
+        frames: usize,
+        block_start: u64,
+        pending: &mut Vec<TimedCommand>,
+        effects_flag: &AtomicBool,
+        reclaim: &mut Producer<Reclaimed>,
+    ) {
+        debug_assert!(
+            frames <= self.capacity(),
+            "block of {frames} frames exceeds scratch capacity {}",
+            self.capacity()
+        );
+        let frames = frames.min(self.capacity());
+
+        let mut pos = 0usize;
+        while pos < frames {
+            // Apply everything due at or before this offset.
+            let due_at = block_start + pos as u64;
+            let mut i = 0;
+            while i < pending.len() {
+                if pending[i].frame <= due_at {
+                    let cmd = pending.remove(i).cmd;
+                    process_command(self, cmd, effects_flag, reclaim);
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Render up to the next command boundary.
+            let next_boundary = pending
+                .iter()
+                .map(|c| c.frame)
+                .filter(|&f| f > due_at)
+                .min()
+                .map(|f| f.saturating_sub(block_start) as usize)
+                .unwrap_or(frames)
+                .clamp(pos + 1, frames);
+
+            self.render_segment(pos..next_boundary);
+            pos = next_boundary;
         }
     }
 
@@ -497,87 +546,19 @@ impl AudioEngine {
                         // sequencer stamps commands in this timebase.
                         let block_start = frame_clock_cb.load(Ordering::Relaxed);
 
-                        state.ensure_capacity(frames);
-
-                        // Drain the queue into the pending list. Commands are
-                        // kept until their frame falls inside a rendered
-                        // segment, which is what makes note timing independent
-                        // of when the UI thread happened to run.
-                        while let Ok(cmd) = consumer.pop() {
-                            if pending.len() == pending.capacity() {
-                                // Cannot grow on the audio thread: apply the
-                                // oldest immediately rather than dropping it.
-                                let stale = pending.remove(0);
-                                process_command(&mut state, stale.cmd, &effects_flag, &mut reclaim);
-                            }
-                            pending.push(cmd);
-                        }
-
-                        // Render the buffer in segments, applying each command
-                        // at its own sample offset.
-                        let mut pos = 0usize;
-                        while pos < frames {
-                            // Apply everything due at or before this offset.
-                            let due_at = block_start + pos as u64;
-                            let mut i = 0;
-                            while i < pending.len() {
-                                if pending[i].frame <= due_at {
-                                    let cmd = pending.remove(i).cmd;
-                                    process_command(&mut state, cmd, &effects_flag, &mut reclaim);
-                                } else {
-                                    i += 1;
-                                }
-                            }
-
-                            // Render up to the next command boundary.
-                            let next_boundary = pending
-                                .iter()
-                                .map(|c| c.frame)
-                                .filter(|&f| f > due_at)
-                                .min()
-                                .map(|f| (f - block_start) as usize)
-                                .unwrap_or(frames)
-                                .clamp(pos + 1, frames);
-
-                            state.render_segment(pos..next_boundary);
-                            pos = next_boundary;
-                        }
-
-                        let left = &state.scratch_left[..frames];
-                        let right = &state.scratch_right[..frames];
-
-                        // Interleave into output buffer with soft clamp
-                        for i in 0..frames {
-                            let base = i * channels;
-                            data[base] = soft_clip(left[i]);
-                            if channels > 1 {
-                                data[base + 1] = soft_clip(right[i]);
-                            }
-                            for ch in 2..channels {
-                                data[base + ch] = 0.0;
-                            }
-                        }
-
-                        // Visualization: compute peak levels and push mono samples
-                        {
-                            let mut pl = 0.0f32;
-                            let mut pr = 0.0f32;
-                            for i in 0..frames {
-                                let l = left[i].abs();
-                                let r = right[i].abs();
-                                if l > pl {
-                                    pl = l;
-                                }
-                                if r > pr {
-                                    pr = r;
-                                }
-                                // Push mono (L+R average) to ring buffer, drop if full
-                                let mono = (left[i] + right[i]) * 0.5;
-                                let _ = vis_producer.push(mono);
-                            }
-                            peak_l_cb.store(pl.to_bits(), Ordering::Relaxed);
-                            peak_r_cb.store(pr.to_bits(), Ordering::Relaxed);
-                        }
+                        let (pl, pr) = fill_output(
+                            data,
+                            channels,
+                            block_start,
+                            &mut state,
+                            &mut pending,
+                            &mut consumer,
+                            &effects_flag,
+                            &mut reclaim,
+                            &mut vis_producer,
+                        );
+                        peak_l_cb.store(pl.to_bits(), Ordering::Relaxed);
+                        peak_r_cb.store(pr.to_bits(), Ordering::Relaxed);
 
                         // Snapshot active sample voices for UI (non-blocking)
                         if let Ok(mut snaps) = voice_snapshots_cb.try_lock() {
@@ -897,6 +878,91 @@ impl AudioEngine {
             Err(_) => 0,
         }
     }
+}
+
+/// Fill one output callback buffer, returning the peak level of each side.
+///
+/// Split out of the stream closure so that what the callback does -- above
+/// all, what it does with a buffer larger than the scratch space -- can be
+/// exercised without an audio device.
+#[allow(clippy::too_many_arguments)]
+fn fill_output(
+    data: &mut [f32],
+    channels: usize,
+    block_start: u64,
+    state: &mut RenderState,
+    pending: &mut Vec<TimedCommand>,
+    consumer: &mut Consumer<TimedCommand>,
+    effects_flag: &AtomicBool,
+    reclaim: &mut Producer<Reclaimed>,
+    vis: &mut Producer<f32>,
+) -> (f32, f32) {
+    let frames = data.len() / channels;
+
+    // Drain the queue into the pending list. Commands are kept until their
+    // frame falls inside a rendered segment, which is what makes note timing
+    // independent of when the UI thread happened to run.
+    while let Ok(cmd) = consumer.pop() {
+        if pending.len() == pending.capacity() {
+            // Cannot grow on the audio thread: apply the oldest immediately
+            // rather than dropping it.
+            let stale = pending.remove(0);
+            process_command(state, stale.cmd, effects_flag, reclaim);
+        }
+        pending.push(cmd);
+    }
+
+    // Render in blocks the scratch buffers can hold. A host is free to hand
+    // over a buffer larger than the one they were sized for -- cpal asks for
+    // a buffer size but the backend is not obliged to honour it -- and
+    // growing them here would allocate on the audio thread. Splitting costs
+    // nothing: the DSP is sample-wise, and the callback is already rendered
+    // in segments so that commands land on their own frame.
+    let mut pl = 0.0f32;
+    let mut pr = 0.0f32;
+    let mut done = 0usize;
+    while done < frames {
+        let block = (frames - done).min(state.capacity());
+        state.render_block(
+            block,
+            block_start + done as u64,
+            pending,
+            effects_flag,
+            reclaim,
+        );
+
+        let left = &state.scratch_left[..block];
+        let right = &state.scratch_right[..block];
+
+        // Interleave into the output buffer with soft clamp, tracking peaks
+        // and feeding the visualiser as we go so each block is read once.
+        for i in 0..block {
+            let base = (done + i) * channels;
+            data[base] = soft_clip(left[i]);
+            if channels > 1 {
+                data[base + 1] = soft_clip(right[i]);
+            }
+            for ch in 2..channels {
+                data[base + ch] = 0.0;
+            }
+
+            let l = left[i].abs();
+            let r = right[i].abs();
+            if l > pl {
+                pl = l;
+            }
+            if r > pr {
+                pr = r;
+            }
+            // Push mono (L+R average) to ring buffer, drop if full
+            let mono = (left[i] + right[i]) * 0.5;
+            let _ = vis.push(mono);
+        }
+
+        done += block;
+    }
+
+    (pl, pr)
 }
 
 /// Process a single command on the audio thread. Called from inside the audio callback.
@@ -1591,16 +1657,141 @@ mod scheduler_tests {
         state.render_segment(10..10);
     }
 
+    /// A visualisation queue whose consumer end is dropped.
+    fn vis_sink() -> Producer<f32> {
+        let (producer, _consumer) = RingBuffer::new(VIS_BUFFER_CAPACITY);
+        producer
+    }
+
+    /// Run one stereo callback of `frames` frames, returning the interleaved
+    /// output. `queued` stands in for what the sequencer pushed since the
+    /// last callback.
+    fn callback(
+        state: &mut RenderState,
+        frames: usize,
+        block_start: u64,
+        queued: Vec<TimedCommand>,
+    ) -> Vec<f32> {
+        let (mut producer, mut consumer) = RingBuffer::new(COMMAND_QUEUE_CAPACITY);
+        for cmd in queued {
+            assert!(producer.push(cmd).is_ok(), "test queued more than fits");
+        }
+        let mut pending: Vec<TimedCommand> = Vec::with_capacity(COMMAND_QUEUE_CAPACITY);
+        let mut data = vec![0.0f32; frames * 2];
+        fill_output(
+            &mut data,
+            2,
+            block_start,
+            state,
+            &mut pending,
+            &mut consumer,
+            &flag(),
+            &mut reclaim_sink(),
+            &mut vis_sink(),
+        );
+        data
+    }
+
+    fn note_on(channel: u8, note: u8) -> AudioCommand {
+        AudioCommand::NoteOn {
+            channel,
+            note,
+            velocity: 100,
+        }
+    }
+
+    /// Peak of the left channel over an interleaved stereo range.
+    fn peak(data: &[f32], range: std::ops::Range<usize>) -> f32 {
+        range.map(|i| data[i * 2].abs()).fold(0.0f32, f32::max)
+    }
+
+    /// The scratch buffers are sized once, up front. A backend is free to
+    /// hand over a larger buffer than the one they were sized for, and
+    /// growing them to fit -- what the callback used to do -- allocates on
+    /// the audio thread, where a blocking allocator call is exactly the
+    /// dropout the buffering exists to prevent.
     #[test]
-    fn ensure_capacity_grows_every_scratch_buffer() {
+    fn an_oversized_callback_does_not_grow_the_scratch_buffers() {
         let mut state = RenderState::for_test(SR);
-        let big = MAX_CALLBACK_FRAMES + 128;
-        state.ensure_capacity(big);
-        assert!(state.scratch_left.len() >= big);
-        assert!(state.scratch_right.len() >= big);
-        assert!(state.ch_buf_left.iter().all(|b| b.len() >= big));
-        assert!(state.ch_buf_right.iter().all(|b| b.len() >= big));
-        // Rendering the full width must not panic.
-        state.render_segment(0..big);
+        apply(&mut state, note_on(0, 60));
+
+        let frames = MAX_CALLBACK_FRAMES + 777;
+        let data = callback(&mut state, frames, 0, Vec::new());
+
+        assert_eq!(state.scratch_left.len(), MAX_CALLBACK_FRAMES);
+        assert_eq!(state.scratch_right.len(), MAX_CALLBACK_FRAMES);
+        assert!(state
+            .ch_buf_left
+            .iter()
+            .all(|b| b.len() == MAX_CALLBACK_FRAMES));
+        assert!(state
+            .ch_buf_right
+            .iter()
+            .all(|b| b.len() == MAX_CALLBACK_FRAMES));
+
+        // The frames past the first block were rendered, not left as the
+        // silence the buffer arrived filled with.
+        assert!(
+            peak(&data, MAX_CALLBACK_FRAMES..frames) > 1e-6,
+            "the tail of an oversized callback came back silent"
+        );
+        assert!(data.iter().all(|s| s.is_finite()));
+    }
+
+    /// Splitting a callback into blocks must be inaudible: the same note
+    /// through the same state has to produce the same samples either way.
+    #[test]
+    fn a_split_callback_renders_the_same_audio_as_one_pass() {
+        let frames = MAX_CALLBACK_FRAMES + 500;
+
+        let mut a = RenderState::for_test(SR);
+        apply(&mut a, note_on(0, 55));
+        let one_pass = callback(&mut a, frames, 0, Vec::new());
+
+        // The same frames, taken as two callbacks the scratch space can hold
+        // in one block each.
+        let half = frames / 2;
+        let mut b = RenderState::for_test(SR);
+        apply(&mut b, note_on(0, 55));
+        let mut two_passes = callback(&mut b, half, 0, Vec::new());
+        two_passes.extend(callback(&mut b, frames - half, half as u64, Vec::new()));
+
+        assert_eq!(one_pass.len(), two_passes.len());
+        for (i, (x, y)) in one_pass.iter().zip(two_passes.iter()).enumerate() {
+            assert_eq!(x, y, "sample {i} differs between one pass and two");
+        }
+        assert!(
+            one_pass.iter().any(|s| s.abs() > 1e-6),
+            "test rendered silence, so it would pass trivially"
+        );
+    }
+
+    /// A command stamped for a frame in a later block still lands on that
+    /// frame. Blocking is a rendering detail; it must not quantise timing to
+    /// the block size the way the UI frame rate used to.
+    #[test]
+    fn a_command_due_in_a_later_block_lands_on_its_own_frame() {
+        let mut state = RenderState::for_test(SR);
+        let due = MAX_CALLBACK_FRAMES as u64 + 100;
+        let frames = MAX_CALLBACK_FRAMES + 600;
+
+        let data = callback(
+            &mut state,
+            frames,
+            0,
+            vec![TimedCommand {
+                frame: due,
+                cmd: note_on(0, 60),
+            }],
+        );
+
+        assert!(
+            peak(&data, 0..due as usize) < 1e-9,
+            "the note sounded before the frame it was stamped for"
+        );
+        assert!(
+            peak(&data, due as usize..frames) > 1e-6,
+            "the note never sounded"
+        );
     }
 }
