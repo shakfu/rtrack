@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide whether the others produced
+      # usable binaries.
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: macos-aarch64
+            os: macos-latest
+          - name: macos-x86_64
+            os: macos-15-intel
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux audio, MIDI, and windowing headers
+        if: runner.os == 'Linux'
+        # cpal and midir bind to ALSA and rusty_link needs CMake for its C++
+        # sources; the rest are what eframe's X11/Wayland backends link against.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev cmake \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Build release binaries
+        # The workspace defaults to rtrack-tui only, so both frontends are
+        # named explicitly. xtask is a maintenance tool and is not shipped.
+        run: cargo build --release -p rtrack-tui -p rtrack-gui
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        # Tarred rather than handed to upload-artifact as loose files: the
+        # action's own zip does not carry the executable bit, so a downloaded
+        # binary would need a chmod before it would run.
+        run: |
+          staging="rtrack-${{ matrix.name }}"
+          mkdir -p "$staging"
+          cp target/release/rtrack target/release/rtrack-gui "$staging/"
+          cp README.md LICENSE "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "rtrack-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item target/release/rtrack.exe, target/release/rtrack-gui.exe $staging
+          Copy-Item README.md, LICENSE $staging
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtrack-${{ matrix.name }}
+          path: |
+            rtrack-${{ matrix.name }}.tar.gz
+            rtrack-${{ matrix.name }}/*.exe
+            rtrack-${{ matrix.name }}/README.md
+            rtrack-${{ matrix.name }}/LICENSE
+          if-no-files-found: error
+          retention-days: 14
