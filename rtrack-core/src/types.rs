@@ -101,7 +101,7 @@ pub enum ChannelType {
 }
 
 impl ChannelType {
-    /// Short display label for the channel type header (e.g. "[MID]").
+    /// Short display label for the channel type header (e.g. `[MID]`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Midi => "[MID]",
@@ -330,6 +330,37 @@ pub fn autosave_path_for(path: &std::path::Path) -> PathBuf {
     dir.join(format!(".{}.autosave", name))
 }
 
+/// Where to auto-save a song that has never been saved.
+///
+/// Beside the song is right once there *is* a song file, and wrong before
+/// there is one: the fallback name has no directory, so it resolved against
+/// the working directory and dropped a hidden `.untitled.rtrk.autosave` into
+/// wherever rtrack happened to be launched from. Run it from `$HOME` and that
+/// is where the file appeared -- which is neither what the README described
+/// ("a temp file") nor something a user would think to look for or clean up.
+///
+/// The title is folded into the name so that two unsaved sessions do not
+/// overwrite each other's recovery file.
+pub fn autosave_path_for_unsaved(title: &str) -> PathBuf {
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('_').to_string();
+    let slug = if slug.is_empty() {
+        "untitled".to_string()
+    } else {
+        slug
+    };
+    std::env::temp_dir().join(format!("rtrack-{}.rtrk.autosave", slug))
+}
+
 /// Make a path relative to a base directory. Falls back to absolute if no common prefix.
 pub fn make_relative(base: &std::path::Path, target: &std::path::Path) -> String {
     let base_abs = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
@@ -461,6 +492,54 @@ mod tests {
         // source file. It must not resolve to the song directory itself.
         assert!(resolve_relative(base, "").is_err());
         assert!(resolve_relative(base, ".").is_err());
+    }
+
+    #[test]
+    fn an_unsaved_song_autosaves_outside_the_working_directory() {
+        let path = autosave_path_for_unsaved("Untitled");
+        assert!(
+            path.is_absolute(),
+            "an unsaved song's autosave must not be a bare relative name: {}",
+            path.display()
+        );
+        assert!(
+            path.starts_with(std::env::temp_dir()),
+            "{} is not under the temp directory",
+            path.display()
+        );
+        assert_ne!(
+            path.parent(),
+            Some(Path::new("")),
+            "an empty parent is what put the file in the working directory"
+        );
+    }
+
+    #[test]
+    fn two_unsaved_songs_do_not_share_an_autosave_file() {
+        assert_ne!(
+            autosave_path_for_unsaved("First Idea"),
+            autosave_path_for_unsaved("Second Idea")
+        );
+    }
+
+    #[test]
+    fn an_awkward_title_still_gives_a_usable_file_name() {
+        for title in ["", "  ", "///", "My Song!", "../../etc/passwd"] {
+            let path = autosave_path_for_unsaved(title);
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("a file name");
+            assert!(
+                name.starts_with("rtrack-") && name.ends_with(".rtrk.autosave"),
+                "title {title:?} produced {name:?}"
+            );
+            assert_eq!(
+                path.parent(),
+                Some(std::env::temp_dir().as_path()),
+                "title {title:?} escaped the temp directory"
+            );
+        }
     }
 
     #[test]

@@ -144,13 +144,32 @@ impl SongFile {
 
     /// Write the song, replacing any existing file atomically.
     ///
-    /// See [`write_atomic`] for the durability and temp-file handling this
+    /// See `crate::fs::write_atomic` for the durability and temp-file handling this
     /// relies on.
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = self.to_json()?;
         write_atomic(path, json.as_bytes())
     }
 
+    /// Read a song file.
+    ///
+    /// Parsing is not validation. A `.rtrk` is user-editable text and may also
+    /// have been written by an older version, so the result can be
+    /// structurally impossible -- an order list naming patterns that are not
+    /// there, a pattern whose declared geometry does not match its cells, a
+    /// channel count larger than the editor can show. **Call
+    /// [`Song::repair`] on `song` before using it**, and show what it returns:
+    /// it corrects those and reports each correction.
+    ///
+    /// ```no_run
+    /// use rtrack_core::tracker::SongFile;
+    ///
+    /// let mut file = SongFile::load(std::path::Path::new("song.rtrk"))?;
+    /// for repair in file.song.repair() {
+    ///     eprintln!("repaired: {repair}");
+    /// }
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -259,15 +278,52 @@ impl Song {
 
     /// Write just the song data, replacing any existing file atomically.
     ///
-    /// Shares [`write_atomic`] with [`SongFile::save`], so both paths get the
-    /// same durability and temp-file guarantees.
+    /// Shares `crate::fs::write_atomic` with [`SongFile::save`], so both paths
+    /// get the same durability and temp-file guarantees.
+    ///
+    /// # Deprecated
+    ///
+    /// Writes a song with no format version and none of the instrument,
+    /// sample, mixer or MIDI-learn state that makes a `.rtrk` a whole
+    /// document. The result loads -- [`SongFile`]'s extra fields all have
+    /// serde defaults -- but as a song that has lost everything except its
+    /// patterns. Use [`SongFile::save`], which writes the full document.
     #[allow(dead_code)]
+    #[deprecated(
+        since = "0.1.3",
+        note = "writes a song without its instruments, samples or mixer state; use SongFile::save"
+    )]
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self).context("Failed to serialize song")?;
         write_atomic(path, json.as_bytes())
     }
 
+    /// Read just the song data from a file.
+    ///
+    /// # Deprecated
+    ///
+    /// Two reasons, and the second is the one that matters:
+    ///
+    /// 1. It reads only the song. Instruments, sample references, mixer state
+    ///    and MIDI-learn mappings are in the same file and are silently
+    ///    dropped, so a `.rtrk` opened this way comes back missing most of
+    ///    what was saved.
+    ///
+    /// 2. Nothing here checks that what was parsed is structurally possible,
+    ///    and the type gives a caller no hint that it should. A song file is
+    ///    user-editable text: it can name patterns that do not exist, declare
+    ///    a geometry its cells do not match, or ask for more channels than the
+    ///    editor can show. [`Song::repair`] exists to correct exactly that and
+    ///    is easy to not know about when the call that produced the `Song`
+    ///    never mentions it.
+    ///
+    /// Use [`SongFile::load`] and call [`Song::repair`] on the result, which
+    /// is what the editor itself does.
     #[allow(dead_code)]
+    #[deprecated(
+        since = "0.1.3",
+        note = "drops instruments, samples and mixer state, and does not repair the song; use SongFile::load then Song::repair"
+    )]
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -603,7 +659,10 @@ mod tests {
         assert!((spr - 0.125).abs() < 1e-9);
     }
 
+    /// The deprecated bare-`Song` pair still has to work: deprecating it says
+    /// do not reach for this, not that it stopped functioning.
     #[test]
+    #[allow(deprecated)]
     fn test_save_load_roundtrip() {
         use crate::tracker::{Cell, Note, NoteValue};
 
@@ -714,6 +773,30 @@ mod tests {
         assert_eq!(loaded.sample_refs[0].sample_ref.path, "samples/0-kick.wav");
 
         let _ = std::fs::remove_file(tmp);
+    }
+
+    /// The replacement has to be able to read what the deprecated one wrote,
+    /// or the deprecation note is pointing people at a dead end.
+    #[test]
+    #[allow(deprecated)]
+    fn a_bare_song_file_still_loads_through_songfile() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("bare.rtrk");
+
+        let mut song = Song::new(3, 16);
+        song.title = "Bare".to_string();
+        song.bpm = 145;
+        song.save(&path).expect("save");
+
+        let mut file = SongFile::load(&path).expect("SongFile should read a bare song");
+        assert_eq!(file.song.title, "Bare");
+        assert_eq!(file.song.bpm, 145);
+        assert_eq!(file.song.channels, 3);
+        // No version field was written, so it reads as the pre-versioning 0.
+        assert_eq!(file.version, 0);
+        assert!(!file.is_from_newer_version());
+        // And the recommended follow-up is safe on it.
+        assert!(file.song.repair().is_empty(), "a bare song needs no repair");
     }
 
     #[test]

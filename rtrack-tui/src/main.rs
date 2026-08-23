@@ -28,7 +28,7 @@ struct Cli {
     #[arg(long = "sample", value_name = "SLOT:FILE")]
     samples: Vec<String>,
 
-    /// Load samples from a directory (files named <slot>-<name>.wav/.aiff)
+    /// Load samples from a directory (files named `<slot>-<name>`.wav/.aiff)
     #[arg(long = "sample-dir", value_name = "DIR")]
     sample_dir: Option<PathBuf>,
 

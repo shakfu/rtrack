@@ -4,6 +4,15 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-24
+
+Note on versioning: the `0.1.2` published to crates.io is older than the
+`0.1.2` that sat in this repository -- the published `rtrack-core` has no
+`editor`, `error`, `fs` or `keymap` module. The version was reused across
+substantively different code. 0.1.3 is the first release where the tag, the
+published crates and the repository describe the same thing, and the release
+commit is the one tagged.
+
 ### Fixed
 
 Four bugs of one shape, listed worst first. Each was a length that came from outside -- a song file, a MIDI file, an AIFF header, a constant that stopped matching its neighbour -- used to size an allocation before anything checked it. Every one is reachable by opening a file.
@@ -91,6 +100,20 @@ Four bugs of one shape, listed worst first. Each was a length that came from out
   - This turns the egui upgrade from housekeeping into something with a security reason attached
 
 ### Changed
+
+- **`Song::save` and `Song::load` are deprecated in favour of `SongFile::save` / `SongFile::load`.** They read and write a bare song: instruments, sample references, mixer state and MIDI-learn mappings live in the same file and were silently dropped, so a `.rtrk` opened through `Song::load` came back missing most of what had been saved
+
+  - The second reason is the one that matters. Nothing in `Song::load` checks that what it parsed is structurally possible, and its signature gives a caller no hint that anything should. A `.rtrk` is user-editable text: it can name patterns that are not there, declare a geometry its cells do not match, or ask for more channels than the editor can show. `Song::repair` exists for exactly that -- and is easy not to know about when the call that produced the `Song` never mentions it. This is the same class as the loader bounds fixed above, one layer up in the API
+
+  - Both still work; deprecation says do not reach for this, not that it stopped functioning. A test pins that `SongFile::load` reads what `Song::save` wrote, so the note points somewhere real
+
+  - `SongFile::load` now documents that parsing is not validation, with a runnable example of the load-then-repair pair the editor itself uses
+
+- **Version bumped to 0.1.3 across the workspace, including the internal `rtrack-core` pins.** Publishing the frontends against an unbumped pin would have built them against the old core; `cargo publish --dry-run` catches this and it is the reason for the note at the top of this entry
+
+- **An unsaved song's auto-save no longer lands in the working directory.** The fallback name had no directory, so it resolved against wherever rtrack was launched from and left a hidden `.untitled.rtrk.autosave` there -- from `$HOME`, in `$HOME`. It now goes to a temp path named after the song title, so two unsaved sessions do not overwrite each other's recovery file. Saving a song for the first time removes the copy it left behind: the path is remembered rather than derived, because the frontends set `file_path` before calling `save`, by which point the temp location can no longer be worked out (`types.rs`, `core.rs`)
+
+- **Rustdoc warnings are gated.** Thirteen broken intra-doc links -- `points[i]` and `<slot>-<name>` read as markup, public documentation linking to the private `write_atomic`, unresolved paths to `SliceRange` and `SliceOverwrite` -- are fixed, and `make ci` and the CI workflow now run `cargo doc` with `-D warnings`. For a crate published to crates.io these are what docs.rs renders, which is the first thing a reader sees
 
 - The release build workflow triggers on bare-version tags as well as `v`-prefixed ones. The repository's existing tag is `0.1.2`, so a `v*`-only filter meant a tagged release never built
 

@@ -32,19 +32,21 @@
 - [x] Sort entries in `SampleBank::load_directory` by filename before loading -- current `read_dir` iteration order is OS-dependent, making slot assignment non-deterministic across platforms
 - [x] Fix flaky `test_render_empty_song` -- panics on missing temp path intermittently (race or platform-dependent temp dir)
 - [x] Add `TrackerCoreBuilder` that can skip hardware init and accept injected `MidiEngine`/`AudioEngine`/`LinkEngine` -- current `with_song_size` unconditionally opens MIDI ports and Link sessions, even for offline/test use
-- [ ] Add CI workflow (GitHub Actions): `cargo fmt --all -- --check`, `cargo clippy --all-targets`, `cargo test --workspace`
-- [ ] Add `fmt-check` Makefile target (`cargo fmt --all -- --check`) -- current `make lint` mutates files via `cargo fmt --all`, unsuitable for CI
+- [x] Add CI workflow (GitHub Actions) -- `.github/workflows/ci.yml`: fmt, clippy, rustdoc, tests and example freshness on Linux and macOS, plus an MSRV job. `build.yml` produces release binaries for four platforms; `audit.yml` checks dependencies against the RustSec database weekly
+- [x] Add `fmt-check` Makefile target -- `make ci` now runs fmt-check, clippy, doc, test and check-examples without mutating anything; `make lint` still reformats in place
 - [x] GUI: read audio/SF2 device config from `config.toml` before initializing `AudioEngine` -- currently hardcodes `None` in `RtrackApp::new`
 - [x] Replace eager `Sample`/`SampleBank` clones with `Arc<Sample>` per slot -- prerequisite for live sample editing and reduces undo/clone allocation cost
-- [ ] Extract shared editor state (cursor, undo/redo, clipboard, block selection) from TUI and GUI into a common crate to prevent drift -- the two undo implementations have now diverged further: the TUI snapshots the whole song plus an optional `SampleSnapshot`, the GUI keeps an `Edit` enum of cell diffs or bank snapshots
-- [ ] Put the rest of the sample bank under undo. Slicing is covered; loading a sample over an occupied slot, and the trim/loop/base-note fields in the sample editor, are not. The fields are the awkward ones -- one undo step per arrow key would swamp the stack, so they need coalescing while a field is held
+- [x] Extract shared editor state from TUI and GUI -- `rtrack-core::editor` holds `SubColumn`, `Clipboard`, `Edit` and `EditHistory`, and both frontends run on them. The shared `Edit` is neither of the two old models: cells stay diffs, structural changes carry a song snapshot, and `Edit::Group` covers an action that changes several at once. The GUI gained structural undo it never had; the history is bounded by bytes (`MAX_UNDO_BYTES`) rather than by step count, because a step's size follows the song
+- [x] The trim/loop/base-note fields in the sample editor are under undo. `EditSource` tags an edit with the control it came from and the history amends the step it already has, so a held arrow key or a dragged value is one step and undo returns to where the field stood before the run began. The same machinery put the GUI's song settings under undo
+
+- [ ] Loading a sample over an occupied slot is still not undoable -- the last part of the sample bank outside the history
 
 ## TUI - Low Priority (nice-to-have or high effort)
 
 - [ ] Header truncation handling on narrow terminals
 - [ ] Keybinding customization (config file with tracker presets)
 - [ ] UI snapshot tests (ratatui TestBackend)
-- [ ] Fuzz testing for MIDI file parser, AIFF parser, .rtrk deserializer
+- [ ] Fuzz testing (`cargo-fuzz`, needs nightly) for the MIDI, AIFF and `.rtrk` parsers. `rtrack-core/tests/hostile_input.rs` is the stable-toolchain stand-in and runs in CI: hand-picked malformed shapes plus truncation and byte-flip sweeps over all four formats. It found nothing the hand audit had not, but the hand audit found four allocation bugs in two sittings, so the yield is not exhausted
 
 - [ ] Decide whether slicing should respect a trim the user set by hand. `SliceRange::Source` ignores it and divides the whole file, which is right for a slice (whose span is a slicing artifact) and wrong for a sample someone trimmed to the part they wanted. Telling the two apart needs provenance on `Sample` -- the span a slot was cut out of -- persisted in `.rtrk`, not just a range argument. `SliceRange::Span` is the workaround in the meantime: it divides exactly the trimmed region.
 

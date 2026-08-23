@@ -784,7 +784,7 @@ pub fn detect_transients_range(
 }
 
 /// Slice a sample at the given frame positions.
-/// Each slice runs from points[i] to points[i+1] (last slice runs to sample end).
+/// Each slice runs from `points[i]` to `points[i+1]` (last slice runs to sample end).
 pub fn slice_at_points(sample: &Sample, points: &[usize], range: SliceRange) -> Vec<Sample> {
     if points.is_empty() {
         return Vec::new();

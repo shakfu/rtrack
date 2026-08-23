@@ -18,9 +18,9 @@ use crate::tracker::{
 
 use crate::error::{Error, Result};
 use crate::types::{
-    autosave_path_for, default_channel_configs, make_relative, resolve_relative, ChannelConfig,
-    ChannelType, ClockMode, Instrument, LearnableParam, MidiCcMapping, PlaybackTiming,
-    ScheduledPosition, AUTOSAVE_INTERVAL_SECS,
+    autosave_path_for, autosave_path_for_unsaved, default_channel_configs, make_relative,
+    resolve_relative, ChannelConfig, ChannelType, ClockMode, Instrument, LearnableParam,
+    MidiCcMapping, PlaybackTiming, ScheduledPosition, AUTOSAVE_INTERVAL_SECS,
 };
 
 /// What a load produced, beyond the song itself.
@@ -123,6 +123,14 @@ pub struct TrackerCore {
     // -- Preview --
     pub preview_note: Option<PreviewNote>,
 
+    /// The auto-save file this session last wrote, if any.
+    ///
+    /// Remembered rather than derived: a song saved for the first time gets
+    /// its `file_path` set by the caller *before* `save` runs, so by then the
+    /// path the recovery copy was written to -- in the temp directory -- can
+    /// no longer be worked out from the song's state.
+    autosave_written: Option<PathBuf>,
+
     /// Audio frame the tick currently being dispatched should sound at.
     /// `None` for anything triggered outside the sequencer (note preview,
     /// live MIDI input), which is applied as soon as the audio thread
@@ -175,6 +183,7 @@ impl TrackerCore {
             midi_cc_mappings: Vec::new(),
             midi_learn_pending: None,
             preview_note: None,
+            autosave_written: None,
             scheduled_frame: None,
         }
     }
@@ -303,6 +312,7 @@ impl TrackerCoreBuilder {
             midi_cc_mappings: Vec::new(),
             midi_learn_pending: None,
             preview_note: None,
+            autosave_written: None,
             scheduled_frame: None,
         }
     }
@@ -1462,15 +1472,15 @@ impl TrackerCore {
 
     /// Slice a slot into `count` pieces (or at detected transients).
     ///
-    /// `range` decides what gets divided: [`SliceRange::Source`] re-derives
+    /// `range` decides what gets divided: [`crate::sample::SliceRange::Source`] re-derives
     /// from the whole sample, so running this again at a different count
     /// replaces the previous slicing rather than eating into it, while
-    /// [`SliceRange::Span`] subdivides the slot's own span.
+    /// [`crate::sample::SliceRange::Span`] subdivides the slot's own span.
     ///
     /// Slices land in consecutive slots from `slot`, overwriting what is
     /// there. `overwrite` decides whether that is allowed to happen to
     /// instruments this slicing did not itself produce; with
-    /// [`SliceOverwrite::Refuse`] such a request fails with
+    /// [`crate::sample::SliceOverwrite::Refuse`] such a request fails with
     /// [`Error::SlotsOccupied`] and nothing is written.
     pub fn slice_sample(
         &mut self,
@@ -1727,11 +1737,14 @@ impl TrackerCore {
             let name = self.song.title.replace(' ', "_").to_lowercase();
             PathBuf::from(format!("{}.rtrk", name))
         });
+        // Taken before `file_path` moves: a song that had never been saved
+        // has its recovery copy in the temp directory, and naming it after
+        // the new path would leave that one behind for good.
         let song_file = self.build_song_file(&path);
         song_file.save(&path).map_err(|e| Error::file(&path, e))?;
         self.file_path = Some(path.clone());
         self.dirty = false;
-        let _ = std::fs::remove_file(autosave_path_for(&path));
+        self.remove_autosave();
         Ok(path)
     }
 
@@ -1745,31 +1758,52 @@ impl TrackerCore {
             return Ok(());
         }
         *last_autosave = Instant::now();
-        let path = match &self.file_path {
-            Some(p) => p.clone(),
-            None => {
-                let name = self.song.title.replace(' ', "_").to_lowercase();
-                PathBuf::from(format!("{}.rtrk", name))
-            }
-        };
-        let autosave = autosave_path_for(&path);
-        let song_file = self.build_song_file(&path);
+        let autosave = self.autosave_path();
+        // Sample paths are stored relative to the song, so the file the
+        // recovery copy describes itself against is the song's own path where
+        // there is one -- not the temp directory it may be sitting in.
+        let relative_to = self
+            .file_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("untitled.rtrk"));
+        let song_file = self.build_song_file(&relative_to);
         song_file
             .save(&autosave)
-            .map_err(|e| Error::file(&autosave, e))
+            .map_err(|e| Error::file(&autosave, e))?;
+        self.autosave_written = Some(autosave);
+        Ok(())
     }
 
-    /// Remove the auto-save temp file.
-    pub fn cleanup_autosave(&self) {
-        let path = match &self.file_path {
-            Some(p) => p.clone(),
-            None => {
-                let name = self.song.title.replace(' ', "_").to_lowercase();
-                PathBuf::from(format!("{}.rtrk", name))
-            }
-        };
-        let autosave = autosave_path_for(&path);
-        let _ = std::fs::remove_file(autosave);
+    /// Where this song's auto-save copy lives.
+    ///
+    /// Beside the song once it has been saved, so a recovery file sits next to
+    /// what it recovers. Before then there is no directory to sit beside, and
+    /// the answer is a temp path rather than the working directory -- see
+    /// [`autosave_path_for_unsaved`].
+    pub fn autosave_path(&self) -> PathBuf {
+        match &self.file_path {
+            Some(p) => autosave_path_for(p),
+            None => autosave_path_for_unsaved(&self.song.title),
+        }
+    }
+
+    /// Remove the auto-save file.
+    pub fn cleanup_autosave(&mut self) {
+        self.remove_autosave();
+    }
+
+    /// Delete the recovery copy: the one this session wrote, wherever it went,
+    /// and the one the current song path implies.
+    ///
+    /// Both, because they can differ. A song saved for the first time wrote
+    /// its recovery copy to the temp directory and now lives somewhere else,
+    /// and a song opened from disk may have a stale copy beside it left by a
+    /// session that did not exit cleanly.
+    fn remove_autosave(&mut self) {
+        if let Some(written) = self.autosave_written.take() {
+            let _ = std::fs::remove_file(written);
+        }
+        let _ = std::fs::remove_file(self.autosave_path());
     }
 
     /// Load a song file. Restores core state (song, instruments, samples).
@@ -2079,6 +2113,70 @@ mod tests {
             Some(2)
         );
         assert_eq!(core.timing.scheduled_positions.len(), 2);
+    }
+
+    // -- Auto-save location --
+
+    /// An unsaved song's recovery copy used to land in whatever directory
+    /// rtrack was launched from, as a hidden `.untitled.rtrk.autosave`.
+    #[test]
+    fn an_unsaved_song_does_not_autosave_into_the_working_directory() {
+        let core = TrackerCoreBuilder::new().headless().build();
+        let path = core.autosave_path();
+
+        assert!(path.is_absolute(), "{}", path.display());
+        assert!(
+            path.starts_with(std::env::temp_dir()),
+            "{} is not under the temp directory",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn a_saved_song_autosaves_beside_itself() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let song = dir.path().join("tune.rtrk");
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.file_path = Some(song.clone());
+
+        let autosave = core.autosave_path();
+        assert_eq!(autosave.parent(), Some(dir.path()));
+        assert_eq!(
+            autosave.file_name().and_then(|n| n.to_str()),
+            Some(".tune.rtrk.autosave")
+        );
+    }
+
+    /// Saving a song that had never been saved has to clear the recovery copy
+    /// it left in the temp directory, not just the one beside its new home.
+    #[test]
+    fn saving_an_unsaved_song_removes_the_recovery_copy_it_left_in_temp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.song.title = "Autosave Orphan Check".to_string();
+        core.dirty = true;
+
+        // Force an auto-save by backdating the timer.
+        let mut last = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(AUTOSAVE_INTERVAL_SECS + 1))
+            .expect("a time before now");
+        core.auto_save(&mut last).expect("auto-save");
+
+        let orphan = core.autosave_path();
+        assert!(
+            orphan.exists(),
+            "auto-save wrote nothing to {}",
+            orphan.display()
+        );
+
+        core.file_path = Some(dir.path().join("tune.rtrk"));
+        core.save().expect("save");
+
+        assert!(
+            !orphan.exists(),
+            "{} was left behind after the song was saved",
+            orphan.display()
+        );
     }
 
     // -- Instrument resolution when editing --

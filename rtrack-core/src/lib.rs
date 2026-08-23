@@ -3,7 +3,7 @@
 //! Headless music tracker core: engine, audio, MIDI, samples, and data model.
 //!
 //! This crate provides the complete tracker engine without any UI dependencies.
-//! Both the TUI ([`rtrack-tui`]) and GUI ([`rtrack-gui`]) frontends wrap
+//! Both the TUI (`rtrack-tui`) and GUI (`rtrack-gui`) frontends wrap
 //! [`TrackerCore`] with their own input handling and rendering.
 //!
 //! ## Modules

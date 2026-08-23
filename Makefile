@@ -1,4 +1,4 @@
-.PHONY: build run gui test test-unit test-integration fmt fmt-check clippy lint ci clean \
+.PHONY: build run gui test test-unit test-integration fmt fmt-check clippy doc lint ci clean \
        regen-examples check-examples \
        publish-dry publish publish-core publish-tui publish-gui
 
@@ -30,6 +30,11 @@ fmt-check:
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
+# Broken intra-doc links are how a published crate's documentation rots:
+# docs.rs renders them as dead text and nothing else complains.
+doc:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
 # Reformats in place, then lints. Use `ci` if you need a check that fails
 # rather than rewrites.
 lint: fmt clippy
@@ -43,7 +48,7 @@ check-examples:
 	cargo xtask regen-examples --check
 
 # What CI runs.
-ci: fmt-check clippy test check-examples
+ci: fmt-check clippy doc test check-examples
 
 clean:
 	cargo clean

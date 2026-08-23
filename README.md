@@ -343,7 +343,7 @@ CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed
 
 ```sh
 make build            # compile all crates
-make test             # run all tests (555 tests across workspace)
+make test             # run all tests (648 tests across workspace)
 make fmt              # format code
 make clippy           # lint with clippy
 make lint             # fmt + clippy

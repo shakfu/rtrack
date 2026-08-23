@@ -46,6 +46,14 @@ jobs:
         # (unused imports and friends) in workspace crates as well.
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Documentation
+        # Broken intra-doc links are invisible until docs.rs renders them as
+        # dead text, which for a published crate is the first thing a reader
+        # sees.
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: Tests
         # No audio device or MIDI port exists on a CI runner. The suite is
         # built to run headless, so this must pass without one.
