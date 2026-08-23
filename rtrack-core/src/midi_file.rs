@@ -347,6 +347,19 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
 /// track are split across tracker channels. For format 1, each track beyond
 /// the tempo track maps to a tracker channel.
 pub fn import_midi(path: &Path) -> Result<Song> {
+    import_midi_with_report(path).map(|(song, _)| song)
+}
+
+/// Import a MIDI file, along with anything the import had to change.
+///
+/// The second element carries the same kind of description
+/// [`Song::repair`](crate::tracker::Song::repair) returns: an import that
+/// succeeded but did not represent everything the file asked for. Today the
+/// only entry is a song truncated at [`MAX_IMPORT_PATTERNS`]. Use this rather
+/// than [`import_midi`] anywhere the result is shown to someone, so a
+/// silently shortened song is not mistaken for the whole file.
+pub fn import_midi_with_report(path: &Path) -> Result<(Song, Vec<String>)> {
+    let mut notes: Vec<String> = Vec::new();
     let data = std::fs::read(path)
         .with_context(|| format!("Failed to read MIDI file: {}", path.display()))?;
 
@@ -406,7 +419,11 @@ pub fn import_midi(path: &Path) -> Result<Song> {
 
         while pos < trk_end {
             let delta = read_variable_length(&data, &mut pos)?;
-            abs_tick += delta;
+            // Saturating rather than wrapping: delta times accumulate, and a
+            // file with enough large ones overflows a u32. Wrapping would
+            // fold late events back to the start of the song; a plain `+=`
+            // panics outright in a debug build.
+            abs_tick = abs_tick.saturating_add(delta);
 
             if pos >= trk_end {
                 break;
@@ -569,8 +586,22 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         .unwrap_or(1);
 
     let rows_per_pattern = DEFAULT_ROWS_PER_PATTERN;
-    let num_patterns = total_rows.div_ceil(rows_per_pattern);
-    let num_patterns = num_patterns.max(1);
+    let wanted_patterns = total_rows.div_ceil(rows_per_pattern).max(1);
+
+    // The song length asked for here comes from the largest absolute tick in
+    // the file, which is delta times added up and so is bounded only by their
+    // encoding -- a few dozen bytes can ask for millions of patterns, each of
+    // them allocated in full below. Cap it, and say so: events past the cap
+    // are dropped by the `pat_idx >= patterns.len()` guard further down, and a
+    // song that quietly lost its second half is worse than one that says it
+    // did.
+    let num_patterns = wanted_patterns.min(MAX_IMPORT_PATTERNS);
+    if num_patterns < wanted_patterns {
+        notes.push(format!(
+            "file spans {} patterns, truncated to the maximum of {}",
+            wanted_patterns, MAX_IMPORT_PATTERNS
+        ));
+    }
 
     // Build empty patterns
     let mut patterns: Vec<Pattern> = (0..num_patterns)
@@ -672,8 +703,8 @@ pub fn import_midi(path: &Path) -> Result<Song> {
         swing: 50,
         tempo_map,
     };
-    song.repair();
-    Ok(song)
+    notes.extend(song.repair());
+    Ok((song, notes))
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,5 +1261,127 @@ mod tests {
             "Engine should preserve fractional BPM 127.5, got {}",
             engine.bpm
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Import bounds
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal single-track SMF whose one note sits `at_tick` into
+    /// the song. Delta times are the only thing that decides how long the
+    /// importer thinks the file is, so this is the shortest way to ask it for
+    /// an arbitrarily long one.
+    fn midi_with_note_at(at_tick: u32, division: u16) -> Vec<u8> {
+        let mut track = Vec::new();
+        write_variable_length(&mut track, at_tick);
+        track.extend_from_slice(&[0x90, 60, 100]); // note on
+        write_variable_length(&mut track, 10);
+        track.extend_from_slice(&[0x80, 60, 0]); // note off
+        write_variable_length(&mut track, 0);
+        track.extend_from_slice(&[0xFF, 0x2F, 0x00]); // end of track
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"MThd");
+        out.extend_from_slice(&6u32.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes()); // format 0
+        out.extend_from_slice(&1u16.to_be_bytes()); // one track
+        out.extend_from_slice(&division.to_be_bytes());
+        out.extend_from_slice(b"MTrk");
+        out.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        out.extend_from_slice(&track);
+        out
+    }
+
+    /// A file's length comes from its delta times, which a few dozen bytes can
+    /// push arbitrarily far out. Every pattern between here and there was
+    /// allocated in full: before the cap, the 37-byte file below produced a
+    /// song of 19,987 patterns, and larger deltas scale that linearly into
+    /// gigabytes.
+    #[test]
+    fn import_caps_a_song_that_spans_too_many_patterns() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("far.mid");
+        std::fs::write(&path, midi_with_note_at(30_700_000, 96)).expect("write");
+
+        let (song, report) = import_midi_with_report(&path).expect("import");
+
+        assert_eq!(song.patterns.len(), MAX_IMPORT_PATTERNS);
+        assert_eq!(song.order.len(), MAX_IMPORT_PATTERNS);
+        assert!(
+            report.iter().any(|r| r.contains("truncated")),
+            "a truncated song must say so: {report:?}"
+        );
+    }
+
+    /// The cap is a ceiling, not a floor: an ordinary file still gets exactly
+    /// the patterns it needs, and reports nothing.
+    #[test]
+    fn import_leaves_an_ordinary_file_untouched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("short.mid");
+        // 96 ticks per beat, speed 6 -> 24 ticks per row; 128 rows is two
+        // patterns of the default 64.
+        std::fs::write(&path, midi_with_note_at(24 * 100, 96)).expect("write");
+
+        let (song, report) = import_midi_with_report(&path).expect("import");
+
+        assert_eq!(song.patterns.len(), 2);
+        assert!(report.is_empty(), "{report:?}");
+        assert_eq!(
+            song.patterns[1].get(36, 0).note,
+            Some(Note::On {
+                value: NoteValue::C,
+                octave: 5
+            }),
+            "the note itself must still land where it belongs"
+        );
+    }
+
+    /// A low division shrinks the ticks-per-row divisor, which multiplies the
+    /// row count the same deltas produce. The cap has to hold there too.
+    #[test]
+    fn import_caps_a_file_with_a_tiny_division() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tiny_division.mid");
+        std::fs::write(&path, midi_with_note_at(30_700_000, 1)).expect("write");
+
+        let (song, report) = import_midi_with_report(&path).expect("import");
+
+        assert_eq!(song.patterns.len(), MAX_IMPORT_PATTERNS);
+        assert!(report.iter().any(|r| r.contains("truncated")), "{report:?}");
+    }
+
+    /// Delta times accumulate into a u32. Enough large ones overflow it,
+    /// which panics a debug build outright and folds late events back to the
+    /// start of the song in a release one.
+    #[test]
+    fn import_does_not_overflow_on_accumulated_delta_times() {
+        let mut track = Vec::new();
+        // Twenty maximum-sized deltas: 20 * 0x0FFFFFFF is well past u32::MAX.
+        for _ in 0..20 {
+            write_variable_length(&mut track, 0x0FFF_FFFF);
+            track.extend_from_slice(&[0x90, 60, 100]);
+            write_variable_length(&mut track, 0);
+            track.extend_from_slice(&[0x80, 60, 0]);
+        }
+        write_variable_length(&mut track, 0);
+        track.extend_from_slice(&[0xFF, 0x2F, 0x00]);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"MThd");
+        data.extend_from_slice(&6u32.to_be_bytes());
+        data.extend_from_slice(&0u16.to_be_bytes());
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&96u16.to_be_bytes());
+        data.extend_from_slice(b"MTrk");
+        data.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        data.extend_from_slice(&track);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("overflow.mid");
+        std::fs::write(&path, data).expect("write");
+
+        let (song, _) = import_midi_with_report(&path).expect("import must not panic");
+        assert_eq!(song.patterns.len(), MAX_IMPORT_PATTERNS);
     }
 }

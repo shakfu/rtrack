@@ -4,7 +4,60 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
-## [0.1.2]
+### Fixed
+
+Four bugs of one shape, listed worst first. Each was a length that came from
+outside -- a song file, a MIDI file, an AIFF header, a constant that stopped
+matching its neighbour -- used to size an allocation before anything checked
+it. Every one is reachable by opening a file.
+
+- **The AIFF loader no longer takes a header's word for how much to allocate.** Every length in `load_aiff` was a number the file declared about itself, used to size a buffer before anything was read. Three of them were unchecked (`sample/mod.rs`)
+
+  - A `COMM` chunk shorter than the 18 bytes of fields the parser reads was read into a buffer of the declared length and then indexed past it anyway, panicking instead of reporting a malformed file. It is now refused
+
+  - An `SSND` chunk declaring fewer than 8 bytes wrapped `chunk_size - 8` round to near `usize::MAX`, which went straight into `Vec::resize`. It is now refused
+
+  - `num_frames x channels` sized the sample buffer directly. `u32::MAX` frames of 65535 channels asked the allocator for 1.1PB and **aborted the process** -- past the point where a panic could be caught and turned into "could not open that file". The bound is now the audio actually present, which is what the decode loop already stopped at. A zero bits-per-sample field, which made the stride zero, is refused
+
+  - Chunk reads are also capped at the size of the file on disk, so a chunk claiming more than the file contains is refused rather than reserved for
+
+- **Loading a song no longer trusts the sizes the file declares.** A pattern's geometry is stored in a `.rtrk` separately from its cell data, and `Pattern::conform` allocates `rows x channels` cells from the declared figures whatever the data actually holds -- so two integers in a small file were an unbounded allocation. `Song::repair` corrected every size that was too *small* and none that was too large, despite `MAX_CHANNELS` having existed all along. A file declaring 9000 channels loaded and produced a song 562 times wider than the editor can display; one declaring `usize::MAX` panicked with "capacity overflow" inside the function whose stated job is to make a file from disk safe to open (`tracker/song.rs`)
+
+  - `repair` now clamps the channel count to `MAX_CHANNELS` and the row count to a new `MAX_ROWS_PER_PATTERN`. Both ceilings are the ones the TUI and GUI already impose when those values are edited, so the clamp only rejects songs that were never editable in rtrack to begin with
+
+  - Each clamp is reported through the returned repair list, which both frontends already put in the status line, rather than being applied silently
+
+- **MIDI import bounds the song it will build.** The importer sized the song from the largest absolute tick in the file -- delta times added up, bounded only by their own encoding -- and allocated every pattern between the start and that point. A hand-built **37-byte** MIDI file containing one note event produced a song of 19,987 patterns; larger deltas or a smaller division value scale that linearly into gigabytes (`midi_file.rs`)
+
+  - The song is capped at `MAX_IMPORT_PATTERNS` (1024, a little over two hours at the default 64 rows and 120 BPM, so nothing musical reaches it)
+
+  - `import_midi_with_report` is the new entry point, returning the truncation alongside the song. `TrackerCore::import_midi_file` puts it in `LoadReport::repairs`, the same field a `.rtrk` load uses, and the TUI now runs a MIDI import through the same `describe_load` formatting as a song load instead of discarding it. A song that quietly lost its second half is worse than one that says it did. `import_midi` remains, as a wrapper that drops the report
+
+  - Accumulating delta times now saturates instead of overflowing. `abs_tick += delta` panics in a debug build once the total passes `u32::MAX`, and in release folds late events back to the beginning of the song
+
+- **The send buses were still allocating on the audio thread.** 0.1.2 fixed the master and per-channel scratch buffers to be sized from what the device says it may ask for, up to 16384 frames, and stated that the callback no longer allocates whatever buffer size the backend hands it. The send-bus input buffers kept their fixed 4096, so a larger callback with a bus enabled reached `ensure_size` and grew them from inside the callback -- the invariant held only while send buses were off (`audio/effects.rs`, `audio/mod.rs`)
+
+  - `SendBus::new` now takes the frame capacity, so the audio thread sizes its buses to the same figure as the render scratch and `ensure_size` has nothing left to do there. The offline renderer still grows on demand, which costs it nothing
+
+  - The existing oversized-callback test asserted this invariant but could not reach the breach: `RenderState::for_test` fixed the scratch at 4096, so its blocks never exceeded it, and its buses were disabled by default so the per-channel path never ran. `for_test_with_capacity` exists now, and two tests cover a full-size block and an oversized one with a bus engaged
+
+  - `effects.rs` had its own copy of `MAX_CALLBACK_FRAMES` with a comment reading "must match audio/mod.rs". That duplication is how the two came to disagree; the copy is gone
+
+  - The voice-snapshot buffer the callback fills for the UI is built at capacity rather than empty, and `clear_inputs` and `process_to_master` clamp instead of slicing straight, so a disagreement between the three lengths is quiet rather than an unwind through the audio callback
+
+### Added
+
+- **A hostile-input test suite** (`rtrack-core/tests/hostile_input.rs`) covering all four formats rtrack opens but does not write: `.rtrk`, `.mid`, `.wav`, and `.aiff`. It asserts the weak rule deliberately -- reject or bound, never panic, and never size an allocation from a number the file chose -- and combines hand-picked shapes with a truncation sweep over every prefix of a valid file and a single-byte corruption sweep over the header region. The byte-flip sweep rediscovered the `COMM` defect above on its own. This is a stand-in for the fuzzing on the TODO, which needs a nightly toolchain and cannot run in CI as it stands
+
+- **Tests for the GUI pattern grid's hit-testing.** The pointer-to-cell mapping was a closure inside `draw_grid`, so reaching it needed a live `Ui` and nothing tested it -- despite being pure arithmetic over layout constants that decides what every click in the editor does. It is now a free `hit_test` function over a `GridGeometry`, with twelve tests covering rows, channels, the four sub-columns, horizontal and vertical scrolling, the gutter and header, and the agreement between `max_visible_channels` and what `hit_test` considers in range
+
+### Changed
+
+- The release build workflow triggers on bare-version tags as well as `v`-prefixed ones. The repository's existing tag is `0.1.2`, so a `v*`-only filter meant a tagged release never built
+
+- README corrections: 12 effect commands, not 16; the test count; the auto-save description, which said "temp file" but writes beside the song; the architecture tree, which omitted `error.rs`, `fs.rs`, `keymap.rs` and placed `midi_file.rs` under `midi/`. The GUI section now says MIDI import is TUI-only
+
+## [0.1.2] - 2026-08-22
 
 ### Fixed
 
@@ -304,7 +357,7 @@ All notable changes to rtrack will be documented in this file.
 
   - Replaced `.get(0)` with `.first()`
 
-## [0.1.1]
+## [0.1.1] - 2026-03-08
 
 ### Added (Recent Files)
 

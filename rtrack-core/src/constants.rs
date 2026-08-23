@@ -65,11 +65,30 @@ pub const EFFECT_SET_SPEED: u8 = 0xF; // Fxx: xx<0x20 = set speed, xx>=0x20 = se
 /// Default pattern length (rows).
 pub const DEFAULT_ROWS_PER_PATTERN: usize = 64;
 
+/// Maximum pattern length (rows).
+///
+/// Both frontends already clamp the row count to this when it is edited, so a
+/// longer pattern is not reachable from the editor. `Song::repair` enforces it
+/// on load as well: a pattern's geometry is declared in the file separately
+/// from its cell data, and `Pattern::conform` allocates `rows x channels`
+/// cells from the declared figures whatever the data holds.
+pub const MAX_ROWS_PER_PATTERN: usize = 256;
+
 /// Maximum number of instruments.
 pub const MAX_INSTRUMENTS: usize = 256;
 
 /// Maximum number of tracker channels.
 pub const MAX_CHANNELS: usize = 16;
+
+/// Most patterns a MIDI import will build.
+///
+/// The importer sizes the song from the largest absolute tick in the file, a
+/// figure that comes straight from delta times and is bounded only by their
+/// encoding. A file whose events sit far enough apart -- or that declares a
+/// small enough division -- otherwise asks for millions of patterns from a few
+/// dozen bytes. At the default 64 rows and 120 BPM this ceiling is a little
+/// over two hours of music, so nothing musical reaches it.
+pub const MAX_IMPORT_PATTERNS: usize = 1024;
 
 /// Number of channels displayed per track page.
 pub const CHANNELS_PER_PAGE: usize = 4;

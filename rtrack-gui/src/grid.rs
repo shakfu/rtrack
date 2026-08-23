@@ -67,6 +67,85 @@ pub struct GridParams {
     pub colors: GridColors,
 }
 
+/// Where the grid was laid out, as far as hit-testing needs to know.
+///
+/// Pulled out of `draw_grid` so the pointer-to-cell mapping is a function of
+/// numbers rather than of a live `Ui`. It is pure arithmetic over layout
+/// constants, it decides what every click in the editor does, and it silently
+/// stops matching the drawing if one of those constants moves -- which is a
+/// combination that wants a test more than most of the file does.
+#[derive(Debug, Clone, Copy)]
+pub struct GridGeometry {
+    /// Screen y of the first data row, below the header.
+    pub data_top: f32,
+    /// Screen x of the grid's left edge, before the row-number gutter.
+    pub left: f32,
+    /// Pattern row drawn at the top of the view.
+    pub start_row: usize,
+    /// Rows in the pattern being drawn.
+    pub rows: usize,
+    /// First and one-past-last channel currently drawn.
+    pub first_channel: usize,
+    pub last_channel: usize,
+}
+
+/// Map a pointer position to the cell under it.
+///
+/// `None` for anything outside the data area: the header, the row-number
+/// gutter, past the last row, or past the last drawn channel.
+pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColumn)> {
+    if pos.y < geom.data_top {
+        return None;
+    }
+    let screen_row = ((pos.y - geom.data_top) / ROW_HEIGHT) as usize;
+    let row_idx = geom.start_row + screen_row;
+    if row_idx >= geom.rows {
+        return None;
+    }
+
+    let channels_start_x = geom.left + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+    let channel_total_width = (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+
+    let rel_x = pos.x - channels_start_x;
+    if rel_x < 0.0 {
+        return None;
+    }
+    let ch_offset = (rel_x / channel_total_width) as usize;
+    let ch_idx = geom.first_channel + ch_offset;
+    if ch_idx >= geom.last_channel {
+        return None;
+    }
+
+    let within_ch = rel_x - ch_offset as f32 * channel_total_width;
+    let note_end = NOTE_CHARS as f32 * CHAR_WIDTH;
+    let inst_start = (NOTE_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+    let inst_end = inst_start + INST_CHARS as f32 * CHAR_WIDTH;
+    let vol_start = inst_start + (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+    let vol_end = vol_start + VOL_CHARS as f32 * CHAR_WIDTH;
+    let fx_start = vol_start + (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+
+    // The gaps between fields, and the separator past the effect column,
+    // resolve to the field on their left rather than to nothing: a click a
+    // pixel wide of a column should still land somewhere.
+    let sub = if within_ch < note_end {
+        SubColumn::Note
+    } else if within_ch >= inst_start && within_ch < inst_end {
+        SubColumn::Instrument
+    } else if within_ch >= vol_start && within_ch < vol_end {
+        SubColumn::Volume
+    } else if within_ch >= fx_start {
+        SubColumn::Effect
+    } else if within_ch < inst_start {
+        SubColumn::Note
+    } else if within_ch < vol_start {
+        SubColumn::Instrument
+    } else {
+        SubColumn::Volume
+    };
+
+    Some((row_idx, ch_idx, sub))
+}
+
 pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<GridAction> {
     let font = FontId::monospace(13.0);
     let available = ui.available_size();
@@ -333,55 +412,15 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
     }
 
     // Helper: convert pointer position to (row, channel, sub-column)
-    let hit_test = |pos: Pos2| -> Option<(usize, usize, SubColumn)> {
-        if pos.y < data_top {
-            return None;
-        }
-        let screen_row = ((pos.y - data_top) / ROW_HEIGHT) as usize;
-        let row_idx = start_row + screen_row;
-        if row_idx >= pattern.rows {
-            return None;
-        }
-
-        let channels_start_x = rect.left() + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-        let channel_total_width = (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-
-        let rel_x = pos.x - channels_start_x;
-        if rel_x < 0.0 {
-            return None;
-        }
-        let ch_offset = (rel_x / channel_total_width) as usize;
-        let ch_idx = first_ch + ch_offset;
-        if ch_idx >= last_ch {
-            return None;
-        }
-
-        let within_ch = rel_x - ch_offset as f32 * channel_total_width;
-        let note_end = NOTE_CHARS as f32 * CHAR_WIDTH;
-        let inst_start = (NOTE_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
-        let inst_end = inst_start + INST_CHARS as f32 * CHAR_WIDTH;
-        let vol_start = inst_start + (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
-        let vol_end = vol_start + VOL_CHARS as f32 * CHAR_WIDTH;
-        let fx_start = vol_start + (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
-
-        let sub = if within_ch < note_end {
-            SubColumn::Note
-        } else if within_ch >= inst_start && within_ch < inst_end {
-            SubColumn::Instrument
-        } else if within_ch >= vol_start && within_ch < vol_end {
-            SubColumn::Volume
-        } else if within_ch >= fx_start {
-            SubColumn::Effect
-        } else if within_ch < inst_start {
-            SubColumn::Note
-        } else if within_ch < vol_start {
-            SubColumn::Instrument
-        } else {
-            SubColumn::Volume
-        };
-
-        Some((row_idx, ch_idx, sub))
+    let geom = GridGeometry {
+        data_top,
+        left: rect.left(),
+        start_row,
+        rows: pattern.rows,
+        first_channel: first_ch,
+        last_channel: last_ch,
     };
+    let hit_test = |pos: Pos2| hit_test(pos, &geom);
 
     // Click to set cursor (non-drag click)
     if response.clicked() {
@@ -409,4 +448,196 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
     }
 
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grid drawn at the origin: header 40px tall, showing rows 0..64 of a
+    /// 64-row pattern and channels 0..4.
+    fn geom() -> GridGeometry {
+        GridGeometry {
+            data_top: 40.0,
+            left: 0.0,
+            start_row: 0,
+            rows: 64,
+            first_channel: 0,
+            last_channel: 4,
+        }
+    }
+
+    /// Screen x of the start of `channel`'s note column.
+    fn channel_x(channel: usize) -> f32 {
+        (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
+            + channel as f32 * (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
+    }
+
+    fn row_y(row: usize) -> f32 {
+        40.0 + row as f32 * ROW_HEIGHT + ROW_HEIGHT / 2.0
+    }
+
+    #[test]
+    fn a_click_in_the_header_hits_nothing() {
+        assert!(hit_test(Pos2::new(100.0, 0.0), &geom()).is_none());
+        assert!(hit_test(Pos2::new(100.0, 39.9), &geom()).is_none());
+    }
+
+    #[test]
+    fn a_click_in_the_row_number_gutter_hits_nothing() {
+        // The gutter is the row number plus the separator after it; the
+        // channels do not start until past both.
+        assert!(hit_test(Pos2::new(0.0, row_y(3)), &geom()).is_none());
+        assert!(hit_test(Pos2::new(channel_x(0) - 1.0, row_y(3)), &geom()).is_none());
+    }
+
+    #[test]
+    fn a_click_past_the_last_row_hits_nothing() {
+        assert!(hit_test(Pos2::new(channel_x(0), row_y(64)), &geom()).is_none());
+    }
+
+    #[test]
+    fn a_click_past_the_last_visible_channel_hits_nothing() {
+        assert!(hit_test(Pos2::new(channel_x(4), row_y(0)), &geom()).is_none());
+    }
+
+    #[test]
+    fn each_row_maps_to_itself() {
+        for row in [0usize, 1, 17, 63] {
+            let hit = hit_test(Pos2::new(channel_x(0) + 1.0, row_y(row)), &geom());
+            assert_eq!(hit.map(|(r, _, _)| r), Some(row), "row {row}");
+        }
+    }
+
+    #[test]
+    fn each_channel_maps_to_itself() {
+        for ch in 0..4 {
+            let hit = hit_test(Pos2::new(channel_x(ch) + 1.0, row_y(0)), &geom());
+            assert_eq!(hit.map(|(_, c, _)| c), Some(ch), "channel {ch}");
+        }
+    }
+
+    /// Horizontal scrolling offsets which pattern channel a screen column is.
+    #[test]
+    fn a_scrolled_view_maps_screen_columns_to_the_channels_drawn() {
+        let scrolled = GridGeometry {
+            first_channel: 4,
+            last_channel: 8,
+            ..geom()
+        };
+        // The leftmost drawn column is channel 4, not channel 0.
+        assert_eq!(
+            hit_test(Pos2::new(channel_x(0) + 1.0, row_y(0)), &scrolled).map(|(_, c, _)| c),
+            Some(4)
+        );
+        assert_eq!(
+            hit_test(Pos2::new(channel_x(3) + 1.0, row_y(0)), &scrolled).map(|(_, c, _)| c),
+            Some(7)
+        );
+        assert!(hit_test(Pos2::new(channel_x(4), row_y(0)), &scrolled).is_none());
+    }
+
+    /// Vertical scrolling does the same for rows, and the end of the pattern
+    /// is still the end.
+    #[test]
+    fn a_scrolled_view_maps_screen_rows_to_the_rows_drawn() {
+        let scrolled = GridGeometry {
+            start_row: 32,
+            ..geom()
+        };
+        assert_eq!(
+            hit_test(Pos2::new(channel_x(0) + 1.0, row_y(0)), &scrolled).map(|(r, _, _)| r),
+            Some(32)
+        );
+        assert_eq!(
+            hit_test(Pos2::new(channel_x(0) + 1.0, row_y(31)), &scrolled).map(|(r, _, _)| r),
+            Some(63)
+        );
+        assert!(hit_test(Pos2::new(channel_x(0) + 1.0, row_y(32)), &scrolled).is_none());
+    }
+
+    /// The four fields of a cell, each hit at its own midpoint. This is the
+    /// mapping that decides whether typing a hex digit edits the volume or
+    /// the effect, so it is worth pinning field by field.
+    #[test]
+    fn each_sub_column_is_reachable_at_its_own_midpoint() {
+        let base = channel_x(1);
+        let mid = |start_chars: usize, width_chars: usize| {
+            base + (start_chars as f32 + width_chars as f32 / 2.0) * CHAR_WIDTH
+        };
+
+        let note = mid(0, NOTE_CHARS);
+        let inst = mid(NOTE_CHARS + GAP_CHARS, INST_CHARS);
+        let vol = mid(NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS, VOL_CHARS);
+        let fx = mid(
+            NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS + VOL_CHARS + GAP_CHARS,
+            FX_CHARS,
+        );
+
+        for (x, expected) in [
+            (note, SubColumn::Note),
+            (inst, SubColumn::Instrument),
+            (vol, SubColumn::Volume),
+            (fx, SubColumn::Effect),
+        ] {
+            let hit = hit_test(Pos2::new(x, row_y(2)), &geom());
+            assert_eq!(hit, Some((2, 1, expected)), "at x={x}");
+        }
+    }
+
+    /// A click in the gap between two fields belongs to the field on its
+    /// left. Recorded because it is a choice, not an accident: the
+    /// alternative -- returning `None` -- would make a one-pixel miss do
+    /// nothing at all.
+    #[test]
+    fn a_click_in_the_gap_between_fields_takes_the_field_to_its_left() {
+        let base = channel_x(0);
+        let gap_after_note = base + (NOTE_CHARS as f32 + 0.5) * CHAR_WIDTH;
+        assert_eq!(
+            hit_test(Pos2::new(gap_after_note, row_y(0)), &geom()),
+            Some((0, 0, SubColumn::Note))
+        );
+
+        let gap_after_inst =
+            base + ((NOTE_CHARS + GAP_CHARS + INST_CHARS) as f32 + 0.5) * CHAR_WIDTH;
+        assert_eq!(
+            hit_test(Pos2::new(gap_after_inst, row_y(0)), &geom()),
+            Some((0, 0, SubColumn::Instrument))
+        );
+    }
+
+    /// `max_visible_channels` is the other half of the same geometry: what it
+    /// returns has to be a width `hit_test` agrees is inside the grid.
+    #[test]
+    fn the_visible_channel_count_agrees_with_the_hit_test() {
+        for width in [400.0f32, 800.0, 1200.0, 1920.0] {
+            let count = max_visible_channels(width);
+            let g = GridGeometry {
+                first_channel: 0,
+                last_channel: count,
+                ..geom()
+            };
+            // The last channel it claims fits must be hittable...
+            assert!(
+                hit_test(Pos2::new(channel_x(count - 1) + 1.0, row_y(0)), &g).is_some(),
+                "channel {} reported visible at width {width} but is not hittable",
+                count - 1
+            );
+            // ...and its right edge must be within the width offered.
+            let used = channel_x(count - 1)
+                + (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+            assert!(
+                used <= width || count == 1,
+                "{count} channels need {used}px but only {width}px was offered"
+            );
+        }
+    }
+
+    #[test]
+    fn a_degenerate_width_still_reports_one_channel() {
+        // Narrower than the gutter: the count is clamped rather than zero or
+        // a wrapped subtraction.
+        assert_eq!(max_visible_channels(0.0), 1);
+        assert_eq!(max_visible_channels(-100.0), 1);
+    }
 }

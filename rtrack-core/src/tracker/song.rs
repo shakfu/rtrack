@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::MIDI_CLOCKS_PER_BEAT;
+use crate::constants::{MAX_CHANNELS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
 use super::{Cell, Pattern};
 use crate::audio::effects::SendBusParams;
@@ -434,6 +434,16 @@ impl Song {
     /// A song file is user-editable text and may also have been written by
     /// an older version, so loading must never leave the song in a state
     /// that can panic the editor or the engine.
+    ///
+    /// Sizes are bounded from above as well as below. A pattern's geometry is
+    /// declared in the file separately from its cell data, and [`Pattern::conform`]
+    /// allocates `rows x channels` cells from the declared figures whatever
+    /// the data holds -- so an unbounded pair of integers in a small file is an
+    /// unbounded allocation, and a large enough one aborts the process before
+    /// anything gets the chance to report it. The ceilings applied here are
+    /// [`MAX_CHANNELS`] and [`MAX_ROWS_PER_PATTERN`], which are the same limits
+    /// both frontends impose when the values are edited: a song beyond them
+    /// could not have been made in rtrack and cannot be shown by it either.
     pub fn repair(&mut self) -> Vec<String> {
         let mut repairs = Vec::new();
 
@@ -441,9 +451,23 @@ impl Song {
             self.channels = 1;
             repairs.push("channel count was 0, set to 1".to_string());
         }
+        if self.channels > MAX_CHANNELS {
+            repairs.push(format!(
+                "channel count was {}, clamped to the maximum of {}",
+                self.channels, MAX_CHANNELS
+            ));
+            self.channels = MAX_CHANNELS;
+        }
         if self.rows_per_pattern == 0 {
             self.rows_per_pattern = 64;
             repairs.push("rows per pattern was 0, set to 64".to_string());
+        }
+        if self.rows_per_pattern > MAX_ROWS_PER_PATTERN {
+            repairs.push(format!(
+                "rows per pattern was {}, clamped to the maximum of {}",
+                self.rows_per_pattern, MAX_ROWS_PER_PATTERN
+            ));
+            self.rows_per_pattern = MAX_ROWS_PER_PATTERN;
         }
         if self.speed == 0 {
             self.speed = 6;
@@ -454,11 +478,14 @@ impl Song {
             repairs.push("bpm was 0, set to 120".to_string());
         }
 
-        // Every pattern must have a non-zero geometry matching its own
-        // declared dimensions, and must cover all song channels.
+        // Every pattern must have a geometry inside the editable range that
+        // matches its own declared dimensions, and must cover all song
+        // channels. The "resized" line below reports a clamp as well as a
+        // repair, since either way the pattern is not the shape the file
+        // claimed.
         for (i, pattern) in self.patterns.iter_mut().enumerate() {
-            let declared_rows = pattern.rows.max(1);
-            let declared_channels = pattern.channels.max(self.channels).max(1);
+            let declared_rows = pattern.rows.clamp(1, MAX_ROWS_PER_PATTERN);
+            let declared_channels = pattern.channels.max(self.channels).clamp(1, MAX_CHANNELS);
             if pattern.rows != declared_rows || pattern.channels != declared_channels {
                 repairs.push(format!(
                     "pattern {} resized from {}x{} to {}x{}",
@@ -872,6 +899,72 @@ mod tests {
         assert!(!repairs.is_empty());
         assert_eq!(song.patterns[0].data.len(), 4);
         assert!(song.patterns[0].data.iter().all(|r| r.len() == 2));
+    }
+
+    /// A `.rtrk` declares each pattern's geometry separately from its cell
+    /// data, and `conform` allocates from the declared figures. Without an
+    /// upper bound a handful of characters in the file asks for an unbounded
+    /// allocation, so the ceiling matters as much as the floor.
+    #[test]
+    fn test_repair_clamps_a_channel_count_past_the_maximum() {
+        let mut song = Song::new(1, 4);
+        song.channels = 9000;
+        let repairs = song.repair();
+
+        assert_eq!(song.channels, MAX_CHANNELS);
+        assert_eq!(song.patterns[0].channels, MAX_CHANNELS);
+        assert!(song.patterns[0]
+            .data
+            .iter()
+            .all(|r| r.len() == MAX_CHANNELS));
+        assert!(
+            repairs.iter().any(|r| r.contains("channel count was 9000")),
+            "the clamp must be reported, not silent: {repairs:?}"
+        );
+    }
+
+    #[test]
+    fn test_repair_clamps_a_row_count_past_the_maximum() {
+        let mut song = Song::new(2, 4);
+        song.rows_per_pattern = 100_000;
+        song.patterns[0].rows = 100_000;
+        let repairs = song.repair();
+
+        assert_eq!(song.rows_per_pattern, MAX_ROWS_PER_PATTERN);
+        assert_eq!(song.patterns[0].rows, MAX_ROWS_PER_PATTERN);
+        assert_eq!(song.patterns[0].data.len(), MAX_ROWS_PER_PATTERN);
+        assert!(
+            repairs.iter().any(|r| r.contains("rows per pattern")),
+            "{repairs:?}"
+        );
+    }
+
+    /// The case that used to abort the process: `vec![Cell; usize::MAX]`
+    /// panics with "capacity overflow" long before it runs out of memory,
+    /// inside the very function whose job is to make a file from disk safe.
+    #[test]
+    fn test_repair_survives_an_absurd_declared_size() {
+        let mut song = Song::new(1, 4);
+        song.channels = usize::MAX;
+        song.patterns[0].channels = usize::MAX;
+        song.patterns[0].rows = usize::MAX;
+        song.repair();
+
+        assert_eq!(song.channels, MAX_CHANNELS);
+        assert_eq!(song.patterns[0].rows, MAX_ROWS_PER_PATTERN);
+        assert!(song.cell_at(0, 0, 0).is_empty());
+    }
+
+    /// The clamps sit exactly where both frontends already clamp, so a song
+    /// built at the limit must come back untouched.
+    #[test]
+    fn test_repair_leaves_a_song_at_the_limits_alone() {
+        let mut song = Song::new(MAX_CHANNELS, MAX_ROWS_PER_PATTERN);
+        let repairs = song.repair();
+
+        assert!(repairs.is_empty(), "{repairs:?}");
+        assert_eq!(song.channels, MAX_CHANNELS);
+        assert_eq!(song.patterns[0].rows, MAX_ROWS_PER_PATTERN);
     }
 
     #[test]

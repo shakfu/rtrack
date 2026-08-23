@@ -76,6 +76,13 @@ fn render_buffer_frames(buffer_size: &cpal::SupportedBufferSize) -> usize {
 /// commands between audio callbacks (~5-10ms at typical buffer sizes).
 const COMMAND_QUEUE_CAPACITY: usize = 256;
 
+/// Simultaneous sample voices the playback engine mixes.
+///
+/// Also the capacity the UI's voice-snapshot buffer is built at: the callback
+/// refills that buffer every time round, and a `push` past its capacity would
+/// reallocate on the audio thread.
+const MAX_SAMPLE_VOICES: usize = 32;
+
 /// Ring buffer capacity for visualization samples (mono, L+R averaged).
 /// 8192 samples at 48kHz ~ 170ms, enough for several GUI frames.
 const VIS_BUFFER_CAPACITY: usize = 8192;
@@ -214,6 +221,19 @@ impl RenderState {
     /// Mirrors what `AudioEngine::new` assembles, minus the output device.
     #[cfg(test)]
     fn for_test(sample_rate: f64) -> Self {
+        Self::for_test_with_capacity(sample_rate, MAX_CALLBACK_FRAMES)
+    }
+
+    /// A render state whose scratch holds `capacity` frames.
+    ///
+    /// `render_buffer_frames` sizes the real one to what the device says it
+    /// may ask for, up to `MAX_RENDER_BUFFER_FRAMES` -- so a state built at
+    /// the default 4096 cannot exercise a block bigger than that, and for a
+    /// while nothing did. That is how a send bus sized to the old constant
+    /// went on allocating inside the callback after the scratch buffers had
+    /// been fixed.
+    #[cfg(test)]
+    fn for_test_with_capacity(sample_rate: f64, capacity: usize) -> Self {
         Self {
             sf2_synth: None,
             builtin_synth: BuiltinSynth::new(sample_rate),
@@ -222,19 +242,19 @@ impl RenderState {
                 .map(|_| ChannelEffects::new(sample_rate))
                 .collect(),
             send_buses: (0..effects::MAX_SEND_BUSES)
-                .map(|_| effects::SendBus::new(sample_rate))
+                .map(|_| effects::SendBus::new(sample_rate, capacity))
                 .collect(),
-            sample_engine: SamplePlaybackEngine::new(32),
+            sample_engine: SamplePlaybackEngine::new(MAX_SAMPLE_VOICES),
             sample_bank: Arc::new(SampleBank::new()),
             has_sf2: false,
             sample_rate,
-            scratch_left: vec![0.0f32; MAX_CALLBACK_FRAMES],
-            scratch_right: vec![0.0f32; MAX_CALLBACK_FRAMES],
+            scratch_left: vec![0.0f32; capacity],
+            scratch_right: vec![0.0f32; capacity],
             ch_buf_left: (0..MAX_EFFECT_CHANNELS)
-                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                .map(|_| vec![0.0f32; capacity])
                 .collect(),
             ch_buf_right: (0..MAX_EFFECT_CHANNELS)
-                .map(|_| vec![0.0f32; MAX_CALLBACK_FRAMES])
+                .map(|_| vec![0.0f32; capacity])
                 .collect(),
         }
     }
@@ -350,8 +370,16 @@ impl RenderState {
                 start..end,
             );
 
+            // No `ensure_size` here: the buses were built to hold a whole
+            // block, so growing them is never necessary, and `ensure_size`
+            // allocates. `render_block` has already clamped `frames` to the
+            // scratch capacity, which is the figure the buses were sized to.
             for bus in self.send_buses.iter_mut() {
-                bus.ensure_size(frames);
+                debug_assert!(
+                    frames <= bus.input_capacity(),
+                    "send bus holds {} frames, block is {frames}",
+                    bus.input_capacity()
+                );
                 bus.clear_inputs(frames);
             }
 
@@ -547,11 +575,11 @@ impl AudioEngine {
 
         // Create send/return buses
         let send_buses: Vec<effects::SendBus> = (0..effects::MAX_SEND_BUSES)
-            .map(|_| effects::SendBus::new(sr_f64))
+            .map(|_| effects::SendBus::new(sr_f64, render_frames))
             .collect();
 
         // Create sample playback engine
-        let sample_engine = SamplePlaybackEngine::new(32);
+        let sample_engine = SamplePlaybackEngine::new(MAX_SAMPLE_VOICES);
         let sample_bank = Arc::new(SampleBank::new());
 
         // Lock-free command queue
@@ -567,7 +595,12 @@ impl AudioEngine {
         let peak_l_cb = Arc::clone(&peak_l);
         let peak_r_cb = Arc::clone(&peak_r);
         let (vis_producer, vis_consumer) = RingBuffer::new(VIS_BUFFER_CAPACITY);
-        let voice_snapshots: Arc<Mutex<Vec<VoiceSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
+        // Built at capacity, not empty: the callback clears and refills this
+        // every time round, and `clear` keeps capacity -- but growing from
+        // empty to the voice count means a handful of allocations on the
+        // audio thread while a song is getting going.
+        let voice_snapshots: Arc<Mutex<Vec<VoiceSnapshot>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(MAX_SAMPLE_VOICES)));
         let voice_snapshots_cb = Arc::clone(&voice_snapshots);
 
         let stream_config: cpal::StreamConfig = config.into();
@@ -1884,6 +1917,79 @@ mod scheduler_tests {
     /// Peak of the left channel over an interleaved stereo range.
     fn peak(data: &[f32], range: std::ops::Range<usize>) -> f32 {
         range.map(|i| data[i * 2].abs()).fold(0.0f32, f32::max)
+    }
+
+    /// The scratch buffers are sized to what the device says it may ask for,
+    /// which `render_buffer_frames` allows up to `MAX_RENDER_BUFFER_FRAMES`.
+    /// Everything else the callback renders through has to be sized to the
+    /// same figure, or the first large block reaches whatever was left at the
+    /// old 4096 and grows it -- on the audio thread.
+    ///
+    /// This is the case the sibling test above cannot reach: it builds a
+    /// state at the default capacity, so its blocks never exceed 4096 and its
+    /// send buses are disabled, which skips the per-channel path entirely.
+    #[test]
+    fn a_large_block_does_not_grow_the_send_bus_buffers() {
+        let capacity = MAX_RENDER_BUFFER_FRAMES;
+        let mut state = RenderState::for_test_with_capacity(SR, capacity);
+
+        // A bus has to be enabled for the per-channel path to run at all.
+        state.send_buses[0].params.enabled = true;
+        state.send_buses[0].params.effect_type = effects::SendBusType::Reverb;
+        state.channel_effects[0].params.send_levels[0] = 0.5;
+        apply(&mut state, note_on(0, 60));
+
+        let before: Vec<usize> = state
+            .send_buses
+            .iter()
+            .map(|b| b.input_capacity())
+            .collect();
+        assert!(
+            before.iter().all(|&c| c == capacity),
+            "buses must be built to hold a whole block: {before:?}"
+        );
+
+        let data = callback(&mut state, capacity, 0, Vec::new());
+
+        let after: Vec<usize> = state
+            .send_buses
+            .iter()
+            .map(|b| b.input_capacity())
+            .collect();
+        assert_eq!(
+            before, after,
+            "a full-size block grew the send bus buffers, which allocates on the audio thread"
+        );
+        assert!(data.iter().all(|s| s.is_finite()));
+        assert!(
+            peak(&data, 0..capacity) > 1e-6,
+            "the block came back silent, so this exercised nothing"
+        );
+    }
+
+    /// The bus path must also survive a callback larger than the scratch,
+    /// which `fill_output` splits into blocks. Each block is capacity-sized,
+    /// so the buses still never grow.
+    #[test]
+    fn an_oversized_callback_through_a_send_bus_does_not_allocate() {
+        let capacity = MAX_CALLBACK_FRAMES;
+        let mut state = RenderState::for_test_with_capacity(SR, capacity);
+        state.send_buses[0].params.enabled = true;
+        state.channel_effects[0].params.send_levels[0] = 0.5;
+        apply(&mut state, note_on(0, 60));
+
+        let frames = capacity + 777;
+        let data = callback(&mut state, frames, 0, Vec::new());
+
+        assert!(state
+            .send_buses
+            .iter()
+            .all(|b| b.input_capacity() == capacity));
+        assert!(
+            peak(&data, capacity..frames) > 1e-6,
+            "the tail past the first block came back silent"
+        );
+        assert!(data.iter().all(|s| s.is_finite()));
     }
 
     /// The scratch buffers are sized once, up front. A backend is free to

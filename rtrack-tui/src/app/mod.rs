@@ -509,9 +509,13 @@ impl App {
     }
 
     /// Render what a load reported into a one-line status message.
-    fn describe_load(report: &rtrack_core::core::LoadReport) -> String {
+    ///
+    /// `verb` names what happened -- "Loaded" for a `.rtrk`, "Imported" for a
+    /// MIDI file -- so both paths report their repairs the same way rather
+    /// than one of them dropping them.
+    fn describe_load(verb: &str, report: &rtrack_core::core::LoadReport) -> String {
         if report.is_clean() {
-            return format!("Loaded: {}", report.path.display());
+            return format!("{}: {}", verb, report.path.display());
         }
         let mut notes = Vec::new();
         if report.from_newer_version {
@@ -528,7 +532,12 @@ impl App {
                 .collect();
             notes.push(format!("missing samples: {}", names.join(", ")));
         }
-        format!("Loaded ({}): {}", notes.join(" | "), report.path.display())
+        format!(
+            "{} ({}): {}",
+            verb,
+            notes.join(" | "),
+            report.path.display()
+        )
     }
 
     pub fn open_synth_editor(&mut self) {
@@ -798,7 +807,7 @@ impl App {
                 self.history.redo_stack.clear();
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
-                self.status_message = Some(Self::describe_load(&report));
+                self.status_message = Some(Self::describe_load("Loaded", &report));
             }
             Err(e) => {
                 self.status_message = Some(format!("Load failed: {}", e));
@@ -957,7 +966,7 @@ impl App {
                 self.cursor_channel = 0;
                 self.cursor_sub = SubColumn::Note;
                 self.edit_order = 0;
-                self.status_message = Some(format!("Imported: {}", report.path.display()));
+                self.status_message = Some(Self::describe_load("Imported", &report));
             }
             Err(e) => {
                 self.status_message = Some(format!("Import failed: {}", e));
@@ -1425,6 +1434,59 @@ mod tests {
 
         // Clipboard should have the data
         assert!(app.history.clipboard.is_some());
+    }
+
+    /// The importer caps how long a song it will build from a MIDI file.
+    /// The cap only helps if the person who ran the import is told about it,
+    /// so the status line has to carry it the way a repaired `.rtrk` does.
+    #[test]
+    fn importing_an_over_long_midi_file_says_it_was_truncated() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("far.mid");
+
+        // One note 30.7 million ticks in: 37 bytes asking for a song of
+        // nearly 20,000 patterns.
+        let mut track = Vec::new();
+        let vlq = |buf: &mut Vec<u8>, mut v: u32| {
+            let mut tmp = Vec::new();
+            loop {
+                tmp.push((v & 0x7F) as u8);
+                v >>= 7;
+                if v == 0 {
+                    break;
+                }
+            }
+            for (i, b) in tmp.iter().enumerate().rev() {
+                buf.push(if i == 0 { *b } else { *b | 0x80 });
+            }
+        };
+        vlq(&mut track, 30_700_000);
+        track.extend_from_slice(&[0x90, 60, 100]);
+        vlq(&mut track, 10);
+        track.extend_from_slice(&[0x80, 60, 0]);
+        vlq(&mut track, 0);
+        track.extend_from_slice(&[0xFF, 0x2F, 0x00]);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"MThd");
+        data.extend_from_slice(&6u32.to_be_bytes());
+        data.extend_from_slice(&0u16.to_be_bytes());
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&96u16.to_be_bytes());
+        data.extend_from_slice(b"MTrk");
+        data.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        data.extend_from_slice(&track);
+        std::fs::write(&path, data).expect("write");
+
+        let mut app = make_app();
+        app.import_midi_file(path);
+
+        let status = app.status_message.clone().expect("a status message");
+        assert!(status.starts_with("Imported"), "{status}");
+        assert!(
+            status.contains("truncated"),
+            "the truncation must reach the status line: {status}"
+        );
     }
 
     #[test]

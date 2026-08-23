@@ -235,7 +235,10 @@ fn render_song_streaming(
         .collect();
     let mut send_buses: Vec<effects::SendBus> = (0..effects::MAX_SEND_BUSES)
         .map(|i| {
-            let mut bus = effects::SendBus::new(sr);
+            // Offline: the block size follows the tempo, so this is a
+            // starting size and `ensure_size` grows it as needed. Nothing
+            // here has a deadline to miss.
+            let mut bus = effects::SendBus::new(sr, 0);
             if let Some(params) = send_bus_params.get(i) {
                 bus.params = params.clone();
             }

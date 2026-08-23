@@ -1885,15 +1885,21 @@ impl TrackerCore {
         }
     }
 
-    /// Import a MIDI file. Returns Ok(song) or Err(message).
+    /// Import a MIDI file, replacing the current song.
+    ///
+    /// The returned [`LoadReport`] carries anything the import had to change
+    /// to fit the file into a song rtrack can edit -- a length past the
+    /// pattern ceiling, most of all -- under `repairs`, the same field a
+    /// `.rtrk` load uses for the same purpose.
     pub fn import_midi_file(&mut self, path: &std::path::Path) -> Result<LoadReport> {
-        match crate::midi_file::import_midi(path) {
-            Ok(song) => {
+        match crate::midi_file::import_midi_with_report(path) {
+            Ok((song, repairs)) => {
                 self.channels = default_channel_configs(song.channels);
                 self.solo_channel = None;
                 self.song = song;
                 Ok(LoadReport {
                     path: path.to_path_buf(),
+                    repairs,
                     ..LoadReport::default()
                 })
             }

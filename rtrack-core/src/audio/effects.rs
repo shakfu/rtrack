@@ -83,13 +83,26 @@ const BUS_COMB_LENGTHS: [usize; 4] = [1116, 1188, 1277, 1356];
 const BUS_AP_LENGTHS: [usize; 2] = [225, 556];
 
 impl SendBus {
-    pub fn new(sample_rate: f64) -> Self {
+    /// Build a bus whose input buffers can hold `max_frames` frames.
+    ///
+    /// The capacity is a parameter rather than a constant because the two
+    /// callers need different ones and only one of them may allocate. The
+    /// audio thread sizes its buses to the same figure as the render scratch,
+    /// so [`SendBus::ensure_size`] never has anything to do there; the offline
+    /// renderer starts from a guess and grows as tempo changes move the
+    /// frames-per-tick, which costs it nothing.
+    ///
+    /// Sizing these to a fixed 4096 was the bug this parameter replaces: the
+    /// scratch buffers are sized to what the device says it may ask for, up to
+    /// 16384, so a larger callback reached `ensure_size` and allocated on the
+    /// audio thread -- the one thing the surrounding design exists to prevent.
+    pub fn new(sample_rate: f64, max_frames: usize) -> Self {
         let buf_size = (sample_rate * 2.0) as usize + 1;
         let sr_ratio = sample_rate / 44100.0;
         Self {
             params: SendBusParams::default(),
-            input_left: vec![0.0; MAX_CALLBACK_FRAMES],
-            input_right: vec![0.0; MAX_CALLBACK_FRAMES],
+            input_left: vec![0.0; max_frames],
+            input_right: vec![0.0; max_frames],
             delay_buf_l: vec![0.0; buf_size],
             delay_buf_r: vec![0.0; buf_size],
             delay_write_pos: 0,
@@ -105,7 +118,16 @@ impl SendBus {
         }
     }
 
+    /// Frames the input buffers can hold without growing.
+    pub fn input_capacity(&self) -> usize {
+        self.input_left.len()
+    }
+
     /// Ensure input buffers are large enough for the given frame count.
+    ///
+    /// Allocates when they are not, so this must not be called from the audio
+    /// thread. The offline renderer is the intended caller: its block size
+    /// follows the tempo, and it has no deadline to miss.
     pub fn ensure_size(&mut self, frames: usize) {
         if self.input_left.len() < frames {
             self.input_left.resize(frames, 0.0);
@@ -115,6 +137,11 @@ impl SendBus {
 
     /// Zero the input accumulation buffers.
     pub fn clear_inputs(&mut self, frames: usize) {
+        // Clamped rather than indexed straight, the way `add_send` already
+        // is: this runs on the audio thread, where an out-of-range slice does
+        // not raise an error someone can act on -- it unwinds through the
+        // callback and takes the stream with it.
+        let frames = Ord::min(frames, self.input_left.len());
         for s in self.input_left[..frames].iter_mut() {
             *s = 0.0;
         }
@@ -142,6 +169,15 @@ impl SendBus {
         if !self.params.enabled {
             return;
         }
+        // Both processors read `input_*[i]` for i in 0..frames and write the
+        // master slices at the same index, so the smallest of the three is
+        // the only safe count. On the audio thread the three already agree;
+        // clamping means a disagreement is quiet rather than a panic that
+        // unwinds through the callback.
+        let frames = Ord::min(
+            Ord::min(frames, self.input_left.len()),
+            Ord::min(master_left.len(), master_right.len()),
+        );
         match self.params.effect_type {
             SendBusType::Delay => self.process_delay(master_left, master_right, frames),
             SendBusType::Reverb => self.process_reverb(master_left, master_right, frames),
@@ -212,9 +248,6 @@ impl SendBus {
         }
     }
 }
-
-/// Maximum frames per callback (must match audio/mod.rs).
-const MAX_CALLBACK_FRAMES: usize = 4096;
 
 /// Stereo effects chain: lightweight stereo delay. Processes audio in-place.
 pub struct EffectsChain {
@@ -318,14 +351,14 @@ mod tests {
 
     #[test]
     fn test_send_bus_creates() {
-        let bus = SendBus::new(44100.0);
+        let bus = SendBus::new(44100.0, super::super::MAX_CALLBACK_FRAMES);
         assert!(!bus.params.enabled);
         assert_eq!(bus.params.effect_type, SendBusType::Delay);
     }
 
     #[test]
     fn test_send_bus_disabled_produces_silence() {
-        let mut bus = SendBus::new(44100.0);
+        let mut bus = SendBus::new(44100.0, super::super::MAX_CALLBACK_FRAMES);
         let frames = 256;
         bus.ensure_size(frames);
         bus.clear_inputs(frames);
@@ -345,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_send_bus_delay_produces_output() {
-        let mut bus = SendBus::new(44100.0);
+        let mut bus = SendBus::new(44100.0, super::super::MAX_CALLBACK_FRAMES);
         bus.params.enabled = true;
         bus.params.effect_type = SendBusType::Delay;
         bus.params.delay_time = 100.0; // 100ms
@@ -386,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_send_bus_reverb_produces_output() {
-        let mut bus = SendBus::new(44100.0);
+        let mut bus = SendBus::new(44100.0, super::super::MAX_CALLBACK_FRAMES);
         bus.params.enabled = true;
         bus.params.effect_type = SendBusType::Reverb;
         bus.params.reverb_size = 0.5;
@@ -428,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_send_bus_add_send_accumulates() {
-        let mut bus = SendBus::new(44100.0);
+        let mut bus = SendBus::new(44100.0, super::super::MAX_CALLBACK_FRAMES);
         let frames = 64;
         bus.ensure_size(frames);
         bus.clear_inputs(frames);

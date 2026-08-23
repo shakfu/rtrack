@@ -387,6 +387,16 @@ fn load_aiff(path: &Path) -> Result<Sample> {
         .unwrap_or("sample")
         .to_string();
 
+    // Every length below is a number the file declares about itself, and each
+    // one is allocated from before anything is read. Bound them by what the
+    // file could possibly contain: a chunk that claims more than the whole
+    // file is lying, and reserving for the claim is how a 60-byte file asks
+    // for a petabyte.
+    let file_len = file
+        .metadata()
+        .map(|m| m.len() as usize)
+        .unwrap_or(usize::MAX);
+
     // Read FORM header
     let mut header = [0u8; 12];
     file.read_exact(&mut header)
@@ -417,9 +427,23 @@ fn load_aiff(path: &Path) -> Result<Sample> {
 
         match chunk_id {
             b"COMM" => {
-                let mut comm = vec![0u8; chunk_size];
+                // The fields below occupy the first 18 bytes. A shorter chunk
+                // used to be read into a shorter buffer and then indexed
+                // anyway, which panics rather than reporting a bad file.
+                const COMM_FIELDS: usize = 18;
+                if chunk_size < COMM_FIELDS {
+                    anyhow::bail!(
+                        "AIFF COMM chunk is {} bytes, needs at least {}",
+                        chunk_size,
+                        COMM_FIELDS
+                    );
+                }
+                let mut comm = vec![0u8; chunk_size.min(file_len)];
                 file.read_exact(&mut comm)
                     .context("Failed to read COMM chunk")?;
+                if comm.len() < COMM_FIELDS {
+                    anyhow::bail!("AIFF COMM chunk is truncated");
+                }
                 channels = u16::from_be_bytes([comm[0], comm[1]]);
                 num_frames = u32::from_be_bytes([comm[2], comm[3], comm[4], comm[5]]);
                 bits_per_sample = u16::from_be_bytes([comm[6], comm[7]]);
@@ -430,9 +454,14 @@ fn load_aiff(path: &Path) -> Result<Sample> {
                 let mut ssnd_header = vec![0u8; 8];
                 file.read_exact(&mut ssnd_header)
                     .context("Failed to read SSND header")?;
-                // offset and block_size (usually 0)
-                let remaining = chunk_size - 8;
-                sound_data.resize(remaining, 0);
+                // The declared size counts the 8-byte offset/block_size pair
+                // just read. A chunk claiming fewer than 8 wrapped the
+                // subtraction round to something near usize::MAX, which was
+                // then handed straight to `resize`.
+                let Some(remaining) = chunk_size.checked_sub(8) else {
+                    anyhow::bail!("AIFF SSND chunk is {} bytes, needs 8", chunk_size);
+                };
+                sound_data.resize(remaining.min(file_len), 0);
                 file.read_exact(&mut sound_data)
                     .context("Failed to read SSND data")?;
             }
@@ -455,7 +484,18 @@ fn load_aiff(path: &Path) -> Result<Sample> {
 
     // Convert raw bytes to f32 samples (big-endian)
     let bytes_per_sample = (bits_per_sample as usize).div_ceil(8);
-    let total_samples = num_frames as usize * channels as usize;
+    if bytes_per_sample == 0 {
+        anyhow::bail!("AIFF file declares a sample size of 0 bits");
+    }
+    // `num_frames x channels` are two numbers out of the file, and their
+    // product overflows into an allocation no machine can serve: u32::MAX
+    // frames of 65535 channels asked for 1.1PB and aborted the process
+    // outright -- past the point where a panic could be caught and reported.
+    // The loop below stops at the end of `sound_data` regardless, so the
+    // audio actually present is the real bound and the only honest capacity.
+    let declared_samples = (num_frames as usize).saturating_mul(channels as usize);
+    let available_samples = sound_data.len() / bytes_per_sample;
+    let total_samples = declared_samples.min(available_samples);
     let mut raw_samples = Vec::with_capacity(total_samples);
 
     for i in 0..total_samples {

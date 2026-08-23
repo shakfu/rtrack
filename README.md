@@ -14,7 +14,7 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 
 - **Ableton Link** -- bidirectional tempo and transport sync with any Link-enabled application
 
-- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 16 effect commands
+- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 12 effect commands
 
 - **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects
 
@@ -56,7 +56,7 @@ Once running, open a song with `Ctrl+O` (or `:open`), reopen a recent one with `
 rtrack-gui                               # launch GUI frontend
 ```
 
-Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI program), interactive sample slicing (equal or transient detection with live preview, dividing either the whole sample or one slice), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
+Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI program), interactive sample slicing (equal or transient detection with live preview, dividing either the whole sample or one slice), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. MIDI file *import* is currently TUI-only; the GUI exports MIDI but cannot open a `.mid`. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
 
 ### CLI (Headless)
 
@@ -245,7 +245,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 - **Configurable row highlighting**: beat and bar intervals supporting time signatures like 3/4, 6/8, 5/4
 
-- **Auto-save**: periodic save to temp file every 60 seconds when unsaved changes exist
+- **Auto-save**: every 60 seconds when there are unsaved changes, to a hidden file beside the song (`.<name>.rtrk.autosave`), removed on a successful save
 
 ### Import / Export
 
@@ -343,7 +343,7 @@ CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed
 
 ```sh
 make build            # compile all crates
-make test             # run all tests (377 tests across workspace)
+make test             # run all tests (555 tests across workspace)
 make fmt              # format code
 make clippy           # lint with clippy
 make lint             # fmt + clippy
@@ -358,13 +358,17 @@ rtrack-core/                Headless library (engine, audio, MIDI, data model)
   src/
     core.rs                 TrackerCore: main API for frontends
     types.rs                Shared types (ChannelConfig, Instrument, ClockMode, etc.)
-    constants.rs            Shared constants (MIDI protocol, music theory, effect commands)
+    constants.rs            Shared constants (MIDI protocol, music theory, effect commands, limits)
     config.rs               User config (~/.config/rtrack/config.toml)
+    error.rs                Error type and Result alias
+    fs.rs                   Atomic file writes (temp file + rename)
+    keymap.rs               Piano keyboard layout, shared by both frontends
+    midi_file.rs            Standard MIDI file import and export
     engine/mod.rs           Deterministic TrackerEngine (tick-based playback, effects, events)
     tracker/                Pattern, Song, Cell, Note (serde)
     audio/                  Unified audio engine (SF2 + synth + samples + effects, cpal)
     sample/                 Sample loading (WAV/AIFF), slicing, playback, offline export
-    midi/                   MIDI output + input (midir), MIDI file export/import
+    midi/                   MIDI output + input (midir)
     link/                   Ableton Link (rusty_link)
 
 rtrack-tui/                 TUI frontend (binary: rtrack)

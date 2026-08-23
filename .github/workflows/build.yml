@@ -3,7 +3,11 @@ name: Build
 on:
   push:
     branches: [main, dev]
-    tags: ["v*"]
+    # Both spellings. The repository's existing tag is `0.1.2`, with no
+    # prefix, so a `v*`-only trigger meant a tagged release never built at
+    # all. These are glob patterns, not regular expressions, which is why the
+    # bare-version case is spelled as broadly as this.
+    tags: ["v*", "[0-9]*"]
   pull_request:
     branches: [main, dev]
   workflow_dispatch:
