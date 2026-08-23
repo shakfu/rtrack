@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use rtrack_core::tracker::Cell;
 use rtrack_core::TrackerCore;
 
 use crate::grid::{self, GridAction, GridParams};
@@ -33,8 +32,8 @@ pub struct RtrackApp {
     pub history: EditHistory,
 
     // Clipboard
-    pub clipboard: Option<Cell>,
-    pub block_clipboard: Option<Vec<Vec<Cell>>>,
+    /// Copied cells. Shared with the TUI so the two cannot drift.
+    pub clipboard: rtrack_core::editor::Clipboard,
 
     // Block selection
     pub block_start: Option<(usize, usize)>,
@@ -91,9 +90,8 @@ impl RtrackApp {
             first_visible_channel: 0,
             mode: Mode::Normal,
             status_message: None,
-            history: EditHistory::new(100),
-            clipboard: None,
-            block_clipboard: None,
+            history: EditHistory::new(),
+            clipboard: rtrack_core::editor::Clipboard::default(),
             block_start: None,
             block_end: None,
             show_song_settings: false,
@@ -143,7 +141,17 @@ impl RtrackApp {
 
     /// A test instance with no hardware attached.
     #[cfg(test)]
+    /// An app with no audio device, MIDI port, or window behind it.
+    ///
+    /// The constructor the tests use; the binary goes through [`RtrackApp::new`].
+    /// It also points the config directory at a scratch path, because saving a
+    /// song records it in the recent-files list -- so without this, every test
+    /// that exercises a save rewrites the developer's real
+    /// `~/.config/rtrack/recent.json`, which is exactly what was happening.
     pub fn headless(channels: usize, rows: usize) -> Self {
+        rtrack_core::config::set_config_dir_for_test(
+            std::env::temp_dir().join(format!("rtrack-test-config-{}", std::process::id())),
+        );
         Self::with_core(
             rtrack_core::core::TrackerCoreBuilder::new()
                 .song_size(channels, rows)
@@ -226,7 +234,7 @@ impl RtrackApp {
                         self.cursor_channel = 0;
                         self.edit_order = 0;
                         self.first_visible_channel = 0;
-                        self.history = EditHistory::new(100);
+                        self.history = EditHistory::new();
                         rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                         rtrack_core::config::save_recent_files(&self.recent_files);
                         self.status_message = Some(Self::describe_load(&report));
@@ -287,6 +295,32 @@ impl RtrackApp {
     }
 }
 
+/// How soon the GUI must wake itself when nothing else is driving it.
+///
+/// egui only calls `update` in response to input unless something asks it to
+/// repaint. Everything rtrack does off the UI thread's own initiative --
+/// draining MIDI input, following Link's tempo, auto-saving -- runs inside
+/// `update`, so with playback stopped and the visualiser closed all three
+/// stalled until the user happened to move the mouse. A MIDI keyboard would
+/// go dead, and a song could sit dirty indefinitely.
+///
+/// Returns `None` when there is genuinely nothing to service, so an idle
+/// window with no MIDI and no Link costs nothing.
+fn idle_repaint_delay(midi_connected: bool, link_enabled: bool, dirty: bool) -> Option<Duration> {
+    // Live input has to feel immediate: this is the interval between a key
+    // being pressed on a controller and rtrack noticing.
+    if midi_connected || link_enabled {
+        return Some(Duration::from_millis(16));
+    }
+    // Auto-save is on a 60-second timer, so it only needs a wake often enough
+    // that the timer is not missed by much. A per-frame poll for this alone
+    // would keep the CPU busy for no reason.
+    if dirty {
+        return Some(Duration::from_secs(1));
+    }
+    None
+}
+
 impl eframe::App for RtrackApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Tick playback
@@ -323,6 +357,17 @@ impl eframe::App for RtrackApp {
         // Auto-save
         if let Err(e) = self.core.auto_save(&mut self.last_autosave) {
             self.status_message = Some(format!("Auto-save failed: {}", e));
+        }
+
+        // Keep waking up while something above needs servicing. The playback
+        // and visualiser branches already request their own repaints; this is
+        // what covers a stopped transport with a controller plugged in.
+        if let Some(delay) = idle_repaint_delay(
+            self.core.midi_input.is_connected(),
+            self.core.link.is_enabled(),
+            self.core.dirty,
+        ) {
+            ctx.request_repaint_after(delay);
         }
 
         // Handle dropped files (drag-and-drop sample loading)
@@ -505,5 +550,223 @@ impl eframe::App for RtrackApp {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtrack_core::core::LoadReport;
+
+    /// A mono WAV of `frames` silent samples, which is enough for the sample
+    /// loader to accept it.
+    fn write_wav(path: &std::path::Path, frames: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).expect("create wav");
+        for _ in 0..frames {
+            w.write_sample(0i16).expect("write sample");
+        }
+        w.finalize().expect("finalize");
+    }
+
+    fn dropped(path: &std::path::Path) -> egui::DroppedFile {
+        egui::DroppedFile {
+            path: Some(path.to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    // -- Idle wake-ups (the GUI used to stall with a controller plugged in) --
+
+    #[test]
+    fn an_idle_window_with_nothing_to_service_does_not_wake_itself() {
+        assert_eq!(idle_repaint_delay(false, false, false), None);
+    }
+
+    #[test]
+    fn connected_midi_or_link_wakes_the_window_promptly() {
+        // This is the interval between a key being pressed on a controller
+        // and rtrack noticing, so it has to be short enough to feel direct.
+        let midi = idle_repaint_delay(true, false, false).expect("midi should wake it");
+        let link = idle_repaint_delay(false, true, false).expect("link should wake it");
+        assert!(midi <= Duration::from_millis(20), "{midi:?}");
+        assert_eq!(midi, link);
+    }
+
+    #[test]
+    fn an_unsaved_song_alone_wakes_the_window_slowly() {
+        // Auto-save runs on a 60-second timer; polling it at frame rate would
+        // burn a core to notice something that happens once a minute.
+        let dirty = idle_repaint_delay(false, false, true).expect("dirty should wake it");
+        assert!(dirty >= Duration::from_millis(500), "{dirty:?}");
+        assert!(dirty <= Duration::from_secs(5), "{dirty:?}");
+    }
+
+    #[test]
+    fn live_input_takes_priority_over_the_auto_save_timer() {
+        assert_eq!(
+            idle_repaint_delay(true, false, true),
+            idle_repaint_delay(true, false, false),
+            "a dirty song must not slow down MIDI polling"
+        );
+    }
+
+    // -- Drag and drop --
+
+    #[test]
+    fn dropping_a_sample_loads_it_into_the_first_empty_slot() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let wav = dir.path().join("kick.wav");
+        write_wav(&wav, 64);
+
+        let mut app = RtrackApp::headless(4, 16);
+        assert!(app.core.sample_bank.get(0).is_none());
+
+        app.handle_dropped_files(vec![dropped(&wav)]);
+
+        assert!(
+            app.core.sample_bank.get(0).is_some(),
+            "slot 0 should be full"
+        );
+        assert!(app.core.dirty, "loading a sample changes the song");
+        assert_eq!(app.status_message.as_deref(), Some("Loaded 1 sample"));
+    }
+
+    #[test]
+    fn dropping_two_samples_fills_two_slots_and_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let a = dir.path().join("kick.wav");
+        let b = dir.path().join("snare.wav");
+        write_wav(&a, 64);
+        write_wav(&b, 64);
+
+        let mut app = RtrackApp::headless(4, 16);
+        app.handle_dropped_files(vec![dropped(&a), dropped(&b)]);
+
+        assert!(app.core.sample_bank.get(0).is_some());
+        assert!(app.core.sample_bank.get(1).is_some());
+        assert_eq!(app.status_message.as_deref(), Some("Loaded 2 samples"));
+    }
+
+    #[test]
+    fn dropping_a_file_of_no_interest_changes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"not audio").expect("write");
+
+        let mut app = RtrackApp::headless(4, 16);
+        app.handle_dropped_files(vec![dropped(&txt)]);
+
+        assert!(app.core.sample_bank.get(0).is_none());
+        assert!(!app.core.dirty);
+        assert!(app.status_message.is_none(), "{:?}", app.status_message);
+    }
+
+    #[test]
+    fn dropping_a_song_replaces_the_song_and_resets_the_cursor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let song_path = dir.path().join("other.rtrk");
+
+        // A song with a different shape, saved from a separate app.
+        let mut source = RtrackApp::headless(3, 32);
+        source.core.song.title = "Dropped".to_string();
+        source.core.file_path = Some(song_path.clone());
+        source.core.save().expect("save");
+
+        let mut app = RtrackApp::headless(4, 16);
+        // Park the cursor somewhere that must be reset.
+        app.cursor_row = 9;
+        app.cursor_channel = 2;
+        app.first_visible_channel = 1;
+
+        app.handle_dropped_files(vec![dropped(&song_path)]);
+
+        assert_eq!(app.core.song.title, "Dropped");
+        assert_eq!(app.core.song.channels, 3);
+        assert_eq!(
+            (
+                app.cursor_row,
+                app.cursor_channel,
+                app.first_visible_channel
+            ),
+            (0, 0, 0),
+            "a cursor left past the end of the new song would index out of range"
+        );
+    }
+
+    /// A project file wins outright: the loop returns as soon as it loads one.
+    #[test]
+    fn dropping_a_song_alongside_samples_loads_only_the_song() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let song_path = dir.path().join("s.rtrk");
+        let wav = dir.path().join("kick.wav");
+        write_wav(&wav, 64);
+        let mut source = RtrackApp::headless(2, 16);
+        source.core.file_path = Some(song_path.clone());
+        source.core.save().expect("save");
+
+        let mut app = RtrackApp::headless(4, 16);
+        app.handle_dropped_files(vec![dropped(&song_path), dropped(&wav)]);
+
+        assert!(
+            app.core.sample_bank.get(0).is_none(),
+            "the sample after the song should not have been loaded"
+        );
+    }
+
+    #[test]
+    fn a_drop_with_no_path_is_ignored() {
+        let mut app = RtrackApp::headless(4, 16);
+        app.handle_dropped_files(vec![egui::DroppedFile::default()]);
+        assert!(app.status_message.is_none());
+    }
+
+    // -- Small helpers --
+
+    #[test]
+    fn the_order_position_follows_the_edit_cursor_while_stopped() {
+        let mut app = RtrackApp::headless(2, 16);
+        app.edit_order = 0;
+        assert_eq!(app.current_order_position(), 0);
+        assert!(!app.core.playing, "this is the stopped case");
+    }
+
+    #[test]
+    fn a_clean_load_is_described_without_ceremony() {
+        let report = LoadReport {
+            path: std::path::PathBuf::from("/songs/x.rtrk"),
+            ..Default::default()
+        };
+        let described = RtrackApp::describe_load(&report);
+        assert!(described.starts_with("Loaded"), "{described}");
+        assert!(described.contains("/songs/x.rtrk"), "{described}");
+    }
+
+    #[test]
+    fn a_load_that_repaired_something_says_what() {
+        let report = LoadReport {
+            path: std::path::PathBuf::from("/songs/x.rtrk"),
+            repairs: vec!["channel count was 9000, clamped to the maximum of 16".to_string()],
+            ..Default::default()
+        };
+        let described = RtrackApp::describe_load(&report);
+        assert!(described.contains("repaired"), "{described}");
+        assert!(described.contains("9000"), "{described}");
+    }
+
+    #[test]
+    fn missing_samples_are_named_in_the_load_message() {
+        let report = LoadReport {
+            path: std::path::PathBuf::from("/songs/x.rtrk"),
+            missing_samples: vec![("kick".to_string(), "no such file".to_string())],
+            ..Default::default()
+        };
+        let described = RtrackApp::describe_load(&report);
+        assert!(described.contains("kick"), "{described}");
     }
 }

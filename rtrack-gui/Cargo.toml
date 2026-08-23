@@ -24,3 +24,4 @@ rustfft = "6"
 
 [dev-dependencies]
 tempfile = "3"
+hound = "3.5"

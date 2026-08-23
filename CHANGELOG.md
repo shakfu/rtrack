@@ -32,6 +32,8 @@ Four bugs of one shape, listed worst first. Each was a length that came from out
 
   - Accumulating delta times now saturates instead of overflowing. `abs_tick += delta` panics in a debug build once the total passes `u32::MAX`, and in release folds late events back to the beginning of the song
 
+- **`make test` no longer rewrites the developer's real recent-files list.** Saving a song records it in `~/.config/rtrack/recent.json`, and the frontend tests that exercise a save called the real save path -- so running the suite left test paths under `/tmp` in a menu the user actually sees. Observed, not theorised: the list held `/tmp/rtrack_test_roundtrip.rtrk` after a test run. The tests were right to call the real path; what was wrong is that the path had nowhere else to go, so `config::set_config_dir_for_test` now redirects config reads and writes for the process, and both frontends' test constructors call it (`config.rs`, both frontends)
+
 - **The send buses were still allocating on the audio thread.** 0.1.2 fixed the master and per-channel scratch buffers to be sized from what the device says it may ask for, up to 16384 frames, and stated that the callback no longer allocates whatever buffer size the backend hands it. The send-bus input buffers kept their fixed 4096, so a larger callback with a bus enabled reached `ensure_size` and grew them from inside the callback -- the invariant held only while send buses were off (`audio/effects.rs`, `audio/mod.rs`)
 
   - `SendBus::new` now takes the frame capacity, so the audio thread sizes its buses to the same figure as the render scratch and `ensure_size` has nothing left to do there. The offline renderer still grows on demand, which costs it nothing
@@ -44,9 +46,29 @@ Four bugs of one shape, listed worst first. Each was a length that came from out
 
 ### Added
 
+- **Both frontends now share one clipboard and one undo subsystem.** `rtrack-core::editor` holds `SubColumn`, `Clipboard`, `Edit` and `EditHistory`, and the TUI and GUI both run on them. What was duplicated: `SubColumn` twice, two clipboards with different shapes (the GUI copied a single cell, the TUI a whole row), and two undo implementations with *different coverage*:
+
+  - The TUI cloned the whole `Song` per undoable action. Expensive, but complete: pattern add/clone, order-list edits and song settings were all undoable because all of them live in the song
+
+  - The GUI recorded per-cell diffs. Cheap and right for typing, but its `Edit` enum could only describe cells and the sample bank -- so **adding a pattern, cloning one, or removing an order entry was not undoable in the GUI at all**
+
+  - The shared `Edit` is neither: cells stay diffs, a structural change carries a before/after song snapshot, and `Edit::Group` covers an action that changes several of these at once -- slicing rewrites the sample bank and renames instruments together, and undoing one without the other leaves a state the user never made
+
+  - The TUI's call sites snapshot *before* they mutate, which does not fit before/after pairs. Rather than convert thirty-three of them, each one a chance to get undo subtly wrong, the snapshot is held and the pair completed once per input event. A keypress is one undo step, as it always was; several snapshots within one key collapse into it. `undo`, `redo` and slicing commit any outstanding snapshot themselves, so a future caller adding a `push_undo` on a new path cannot silently lose a step
+
+  - The shared `Clipboard` keeps a run and a rectangle apart, where a run is one cell for the GUI and a row for the TUI
+
+- **The undo history is bounded by memory rather than by step count.** `MAX_UNDO_BYTES` (64MB) and `MAX_UNDO_STEPS` (1000) are in `constants.rs`. A step carries whatever it has to put back, so its size follows the song and a fixed step count caps the wrong quantity -- measured, a hundred steps of a 64-pattern by 16-channel by 256-row song is about 290MB, and a 256-pattern one 1.15GB, against 1.6MB for a song the size of the shipped examples. The oldest steps are dropped until the total fits, so a small song keeps a deep history and a large one a shallower one, with the same ceiling either way. The newest step is never evicted, however large: an undo key that silently does nothing is worse than one step over budget
+
+- **The GUI can undo structural edits.** New pattern, clone pattern, remove and duplicate order entry now record an `Edit::Structure`, from the keyboard and from the pattern-matrix buttons alike. Undo also brings the cursor back inside the restored song, since undoing "add pattern" removes the order entry the cursor was moved onto (`input.rs`, `pattern_matrix.rs`)
+
+- **The GUI wakes itself while there is something to service.** `poll_midi_input`, `sync_link` and `auto_save` all run inside `update`, which egui only calls in response to input unless something requests a repaint -- and the only two requests were conditional on playback running or the visualiser being open. With the transport stopped and the visualiser closed, a MIDI keyboard went dead and a dirty song sat unsaved until the user moved the mouse. `idle_repaint_delay` asks for a wake every 16ms while MIDI or Link is connected, every second while merely unsaved, and not at all when there is nothing to do (`app.rs`)
+
+- **Tests for the GUI's file handling, drag-and-drop and idle behaviour**, and for the pattern grid's hit-testing. The GUI went from 33 tests to 69
+
 - **A hostile-input test suite** (`rtrack-core/tests/hostile_input.rs`) covering all four formats rtrack opens but does not write: `.rtrk`, `.mid`, `.wav`, and `.aiff`. It asserts the weak rule deliberately -- reject or bound, never panic, and never size an allocation from a number the file chose -- and combines hand-picked shapes with a truncation sweep over every prefix of a valid file and a single-byte corruption sweep over the header region. The byte-flip sweep rediscovered the `COMM` defect above on its own. This is a stand-in for the fuzzing on the TODO, which needs a nightly toolchain and cannot run in CI as it stands
 
-- **Tests for the GUI pattern grid's hit-testing.** The pointer-to-cell mapping was a closure inside `draw_grid`, so reaching it needed a live `Ui` and nothing tested it -- despite being pure arithmetic over layout constants that decides what every click in the editor does. It is now a free `hit_test` function over a `GridGeometry`, with twelve tests covering rows, channels, the four sub-columns, horizontal and vertical scrolling, the gutter and header, and the agreement between `max_visible_channels` and what `hit_test` considers in range
+- **The pattern grid's hit-testing is a function rather than a closure.** The pointer-to-cell mapping lived inside `draw_grid`, so reaching it needed a live `Ui` and nothing tested it -- despite being pure arithmetic over layout constants that decides what every click in the editor does. It is now `hit_test` over a `GridGeometry`, covered by twelve tests: rows, channels, the four sub-columns, both scroll axes, the gutter and header, and the agreement between `max_visible_channels` and what `hit_test` considers in range
 
 ### Changed
 

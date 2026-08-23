@@ -42,7 +42,16 @@ impl App {
     // -- MIDI input handling --
 
     /// Process incoming MIDI note events from external controllers
+    /// Drain MIDI input, committing any undo step the notes produced.
+    ///
+    /// Step recording writes into the pattern, so this is an editing entry
+    /// point like `handle_key` and needs the same commit.
     pub fn poll_midi_input(&mut self) {
+        self.poll_midi_input_inner();
+        self.commit_undo();
+    }
+
+    fn poll_midi_input_inner(&mut self) {
         while let Some(event) = self.core.midi_input.poll() {
             self.handle_midi_input(event);
         }

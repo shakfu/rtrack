@@ -74,6 +74,27 @@ pub const DEFAULT_ROWS_PER_PATTERN: usize = 64;
 /// cells from the declared figures whatever the data holds.
 pub const MAX_ROWS_PER_PATTERN: usize = 256;
 
+/// Memory budget for one editor's undo history, in bytes.
+///
+/// The bound that matters is bytes rather than steps. A step is a snapshot of
+/// whatever it has to put back, so its size follows the song: at the top of
+/// the range the format allows, a hundred steps of a 64-pattern by 16-channel
+/// by 256-row song is roughly 290MB, and a 256-pattern one over a gigabyte.
+/// Counting steps caps the wrong quantity -- it is generous with a small song
+/// and ruinous with a large one.
+///
+/// The oldest steps are dropped until the total fits, so a small song still
+/// gets a deep history and a large one gets a shallower one, with the ceiling
+/// the same either way.
+pub const MAX_UNDO_BYTES: usize = 64 * 1024 * 1024;
+
+/// Ceiling on the number of undo steps, whatever they weigh.
+///
+/// A backstop for the opposite case to [`MAX_UNDO_BYTES`]: single-cell edits
+/// are tens of bytes each, so a byte budget alone would let the stack grow to
+/// hundreds of thousands of entries before it noticed.
+pub const MAX_UNDO_STEPS: usize = 1000;
+
 /// Maximum number of instruments.
 pub const MAX_INSTRUMENTS: usize = 256;
 

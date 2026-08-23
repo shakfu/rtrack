@@ -23,7 +23,7 @@ impl RtrackApp {
                         }
                         self.reset_cursor_state();
                         self.history.clear();
-                        self.clipboard = None;
+                        self.clipboard.clear();
                         self.status_message = Some("New song created".to_string());
                         ui.close_menu();
                     }
@@ -38,7 +38,7 @@ impl RtrackApp {
                                 Ok(report) => {
                                     self.reset_cursor_state();
                                     self.history.clear();
-                                    self.clipboard = None;
+                                    self.clipboard.clear();
                                     rtrack_core::config::push_recent_file(
                                         &mut self.recent_files,
                                         &path,
@@ -99,7 +99,7 @@ impl RtrackApp {
                                         Ok(report) => {
                                             self.reset_cursor_state();
                                             self.history.clear();
-                                            self.clipboard = None;
+                                            self.clipboard.clear();
                                             self.status_message =
                                                 Some(Self::describe_load(&report));
                                         }
@@ -176,7 +176,7 @@ impl RtrackApp {
                         let pattern_idx = self.core.song.order[self.edit_order];
                         let cell = *self.core.song.patterns[pattern_idx]
                             .get(self.cursor_row, self.cursor_channel);
-                        self.clipboard = Some(cell);
+                        self.clipboard.set_cell(cell);
                         self.status_message = Some("Copied".to_string());
                         ui.close_menu();
                     }
@@ -187,7 +187,7 @@ impl RtrackApp {
                         let pattern_idx = self.core.song.order[self.edit_order];
                         let old_cell = *self.core.song.patterns[pattern_idx]
                             .get(self.cursor_row, self.cursor_channel);
-                        self.clipboard = Some(old_cell);
+                        self.clipboard.set_cell(old_cell);
                         let cell = self.core.song.patterns[pattern_idx]
                             .get_mut(self.cursor_row, self.cursor_channel);
                         *cell = Cell::default();
@@ -205,12 +205,12 @@ impl RtrackApp {
                     }
                     if ui
                         .add_enabled(
-                            self.clipboard.is_some(),
+                            self.clipboard.cell().is_some(),
                             egui::Button::new("Paste  (Ctrl+V)"),
                         )
                         .clicked()
                     {
-                        if let Some(clip) = self.clipboard {
+                        if let Some(clip) = self.clipboard.cell() {
                             let pattern_idx = self.core.song.order[self.edit_order];
                             let old_cell = *self.core.song.patterns[pattern_idx]
                                 .get(self.cursor_row, self.cursor_channel);
@@ -304,5 +304,99 @@ impl RtrackApp {
         self.cursor_channel = 0;
         self.cursor_sub = SubColumn::Note;
         self.edit_order = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::RtrackApp;
+
+    #[test]
+    fn saving_writes_the_file_and_clears_the_dirty_flag() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("song.rtrk");
+
+        let mut app = RtrackApp::headless(2, 16);
+        app.core.file_path = Some(path.clone());
+        app.core.dirty = true;
+
+        app.do_save();
+
+        assert!(path.exists(), "the song file was not written");
+        assert!(!app.core.dirty, "a saved song is not dirty");
+        let msg = app.status_message.as_deref().expect("a status message");
+        assert!(msg.starts_with("Saved:"), "{msg}");
+    }
+
+    #[test]
+    fn saving_records_the_song_in_the_recent_files_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("song.rtrk");
+
+        let mut app = RtrackApp::headless(2, 16);
+        // The test config directory is shared across this binary's tests, and
+        // the app loads the recent list from it at construction -- so start
+        // from a known state rather than whatever another test saved.
+        app.recent_files.clear();
+        app.core.file_path = Some(path.clone());
+        app.do_save();
+
+        let canonical = std::fs::canonicalize(&path).expect("canonicalize");
+        assert_eq!(
+            app.recent_files.first(),
+            Some(&canonical),
+            "the song just saved should be the most recent entry"
+        );
+    }
+
+    #[test]
+    fn saving_the_same_song_twice_does_not_list_it_twice() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("song.rtrk");
+
+        let mut app = RtrackApp::headless(2, 16);
+        app.recent_files.clear();
+        app.core.file_path = Some(path);
+        app.do_save();
+        app.do_save();
+
+        assert_eq!(app.recent_files.len(), 1, "{:?}", app.recent_files);
+    }
+
+    #[test]
+    fn a_save_that_cannot_be_written_reports_rather_than_panicking() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // A path whose parent does not exist.
+        let path = dir.path().join("no_such_dir").join("song.rtrk");
+
+        let mut app = RtrackApp::headless(2, 16);
+        app.core.file_path = Some(path);
+        app.core.dirty = true;
+
+        app.do_save();
+
+        let msg = app.status_message.as_deref().expect("a status message");
+        assert!(msg.starts_with("Save failed:"), "{msg}");
+        assert!(
+            app.core.dirty,
+            "a song that failed to save is still unsaved"
+        );
+    }
+
+    #[test]
+    fn resetting_the_cursor_puts_it_back_at_the_first_cell() {
+        let mut app = RtrackApp::headless(4, 16);
+        app.cursor_row = 11;
+        app.cursor_channel = 3;
+        app.cursor_sub = SubColumn::Effect;
+        app.edit_order = 2;
+
+        app.reset_cursor_state();
+
+        assert_eq!(app.cursor_row, 0);
+        assert_eq!(app.cursor_channel, 0);
+        assert_eq!(app.cursor_sub, SubColumn::Note);
+        assert_eq!(app.edit_order, 0);
     }
 }

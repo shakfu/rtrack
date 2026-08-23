@@ -1175,7 +1175,7 @@ impl App {
         self.push_undo();
         let pattern_idx = self.core.song.order[self.current_order_position()];
 
-        if let Some((anchor_row, anchor_ch)) = self.history.block_anchor {
+        if let Some((anchor_row, anchor_ch)) = self.block_anchor {
             let (r0, r1) = if anchor_row <= self.cursor_row {
                 (anchor_row, self.cursor_row)
             } else {
@@ -1273,6 +1273,14 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.status_message = None;
+        self.dispatch_key(key);
+        // One keypress is one undo step. Whatever the handlers snapshotted is
+        // paired with the song as it now stands; a key that edited nothing
+        // leaves nothing pending and this costs nothing.
+        self.commit_undo();
+    }
+
+    fn dispatch_key(&mut self, key: KeyEvent) {
         match self.mode {
             Mode::Normal => self.handle_normal_key(key),
             Mode::Insert => self.handle_insert_key(key),
@@ -1323,7 +1331,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('c') => {
-                    if self.history.block_anchor.is_some() {
+                    if self.block_anchor.is_some() {
                         self.copy_block();
                     } else {
                         self.copy_row();
@@ -1331,7 +1339,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('v') => {
-                    if self.history.block_clipboard.is_some() {
+                    if self.clipboard.has_block() {
                         self.paste_block();
                     } else {
                         self.paste_row();
@@ -1339,7 +1347,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('x') => {
-                    if self.history.block_anchor.is_some() {
+                    if self.block_anchor.is_some() {
                         self.cut_block();
                     } else {
                         self.cut_row();
@@ -1896,18 +1904,18 @@ impl App {
 
     /// Toggle block selection anchor at the current cursor position
     pub fn toggle_block_select(&mut self) {
-        if self.history.block_anchor.is_some() {
-            self.history.block_anchor = None;
+        if self.block_anchor.is_some() {
+            self.block_anchor = None;
             self.status_message = Some("Block selection cleared".to_string());
         } else {
-            self.history.block_anchor = Some((self.cursor_row, self.cursor_channel));
+            self.block_anchor = Some((self.cursor_row, self.cursor_channel));
             self.status_message = Some("Block selection started".to_string());
         }
     }
 
     /// Get the block selection bounds: (row_start, row_end, ch_start, ch_end) inclusive
     pub fn block_bounds(&self) -> Option<(usize, usize, usize, usize)> {
-        self.history.block_anchor.map(|(anchor_row, anchor_ch)| {
+        self.block_anchor.map(|(anchor_row, anchor_ch)| {
             let (r0, r1) = if anchor_row <= self.cursor_row {
                 (anchor_row, self.cursor_row)
             } else {
@@ -1935,7 +1943,7 @@ impl App {
                 }
                 block.push(row);
             }
-            self.history.block_clipboard = Some(block);
+            self.clipboard.set_block(block);
             let rows = r1 - r0 + 1;
             let cols = c1 - c0 + 1;
             self.status_message = Some(format!("Copied block {}x{}", rows, cols));
@@ -1954,7 +1962,7 @@ impl App {
                     pattern.set_cell(r, c, rtrack_core::tracker::Cell::default());
                 }
             }
-            self.history.block_anchor = None;
+            self.block_anchor = None;
             self.status_message = Some("Cut block".to_string());
         }
     }
@@ -2011,7 +2019,7 @@ impl App {
 
     /// Paste block clipboard at cursor position
     fn paste_block(&mut self) {
-        if let Some(ref block) = self.history.block_clipboard.clone() {
+        if let Some(block) = self.clipboard.block().cloned() {
             self.push_undo();
             let pattern_idx = self.core.song.order[self.current_order_position()];
             let pattern = &mut self.core.song.patterns[pattern_idx];

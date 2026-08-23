@@ -4,6 +4,7 @@
 //! to defaults. CLI arguments always take precedence over config values.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -69,8 +70,33 @@ fn config_path() -> Option<PathBuf> {
 
 const MAX_RECENT_FILES: usize = 3;
 
+/// Redirect config reads and writes to `dir` for the rest of the process.
+///
+/// Exists because saving a song records it in the recent-files list, which
+/// means every test that exercises a save wrote into the developer's real
+/// `~/.config/rtrack/recent.json` -- test paths under `/tmp` and all. The
+/// tests were right to call the real save path; what was wrong was that the
+/// path had nowhere else to go.
+///
+/// Takes effect once and only once: the first caller wins and later calls are
+/// ignored, so parallel tests racing to set it all end up pointing at whoever
+/// got there first. That is fine, because the point is that none of them
+/// point at the user's directory -- not that each gets its own.
+///
+/// Not for use outside tests. An application wanting a different config
+/// location should set `XDG_CONFIG_HOME`.
+#[doc(hidden)]
+pub fn set_config_dir_for_test(dir: PathBuf) {
+    let _ = CONFIG_DIR_OVERRIDE.set(dir);
+}
+
+static CONFIG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
 /// Return the config directory: `$XDG_CONFIG_HOME/rtrack/` or `~/.config/rtrack/`.
 pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = CONFIG_DIR_OVERRIDE.get() {
+        return Some(dir.clone());
+    }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(xdg).join("rtrack"));
     }

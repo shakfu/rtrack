@@ -3657,6 +3657,7 @@ version = "0.1.2"
 dependencies = [
  "eframe",
  "egui",
+ "hound",
  "rfd",
  "rtrack-core",
  "rustfft",

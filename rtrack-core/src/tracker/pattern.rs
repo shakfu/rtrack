@@ -243,6 +243,22 @@ impl Pattern {
         }
     }
 
+    /// Roughly how much heap this pattern holds.
+    ///
+    /// Used to budget the undo history by bytes. An estimate on purpose: it
+    /// counts the cell storage and the per-row `Vec` headers, which together
+    /// are all but a rounding error of the real figure, and does not chase
+    /// allocator overhead.
+    pub fn approx_heap_bytes(&self) -> usize {
+        let row_header = std::mem::size_of::<Vec<Cell>>();
+        let cells: usize = self
+            .data
+            .iter()
+            .map(|row| row.capacity() * std::mem::size_of::<Cell>())
+            .sum();
+        cells + self.data.capacity() * row_header
+    }
+
     pub fn get(&self, row: usize, channel: usize) -> &Cell {
         &self.data[row][channel]
     }

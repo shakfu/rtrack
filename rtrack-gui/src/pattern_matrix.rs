@@ -173,14 +173,17 @@ impl RtrackApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("Ctrl+N: New Pattern").clicked() {
+                let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.matrix_cursor + 1, idx);
                 self.core.song.sync_order_repeats();
                 self.matrix_cursor += 1;
                 self.core.dirty = true;
                 self.status_message = Some(format!("New pattern {:02X}", idx));
+                self.end_structural_edit(before);
             }
             if ui.button("Ctrl+D: Clone").clicked() {
+                let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.matrix_cursor];
                 let cloned = self.core.song.patterns[src_idx].clone();
                 let new_idx = self.core.song.patterns.len();
@@ -190,6 +193,7 @@ impl RtrackApp {
                 self.matrix_cursor += 1;
                 self.core.dirty = true;
                 self.status_message = Some(format!("Cloned {:02X} -> {:02X}", src_idx, new_idx));
+                self.end_structural_edit(before);
             }
             if ui
                 .add_enabled(
@@ -198,6 +202,7 @@ impl RtrackApp {
                 )
                 .clicked()
             {
+                let before = self.begin_structural_edit();
                 self.core.song.order.remove(self.matrix_cursor);
                 self.core.song.sync_order_repeats();
                 if self.matrix_cursor >= self.core.song.order.len() {
@@ -206,14 +211,15 @@ impl RtrackApp {
                 if self.edit_order >= self.core.song.order.len() {
                     self.edit_order = self.core.song.order.len() - 1;
                 }
-                self.core.dirty = true;
+                self.end_structural_edit(before);
             }
             if ui.button("Ins: Duplicate Entry").clicked() {
+                let before = self.begin_structural_edit();
                 let pat = self.core.song.order[self.matrix_cursor];
                 self.core.song.order.insert(self.matrix_cursor + 1, pat);
                 self.core.song.sync_order_repeats();
                 self.matrix_cursor += 1;
-                self.core.dirty = true;
+                self.end_structural_edit(before);
             }
             ui.separator();
             if ui.button("Close (Esc)").clicked() {

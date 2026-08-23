@@ -430,14 +430,14 @@ impl RtrackApp {
                     }
                     let rows = block.len();
                     let chs = block.first().map_or(0, |r| r.len());
-                    self.block_clipboard = Some(block);
+                    self.clipboard.set_block(block);
                     self.status_message = Some(format!("Block copied ({}x{})", rows, chs));
                 } else {
                     // Single cell copy
                     let pattern_idx = self.core.song.order[self.edit_order];
                     let cell = *self.core.song.patterns[pattern_idx]
                         .get(self.cursor_row, self.cursor_channel);
-                    self.clipboard = Some(cell);
+                    self.clipboard.set_cell(cell);
                     self.status_message = Some("Copied".to_string());
                 }
             }
@@ -470,7 +470,7 @@ impl RtrackApp {
                     }
                     let rows = block.len();
                     let chs = block.first().map_or(0, |r| r.len());
-                    self.block_clipboard = Some(block);
+                    self.clipboard.set_block(block);
                     self.history.push(edits);
                     self.core.dirty = true;
                     self.block_start = None;
@@ -481,7 +481,7 @@ impl RtrackApp {
                     let pattern_idx = self.core.song.order[self.edit_order];
                     let old_cell = *self.core.song.patterns[pattern_idx]
                         .get(self.cursor_row, self.cursor_channel);
-                    self.clipboard = Some(old_cell);
+                    self.clipboard.set_cell(old_cell);
 
                     let cell = self.core.song.patterns[pattern_idx]
                         .get_mut(self.cursor_row, self.cursor_channel);
@@ -500,7 +500,7 @@ impl RtrackApp {
                 }
             }
             Action::Paste => {
-                if let Some(ref block) = self.block_clipboard.clone() {
+                if let Some(block) = self.clipboard.block().cloned() {
                     // Block paste
                     let pattern_idx = self.core.song.order[self.edit_order];
                     let pattern = &self.core.song.patterns[pattern_idx];
@@ -532,7 +532,7 @@ impl RtrackApp {
                     self.history.push(edits);
                     self.core.dirty = true;
                     self.status_message = Some("Block pasted".to_string());
-                } else if let Some(clip) = self.clipboard {
+                } else if let Some(clip) = self.clipboard.cell() {
                     // Single cell paste
                     let pattern_idx = self.core.song.order[self.edit_order];
                     let old_cell = *self.core.song.patterns[pattern_idx]
@@ -592,6 +592,7 @@ impl RtrackApp {
                 self.show_track_config = Some(self.cursor_channel);
             }
             Action::NewPattern => {
+                let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.edit_order + 1, idx);
                 self.core.song.sync_order_repeats();
@@ -599,8 +600,10 @@ impl RtrackApp {
                 self.cursor_row = 0;
                 self.core.dirty = true;
                 self.status_message = Some(format!("New pattern {:02X}", idx));
+                self.end_structural_edit(before);
             }
             Action::ClonePattern => {
+                let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.edit_order];
                 let cloned = self.core.song.patterns[src_idx].clone();
                 let new_idx = self.core.song.patterns.len();
@@ -611,6 +614,7 @@ impl RtrackApp {
                 self.cursor_row = 0;
                 self.core.dirty = true;
                 self.status_message = Some(format!("Cloned {:02X} -> {:02X}", src_idx, new_idx));
+                self.end_structural_edit(before);
             }
             Action::TogglePatternMatrix => {
                 self.show_pattern_matrix = !self.show_pattern_matrix;
@@ -644,13 +648,16 @@ impl RtrackApp {
                 self.show_pattern_matrix = false;
             }
             Action::MatrixInsert => {
+                let before = self.begin_structural_edit();
                 let pat = self.core.song.order[self.matrix_cursor];
                 self.core.song.order.insert(self.matrix_cursor + 1, pat);
                 self.core.song.sync_order_repeats();
                 self.matrix_cursor += 1;
                 self.core.dirty = true;
+                self.end_structural_edit(before);
             }
             Action::MatrixDelete => {
+                let before = self.begin_structural_edit();
                 if self.core.song.order.len() > 1 {
                     self.core.song.order.remove(self.matrix_cursor);
                     self.core.song.sync_order_repeats();
@@ -662,6 +669,7 @@ impl RtrackApp {
                     }
                     self.core.dirty = true;
                 }
+                self.end_structural_edit(before);
             }
             Action::MatrixPrevPattern => {
                 let cur = self.core.song.order[self.matrix_cursor];
@@ -678,14 +686,17 @@ impl RtrackApp {
                 }
             }
             Action::MatrixNewPattern => {
+                let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.matrix_cursor + 1, idx);
                 self.core.song.sync_order_repeats();
                 self.matrix_cursor += 1;
                 self.core.dirty = true;
                 self.status_message = Some(format!("New pattern {:02X}", idx));
+                self.end_structural_edit(before);
             }
             Action::MatrixClonePattern => {
+                let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.matrix_cursor];
                 let cloned = self.core.song.patterns[src_idx].clone();
                 let new_idx = self.core.song.patterns.len();
@@ -695,6 +706,7 @@ impl RtrackApp {
                 self.matrix_cursor += 1;
                 self.core.dirty = true;
                 self.status_message = Some(format!("Cloned {:02X} -> {:02X}", src_idx, new_idx));
+                self.end_structural_edit(before);
             }
             Action::MatrixDecRepeat => {
                 self.core.song.sync_order_repeats();
@@ -878,32 +890,109 @@ impl RtrackApp {
     /// two entry points cannot drift apart.
     pub(crate) fn apply_undo(&mut self) {
         if let Some(edit) = self.history.undo() {
-            match edit {
-                Edit::Cells(edits) => {
-                    for e in &edits {
-                        self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.old_cell);
-                    }
-                }
-                Edit::Bank(bank) => self.core.restore_samples(bank.before),
-            }
+            self.apply_edit_backward(edit);
             self.core.dirty = true;
             self.status_message = Some("Undo".to_string());
+        }
+    }
+
+    /// Put back the "before" side of one step.
+    fn apply_edit_backward(&mut self, edit: Edit) {
+        match edit {
+            Edit::Cells(edits) => {
+                for e in &edits {
+                    self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.old_cell);
+                }
+            }
+            Edit::Bank(bank) => self.core.restore_samples(bank.before),
+            Edit::Structure(s) => self.restore_song(s.before),
+            // Undone in reverse, so the parts come apart the way they were
+            // put together.
+            Edit::Group(parts) => {
+                for part in parts.into_iter().rev() {
+                    self.apply_edit_backward(part);
+                }
+            }
         }
     }
 
     /// Re-apply one edit group. Counterpart to [`RtrackApp::apply_undo`].
     pub(crate) fn apply_redo(&mut self) {
         if let Some(edit) = self.history.redo() {
-            match edit {
-                Edit::Cells(edits) => {
-                    for e in &edits {
-                        self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.new_cell);
-                    }
-                }
-                Edit::Bank(bank) => self.core.restore_samples(bank.after),
-            }
+            self.apply_edit_forward(edit);
             self.core.dirty = true;
             self.status_message = Some("Redo".to_string());
+        }
+    }
+
+    /// Re-apply the "after" side of one step.
+    fn apply_edit_forward(&mut self, edit: Edit) {
+        match edit {
+            Edit::Cells(edits) => {
+                for e in &edits {
+                    self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.new_cell);
+                }
+            }
+            Edit::Bank(bank) => self.core.restore_samples(bank.after),
+            Edit::Structure(s) => self.restore_song(s.after),
+            Edit::Group(parts) => {
+                for part in parts {
+                    self.apply_edit_forward(part);
+                }
+            }
+        }
+    }
+
+    /// Take the song as it stands, to pair with [`RtrackApp::end_structural_edit`].
+    ///
+    /// Structural changes -- adding, cloning or removing patterns and order
+    /// entries -- move data around wholesale, so they are recorded as a
+    /// before/after pair rather than a diff. Before this the GUI could not
+    /// undo any of them.
+    pub(crate) fn begin_structural_edit(&self) -> rtrack_core::tracker::Song {
+        self.core.song.clone()
+    }
+
+    /// Record a structural change against the song `begin_structural_edit`
+    /// returned.
+    pub(crate) fn end_structural_edit(&mut self, before: rtrack_core::tracker::Song) {
+        self.history.push_structure(before, self.core.song.clone());
+        self.core.dirty = true;
+    }
+
+    /// Put back a whole song recorded by a structural edit.
+    ///
+    /// The cursor has to be brought back inside it: the song being restored
+    /// may have fewer patterns, channels, or rows than the one on screen --
+    /// undoing "add pattern" is exactly that case -- and a cursor left past
+    /// the end would index out of range on the next draw.
+    fn restore_song(&mut self, song: rtrack_core::tracker::Song) {
+        self.core.song = song;
+        self.clamp_cursor_to_song();
+    }
+
+    /// Bring the cursor and the visible channel window inside the song.
+    pub(crate) fn clamp_cursor_to_song(&mut self) {
+        let order_len = self.core.song.order.len().max(1);
+        if self.edit_order >= order_len {
+            self.edit_order = order_len - 1;
+        }
+        let rows = self
+            .core
+            .song
+            .pattern_at(self.edit_order)
+            .map(|p| p.rows)
+            .unwrap_or(self.core.song.rows_per_pattern)
+            .max(1);
+        if self.cursor_row >= rows {
+            self.cursor_row = rows - 1;
+        }
+        let channels = self.core.song.channels.max(1);
+        if self.cursor_channel >= channels {
+            self.cursor_channel = channels - 1;
+        }
+        if self.first_visible_channel >= channels {
+            self.first_visible_channel = 0;
         }
     }
 
@@ -1539,6 +1628,91 @@ mod tests {
 
         a.apply_undo();
         assert_eq!(note_at(&a, 0, 0), None);
+    }
+
+    // -- Structural undo, which the GUI could not do at all before --
+
+    #[test]
+    fn adding_a_pattern_can_be_undone() {
+        let mut app = app();
+        assert_eq!(app.core.song.patterns.len(), 1);
+        assert_eq!(app.core.song.order.len(), 1);
+
+        app.execute_action(Action::NewPattern);
+        assert_eq!(app.core.song.patterns.len(), 2);
+        assert_eq!(app.core.song.order.len(), 2);
+
+        app.apply_undo();
+        assert_eq!(
+            app.core.song.patterns.len(),
+            1,
+            "the pattern should be gone"
+        );
+        assert_eq!(app.core.song.order.len(), 1);
+    }
+
+    #[test]
+    fn adding_a_pattern_can_be_redone() {
+        let mut app = app();
+        app.execute_action(Action::NewPattern);
+        app.apply_undo();
+        app.apply_redo();
+        assert_eq!(app.core.song.patterns.len(), 2);
+        assert_eq!(app.core.song.order.len(), 2);
+    }
+
+    #[test]
+    fn cloning_a_pattern_can_be_undone() {
+        let mut app = app();
+        app.execute_action(Action::ClonePattern);
+        assert_eq!(app.core.song.patterns.len(), 2);
+
+        app.apply_undo();
+        assert_eq!(app.core.song.patterns.len(), 1);
+    }
+
+    #[test]
+    fn undoing_a_pattern_add_brings_the_cursor_back_inside_the_song() {
+        // `NewPattern` moves the edit cursor onto the pattern it made. Undo
+        // removes that order entry, so a cursor left where it was would index
+        // past the end on the next draw.
+        let mut app = app();
+        app.execute_action(Action::NewPattern);
+        assert_eq!(app.edit_order, 1);
+
+        app.apply_undo();
+        assert!(
+            app.edit_order < app.core.song.order.len(),
+            "edit_order {} is past the end of a {}-entry order list",
+            app.edit_order,
+            app.core.song.order.len()
+        );
+    }
+
+    /// Structural and cell steps share one stack, so they have to unwind in
+    /// the order they were made.
+    #[test]
+    fn structural_and_cell_edits_undo_in_the_order_they_were_made() {
+        let mut app = app();
+        app.mode = Mode::Insert;
+        app.execute_action(Action::TryEnterNote('z'));
+        let with_note = app.core.song.patterns[0].get(0, 0).note;
+        assert!(with_note.is_some(), "the note should have been entered");
+
+        app.execute_action(Action::NewPattern);
+        assert_eq!(app.core.song.patterns.len(), 2);
+
+        // Newest first: the pattern, then the note.
+        app.apply_undo();
+        assert_eq!(app.core.song.patterns.len(), 1);
+        assert_eq!(
+            app.core.song.patterns[0].get(0, 0).note,
+            with_note,
+            "undoing the pattern must not touch the note"
+        );
+
+        app.apply_undo();
+        assert!(app.core.song.patterns[0].get(0, 0).note.is_none());
     }
 
     #[test]

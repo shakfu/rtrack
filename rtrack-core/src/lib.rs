@@ -16,6 +16,8 @@
 //! - [`link`] -- Ableton Link tempo and transport synchronization.
 //! - [`sample`] -- WAV/AIFF sample loading, slicing, and offline export (WAV/FLAC).
 //! - [`midi_file`] -- Standard MIDI file import and export.
+//! - [`editor`] -- Editing state shared by both frontends: cursor sub-column,
+//!   clipboard, and undo/redo history.
 //! - [`config`] -- User configuration file (`~/.config/rtrack/config.toml`).
 //! - [`types`] -- Shared types: [`ChannelConfig`], [`Instrument`], [`ClockMode`], etc.
 //! - [`constants`] -- Numeric constants (MIDI, music theory, effect commands, tracker limits).
@@ -35,6 +37,7 @@ pub mod audio;
 pub mod config;
 pub mod constants;
 pub mod core;
+pub mod editor;
 pub mod engine;
 pub mod error;
 pub(crate) mod fs;

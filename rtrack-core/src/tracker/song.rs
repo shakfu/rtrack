@@ -216,6 +216,21 @@ impl Song {
         }
     }
 
+    /// Roughly how much heap this song holds, for budgeting the undo history.
+    ///
+    /// Dominated by the patterns; the order list, tempo map and title are
+    /// counted because they are cheap to count, not because they matter.
+    pub fn approx_heap_bytes(&self) -> usize {
+        let patterns: usize = self.patterns.iter().map(|p| p.approx_heap_bytes()).sum();
+        patterns
+            + self.patterns.capacity() * std::mem::size_of::<Pattern>()
+            + self.order.capacity() * std::mem::size_of::<usize>()
+            + self.order_repeats.capacity()
+            + self.tempo_map.capacity() * std::mem::size_of::<TempoPoint>()
+            + self.title.capacity()
+            + std::mem::size_of::<Self>()
+    }
+
     /// Ensure order_repeats matches order length (for backwards compat with old files)
     pub fn sync_order_repeats(&mut self) {
         self.order_repeats.resize(self.order.len(), 1);

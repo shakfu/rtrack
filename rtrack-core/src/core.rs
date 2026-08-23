@@ -80,6 +80,14 @@ pub struct SampleSnapshot {
     instruments: Vec<Instrument>,
 }
 
+impl SampleSnapshot {
+    /// Instrument slots this snapshot carries. Used to budget the undo
+    /// history; the bank itself is an `Arc` and copies no audio.
+    pub fn instrument_count(&self) -> usize {
+        self.instruments.len()
+    }
+}
+
 pub struct TrackerCore {
     // -- Song & engine --
     pub song: Song,
