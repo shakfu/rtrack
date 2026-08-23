@@ -6,10 +6,7 @@ All notable changes to rtrack will be documented in this file.
 
 ### Fixed
 
-Four bugs of one shape, listed worst first. Each was a length that came from
-outside -- a song file, a MIDI file, an AIFF header, a constant that stopped
-matching its neighbour -- used to size an allocation before anything checked
-it. Every one is reachable by opening a file.
+Four bugs of one shape, listed worst first. Each was a length that came from outside -- a song file, a MIDI file, an AIFF header, a constant that stopped matching its neighbour -- used to size an allocation before anything checked it. Every one is reachable by opening a file.
 
 - **The AIFF loader no longer takes a header's word for how much to allocate.** Every length in `load_aiff` was a number the file declared about itself, used to size a buffer before anything was read. Three of them were unchecked (`sample/mod.rs`)
 
