@@ -58,6 +58,18 @@ Four bugs of one shape, listed worst first. Each was a length that came from out
 
   - The shared `Clipboard` keeps a run and a rectangle apart, where a run is one cell for the GUI and a row for the TUI
 
+- **Held controls are undoable, and a whole drag is one step.** The song settings in the GUI and the sample-editor fields in both frontends were outside undo entirely -- change the channel count in the GUI, or a sample's trim point anywhere, and there was no way back. They were left out for a real reason, which the TODO named: these are drag values and repeating arrow keys, so recording each change would bury the history under a single gesture
+
+  - `EditSource` tags an edit with the control it came from, and the history amends the step it already has rather than pushing another. Coalescing keeps the *first* "before", so undo returns to where the value stood before the drag began rather than one frame back. A run of 500 frames weighs exactly what one step weighs
+
+  - The run ends when something else happens, when focus moves to another field, or when the dialog closes -- two visits to the same control with a gap between them are two things the user did. Cell diffs never coalesce: they describe distinct cells rather than successive values of one
+
+  - The step's size is now cached rather than recomputed. `approx_bytes` walks every pattern of a song snapshot, and eviction and undo were paying that walk again for a figure that cannot have changed
+
+- **Dependency automation** (`.github/dependabot.yml`, `.github/workflows/audit.yml`). Dependabot groups routine minor and patch bumps into one weekly PR rather than one per crate -- forty direct dependencies raising individual PRs is how this gets switched off again -- and holds back *minor* bumps of the pre-1.0 UI and audio stacks (egui, eframe, ratatui, crossterm, cpal, fundsp), where a minor version is a migration rather than an update
+
+  - `cargo audit` runs weekly on a schedule as well as on dependency changes, because an advisory is published against a dependency without anybody touching this repository. It is a separate workflow from `ci.yml` for the same reason: when it goes red it is reporting something about the world, not about the commit under test
+
 - **The undo history is bounded by memory rather than by step count.** `MAX_UNDO_BYTES` (64MB) and `MAX_UNDO_STEPS` (1000) are in `constants.rs`. A step carries whatever it has to put back, so its size follows the song and a fixed step count caps the wrong quantity -- measured, a hundred steps of a 64-pattern by 16-channel by 256-row song is about 290MB, and a 256-pattern one 1.15GB, against 1.6MB for a song the size of the shipped examples. The oldest steps are dropped until the total fits, so a small song keeps a deep history and a large one a shallower one, with the same ceiling either way. The newest step is never evicted, however large: an undo key that silently does nothing is worse than one step over budget
 
 - **The GUI can undo structural edits.** New pattern, clone pattern, remove and duplicate order entry now record an `Edit::Structure`, from the keyboard and from the pattern-matrix buttons alike. Undo also brings the cursor back inside the restored song, since undoing "add pattern" removes the order entry the cursor was moved onto (`input.rs`, `pattern_matrix.rs`)
@@ -69,6 +81,14 @@ Four bugs of one shape, listed worst first. Each was a length that came from out
 - **A hostile-input test suite** (`rtrack-core/tests/hostile_input.rs`) covering all four formats rtrack opens but does not write: `.rtrk`, `.mid`, `.wav`, and `.aiff`. It asserts the weak rule deliberately -- reject or bound, never panic, and never size an allocation from a number the file chose -- and combines hand-picked shapes with a truncation sweep over every prefix of a valid file and a single-byte corruption sweep over the header region. The byte-flip sweep rediscovered the `COMM` defect above on its own. This is a stand-in for the fuzzing on the TODO, which needs a nightly toolchain and cannot run in CI as it stands
 
 - **The pattern grid's hit-testing is a function rather than a closure.** The pointer-to-cell mapping lived inside `draw_grid`, so reaching it needed a live `Ui` and nothing tested it -- despite being pure arithmetic over layout constants that decides what every click in the editor does. It is now `hit_test` over a `GridGeometry`, covered by twelve tests: rows, channels, the four sub-columns, both scroll axes, the gutter and header, and the agreement between `max_visible_channels` and what `hit_test` considers in range
+
+### Security
+
+- **Five advisories against dependencies, four of them cleared by a lockfile update** -- found by adding `cargo audit` (below), not by reading. `webbrowser` (browser argument injection via `BROWSER`), `anyhow`, `event-listener`, `memmap2` and `rand` all had fixed versions available within existing semver constraints, so `cargo update` resolved them with no manifest change
+
+  - Two remain, both high severity: `quick-xml` quadratic run time on duplicate attribute names, and an unbounded namespace-declaration allocation. rtrack does not depend on `quick-xml`; it arrives at 0.30 through `eframe -> egui-winit -> accesskit_winit -> ... -> zbus_xml`, the Linux accessibility bridge parsing D-Bus introspection XML. Nothing rtrack opens reaches it -- song, MIDI and audio files are not XML. The pin is inside eframe 0.31's tree and cannot be lifted from here, so clearing it means upgrading egui/eframe. Recorded with that reasoning, and with the way out, in `.cargo/audit.toml`
+
+  - This turns the egui upgrade from housekeeping into something with a security reason attached
 
 ### Changed
 

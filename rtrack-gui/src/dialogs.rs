@@ -27,44 +27,69 @@ impl RtrackApp {
                     .show(ui, |ui| {
                         // Title
                         ui.label("Title:");
-                        ui.text_edit_singleline(&mut self.core.song.title);
+                        let mut title = self.core.song.title.clone();
+                        ui.text_edit_singleline(&mut title);
+                        if title != self.core.song.title {
+                            let before = self.core.song.clone();
+                            self.core.song.title = title;
+                            self.record_settings_edit("song.title", before);
+                        }
                         ui.end_row();
 
                         // BPM
                         ui.label("BPM:");
-                        let prev_bpm = self.core.song.bpm;
-                        ui.add(egui::DragValue::new(&mut self.core.song.bpm).range(20..=999));
-                        if self.core.song.bpm != prev_bpm {
-                            self.core.link.set_tempo(self.core.song.bpm as f64);
+                        let mut bpm = self.core.song.bpm;
+                        ui.add(egui::DragValue::new(&mut bpm).range(20..=999));
+                        if bpm != self.core.song.bpm {
+                            let before = self.core.song.clone();
+                            self.core.song.bpm = bpm;
+                            self.core.link.set_tempo(bpm as f64);
+                            self.record_settings_edit("song.bpm", before);
                         }
                         ui.end_row();
 
                         // Speed
                         ui.label("Speed:");
-                        ui.add(egui::DragValue::new(&mut self.core.song.speed).range(1..=31));
+                        let mut speed = self.core.song.speed;
+                        ui.add(egui::DragValue::new(&mut speed).range(1..=31));
+                        if speed != self.core.song.speed {
+                            let before = self.core.song.clone();
+                            self.core.song.speed = speed;
+                            self.record_settings_edit("song.speed", before);
+                        }
                         ui.end_row();
 
                         // Highlight Beat
                         ui.label("Beat highlight:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.core.song.highlight_beat).range(1..=64),
-                        );
+                        let mut highlight_beat = self.core.song.highlight_beat;
+                        ui.add(egui::DragValue::new(&mut highlight_beat).range(1..=64));
+                        if highlight_beat != self.core.song.highlight_beat {
+                            let before = self.core.song.clone();
+                            self.core.song.highlight_beat = highlight_beat;
+                            self.record_settings_edit("song.highlight_beat", before);
+                        }
                         ui.end_row();
 
                         // Highlight Bar
                         ui.label("Bar highlight:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.core.song.highlight_bar).range(1..=256),
-                        );
+                        let mut highlight_bar = self.core.song.highlight_bar;
+                        ui.add(egui::DragValue::new(&mut highlight_bar).range(1..=256));
+                        if highlight_bar != self.core.song.highlight_bar {
+                            let before = self.core.song.clone();
+                            self.core.song.highlight_bar = highlight_bar;
+                            self.record_settings_edit("song.highlight_bar", before);
+                        }
                         ui.end_row();
 
                         // Swing
                         ui.label("Swing:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.core.song.swing)
-                                .range(0..=100)
-                                .suffix("%"),
-                        );
+                        let mut swing = self.core.song.swing;
+                        ui.add(egui::DragValue::new(&mut swing).range(0..=100).suffix("%"));
+                        if swing != self.core.song.swing {
+                            let before = self.core.song.clone();
+                            self.core.song.swing = swing;
+                            self.record_settings_edit("song.swing", before);
+                        }
                         ui.end_row();
 
                         // Rows per pattern (current pattern)
@@ -83,9 +108,10 @@ impl RtrackApp {
                         let prev_rows = rows;
                         ui.add(egui::DragValue::new(&mut rows).range(1..=256));
                         if rows != prev_rows {
+                            let before = self.core.song.clone();
                             if let Some(pattern) = self.core.song.pattern_at_mut(order_pos) {
                                 pattern.resize_rows(rows);
-                                self.core.dirty = true;
+                                self.record_settings_edit("song.rows", before);
                             }
                         }
                         ui.end_row();
@@ -103,6 +129,7 @@ impl RtrackApp {
                                 .range(1..=rtrack_core::constants::MAX_CHANNELS),
                         );
                         if ch_count != prev_ch_count {
+                            let before = self.core.song.clone();
                             self.core.song.channels = ch_count;
                             for pat in &mut self.core.song.patterns {
                                 for row in &mut pat.data {
@@ -120,7 +147,7 @@ impl RtrackApp {
                             if self.cursor_channel >= ch_count {
                                 self.cursor_channel = ch_count.saturating_sub(1);
                             }
-                            self.core.dirty = true;
+                            self.record_settings_edit("song.channels", before);
                         }
                         ui.end_row();
 
@@ -139,12 +166,16 @@ impl RtrackApp {
                 ui.horizontal(|ui| {
                     if ui.button("Close").clicked() {
                         self.show_song_settings = false;
+                        // Two visits to the same control with the dialog
+                        // closed in between are two things the user did.
+                        self.break_edit_coalescing();
                     }
                 });
             });
 
         if !open {
             self.show_song_settings = false;
+            self.break_edit_coalescing();
         }
     }
 

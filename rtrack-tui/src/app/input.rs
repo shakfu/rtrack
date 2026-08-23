@@ -214,10 +214,12 @@ impl App {
             KeyCode::Tab => {
                 self.dialogs.sample_editor_field = self.dialogs.sample_editor_field.next();
                 self.dialogs.sample_slice_overwrite_armed = false;
+                self.break_edit_coalescing();
             }
             KeyCode::BackTab => {
                 self.dialogs.sample_editor_field = self.dialogs.sample_editor_field.prev();
                 self.dialogs.sample_slice_overwrite_armed = false;
+                self.break_edit_coalescing();
             }
             KeyCode::Enter => {
                 // Execute slice actions on Enter
@@ -296,6 +298,10 @@ impl App {
             _ => {}
         }
 
+        // Taken before the mutation so it is the "before" side of the step.
+        // Cheap: the bank is `Arc<Sample>` per slot, so nothing is copied.
+        let before = self.core.snapshot_samples();
+        let field = self.dialogs.sample_editor_field;
         let mut bank = (*self.core.sample_bank).clone();
         if let Some(sample) = bank
             .samples
@@ -347,6 +353,12 @@ impl App {
             if let Some(ref mut audio) = self.core.audio {
                 audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
             }
+            // Held arrow keys on one field are one edit; the source ties the
+            // run together and the slot keeps two samples' fields apart.
+            self.record_sample_field_edit(
+                rtrack_core::editor::EditSource::new(field.undo_control(), slot),
+                before,
+            );
         } else {
             self.status_message = Some("No sample loaded in this slot".to_string());
         }

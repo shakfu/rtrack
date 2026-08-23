@@ -177,6 +177,72 @@ impl Edit {
     }
 }
 
+/// Which control an edit came from, so that consecutive edits to the same one
+/// fold into a single undo step.
+///
+/// Dragging a BPM field from 120 to 160, or holding an arrow key on a sample's
+/// trim point, produces one change per frame or per repeat. Recording each as
+/// its own step is useless -- undo would walk back through fifty of them -- and
+/// it is what kept these controls out of the history altogether. Tagging the
+/// edit with its source lets the history amend the step it already has instead
+/// of pushing another.
+///
+/// `control` names the field and `index` separates instances of it, so the
+/// trim point of slot 3 does not coalesce with the trim point of slot 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditSource {
+    pub control: &'static str,
+    pub index: usize,
+}
+
+impl EditSource {
+    pub fn new(control: &'static str, index: usize) -> Self {
+        Self { control, index }
+    }
+}
+
+/// A step on the undo stack, with its source and its measured size.
+///
+/// The size is cached rather than recomputed: `approx_bytes` walks every
+/// pattern of a song snapshot, and eviction and undo would otherwise pay that
+/// walk again for a figure that cannot have changed.
+struct Step {
+    edit: Edit,
+    source: Option<EditSource>,
+    bytes: usize,
+}
+
+impl Step {
+    fn new(edit: Edit, source: Option<EditSource>) -> Self {
+        let bytes = edit.approx_bytes();
+        Self {
+            edit,
+            source,
+            bytes,
+        }
+    }
+}
+
+/// Fold `next` into `existing`, keeping the original "before" side.
+///
+/// Hands `next` back in `Err` when the two are not a kind that folds, so the
+/// caller can push it as a new step instead. Only the snapshot kinds coalesce: a run
+/// of cell diffs describes distinct cells rather than successive values of
+/// one, so merging them would be wrong.
+fn amend(existing: &mut Edit, next: Edit) -> Result<(), Edit> {
+    match (existing, next) {
+        (Edit::Structure(old), Edit::Structure(new)) => {
+            old.after = new.after;
+            Ok(())
+        }
+        (Edit::Bank(old), Edit::Bank(new)) => {
+            old.after = new.after;
+            Ok(())
+        }
+        (_, next) => Err(next),
+    }
+}
+
 /// Dual-stack undo/redo over [`Edit`] steps, bounded by memory.
 ///
 /// Pushing a new step clears the redo stack, which is the usual rule: once you
@@ -194,8 +260,8 @@ impl Edit {
 /// Eviction is from the oldest end, so what is lost is the far end of the
 /// history rather than the step you are about to undo.
 pub struct EditHistory {
-    undo_stack: VecDeque<Edit>,
-    redo_stack: Vec<Edit>,
+    undo_stack: VecDeque<Step>,
+    redo_stack: Vec<Step>,
     max_bytes: usize,
     max_steps: usize,
     /// Running total of `undo_stack`, kept incrementally so that pushing does
@@ -248,9 +314,53 @@ impl EditHistory {
     }
 
     pub fn push_edit(&mut self, edit: Edit) {
+        self.push_step(Step::new(edit, None));
+    }
+
+    /// Record a step attributed to a control, folding it into the previous
+    /// step when that came from the same one.
+    ///
+    /// Coalescing keeps the *original* "before" and takes the newest "after",
+    /// so undoing a dragged BPM returns to where it stood before the drag
+    /// began rather than to the frame before last. Anything else happening in
+    /// between -- a note entered, a different field touched -- puts a step of
+    /// its own on top, and the next edit to this control starts fresh.
+    pub fn push_from(&mut self, source: EditSource, edit: Edit) {
+        let mut edit = edit;
+        if let Some(last) = self.undo_stack.back_mut() {
+            if last.source == Some(source) {
+                match amend(&mut last.edit, edit) {
+                    Ok(()) => {
+                        self.bytes = self.bytes.saturating_sub(last.bytes);
+                        last.bytes = last.edit.approx_bytes();
+                        self.bytes += last.bytes;
+                        self.redo_stack.clear();
+                        self.evict_to_budget();
+                        return;
+                    }
+                    // Not a kind that folds; handed back so it can be pushed.
+                    Err(returned) => edit = returned,
+                }
+            }
+        }
+        self.push_step(Step::new(edit, Some(source)));
+    }
+
+    /// End any run of coalescing, so the next edit starts a new step even if
+    /// it comes from the same control.
+    ///
+    /// Called when focus leaves a field or a dialog closes: two visits to the
+    /// same control with a gap between them are two things the user did.
+    pub fn break_coalescing(&mut self) {
+        if let Some(last) = self.undo_stack.back_mut() {
+            last.source = None;
+        }
+    }
+
+    fn push_step(&mut self, step: Step) {
         self.redo_stack.clear();
-        self.bytes += edit.approx_bytes();
-        self.undo_stack.push_back(edit);
+        self.bytes += step.bytes;
+        self.undo_stack.push_back(step);
         self.evict_to_budget();
     }
 
@@ -266,7 +376,7 @@ impl EditHistory {
             && (self.bytes > self.max_bytes || self.undo_stack.len() > self.max_steps)
         {
             if let Some(dropped) = self.undo_stack.pop_front() {
-                self.bytes = self.bytes.saturating_sub(dropped.approx_bytes());
+                self.bytes = self.bytes.saturating_sub(dropped.bytes);
             }
         }
     }
@@ -274,18 +384,20 @@ impl EditHistory {
     /// Move the most recent step onto the redo stack and hand it back, for the
     /// caller to apply the "before" side of.
     pub fn undo(&mut self) -> Option<Edit> {
-        let edit = self.undo_stack.pop_back()?;
-        self.bytes = self.bytes.saturating_sub(edit.approx_bytes());
-        self.redo_stack.push(edit.clone());
+        let step = self.undo_stack.pop_back()?;
+        self.bytes = self.bytes.saturating_sub(step.bytes);
+        let edit = step.edit.clone();
+        self.redo_stack.push(step);
         Some(edit)
     }
 
     /// Counterpart to [`EditHistory::undo`]: hand back the step to re-apply
     /// the "after" side of.
     pub fn redo(&mut self) -> Option<Edit> {
-        let edit = self.redo_stack.pop()?;
-        self.bytes += edit.approx_bytes();
-        self.undo_stack.push_back(edit.clone());
+        let step = self.redo_stack.pop()?;
+        self.bytes += step.bytes;
+        let edit = step.edit.clone();
+        self.undo_stack.push_back(step);
         self.evict_to_budget();
         Some(edit)
     }
@@ -670,6 +782,147 @@ mod tests {
             .describe(),
             "song structure"
         );
+    }
+
+    // -- Coalescing --
+
+    fn structure(before: &Song, after: &Song) -> Edit {
+        Edit::Structure(Box::new(StructureEdit {
+            before: before.clone(),
+            after: after.clone(),
+        }))
+    }
+
+    fn bpm(n: u16) -> Song {
+        let mut s = Song::new(2, 16);
+        s.bpm = n;
+        s
+    }
+
+    /// A drag produces one change per frame. All of them are one undo step,
+    /// and undoing it returns to where the value stood before the drag began.
+    #[test]
+    fn a_run_of_edits_to_one_control_is_a_single_step() {
+        let source = EditSource::new("song.bpm", 0);
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+
+        let start = bpm(120);
+        let mut previous = start.clone();
+        for n in [121, 130, 145, 160] {
+            let next = bpm(n);
+            h.push_from(source, structure(&previous, &next));
+            previous = next;
+        }
+
+        assert_eq!(h.undo_depth(), 1, "a drag should be one step");
+        match h.undo().expect("a step") {
+            Edit::Structure(s) => {
+                assert_eq!(s.before.bpm, 120, "undo must return to before the drag");
+                assert_eq!(s.after.bpm, 160, "redo must return to the end of it");
+            }
+            other => panic!("expected a structural step, got {}", other.describe()),
+        }
+    }
+
+    #[test]
+    fn edits_to_different_controls_are_separate_steps() {
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        let song = bpm(120);
+        h.push_from(EditSource::new("song.bpm", 0), structure(&song, &bpm(130)));
+        h.push_from(EditSource::new("song.swing", 0), structure(&song, &song));
+        assert_eq!(h.undo_depth(), 2);
+    }
+
+    /// The same field of two different samples is two controls.
+    #[test]
+    fn the_index_keeps_instances_of_one_control_apart() {
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        let song = bpm(120);
+        h.push_from(
+            EditSource::new("sample.trim_start", 3),
+            structure(&song, &song),
+        );
+        h.push_from(
+            EditSource::new("sample.trim_start", 4),
+            structure(&song, &song),
+        );
+        assert_eq!(h.undo_depth(), 2);
+    }
+
+    /// Something else happening in between ends the run, so a later edit to
+    /// the same control does not reach back past it.
+    #[test]
+    fn an_unrelated_edit_between_two_runs_keeps_them_apart() {
+        let source = EditSource::new("song.bpm", 0);
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        let song = bpm(120);
+
+        h.push_from(source, structure(&song, &bpm(130)));
+        h.push(vec![cell_edit(0, c4())]);
+        h.push_from(source, structure(&bpm(130), &bpm(140)));
+
+        assert_eq!(h.undo_depth(), 3, "the note must not be swallowed");
+    }
+
+    #[test]
+    fn breaking_coalescing_starts_a_new_step_for_the_same_control() {
+        let source = EditSource::new("song.bpm", 0);
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        let song = bpm(120);
+
+        h.push_from(source, structure(&song, &bpm(130)));
+        h.break_coalescing();
+        h.push_from(source, structure(&bpm(130), &bpm(140)));
+
+        assert_eq!(h.undo_depth(), 2, "closing the dialog should end the run");
+    }
+
+    /// Cell diffs describe distinct cells rather than successive values of
+    /// one, so they must never fold together.
+    #[test]
+    fn cell_edits_do_not_coalesce_even_from_one_source() {
+        let source = EditSource::new("pattern.cell", 0);
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        h.push_from(source, Edit::Cells(vec![cell_edit(0, c4())]));
+        h.push_from(source, Edit::Cells(vec![cell_edit(1, c4())]));
+        assert_eq!(h.undo_depth(), 2);
+    }
+
+    /// A coalesced run must not grow the history's byte count with every
+    /// frame of a drag -- that was half the reason these controls were left
+    /// out of undo.
+    #[test]
+    fn coalescing_does_not_grow_the_history() {
+        let source = EditSource::new("song.bpm", 0);
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        let song = bpm(120);
+
+        h.push_from(source, structure(&song, &song));
+        let after_one = h.approx_bytes();
+        for _ in 0..500 {
+            h.push_from(source, structure(&song, &song));
+        }
+
+        assert_eq!(h.undo_depth(), 1);
+        assert_eq!(
+            h.approx_bytes(),
+            after_one,
+            "500 frames of a drag should weigh the same as one step"
+        );
+    }
+
+    #[test]
+    fn a_coalesced_run_still_clears_the_redo_branch() {
+        let source = EditSource::new("song.bpm", 0);
+        let mut h = EditHistory::with_budget(usize::MAX, 100);
+        let song = bpm(120);
+
+        h.push_from(source, structure(&song, &bpm(130)));
+        h.undo();
+        assert!(h.can_redo());
+
+        h.push_from(source, structure(&song, &bpm(140)));
+        assert!(!h.can_redo(), "editing after an undo kills the redo branch");
     }
 
     // -- Clipboard --

@@ -1,0 +1,56 @@
+name: Audit
+
+# Kept out of `ci.yml` deliberately. A new advisory is published against a
+# dependency without anybody touching this repository, so this has to run on a
+# schedule as well as on changes -- and when it does go red, it is reporting
+# something about the world rather than about the commit under test. Failing a
+# separate workflow says that clearly; failing the build of an unrelated pull
+# request does not.
+on:
+  schedule:
+    # Weekly, early Monday. Advisories are not urgent enough for daily noise
+    # and not rare enough to leave until someone remembers.
+    - cron: "0 6 * * 1"
+  push:
+    branches: [main, dev]
+    paths: ["**/Cargo.toml", "Cargo.lock", ".github/workflows/audit.yml"]
+  pull_request:
+    branches: [main, dev]
+    paths: ["**/Cargo.toml", "Cargo.lock"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: audit
+
+      # `--locked` so the tool itself is built from a known-good set rather
+      # than whatever resolves that day; the cache above makes this a one-off
+      # cost per toolchain.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # rtrack decodes four file formats it did not write -- .rtrk, .mid,
+      # .wav and .aiff -- through third-party crates, and is published on
+      # crates.io for other people to install. That combination is what makes
+      # this worth a job of its own.
+      #
+      # Vulnerabilities fail the job. Unmaintained and unsound notices are
+      # printed but do not: several have no fixed version to move to, and a
+      # job that is permanently red for something no commit can put right is a
+      # job people stop reading. Exceptions, with the reason and the way out
+      # for each, are in `.cargo/audit.toml`.
+      - name: Check dependencies against the RustSec advisory database
+        run: cargo audit

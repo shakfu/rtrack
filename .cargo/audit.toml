@@ -1,0 +1,35 @@
+# Configuration for `cargo audit`, run by .github/workflows/audit.yml.
+#
+# Every entry below is an advisory that is real, that rtrack cannot currently
+# fix from here, and that has a named way out. They are listed rather than
+# silenced wholesale so that the list is short enough to keep reading -- a job
+# that is permanently red teaches people to ignore it, and one that ignores
+# everything reports nothing.
+
+[advisories]
+ignore = [
+    # quick-xml: quadratic run time on duplicate attribute names, and an
+    # unbounded namespace-declaration allocation. Both are denial of service
+    # on parsing untrusted XML, both fixed in quick-xml 0.41.
+    #
+    # rtrack does not depend on quick-xml. It arrives at version 0.30 through
+    #
+    #   eframe -> egui-winit -> accesskit_winit -> ... -> zbus_xml -> quick-xml
+    #
+    # which is the Linux accessibility bridge parsing D-Bus introspection XML
+    # from the session bus. Nothing rtrack opens reaches it: song, MIDI and
+    # audio files are not XML and never go near this path.
+    #
+    # The fix is not available from here -- the pin is inside eframe 0.31's
+    # dependency tree -- so clearing these two means upgrading egui/eframe,
+    # which is already on the list as its own piece of work. Re-check after
+    # that upgrade and delete these lines.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
+
+# Unmaintained and unsound notices are reported but do not fail the job.
+# Several of them (paste, ttf-parser, lru) have no fixed version to move to,
+# so failing on them would make the job permanently red for something no
+# commit here can put right. They are still worth seeing in the log.
+informational_warnings = ["unmaintained", "unsound"]

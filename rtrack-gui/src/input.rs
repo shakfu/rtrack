@@ -317,6 +317,7 @@ impl RtrackApp {
                     self.show_track_config = None;
                 } else if mode == Mode::Normal && self.show_song_settings {
                     self.show_song_settings = false;
+                    self.break_edit_coalescing();
                 } else {
                     self.mode = mode;
                 }
@@ -941,6 +942,35 @@ impl RtrackApp {
                 }
             }
         }
+    }
+
+    /// Record a song-settings change attributed to one control, folding it
+    /// into the previous step when that came from the same control.
+    ///
+    /// These are drag values: one change per frame while the pointer moves,
+    /// and one per repeat while an arrow key is held. Recording each would
+    /// bury the history under a single drag, which is why the settings were
+    /// outside undo entirely. Coalescing keeps the first "before", so undo
+    /// returns to where the value stood before the drag began.
+    pub(crate) fn record_settings_edit(
+        &mut self,
+        control: &'static str,
+        before: rtrack_core::tracker::Song,
+    ) {
+        self.history.push_from(
+            rtrack_core::editor::EditSource::new(control, 0),
+            Edit::Structure(Box::new(rtrack_core::editor::StructureEdit {
+                before,
+                after: self.core.song.clone(),
+            })),
+        );
+        self.core.dirty = true;
+    }
+
+    /// End a run of coalescing, so the next edit to the same control starts a
+    /// new step. Called when a dialog closes.
+    pub(crate) fn break_edit_coalescing(&mut self) {
+        self.history.break_coalescing();
     }
 
     /// Take the song as it stands, to pair with [`RtrackApp::end_structural_edit`].
@@ -1628,6 +1658,114 @@ mod tests {
 
         a.apply_undo();
         assert_eq!(note_at(&a, 0, 0), None);
+    }
+
+    // -- Song settings undo, which the GUI did not have at all --
+
+    #[test]
+    fn a_settings_change_can_be_undone() {
+        let mut app = app();
+        let original = app.core.song.bpm;
+
+        let before = app.core.song.clone();
+        app.core.song.bpm = 160;
+        app.record_settings_edit("song.bpm", before);
+
+        app.apply_undo();
+        assert_eq!(app.core.song.bpm, original);
+
+        app.apply_redo();
+        assert_eq!(app.core.song.bpm, 160);
+    }
+
+    /// A drag reports a change per frame. All of them are one step, and undo
+    /// returns to where the value stood before the drag began.
+    #[test]
+    fn a_dragged_setting_is_one_undo_step() {
+        let mut app = app();
+        let original = app.core.song.bpm;
+        let depth = app.history.undo_depth();
+
+        for bpm in [121, 130, 145, 160] {
+            let before = app.core.song.clone();
+            app.core.song.bpm = bpm;
+            app.record_settings_edit("song.bpm", before);
+        }
+        assert_eq!(
+            app.history.undo_depth(),
+            depth + 1,
+            "a drag should leave one step"
+        );
+
+        app.apply_undo();
+        assert_eq!(
+            app.core.song.bpm, original,
+            "undo should return to before the drag, not one frame back"
+        );
+    }
+
+    #[test]
+    fn two_different_settings_are_two_steps() {
+        let mut app = app();
+        let depth = app.history.undo_depth();
+
+        let before = app.core.song.clone();
+        app.core.song.bpm = 160;
+        app.record_settings_edit("song.bpm", before);
+
+        let before = app.core.song.clone();
+        app.core.song.swing = 60;
+        app.record_settings_edit("song.swing", before);
+
+        assert_eq!(app.history.undo_depth(), depth + 2);
+    }
+
+    #[test]
+    fn closing_the_dialog_ends_the_run() {
+        let mut app = app();
+        let before = app.core.song.clone();
+        app.core.song.bpm = 160;
+        app.record_settings_edit("song.bpm", before);
+        let depth = app.history.undo_depth();
+
+        app.break_edit_coalescing();
+
+        let before = app.core.song.clone();
+        app.core.song.bpm = 170;
+        app.record_settings_edit("song.bpm", before);
+        assert_eq!(app.history.undo_depth(), depth + 1);
+    }
+
+    /// Shrinking the channel count truncates every pattern, so undo has to
+    /// bring the cells back as well as the count.
+    #[test]
+    fn undoing_a_channel_count_change_restores_the_cells() {
+        let mut app = app();
+        app.mode = Mode::Insert;
+        app.cursor_channel = 3;
+        app.try_enter_note('z');
+        let note = app.core.song.cell_at(app.edit_order, 0, 3).note;
+        assert!(note.is_some(), "the note should have been entered");
+
+        // Shrink to two channels, as the settings dialog does.
+        let before = app.core.song.clone();
+        app.core.song.channels = 2;
+        for pat in &mut app.core.song.patterns {
+            for row in &mut pat.data {
+                row.truncate(2);
+            }
+            pat.channels = 2;
+        }
+        app.cursor_channel = 1;
+        app.record_settings_edit("song.channels", before);
+
+        app.apply_undo();
+        assert_eq!(app.core.song.channels, 4);
+        assert_eq!(
+            app.core.song.cell_at(app.edit_order, 0, 3).note,
+            note,
+            "the truncated cells should have come back"
+        );
     }
 
     // -- Structural undo, which the GUI could not do at all before --

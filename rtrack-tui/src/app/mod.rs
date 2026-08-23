@@ -263,6 +263,26 @@ pub enum SampleField {
 }
 
 impl SampleField {
+    /// Name used to tie a run of edits to this field together for undo.
+    ///
+    /// A `&'static str` rather than the enum itself so that `rtrack-core`,
+    /// which owns the history, needs to know nothing about the TUI's dialogs.
+    pub fn undo_control(self) -> &'static str {
+        match self {
+            Self::BaseNote => "sample.base_note",
+            Self::TrimStart => "sample.trim_start",
+            Self::TrimEnd => "sample.trim_end",
+            Self::LoopEnabled => "sample.loop_enabled",
+            Self::LoopStart => "sample.loop_start",
+            Self::LoopEnd => "sample.loop_end",
+            Self::SliceCount => "sample.slice_count",
+            Self::SliceSensitivity => "sample.slice_sensitivity",
+            Self::SliceRange => "sample.slice_range",
+            Self::SliceEqual => "sample.slice_equal",
+            Self::SliceTransient => "sample.slice_transient",
+        }
+    }
+
     pub fn next(self) -> Self {
         match self {
             Self::BaseNote => Self::TrimStart,
@@ -824,6 +844,36 @@ impl App {
                 pending.samples = Some(self.core.snapshot_samples());
             }
         }
+    }
+
+    /// Record a sample-bank change attributed to one control, folding it into
+    /// the previous step if that came from the same one.
+    ///
+    /// The sample editor's fields are adjusted by held arrow keys, so each
+    /// press is one change. Recording every press would bury the history, and
+    /// avoiding that is why these fields were outside undo altogether. `before`
+    /// is the bank as it stood before this press; coalescing keeps the first
+    /// one, so undo returns to where the field stood before the run began.
+    pub fn record_sample_field_edit(
+        &mut self,
+        source: rtrack_core::editor::EditSource,
+        before: rtrack_core::core::SampleSnapshot,
+    ) {
+        // A field edit is its own step, so anything the current event had
+        // pending is committed first rather than being swallowed by it.
+        self.commit_undo();
+        let after = self.core.snapshot_samples();
+        self.history.push_from(
+            source,
+            Edit::Bank(Box::new(rtrack_core::editor::BankEdit { before, after })),
+        );
+        self.core.dirty = true;
+    }
+
+    /// End a run of coalescing, so the next edit to the same control starts a
+    /// new step. Called when the field or the dialog changes.
+    pub fn break_edit_coalescing(&mut self) {
+        self.history.break_coalescing();
     }
 
     /// Abandon the pending snapshot: the edit it was taken for did not happen.
@@ -1490,6 +1540,103 @@ mod tests {
 
         app.redo();
         assert_eq!(app.core.song.title, "Modified");
+    }
+
+    // -- Sample editor fields under undo --
+
+    /// These fields were outside undo entirely, because one step per arrow
+    /// key would bury the history.
+    #[test]
+    fn a_sample_field_edit_can_be_undone() {
+        let (mut app, _dir) = app_with_amen();
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_editor_field = SampleField::BaseNote;
+        let original = app.core.sample_bank.get(0).expect("a sample").base_note;
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let raised = app.core.sample_bank.get(0).expect("a sample").base_note;
+        assert_eq!(raised, original + 1);
+
+        app.undo();
+        assert_eq!(
+            app.core.sample_bank.get(0).expect("a sample").base_note,
+            original
+        );
+    }
+
+    /// A held arrow key is one edit, not one per repeat, and undo returns to
+    /// where the field stood before the run began.
+    #[test]
+    fn a_run_of_sample_field_edits_is_one_undo_step() {
+        let (mut app, _dir) = app_with_amen();
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_editor_field = SampleField::BaseNote;
+        let original = app.core.sample_bank.get(0).expect("a sample").base_note;
+
+        let before_depth = app.history.undo_depth();
+        for _ in 0..10 {
+            app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        }
+        assert_eq!(
+            app.history.undo_depth(),
+            before_depth + 1,
+            "ten presses should be one step"
+        );
+        assert_eq!(
+            app.core.sample_bank.get(0).expect("a sample").base_note,
+            original + 10
+        );
+
+        app.undo();
+        assert_eq!(
+            app.core.sample_bank.get(0).expect("a sample").base_note,
+            original,
+            "undo should return to before the run, not one press back"
+        );
+    }
+
+    /// Moving to another field ends the run: the two are separate edits.
+    #[test]
+    fn moving_between_sample_fields_ends_the_run() {
+        let (mut app, _dir) = app_with_amen();
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_editor_field = SampleField::BaseNote;
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let after_first = app.history.undo_depth();
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+        assert_eq!(
+            app.history.undo_depth(),
+            after_first + 1,
+            "a different field is a different step"
+        );
+    }
+
+    /// A drag or held key must not grow the history frame by frame.
+    #[test]
+    fn a_long_run_of_field_edits_does_not_grow_the_history() {
+        let (mut app, _dir) = app_with_amen();
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_editor_field = SampleField::TrimStart;
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let after_one = app.history.approx_bytes();
+        for _ in 0..200 {
+            app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        }
+
+        assert_eq!(
+            app.history.approx_bytes(),
+            after_one,
+            "200 presses should weigh the same as one step"
+        );
     }
 
     // -- Undo step boundaries under the shared history --
