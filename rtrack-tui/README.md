@@ -202,4 +202,4 @@ way `Ctrl+Z` puts back what was there.
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](../LICENSE) for the full text.
+GPL-3.0-or-later. See [LICENSE](https://github.com/shakfu/rtrack/blob/main/LICENSE) for the full text.

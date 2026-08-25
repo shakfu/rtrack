@@ -126,4 +126,4 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](../LICENSE) for the full text.
+GPL-3.0-or-later. See [LICENSE](https://github.com/shakfu/rtrack/blob/main/LICENSE) for the full text.

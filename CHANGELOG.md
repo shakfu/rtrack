@@ -4,7 +4,7 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
-## [0.1.3] - 2026-08-24
+## [0.1.3] - 2026-08-26
 
 Note on versioning: the `0.1.2` published to crates.io is older than the
 `0.1.2` that sat in this repository -- the published `rtrack-core` has no
@@ -116,6 +116,10 @@ Four bugs of one shape, listed worst first. Each was a length that came from out
 - **Rustdoc warnings are gated.** Thirteen broken intra-doc links -- `points[i]` and `<slot>-<name>` read as markup, public documentation linking to the private `write_atomic`, unresolved paths to `SliceRange` and `SliceOverwrite` -- are fixed, and `make ci` and the CI workflow now run `cargo doc` with `-D warnings`. For a crate published to crates.io these are what docs.rs renders, which is the first thing a reader sees
 
 - The release build workflow triggers on bare-version tags as well as `v`-prefixed ones. The repository's existing tag is `0.1.2`, so a `v*`-only filter meant a tagged release never built
+
+- **The generated example is regenerated from its generator.** `examples/sliced-amen.rtrk` predated `cargo xtask regen-examples` and had never been produced by it: it carried eight ascending pitches over ten rows, which would pitch-shift every slice of a drum break, where the generator places one slice per instrument at its root note. `make check-examples` had been failing on this, so the gate that exists to keep the example honest was itself red
+
+- README corrections in the per-crate readmes, which are what crates.io renders: `rtrack-core` claimed Rust 1.70+ against a declared `rust-version` of 1.89, and all three linked the licence as `../LICENSE`, a path that leaves the package root and so renders dead on crates.io. The link now points at the file in the repository
 
 - README corrections: 12 effect commands, not 16; the test count; the auto-save description, which said "temp file" but writes beside the song; the architecture tree, which omitted `error.rs`, `fs.rs`, `keymap.rs` and placed `midi_file.rs` under `midi/`. The GUI section now says MIDI import is TUI-only
 

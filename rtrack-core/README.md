@@ -27,9 +27,9 @@ core.stop();
 
 ## Build requirements
 
-- Rust 1.70+
+- Rust 1.89+
 - CMake 3.14+ (required by the `rusty_link` C++ dependency for Ableton Link)
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](../LICENSE) for the full text.
+GPL-3.0-or-later. See [LICENSE](https://github.com/shakfu/rtrack/blob/main/LICENSE) for the full text.
