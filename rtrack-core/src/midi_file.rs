@@ -702,6 +702,7 @@ pub fn import_midi_with_report(path: &Path) -> Result<(Song, Vec<String>)> {
         highlight_bar: 16,
         swing: 50,
         tempo_map,
+        scale: None,
     };
     notes.extend(song.repair());
     Ok((song, notes))

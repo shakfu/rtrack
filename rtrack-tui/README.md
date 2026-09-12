@@ -72,7 +72,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | F8 | Cycle color theme |
 | F9-F12 | Mute channels on current page |
 | Ctrl+F9-F12 | Solo channels on current page |
-| Shift+Up / Down | Transpose note(s) up / down by semitone |
+| Shift+Up / Down | Transpose note(s) up / down by one semitone, or by one scale degree when the song has a scale |
 | Ctrl+B | Toggle block selection |
 | Ctrl+I | Interpolate block (volume/effect ramp) |
 | Ctrl+F | Toggle follow mode (cursor follows playback) |
@@ -112,7 +112,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Command | Action |
 |---------|--------|
 | `:p` / `:pattern` | Open pattern matrix |
-| `:set` / `:settings` | Song settings |
+| `:set` / `:settings` | Song settings, including the note-entry scale (`C# dorian`, or `off`) |
 | `:fx` / `:effects` | Track config / effects editor |
 | `:inst` / `:instruments` | Instrument list |
 | `:midi` | MIDI port selector |

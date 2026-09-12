@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use super::{App, ChannelType, Mode, SampleField, SettingsField, SubColumn};
 use rtrack_core::constants::*;
+use rtrack_core::theory::ScaleSetting;
 use rtrack_core::tracker::Note;
 
 impl App {
@@ -12,17 +13,17 @@ impl App {
     pub(crate) fn open_song_settings(&mut self) {
         self.prev_mode = self.mode;
         self.mode = Mode::SongSettings;
-        self.dialogs.settings_field = SettingsField::Title;
-        self.dialogs.settings_edit_buf = self.core.song.title.clone();
+        self.settings_select_field(SettingsField::Title);
     }
 
     fn close_song_settings(&mut self) {
         self.mode = Mode::Normal;
     }
 
-    fn settings_select_field(&mut self, field: SettingsField) {
-        self.dialogs.settings_field = field;
-        self.dialogs.settings_edit_buf = match field {
+    /// The song's current value for a settings field, as the edit buffer holds
+    /// it. Seeds the buffer on selection and decides whether a field changed.
+    fn settings_field_value(&self, field: SettingsField) -> String {
+        match field {
             SettingsField::Title => self.core.song.title.clone(),
             SettingsField::Bpm => self.core.song.bpm.to_string(),
             SettingsField::Speed => self.core.song.speed.to_string(),
@@ -31,10 +32,26 @@ impl App {
             SettingsField::HighlightBeat => self.core.song.highlight_beat.to_string(),
             SettingsField::HighlightBar => self.core.song.highlight_bar.to_string(),
             SettingsField::Swing => self.core.song.swing.to_string(),
-        };
+            SettingsField::Scale => match self.core.song.scale {
+                Some(sc) => sc.display(),
+                None => "off".to_string(),
+            },
+        }
+    }
+
+    fn settings_select_field(&mut self, field: SettingsField) {
+        self.dialogs.settings_field = field;
+        self.dialogs.settings_buf_untouched = true;
+        self.dialogs.settings_edit_buf = self.settings_field_value(field);
     }
 
     pub(crate) fn settings_apply_field(&mut self) {
+        // Tabbing past a field the user did not change must not push an undo
+        // entry or mark the song dirty.
+        if self.dialogs.settings_edit_buf == self.settings_field_value(self.dialogs.settings_field)
+        {
+            return;
+        }
         match self.dialogs.settings_field {
             SettingsField::Title => {
                 if !self.dialogs.settings_edit_buf.is_empty() {
@@ -116,6 +133,19 @@ impl App {
                     self.core.song.swing = v;
                 }
             }
+            SettingsField::Scale => match ScaleSetting::parse(&self.dialogs.settings_edit_buf) {
+                Ok(parsed) if parsed != self.core.song.scale => {
+                    self.push_undo();
+                    self.core.song.scale = parsed;
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    self.status_message = Some(format!(
+                        "Unknown scale: {} (try \"C minor\" or \"off\")",
+                        self.dialogs.settings_edit_buf
+                    ));
+                }
+            },
         }
     }
 
@@ -140,9 +170,18 @@ impl App {
                 self.close_song_settings();
             }
             KeyCode::Char(c) => {
+                // The buffer is seeded with the field's current value, so the
+                // first character typed replaces it: entering "C minor" over a
+                // seeded "off" should not produce "offC minor".
+                if self.dialogs.settings_buf_untouched {
+                    self.dialogs.settings_edit_buf.clear();
+                }
+                self.dialogs.settings_buf_untouched = false;
                 self.dialogs.settings_edit_buf.push(c);
             }
             KeyCode::Backspace => {
+                // Backspace edits the seeded value rather than clearing it.
+                self.dialogs.settings_buf_untouched = false;
                 self.dialogs.settings_edit_buf.pop();
             }
             _ => {}
@@ -1183,7 +1222,9 @@ impl App {
 
     /// Transpose selected notes by the given number of semitones.
     /// If block selection is active, transpose the block; otherwise transpose at cursor.
-    fn transpose_notes(&mut self, semitones: i8) {
+    fn transpose_notes(&mut self, steps: i8) {
+        // Copied out before the pattern is borrowed mutably.
+        let scale = self.core.song.scale;
         self.push_undo();
         let pattern_idx = self.core.song.order[self.current_order_position()];
 
@@ -1201,15 +1242,20 @@ impl App {
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    pattern.get_mut(r, c).transpose_note(semitones);
+                    pattern.get_mut(r, c).transpose_note(steps, scale);
                 }
             }
-            self.status_message = Some(format!("Transposed block by {} semitone(s)", semitones));
+            let unit = if scale.is_some() {
+                "scale degree(s)"
+            } else {
+                "semitone(s)"
+            };
+            self.status_message = Some(format!("Transposed block by {} {}", steps, unit));
         } else {
             let pattern = &mut self.core.song.patterns[pattern_idx];
             pattern
                 .get_mut(self.cursor_row, self.cursor_channel)
-                .transpose_note(semitones);
+                .transpose_note(steps, scale);
         }
     }
 
@@ -1737,7 +1783,7 @@ impl App {
         else {
             return;
         };
-        let note = Note::On { value, octave };
+        let note = self.core.song.snap_entry(Note::On { value, octave });
 
         self.push_undo();
 

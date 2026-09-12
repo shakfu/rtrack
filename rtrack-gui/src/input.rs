@@ -1060,7 +1060,7 @@ impl RtrackApp {
         else {
             return;
         };
-        let note = Note::On { value, octave };
+        let note = self.core.song.snap_entry(Note::On { value, octave });
 
         let ch = self.cursor_channel;
         // One resolution for both the preview and the written cell, so what
@@ -1219,7 +1219,9 @@ impl RtrackApp {
         (pattern_idx < self.core.song.patterns.len()).then_some(pattern_idx)
     }
 
-    fn transpose_notes(&mut self, semitones: i8) {
+    fn transpose_notes(&mut self, steps: i8) {
+        // Copied out before the pattern is borrowed mutably.
+        let scale = self.core.song.scale;
         let pattern_idx = self.core.song.order[self.edit_order];
 
         if let (Some(start), Some(end)) = (self.block_start, self.block_end) {
@@ -1230,15 +1232,20 @@ impl RtrackApp {
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    pattern.get_mut(r, c).transpose_note(semitones);
+                    pattern.get_mut(r, c).transpose_note(steps, scale);
                 }
             }
             self.core.dirty = true;
-            self.status_message = Some(format!("Transposed block by {} semitone(s)", semitones));
+            let unit = if scale.is_some() {
+                "scale degree(s)"
+            } else {
+                "semitone(s)"
+            };
+            self.status_message = Some(format!("Transposed block by {} {}", steps, unit));
         } else {
             let cell =
                 self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-            cell.transpose_note(semitones);
+            cell.transpose_note(steps, scale);
             self.core.dirty = true;
         }
     }
@@ -1449,6 +1456,28 @@ mod tests {
         a.cursor_row = 0;
         a.try_enter_note('m');
         assert_eq!(note_at(&a, 0, 0), on(NoteValue::B, 4));
+    }
+
+    #[test]
+    fn keyboard_entry_snaps_to_the_song_scale() {
+        use rtrack_core::theory::{Scale, ScaleSetting};
+
+        let mut a = app();
+        a.current_octave = 4;
+        a.core.song.scale = Some(ScaleSetting::new(NoteValue::A, Scale::MinorPentatonic));
+
+        // A minor pentatonic is A C D E G; D# and C# are not in it.
+        a.try_enter_note('d'); // D# 4
+        assert_eq!(note_at(&a, 0, 0), on(NoteValue::D, 4), "D# snaps down to D");
+
+        a.cursor_row = 1;
+        a.try_enter_note('s'); // C# 4
+        assert_eq!(note_at(&a, 1, 0), on(NoteValue::C, 4), "C# snaps down to C");
+
+        // A note already in the scale is untouched.
+        a.cursor_row = 2;
+        a.try_enter_note('n'); // A 4
+        assert_eq!(note_at(&a, 2, 0), on(NoteValue::A, 4));
     }
 
     #[test]
@@ -1882,23 +1911,66 @@ mod tests {
             note: on(NoteValue::C, 4),
             ..Cell::default()
         };
-        cell.transpose_note(12);
+        cell.transpose_note(12, None);
         assert_eq!(cell.note, on(NoteValue::C, 5));
-        cell.transpose_note(-13);
+        cell.transpose_note(-13, None);
         assert_eq!(cell.note, on(NoteValue::B, 3));
+    }
+
+    #[test]
+    fn transpose_moves_by_scale_degree_when_a_scale_is_set() {
+        use rtrack_core::theory::{Scale, ScaleSetting};
+
+        let mut a = app();
+        a.core.song.scale = Some(ScaleSetting::new(NoteValue::C, Scale::Major));
+        let pattern_idx = a.current_pattern_idx().unwrap();
+        a.core.song.patterns[pattern_idx].get_mut(0, 0).note = on(NoteValue::E, 4);
+
+        a.transpose_notes(1);
+        assert_eq!(
+            a.core.song.patterns[pattern_idx].get(0, 0).note,
+            on(NoteValue::F, 4),
+            "one degree up from E in C major is F, not F#"
+        );
+
+        a.transpose_notes(-1);
+        assert_eq!(
+            a.core.song.patterns[pattern_idx].get(0, 0).note,
+            on(NoteValue::E, 4)
+        );
+    }
+
+    #[test]
+    fn transpose_stays_chromatic_without_a_scale() {
+        let mut a = app();
+        assert_eq!(a.core.song.scale, None);
+        let pattern_idx = a.current_pattern_idx().unwrap();
+        a.core.song.patterns[pattern_idx].get_mut(0, 0).note = on(NoteValue::E, 4);
+
+        a.transpose_notes(1);
+        assert_eq!(
+            a.core.song.patterns[pattern_idx].get(0, 0).note,
+            on(NoteValue::F, 4)
+        );
+        a.transpose_notes(1);
+        assert_eq!(
+            a.core.song.patterns[pattern_idx].get(0, 0).note,
+            on(NoteValue::Fs, 4),
+            "no scale means semitones"
+        );
     }
 
     #[test]
     fn transpose_leaves_empty_and_note_off_cells_alone() {
         let mut empty = Cell::default();
-        empty.transpose_note(5);
+        empty.transpose_note(5, None);
         assert_eq!(empty.note, None);
 
         let mut off = Cell {
             note: Some(Note::Off),
             ..Cell::default()
         };
-        off.transpose_note(5);
+        off.transpose_note(5, None);
         assert_eq!(off.note, Some(Note::Off));
     }
 
@@ -1908,7 +1980,7 @@ mod tests {
             note: on(NoteValue::C, 0),
             ..Cell::default()
         };
-        low.transpose_note(-1);
+        low.transpose_note(-1, None);
         assert_eq!(low.note, on(NoteValue::C, 0), "would fall below MIDI 0");
 
         let mut high = Cell {
@@ -1916,7 +1988,7 @@ mod tests {
             ..Cell::default()
         };
         let before = high.note;
-        high.transpose_note(12);
+        high.transpose_note(12, None);
         assert_eq!(high.note, before, "would exceed MIDI 127");
     }
 

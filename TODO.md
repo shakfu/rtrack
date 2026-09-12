@@ -45,7 +45,7 @@
 
 - [ ] Header truncation handling on narrow terminals
 - [ ] Keybinding customization (config file with tracker presets)
-- [ ] UI snapshot tests (ratatui TestBackend)
+- [ ] UI snapshot tests (ratatui TestBackend) -- the song settings dialog is covered in `rtrack-tui/src/tui/mod.rs`; the pattern grid and the other dialogs are not
 - [ ] Fuzz testing (`cargo-fuzz`, needs nightly) for the MIDI, AIFF and `.rtrk` parsers. `rtrack-core/tests/hostile_input.rs` is the stable-toolchain stand-in and runs in CI: hand-picked malformed shapes plus truncation and byte-flip sweeps over all four formats. It found nothing the hand audit had not, but the hand audit found four allocation bugs in two sittings, so the yield is not exhausted
 
 - [ ] Decide whether slicing should respect a trim the user set by hand. `SliceRange::Source` ignores it and divides the whole file, which is right for a slice (whose span is a slicing artifact) and wrong for a sample someone trimmed to the part they wanted. Telling the two apart needs provenance on `Sample` -- the span a slot was cut out of -- persisted in `.rtrk`, not just a range argument. `SliceRange::Span` is the workaround in the meantime: it divides exactly the trimmed region.

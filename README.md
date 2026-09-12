@@ -14,7 +14,7 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 
 - **Ableton Link** -- bidirectional tempo and transport sync with any Link-enabled application
 
-- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, block selection, interpolation, transpose, undo/redo, 12 effect commands
+- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, optional scale-constrained note entry and transpose (26 scales), block selection, interpolation, undo/redo, 14 effect commands
 
 - **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects
 
@@ -167,6 +167,8 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 | `4xy` | Vibrato | Pitch vibrato (speed x, depth y) |
 | `5xy` | Volume slide | Slide volume up by x, down by y per tick |
 | `6xx` | Note delay | Delay note trigger by xx ticks |
+| `7xx` | Probability | Play the note with probability xx/255 (00 never, FF always) |
+| `8xx` | Randomize | Re-run this channel's last continuous effect, parameter varied by +/-xx |
 | `Bxx` | Position jump | Jump to order position xx |
 | `Cxx` | MIDI CC | Send CC (controller from instrument col, value xx) |
 | `Dxx` | Pattern break | Break to row xx of next pattern |
@@ -174,6 +176,8 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 | `Fxx` | Set speed/tempo | xx < 20: ticks per row; xx >= 20: set BPM |
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
+
+`7xx` and `8xx` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `8xx` varies only the continuous effects (`0xy`-`5xy`); it ignores structural ones, where a random parameter would scramble playback rather than colour it.
 
 ### Instruments & Samples
 

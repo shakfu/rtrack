@@ -20,6 +20,7 @@
 //!   clipboard, and undo/redo history.
 //! - [`config`] -- User configuration file (`~/.config/rtrack/config.toml`).
 //! - [`types`] -- Shared types: [`ChannelConfig`], [`Instrument`], [`ClockMode`], etc.
+//! - [`theory`] -- Scale masks for note-entry quantization.
 //! - [`constants`] -- Numeric constants (MIDI, music theory, effect commands, tracker limits).
 //!
 //! ## Quick start
@@ -46,6 +47,7 @@ pub mod link;
 pub mod midi;
 pub mod midi_file;
 pub mod sample;
+pub mod theory;
 pub mod tracker;
 pub mod types;
 

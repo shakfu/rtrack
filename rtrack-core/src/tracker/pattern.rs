@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{MIDI_MAX_NOTE, SEMITONES_PER_OCTAVE};
+use crate::theory::ScaleSetting;
 
 /// A musical note pitch (C, C#, D, ... B)
 ///
@@ -26,6 +27,23 @@ pub enum NoteValue {
     As,
     B,
 }
+
+/// Pitch names by semitone: plain, then padded to two columns for the pattern
+/// grid. One table so the two spellings cannot drift apart.
+const PITCH_NAMES: [(&str, &str); 12] = [
+    ("C", "C-"),
+    ("C#", "C#"),
+    ("D", "D-"),
+    ("D#", "D#"),
+    ("E", "E-"),
+    ("F", "F-"),
+    ("F#", "F#"),
+    ("G", "G-"),
+    ("G#", "G#"),
+    ("A", "A-"),
+    ("A#", "A#"),
+    ("B", "B-"),
+];
 
 impl NoteValue {
     pub fn from_index(i: u8) -> Option<Self> {
@@ -63,21 +81,23 @@ impl NoteValue {
         }
     }
 
+    /// Plain name, e.g. `C` or `C#`.
+    pub fn name(self) -> &'static str {
+        PITCH_NAMES[self.to_index() as usize].0
+    }
+
+    /// Name padded to two columns for the pattern grid, e.g. `C-` or `C#`.
     pub fn display_name(self) -> &'static str {
-        match self {
-            Self::C => "C-",
-            Self::Cs => "C#",
-            Self::D => "D-",
-            Self::Ds => "D#",
-            Self::E => "E-",
-            Self::F => "F-",
-            Self::Fs => "F#",
-            Self::G => "G-",
-            Self::Gs => "G#",
-            Self::A => "A-",
-            Self::As => "A#",
-            Self::B => "B-",
-        }
+        PITCH_NAMES[self.to_index() as usize].1
+    }
+
+    /// Parse a plain name. Case-insensitive; `Db`-style flats are not accepted.
+    pub fn from_name(s: &str) -> Option<Self> {
+        let s = s.trim().to_ascii_uppercase();
+        PITCH_NAMES
+            .iter()
+            .position(|(plain, _)| *plain == s)
+            .and_then(|i| Self::from_index(i as u8))
     }
 }
 
@@ -106,6 +126,17 @@ impl Note {
         }
     }
 
+    /// Build a note from a MIDI note number, or `None` above 127.
+    pub fn from_midi(midi: u8) -> Option<Note> {
+        if midi > MIDI_MAX_NOTE {
+            return None;
+        }
+        NoteValue::from_index(midi % SEMITONES_PER_OCTAVE).map(|value| Note::On {
+            value,
+            octave: midi / SEMITONES_PER_OCTAVE,
+        })
+    }
+
     pub fn display(&self) -> String {
         match self {
             Note::On { value, octave } => format!("{}{}", value.display_name(), octave),
@@ -131,20 +162,19 @@ impl Note {
                 if midi < 0 || midi > MIDI_MAX_NOTE as i16 {
                     return self;
                 }
-                let midi = midi as u8;
-                let new_octave = midi / SEMITONES_PER_OCTAVE;
-                let new_index = midi % SEMITONES_PER_OCTAVE;
-                match NoteValue::from_index(new_index) {
-                    Some(nv) => Note::On {
-                        value: nv,
-                        octave: new_octave,
-                    },
-                    None => self, // shouldn't happen
-                }
+                Note::from_midi(midi as u8).unwrap_or(self)
             }
             Note::Off => Note::Off,
         }
     }
+}
+
+/// Name a MIDI note number for display, e.g. `60` -> `C4`. Out-of-range input
+/// is named by its pitch class rather than refused, so callers holding a raw
+/// `u8` (sample base note, MIDI mapping) need no fallback.
+pub fn midi_note_name(midi: u8) -> String {
+    let value = NoteValue::from_index(midi % SEMITONES_PER_OCTAVE).unwrap_or(NoteValue::C);
+    format!("{}{}", value.name(), midi / SEMITONES_PER_OCTAVE)
 }
 
 /// A single cell in the tracker grid.
@@ -169,12 +199,17 @@ pub struct Cell {
 impl Cell {
     /// Transpose this cell's note in place, if it has one.
     ///
-    /// Shared by both frontends' transpose commands so they cannot drift
-    /// apart on edge cases like the ends of the MIDI range.
-    pub fn transpose_note(&mut self, semitones: i8) {
-        if let Some(note) = self.note {
-            self.note = Some(note.transposed(semitones));
-        }
+    /// `steps` counts scale degrees when a scale is given and semitones
+    /// otherwise. Shared by both frontends' transpose commands so they cannot
+    /// drift apart on edge cases like the ends of the MIDI range.
+    pub fn transpose_note(&mut self, steps: i8, scale: Option<ScaleSetting>) {
+        let Some(note) = self.note else { return };
+        self.note = Some(match (scale, note.to_midi_note()) {
+            (Some(scale), Some(midi)) => {
+                Note::from_midi(scale.transpose(midi, steps as i16)).unwrap_or(note)
+            }
+            _ => note.transposed(steps),
+        });
     }
 
     #[allow(dead_code)]
@@ -359,6 +394,28 @@ mod tests {
         };
         assert_eq!(note.display(), "C#5");
         assert_eq!(Note::Off.display(), "===");
+    }
+
+    #[test]
+    fn from_midi_inverts_to_midi_note() {
+        for midi in 0..=MIDI_MAX_NOTE {
+            let note = Note::from_midi(midi).expect("in range");
+            assert_eq!(note.to_midi_note(), Some(midi));
+        }
+        assert_eq!(Note::from_midi(128), None);
+    }
+
+    #[test]
+    fn midi_note_names_match_the_grid_spelling() {
+        assert_eq!(midi_note_name(60), "C5");
+        assert_eq!(midi_note_name(61), "C#5");
+        assert_eq!(midi_note_name(0), "C0");
+        // Same pitch class as the padded grid name, minus the padding.
+        for midi in 0..=MIDI_MAX_NOTE {
+            let value = NoteValue::from_index(midi % SEMITONES_PER_OCTAVE).unwrap();
+            assert!(midi_note_name(midi).starts_with(value.name()));
+            assert_eq!(value.display_name().trim_end_matches('-'), value.name());
+        }
     }
 
     #[test]

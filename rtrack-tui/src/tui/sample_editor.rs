@@ -4,8 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use rtrack_core::constants::SEMITONES_PER_OCTAVE;
 use rtrack_core::sample::{self, Sample, SliceRange};
+use rtrack_core::tracker::midi_note_name;
 
 use crate::app::{App, SampleField};
 
@@ -82,7 +82,7 @@ pub fn draw_sample_panel(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            note_name(sample.base_note),
+            midi_note_name(sample.base_note),
             Style::default().fg(Color::Cyan),
         ),
     ]));
@@ -158,7 +158,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
                 "Base Note",
                 format!(
                     "{} (MIDI {})",
-                    note_name(sample.base_note),
+                    midi_note_name(sample.base_note),
                     sample.base_note
                 ),
             ),
@@ -592,15 +592,6 @@ fn render_waveform_colored(
     }
 
     result
-}
-
-fn note_name(note: u8) -> String {
-    let names = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let octave = note / SEMITONES_PER_OCTAVE;
-    let name = names[(note % SEMITONES_PER_OCTAVE) as usize];
-    format!("{}{}", name, octave)
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {

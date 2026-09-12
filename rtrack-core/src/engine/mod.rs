@@ -24,6 +24,11 @@ pub struct ChannelState {
     pub delayed_note: Option<(u8, u8, bool)>,
     pub delay_tick: u8,
     pub active_instrument: Option<u8>,
+    /// Last continuous effect written on this channel, with the parameter as
+    /// written. `8xx` varies that parameter rather than the last randomized
+    /// one, so repeated `8xx` rows deviate from the written value instead of
+    /// random-walking away from it.
+    pub last_continuous: Option<(u8, u8)>,
 }
 
 impl Default for ChannelState {
@@ -39,6 +44,7 @@ impl Default for ChannelState {
             delayed_note: None,
             delay_tick: 0,
             active_instrument: None,
+            last_continuous: None,
         }
     }
 }
@@ -160,9 +166,69 @@ pub struct TrackerEngine {
 
     // -- Set when the song finishes (order exhausted, no wrap) --
     pub finished: bool,
+
+    // -- PRNG for 7xx and 8xx --
+    //
+    // Seeded to a fixed value on reset, so a song plays the same way every
+    // time and an offline render matches what was heard in the editor.
+    rng: u64,
+}
+
+/// Fixed PRNG seed. See `TrackerEngine::rng`.
+const RNG_SEED: u64 = 0x2545_F491_4F6C_DD1D;
+
+/// Effects whose parameter `8xx` may vary: the ones read on every tick, where
+/// a changed parameter alters the sound rather than the song structure. A
+/// randomized position jump or pattern break would scramble playback, and a
+/// randomized program change would pick an unrelated instrument.
+fn is_continuous(effect: u8) -> bool {
+    matches!(
+        effect,
+        EFFECT_ARPEGGIO
+            | EFFECT_PORTA_UP
+            | EFFECT_PORTA_DOWN
+            | EFFECT_VIBRATO
+            | EFFECT_VOLUME_SLIDE
+    )
 }
 
 impl TrackerEngine {
+    /// xorshift64*. Small, seedable, and good enough to pick notes with.
+    fn next_rand(&mut self) -> u64 {
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// True with probability `chance`/255. 0 never fires, 255 always does.
+    fn roll(&mut self, chance: u8) -> bool {
+        (self.next_rand() % 255) < chance as u64
+    }
+
+    /// A value in `-range..=range`.
+    fn rand_offset(&mut self, range: u8) -> i32 {
+        let span = 2 * range as u64 + 1;
+        (self.next_rand() % span) as i32 - range as i32
+    }
+
+    /// Resolve `8xx` to the channel's last continuous effect with its
+    /// parameter varied by up to `xx` in either direction. Any other effect
+    /// passes through. `8xx` on a channel that has run no continuous effect
+    /// does nothing.
+    fn resolve_randomize(&mut self, ch: usize, effect: Option<u8>, param: u8) -> (Option<u8>, u8) {
+        if effect != Some(EFFECT_RANDOMIZE) {
+            return (effect, param);
+        }
+        match self.channel_states[ch].last_continuous {
+            Some((last_effect, last_param)) => {
+                let varied = (last_param as i32 + self.rand_offset(param)).clamp(0, 255) as u8;
+                (Some(last_effect), varied)
+            }
+            None => (None, 0),
+        }
+    }
+
     /// Create a new engine.
     pub fn new(song: &Song, wrap_at_end: bool) -> Self {
         let mut engine = Self {
@@ -180,6 +246,7 @@ impl TrackerEngine {
             events: Vec::with_capacity(64),
             wrap_at_end,
             finished: false,
+            rng: RNG_SEED,
         };
         engine.skip_zero_repeats_forward(song);
         engine
@@ -197,6 +264,7 @@ impl TrackerEngine {
         self.bpm = song.bpm as f64;
         self.repeat_count = 0;
         self.finished = false;
+        self.rng = RNG_SEED;
         self.channel_states = vec![ChannelState::default(); song.channels];
         self.events.clear();
         self.skip_zero_repeats_forward(song);
@@ -414,7 +482,27 @@ impl TrackerEngine {
         // Process notes and tick-0 effects
         for (ch, (note, volume, effect, effect_value, instrument)) in cells.into_iter().enumerate()
         {
-            let param = effect_value.unwrap_or(0);
+            let written_effect = effect;
+            // 8xx stands in for the channel's last continuous effect, so the
+            // rest of the row treats it as if that effect had been written.
+            let (effect, param) = self.resolve_randomize(ch, effect, effect_value.unwrap_or(0));
+
+            // 7xx: the note plays only if the roll succeeds. The roll happens
+            // on every channel, muted or not, so muting one does not shift the
+            // sequence the others draw from.
+            let suppressed = effect == Some(EFFECT_PROBABILITY) && !self.roll(param);
+            let (note, volume) = if suppressed {
+                (None, None)
+            } else {
+                (note, volume)
+            };
+
+            if written_effect != Some(EFFECT_RANDOMIZE) {
+                if let Some(e) = effect.filter(|e| is_continuous(*e)) {
+                    self.channel_states[ch].last_continuous = Some((e, param));
+                }
+            }
+
             let is_tone_porta = effect == Some(EFFECT_TONE_PORTA);
             let audible = self.channel_audible(ch);
 
@@ -1014,6 +1102,223 @@ mod tests {
                 program: 5
             }
         )));
+    }
+
+    /// A song of `rows` rows on one channel, every row a C-4 with `7xx`.
+    fn probability_song(rows: usize, chance: u8) -> Song {
+        let mut song = Song::new(1, rows);
+        song.speed = 1;
+        for row in 0..rows {
+            song.set_cell(
+                0,
+                row,
+                0,
+                Cell {
+                    note: Some(Note::On {
+                        value: NoteValue::C,
+                        octave: 4,
+                    }),
+                    volume: Some(100),
+                    effect: Some(EFFECT_PROBABILITY),
+                    effect_value: Some(chance),
+                    ..Cell::default()
+                },
+            );
+        }
+        song
+    }
+
+    fn count_note_ons(song: &Song, rows: usize) -> usize {
+        let mut engine = TrackerEngine::new(song, false);
+        (0..rows)
+            .map(|_| {
+                engine
+                    .process_tick(song)
+                    .iter()
+                    .filter(|e| matches!(e, TrackerEvent::NoteOn { .. }))
+                    .count()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn probability_ff_always_plays_and_00_never_does() {
+        let rows = 64;
+        assert_eq!(count_note_ons(&probability_song(rows, 0xFF), rows), rows);
+        assert_eq!(count_note_ons(&probability_song(rows, 0x00), rows), 0);
+    }
+
+    #[test]
+    fn probability_80_plays_about_half_the_notes() {
+        let rows = 256;
+        let played = count_note_ons(&probability_song(rows, 0x80), rows);
+        // Binomial(256, 0.502): a 45-83 window is far outside any plausible
+        // run, so this catches a broken roll without being flaky.
+        assert!(
+            (90..=166).contains(&played),
+            "expected roughly half of {rows}, got {played}"
+        );
+    }
+
+    #[test]
+    fn probability_is_reproducible_across_playbacks() {
+        let song = probability_song(64, 0x80);
+        assert_eq!(count_note_ons(&song, 64), count_note_ons(&song, 64));
+    }
+
+    #[test]
+    fn a_suppressed_note_leaves_the_channel_alone() {
+        let mut song = Song::new(1, 2);
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                volume: Some(100),
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::E,
+                    octave: 4,
+                }),
+                volume: Some(40),
+                effect: Some(EFFECT_PROBABILITY),
+                effect_value: Some(0),
+                ..Cell::default()
+            },
+        );
+
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.process_tick(&song);
+        let sounding = engine.channel_states[0].note;
+        let volume = engine.channel_states[0].volume;
+        let events = engine.process_tick(&song).to_vec();
+
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                TrackerEvent::NoteOn { .. } | TrackerEvent::NoteOff { .. }
+            )),
+            "a suppressed note must not cut the one already sounding"
+        );
+        assert_eq!(engine.channel_states[0].note, sounding);
+        assert_eq!(
+            engine.channel_states[0].volume, volume,
+            "the volume column of a suppressed row must not apply"
+        );
+    }
+
+    #[test]
+    fn randomize_varies_the_last_continuous_effect() {
+        let mut song = Song::new(1, 2);
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_VIBRATO),
+                effect_value: Some(0x44),
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                effect: Some(EFFECT_RANDOMIZE),
+                effect_value: Some(0x10),
+                ..Cell::default()
+            },
+        );
+
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.process_tick(&song);
+        assert_eq!(
+            engine.channel_states[0].last_continuous,
+            Some((EFFECT_VIBRATO, 0x44))
+        );
+
+        engine.process_tick(&song);
+        assert_eq!(engine.channel_states[0].effect, Some(EFFECT_VIBRATO));
+        let param = engine.channel_states[0].effect_param as i32;
+        assert!(
+            (0x44 - 0x10..=0x44 + 0x10).contains(&param),
+            "0x{param:02X} is outside the +/-0x10 range"
+        );
+        assert_eq!(
+            engine.channel_states[0].last_continuous,
+            Some((EFFECT_VIBRATO, 0x44)),
+            "the written parameter stays the reference, so 8xx does not drift"
+        );
+    }
+
+    #[test]
+    fn randomize_without_a_previous_effect_does_nothing() {
+        let mut song = Song::new(1, 1);
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_RANDOMIZE),
+                effect_value: Some(0x40),
+                ..Cell::default()
+            },
+        );
+
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.process_tick(&song);
+        assert_eq!(engine.channel_states[0].effect, None);
+    }
+
+    #[test]
+    fn randomize_ignores_structural_effects() {
+        let mut song = Song::new(1, 2);
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                effect: Some(EFFECT_PROGRAM_CHANGE),
+                effect_value: Some(9),
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                effect: Some(EFFECT_RANDOMIZE),
+                effect_value: Some(0x40),
+                ..Cell::default()
+            },
+        );
+
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.process_tick(&song);
+        let events = engine.process_tick(&song).to_vec();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TrackerEvent::ProgramChange { .. })),
+            "8xx must not re-fire a program change"
+        );
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub use rtrack_core::{
 pub struct DialogState {
     pub settings_field: SettingsField,
     pub settings_edit_buf: String,
+    /// Set while the buffer still holds the value the field was seeded with.
+    /// The first character typed then replaces it instead of appending.
+    pub settings_buf_untouched: bool,
     pub instrument_cursor: usize,
     pub sample_editor_slot: usize,
     pub sample_editor_field: SampleField,
@@ -45,6 +48,7 @@ impl DialogState {
         Self {
             settings_field: SettingsField::Title,
             settings_edit_buf: String::new(),
+            settings_buf_untouched: true,
             instrument_cursor: 0,
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
@@ -217,6 +221,7 @@ pub enum SettingsField {
     HighlightBeat,
     HighlightBar,
     Swing,
+    Scale,
 }
 
 impl SettingsField {
@@ -229,13 +234,14 @@ impl SettingsField {
             Self::Rows => Self::HighlightBeat,
             Self::HighlightBeat => Self::HighlightBar,
             Self::HighlightBar => Self::Swing,
-            Self::Swing => Self::Title,
+            Self::Swing => Self::Scale,
+            Self::Scale => Self::Title,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Title => Self::Swing,
+            Self::Title => Self::Scale,
             Self::Bpm => Self::Title,
             Self::Speed => Self::Bpm,
             Self::Channels => Self::Speed,
@@ -243,6 +249,7 @@ impl SettingsField {
             Self::HighlightBeat => Self::Rows,
             Self::HighlightBar => Self::HighlightBeat,
             Self::Swing => Self::HighlightBar,
+            Self::Scale => Self::Swing,
         }
     }
 }
@@ -1128,7 +1135,7 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rtrack_core::tracker::Note;
@@ -1146,7 +1153,7 @@ mod tests {
         );
     }
 
-    fn make_app() -> App {
+    pub(crate) fn make_app() -> App {
         isolate_config();
         // Use the builder rather than a struct literal: it is the supported
         // way to get a core with no hardware attached, and it does not need
@@ -1179,6 +1186,7 @@ mod tests {
                 midi_port_cursor: 0,
                 settings_field: SettingsField::Title,
                 settings_edit_buf: String::new(),
+                settings_buf_untouched: true,
                 instrument_cursor: 0,
                 sample_editor_slot: 0,
                 sample_editor_field: SampleField::BaseNote,
@@ -1286,6 +1294,50 @@ mod tests {
         assert!(cell.note.is_some());
         // Cursor should have advanced by edit_step (1)
         assert_eq!(app.cursor_row, 1);
+    }
+
+    #[test]
+    fn keyboard_entry_snaps_to_the_song_scale() {
+        use rtrack_core::theory::{Scale, ScaleSetting};
+        use rtrack_core::tracker::NoteValue;
+
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.cursor_sub = SubColumn::Note;
+        app.core.song.scale = Some(ScaleSetting::new(NoteValue::C, Scale::Major));
+
+        // 's' is C# at the current octave, which C major does not contain.
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+
+        let pattern_idx = app.core.song.order[0];
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(0, 0).note,
+            Some(Note::On {
+                value: NoteValue::C,
+                octave: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn a_scale_does_not_rewrite_notes_already_in_the_pattern() {
+        use rtrack_core::theory::{Scale, ScaleSetting};
+        use rtrack_core::tracker::NoteValue;
+
+        let mut app = make_app();
+        let pattern_idx = app.core.song.order[0];
+        let off_scale = Note::On {
+            value: NoteValue::Cs,
+            octave: 4,
+        };
+        app.core.song.patterns[pattern_idx].get_mut(0, 0).note = Some(off_scale);
+
+        app.core.song.scale = Some(ScaleSetting::new(NoteValue::C, Scale::Major));
+
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].get(0, 0).note,
+            Some(off_scale)
+        );
     }
 
     #[test]
@@ -3285,6 +3337,78 @@ mod tests {
         app.dialogs.settings_edit_buf = "New Title".to_string();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.core.song.title, "New Title");
+    }
+
+    #[test]
+    fn tabbing_through_settings_without_editing_leaves_the_song_clean() {
+        let mut app = make_app();
+        app.core.dirty = false;
+        app.open_song_settings();
+
+        // A full cycle of every field, back to Title.
+        for _ in 0..9 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(!app.core.dirty, "no field changed, so nothing was edited");
+    }
+
+    #[test]
+    fn editing_a_settings_field_still_marks_the_song_dirty() {
+        let mut app = make_app();
+        app.core.dirty = false;
+        app.open_song_settings();
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for c in "140".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.core.song.bpm, 140);
+        assert!(app.core.dirty);
+    }
+
+    #[test]
+    fn typing_in_a_settings_field_replaces_the_seeded_value() {
+        use rtrack_core::theory::{Scale, ScaleSetting};
+        use rtrack_core::tracker::NoteValue;
+
+        let mut app = make_app();
+        app.open_song_settings();
+        // Tab to Scale, whose buffer is seeded with "off".
+        for _ in 0..8 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        assert_eq!(app.dialogs.settings_field, SettingsField::Scale);
+        assert_eq!(app.dialogs.settings_edit_buf, "off");
+
+        for c in "c minor".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(app.dialogs.settings_edit_buf, "c minor");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.core.song.scale,
+            Some(ScaleSetting::new(NoteValue::C, Scale::Minor))
+        );
+    }
+
+    #[test]
+    fn backspace_edits_the_seeded_value_instead_of_replacing_it() {
+        let mut app = make_app();
+        app.core.song.bpm = 140;
+        app.open_song_settings();
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.dialogs.settings_edit_buf, "140");
+
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
+        assert_eq!(app.dialogs.settings_edit_buf, "145");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.core.song.bpm, 145);
     }
 
     #[test]

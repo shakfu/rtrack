@@ -3,19 +3,10 @@ use std::sync::Arc;
 use rtrack_core::audio::synth::{FilterType, Patch, SynthParams};
 use rtrack_core::constants::MAX_INSTRUMENTS;
 use rtrack_core::sample::{SliceOverwrite, SliceRange};
+use rtrack_core::tracker::midi_note_name;
 use rtrack_core::Instrument;
 
 use crate::app::RtrackApp;
-
-const NOTE_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
-
-fn note_name(midi_note: u8) -> String {
-    let name = NOTE_NAMES[(midi_note % 12) as usize];
-    let octave = midi_note / 12;
-    format!("{}{}", name, octave)
-}
 
 /// Instrument type for the sidebar display and type selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -680,7 +671,7 @@ impl RtrackApp {
                                 base_note = bn as u8;
                                 changed = true;
                             }
-                            ui.label(note_name(base_note));
+                            ui.label(midi_note_name(base_note));
                         });
 
                         ui.label("Loop:");

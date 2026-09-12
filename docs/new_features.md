@@ -172,7 +172,7 @@ rtrack currently has a single `swing` field on Song -- not per-pattern, not sele
 
 **Source:** LSDj (`B` command).
 **Priority:** High value, trivial effort.
-**Status:** Not started.
+**Status:** Done, as `7xx` -- `B` was already position jump.
 
 LSDj's `Bxx` command gives each note an xx% probability of playing. In tables, it controls probability of a HOP executing.
 
@@ -184,7 +184,7 @@ LSDj's `Bxx` command gives each note an xx% probability of playing. In tables, i
 
 **Source:** LSDj (`Z` command).
 **Priority:** Low effort, unique.
-**Status:** Not started.
+**Status:** Done, as `8xx`, restricted to the continuous effects.
 
 LSDj's `Z` command randomizes the value of the last-used command within a range. For example, if the previous command was a volume set, `Z` varies the volume randomly each time the row plays.
 
@@ -235,7 +235,9 @@ Tables enable arpeggios, tremolo, filter sweeps, retriggering, and custom envelo
 
 **Source:** picoTracker (44 built-in scales).
 **Priority:** Low effort, high usability.
-**Status:** Not started.
+**Status:** Done. `rtrack_core::theory` holds 26 scales as 12-bit masks;
+`Song.scale` carries root and scale; both frontends snap keyboard entry through
+`Song::snap_entry`. Set it in the TUI `:set` dialog or the GUI settings dialog.
 
 picoTracker has a project-wide scale selection (Dorian, Hirajoshi, Persian, etc.) that constrains note input to scale-valid pitches.
 
@@ -281,11 +283,11 @@ LSDj distinguishes between deep-cloning (copies the chain AND all its phrases) a
 |---|---|---|---|---|
 | 1 | Song/Chain/Phrase | High | Foundational | -- |
 | 2 | Grooves | Moderate | High | -- |
-| 3 | MayBe command | Trivial | Medium | -- |
-| 4 | Randomize command | Trivial | Medium | -- |
+| 3 | MayBe command | Trivial | Medium | Done |
+| 4 | Randomize command | Trivial | Medium | Done |
 | 5 | Live Mode | Moderate | High | Chain/Phrase model |
 | 6 | Tables | Significant | Transformative | -- |
-| 7 | Scale quantization | Low | Medium | -- |
+| 7 | Scale quantization | Low | Medium | Done |
 | 8 | Retrigger w/ transpose | Low | Low | Tables (ideally) |
 | 9 | Stem export | Low | Medium | -- |
 | 10 | Deep/slim cloning | Low | Low | Chain/Phrase model |

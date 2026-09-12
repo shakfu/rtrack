@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{MAX_CHANNELS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
-use super::{Cell, Pattern};
+use super::{Cell, Note, Pattern};
 use crate::audio::effects::SendBusParams;
 use crate::audio::synth::SynthParams;
 use crate::fs::write_atomic;
+use crate::theory::ScaleSetting;
 use crate::types::{ChannelConfig, MidiCcMapping};
 
 /// A tempo change point in the song
@@ -204,6 +205,9 @@ pub struct Song {
     /// Tempo automation points (order, row, bpm)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_map: Vec<TempoPoint>,
+    /// Scale constraining keyboard note entry. `None` means chromatic entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<ScaleSetting>,
 }
 
 fn default_highlight_beat() -> usize {
@@ -232,7 +236,20 @@ impl Song {
             highlight_bar: 16,
             swing: 50,
             tempo_map: Vec::new(),
+            scale: None,
         }
+    }
+
+    /// Constrain a note played on the keyboard to the song's scale.
+    ///
+    /// Applied by the frontends at note entry only. Notes arriving from a file,
+    /// the clipboard or MIDI input pass through untouched, so setting a scale
+    /// never rewrites material that is already in the song.
+    pub fn snap_entry(&self, note: Note) -> Note {
+        let (Some(scale), Some(midi)) = (self.scale, note.to_midi_note()) else {
+            return note;
+        };
+        Note::from_midi(scale.snap(midi)).unwrap_or(note)
     }
 
     /// Roughly how much heap this song holds, for budgeting the undo history.
@@ -630,7 +647,56 @@ impl Song {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theory::ScaleSetting;
     use crate::tracker::{Note, NoteValue};
+
+    #[test]
+    fn a_song_without_a_scale_leaves_entry_alone() {
+        let song = Song::new(4, 64);
+        assert_eq!(song.scale, None);
+        let cs = Note::On {
+            value: NoteValue::Cs,
+            octave: 5,
+        };
+        assert_eq!(song.snap_entry(cs), cs);
+    }
+
+    #[test]
+    fn entry_snaps_to_the_song_scale_but_note_off_passes_through() {
+        let mut song = Song::new(4, 64);
+        song.scale = Some(ScaleSetting::new(NoteValue::C, crate::theory::Scale::Major));
+        assert_eq!(
+            song.snap_entry(Note::On {
+                value: NoteValue::Cs,
+                octave: 5,
+            }),
+            Note::On {
+                value: NoteValue::C,
+                octave: 5,
+            }
+        );
+        assert_eq!(song.snap_entry(Note::Off), Note::Off);
+    }
+
+    #[test]
+    fn the_scale_survives_a_save_and_an_absent_one_is_not_written() {
+        let mut song = Song::new(4, 64);
+        let json = serde_json::to_string(&song).unwrap();
+        assert!(!json.contains("scale"), "no scale should write no field");
+        assert_eq!(
+            serde_json::from_str::<Song>(&json).unwrap().scale,
+            None,
+            "a file predating the field still loads"
+        );
+
+        let setting = ScaleSetting::new(NoteValue::Ds, crate::theory::Scale::HarmonicMinor);
+        song.scale = Some(setting);
+        let json = serde_json::to_string(&song).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Song>(&json).unwrap().scale,
+            Some(setting)
+        );
+    }
 
     #[test]
     fn test_song_new() {

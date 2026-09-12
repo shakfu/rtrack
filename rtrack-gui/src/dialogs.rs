@@ -1,3 +1,6 @@
+use rtrack_core::theory::{Scale, ScaleSetting};
+use rtrack_core::tracker::NoteValue;
+
 use crate::app::RtrackApp;
 
 impl RtrackApp {
@@ -90,6 +93,53 @@ impl RtrackApp {
                             self.core.song.swing = swing;
                             self.record_settings_edit("song.swing", before);
                         }
+                        ui.end_row();
+
+                        // Scale for keyboard note entry
+                        ui.label("Scale:");
+                        ui.horizontal(|ui| {
+                            let current = self.core.song.scale;
+                            let mut chosen = current;
+
+                            let root = current.map(|s| s.root).unwrap_or(NoteValue::C);
+                            let scale = current.map(|s| s.scale).unwrap_or(Scale::Major);
+
+                            egui::ComboBox::from_id_salt("scale_root")
+                                .width(50.0)
+                                .selected_text(root.name())
+                                .show_ui(ui, |ui| {
+                                    for i in 0..12u8 {
+                                        let v = NoteValue::from_index(i).unwrap();
+                                        if ui.selectable_label(v == root, v.name()).clicked() {
+                                            chosen = Some(ScaleSetting::new(v, scale));
+                                        }
+                                    }
+                                });
+
+                            egui::ComboBox::from_id_salt("scale_name")
+                                .width(150.0)
+                                .selected_text(match current {
+                                    Some(s) => s.scale.name(),
+                                    None => "off",
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(current.is_none(), "off").clicked() {
+                                        chosen = None;
+                                    }
+                                    for s in Scale::ALL {
+                                        let on = current.map(|c| c.scale) == Some(s);
+                                        if ui.selectable_label(on, s.name()).clicked() {
+                                            chosen = Some(ScaleSetting::new(root, s));
+                                        }
+                                    }
+                                });
+
+                            if chosen != current {
+                                let before = self.core.song.clone();
+                                self.core.song.scale = chosen;
+                                self.record_settings_edit("song.scale", before);
+                            }
+                        });
                         ui.end_row();
 
                         // Rows per pattern (current pattern)

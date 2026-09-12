@@ -4,6 +4,32 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Two effect commands, `7xx` and `8xx`.** `7xx` plays the row's note with probability `xx/255`; a suppressed note leaves the sounding note and the channel volume alone rather than cutting it. `8xx` re-runs the channel's last continuous effect with its parameter varied by up to `xx` either way.
+
+  `8xx` covers only `0xy`-`5xy`, the effects read on every tick. Randomizing a position jump, pattern break or program change would scramble playback rather than colour it. It varies the parameter as written, not the last randomized one, so consecutive `8xx` rows deviate from the written value instead of random-walking away from it.
+
+  The generator is a xorshift seeded to a fixed value at every playback start, so a song sounds the same each time and an offline render matches the editor. LSDj spells these `B` and `Z`; both letters were already taken.
+
+- **Transpose follows the song's scale.** Shift+Up/Down moves by one scale degree when a scale is set, and by one semitone otherwise. An off-scale note is snapped before it is moved, so transposing chromatic material into a scale converges rather than preserving the offset. `Cell::transpose_note` now takes the scale, so both frontends share the behaviour.
+
+- **Scale-constrained note entry.** A song can carry a root and scale (`Song.scale`, 26 scales in the new `rtrack_core::theory`); keyboard entry then snaps each note to the nearest pitch in it, ties resolving downward. Set it in the TUI with the `Scale` row of `:set`, typed as `C# dorian` or `off`, or with the two selectors in the GUI settings dialog.
+
+  Snapping happens in each frontend's `try_enter_note`, via `Song::snap_entry`. Quantizing inside the data model would have rewritten notes arriving from a file, the clipboard or MIDI input, so choosing a scale never touches material already in the song. An unparseable scale name is reported and leaves the setting alone, rather than reading as "off" and silently disabling quantization.
+
+  A scale is a 12-bit mask over semitones rotated to its root, so no music-theory dependency was added; `tonal_rs` and `rust-music-theory` were both evaluated and rejected (`docs/dev/music-theory-crates.md`).
+
+### Fixed
+
+- **TUI song settings no longer mark the song modified for tabbing through it.** `settings_apply_field` pushed an undo entry and set the dirty flag for any field it visited, so opening `:set` and closing it left an unsaved-changes marker and a spurious undo step. A field whose buffer still equals the song's value is now skipped. The value is read through one `settings_field_value` helper, which also seeds the buffer.
+
+- **TUI song settings: typing now replaces the field's current value.** The edit buffer is seeded with that value and every character appended to it, so entering a scale over the seeded `off` produced `offc minor` unless you backspaced first. The first character typed after selecting a field clears the buffer; Backspace still edits the seeded value rather than dropping it, so correcting one digit of a BPM works as before.
+
+### Changed
+
+- `Note::from_midi` replaces the MIDI-to-note arithmetic that `Note::transposed` carried inline, and `NoteValue` gained `name`, `from_name`, and one `PITCH_NAMES` table behind both `name` and `display_name`. The GUI instrument editor and TUI sample editor each held their own copy of a note-naming array and function; both now call `tracker::midi_note_name`. Displayed names are unchanged.
+
 ## [0.1.3] - 2026-08-26
 
 Note on versioning: the `0.1.2` published to crates.io is older than the

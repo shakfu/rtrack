@@ -655,7 +655,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
     use crate::app::SettingsField;
 
     let area = f.area();
-    let popup_area = centered_rect(42, 12, area);
+    let popup_area = centered_rect(42, 13, area);
 
     f.render_widget(Clear, popup_area);
 
@@ -668,6 +668,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
         (SettingsField::HighlightBeat, "Beat Hilight"),
         (SettingsField::HighlightBar, "Bar Hilight"),
         (SettingsField::Swing, "Swing"),
+        (SettingsField::Scale, "Scale"),
     ];
 
     let lines: Vec<Line> = fields
@@ -686,6 +687,10 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
                     SettingsField::HighlightBeat => app.core.song.highlight_beat.to_string(),
                     SettingsField::HighlightBar => app.core.song.highlight_bar.to_string(),
                     SettingsField::Swing => format!("{}%", app.core.song.swing),
+                    SettingsField::Scale => match app.core.song.scale {
+                        Some(sc) => sc.display(),
+                        None => "off".to_string(),
+                    },
                 }
             };
             let label_style = Style::default().fg(theme.settings_label);
@@ -1442,5 +1447,100 @@ fn write_str(
             buf[(cx, y)].set_char(c);
             buf[(cx, y)].set_style(style);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::make_app;
+    use crate::app::SettingsField;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Render the whole screen, then crop to the popup's box-drawing frame.
+    /// Cropping keeps these snapshots from breaking when the pattern grid or
+    /// status bar changes underneath the dialog.
+    fn popup_snapshot(app: &App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let mut lines = Vec::new();
+        for y in 0..buf.area.height {
+            // Indexed by character, not byte: the box-drawing glyphs are
+            // multi-byte and slicing a String by byte lands mid-character.
+            let row: Vec<char> = (0..buf.area.width)
+                .flat_map(|x| buf[(x, y)].symbol().chars().collect::<Vec<_>>())
+                .collect();
+            let start = row
+                .iter()
+                .position(|c| "\u{250c}\u{2502}\u{2514}".contains(*c));
+            let end = row
+                .iter()
+                .rposition(|c| "\u{2510}\u{2502}\u{2518}".contains(*c));
+            if let (Some(s), Some(e)) = (start, end) {
+                if e > s {
+                    lines.push(row[s..=e].iter().collect::<String>());
+                }
+            }
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn the_song_settings_dialog_renders_every_field() {
+        let mut app = make_app();
+        app.open_song_settings();
+
+        let expected = "\
+┌ Song Settings ─────────────────────────┐
+│  Title         Untitled_               │
+│  BPM           120                     │
+│  Speed         6                       │
+│  Channels      4                       │
+│  Rows          64                      │
+│  Beat Hilight  4                       │
+│  Bar Hilight   16                      │
+│  Swing         50%                     │
+│  Scale         off                     │
+│                                        │
+│                                        │
+└ Tab:next  Enter/Esc:close ─────────────┘";
+        assert_eq!(popup_snapshot(&app), expected);
+    }
+
+    #[test]
+    fn the_scale_row_shows_the_songs_scale() {
+        use rtrack_core::theory::{Scale, ScaleSetting};
+        use rtrack_core::tracker::NoteValue;
+
+        let mut app = make_app();
+        app.core.song.scale = Some(ScaleSetting::new(NoteValue::D, Scale::Dorian));
+        app.open_song_settings();
+
+        let snapshot = popup_snapshot(&app);
+        assert!(
+            snapshot.contains("│  Scale         D dorian                │"),
+            "scale row missing from:\n{snapshot}"
+        );
+    }
+
+    #[test]
+    fn the_active_field_shows_the_edit_cursor() {
+        let mut app = make_app();
+        app.open_song_settings();
+        app.dialogs.settings_field = SettingsField::Scale;
+        app.dialogs.settings_edit_buf = "c minor".to_string();
+
+        let snapshot = popup_snapshot(&app);
+        assert!(
+            snapshot.contains("│  Scale         c minor_                │"),
+            "edit buffer not shown on the active row:\n{snapshot}"
+        );
+        assert!(
+            snapshot.contains("│  Title         Untitled                │"),
+            "inactive rows should show the value without a cursor:\n{snapshot}"
+        );
     }
 }
