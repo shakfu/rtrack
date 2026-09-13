@@ -759,9 +759,10 @@ impl TrackerCore {
                     midi_note,
                     velocity,
                     instrument,
+                    sample_offset,
                 } => {
                     let midi_ch = self.midi_channel_for(channel);
-                    self.send_note_on_with_instrument(midi_ch, midi_note, velocity, instrument);
+                    self.route_note_on(midi_ch, midi_note, velocity, instrument, sample_offset);
                 }
                 TrackerEvent::NoteOff { channel } => {
                     let midi_ch = self.midi_channel_for(channel);
@@ -898,6 +899,19 @@ impl TrackerCore {
         velocity: u8,
         instrument: Option<u8>,
     ) {
+        self.route_note_on(channel, note, velocity, instrument, 0);
+    }
+
+    /// [`Self::send_note_on_with_instrument`], starting a sample
+    /// `sample_offset`/256 of the way into its played span (`9xx`).
+    fn route_note_on(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        instrument: Option<u8>,
+        sample_offset: u8,
+    ) {
         let inst_idx = instrument.unwrap_or(0) as usize;
         let inst = self.instruments.get(inst_idx);
         // Sequencer-driven notes carry the frame they should sound at;
@@ -919,6 +933,7 @@ impl TrackerCore {
                             velocity,
                             channel,
                             NewNoteAction::Cut,
+                            sample_offset,
                         ),
                         // Previews and live MIDI are not pattern rows, so
                         // they stack and a chord stays a chord.
@@ -928,6 +943,7 @@ impl TrackerCore {
                             velocity,
                             channel,
                             NewNoteAction::Continue,
+                            sample_offset,
                         ),
                     }
                 }
@@ -1481,7 +1497,8 @@ impl TrackerCore {
     /// there. `overwrite` decides whether that is allowed to happen to
     /// instruments this slicing did not itself produce; with
     /// [`crate::sample::SliceOverwrite::Refuse`] such a request fails with
-    /// [`Error::SlotsOccupied`] and nothing is written.
+    /// [`Error::SlotsOccupied`] and nothing is written. With `Source`, slices
+    /// of the same file directly after the new ones are cleared.
     pub fn slice_sample(
         &mut self,
         slot: usize,
@@ -1495,13 +1512,7 @@ impl TrackerCore {
             return Err(Error::NoSampleInSlot { slot });
         };
 
-        let slices = if use_transients {
-            let (start, end) = sample.slice_bounds(range);
-            let points = crate::sample::detect_transients_range(sample, sensitivity, start, end);
-            crate::sample::slice_at_points(sample, &points, range)
-        } else {
-            crate::sample::slice_equal(sample, count, range)
-        };
+        let slices = crate::sample::plan_slices(sample, count, sensitivity, use_transients, range);
 
         if slices.is_empty() {
             return Err(Error::SampleTooShort { slot });
@@ -1529,9 +1540,25 @@ impl TrackerCore {
         // Collect names before consuming slices
         let slice_names: Vec<String> = slices.iter().map(|s| s.name.clone()).collect();
 
+        let source = sample.source_path.clone();
         let mut bank = (*self.sample_bank).clone();
         for (i, s) in slices.into_iter().enumerate() {
             bank.samples[slot + i] = Some(Arc::new(s));
+        }
+
+        // `Source` replaces the whole previous division. With fewer pieces,
+        // the old slices past the end would stay and overlap the new ones.
+        // `Span` replaces only what it writes, so it clears nothing.
+        let mut cleared = Vec::new();
+        if range == crate::sample::SliceRange::Source && source.is_some() {
+            for i in end_slot..MAX_INSTRUMENTS {
+                let Some(old) = bank.get(i) else { break };
+                if !crate::sample::is_slice_of(old, &source) {
+                    break;
+                }
+                cleared.push((i, old.name.clone()));
+                bank.samples[i] = None;
+            }
         }
         self.sample_bank = Arc::new(bank);
         if let Some(ref mut audio) = self.audio {
@@ -1548,6 +1575,15 @@ impl TrackerCore {
                 // first slot in particular kept the whole sample's name and
                 // ended up as "amen" sitting alongside "amen_S01".
                 self.instruments[inst_slot].name = name.clone();
+            }
+        }
+        for (i, name) in cleared {
+            if let Some(inst) = self.instruments.get_mut(i) {
+                inst.sample_index = None;
+                // A name the user typed over the slice name is theirs to keep.
+                if inst.name == name {
+                    inst.name.clear();
+                }
             }
         }
 

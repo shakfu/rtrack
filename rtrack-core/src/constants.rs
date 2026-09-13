@@ -54,6 +54,7 @@ pub const EFFECT_VOLUME_SLIDE: u8 = 0x5; // 5xy: volume slide up x, down y per t
 pub const EFFECT_NOTE_DELAY: u8 = 0x6; // 6xx: delay note trigger by xx ticks
 pub const EFFECT_PROBABILITY: u8 = 0x7; // 7xx: play the note with probability xx/255
 pub const EFFECT_RANDOMIZE: u8 = 0x8; // 8xx: re-run this channel's last continuous effect, parameter varied by +/-xx
+pub const EFFECT_SAMPLE_OFFSET: u8 = 0x9; // 9xx: start the row's sample note xx/256 of the way into its played span
 pub const EFFECT_POSITION_JUMP: u8 = 0xB; // Bxx: jump to order position xx
 pub const EFFECT_MIDI_CC: u8 = 0xC; // Cxx: send MIDI CC (controller from instrument col, value xx)
 pub const EFFECT_PATTERN_BREAK: u8 = 0xD; // Dxx: break to row xx of next pattern

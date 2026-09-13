@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use rtrack_core::sample::{self, Sample, SliceRange};
+use rtrack_core::sample::{Sample, SliceRange};
 use rtrack_core::tracker::midi_note_name;
 
 use crate::app::{App, SampleField};
@@ -309,13 +309,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
                 .collect();
 
             // Compute slice boundary preview based on current field focus
-            let slice_preview = compute_slice_preview(
-                sample,
-                &app.dialogs.sample_editor_field,
-                app.dialogs.sample_slice_count,
-                app.dialogs.sample_slice_sensitivity,
-                app.dialogs.sample_slice_range,
-            );
+            let slice_preview = compute_slice_preview(app, sample);
 
             // Find related slot boundaries (other samples sharing same source path)
             let related_boundaries = find_related_boundaries(app, slot);
@@ -360,36 +354,30 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
     f.render_widget(para, inner);
 }
 
-/// Compute slice boundary positions (in frames) based on current editor settings.
-fn compute_slice_preview(
-    sample: &Sample,
-    field: &SampleField,
-    count: usize,
-    sensitivity: f32,
-    range: SliceRange,
-) -> Vec<usize> {
-    // The markers have to describe the range the action will actually
-    // divide, or the preview promises boundaries that slicing will not
-    // produce.
-    let (start, end) = sample.slice_bounds(range);
-    if end <= start {
-        return Vec::new();
-    }
-    let span = end - start;
-
-    // Only show preview when user is focused on slice-related fields
-    match field {
-        SampleField::SliceCount | SampleField::SliceRange | SampleField::SliceEqual => {
-            if count <= 1 {
-                return Vec::new();
-            }
-            (1..count).map(|i| start + i * span / count).collect()
-        }
-        SampleField::SliceSensitivity | SampleField::SliceTransient => {
-            sample::detect_transients_range(sample, sensitivity, start, end)
-        }
-        _ => Vec::new(),
-    }
+/// Where slicing would cut, in frames, while a slice field has focus.
+///
+/// From the core's plan, so the markers match what slicing writes. Cached:
+/// the TUI redraws every 5 ms during playback.
+fn compute_slice_preview(app: &App, sample: &Sample) -> Vec<usize> {
+    let d = &app.dialogs;
+    let use_transients = match d.sample_editor_field {
+        SampleField::SliceCount | SampleField::SliceRange | SampleField::SliceEqual => false,
+        SampleField::SliceSensitivity | SampleField::SliceTransient => true,
+        _ => return Vec::new(),
+    };
+    d.sample_slice_plan
+        .borrow_mut()
+        .spans(
+            sample,
+            d.sample_slice_count,
+            d.sample_slice_sensitivity,
+            use_transients,
+            d.sample_slice_range,
+        )
+        .iter()
+        .skip(1)
+        .map(|&(start, _)| start)
+        .collect()
 }
 
 /// Find trim boundaries of related samples (same source file) for visual markers.
@@ -478,21 +466,13 @@ fn render_waveform_colored(
         sample.trim_end * width / total_len
     };
 
-    let loop_start_col = if sample.loop_enabled {
-        Some(sample.loop_start * width / total_len)
-    } else {
-        None
-    };
-    let loop_end_col = if sample.loop_enabled {
-        let le = if sample.loop_end == 0 {
-            sample.end()
-        } else {
-            sample.loop_end
-        };
-        Some(le * width / total_len)
-    } else {
-        None
-    };
+    // Where playback loops, which for a slice is clamped into its span.
+    let loop_start_col = sample
+        .loop_enabled
+        .then(|| sample.effective_loop_start() * width / total_len);
+    let loop_end_col = sample
+        .loop_enabled
+        .then(|| sample.effective_loop_end() * width / total_len);
 
     // Voice playhead columns
     let voice_cols: Vec<usize> = voice_positions
@@ -612,4 +592,70 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vert[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loop_columns(lines: &[Line<'_>]) -> Vec<usize> {
+        // Span 0 is the left margin; span n + 1 is waveform column n.
+        lines[0].spans[1..]
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.style.fg == Some(Color::LightGreen))
+            .map(|(col, _)| col)
+            .collect()
+    }
+
+    #[test]
+    fn slice_preview_marks_where_slicing_cuts() {
+        // 4000 frames in 7: the old preview put cut 3 at 3 * 4000 / 7 = 1714,
+        // slicing at 3 * (4000 / 7) = 1713.
+        let mut app = crate::app::tests::make_app();
+        let sample = Sample {
+            name: "amen".into(),
+            data: vec![[0.1; 2]; 4000].into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        };
+        app.dialogs.sample_slice_count = 7;
+        app.dialogs.sample_editor_field = SampleField::SliceCount;
+        let cuts: Vec<usize> =
+            rtrack_core::sample::plan_slices(&sample, 7, 0.5, false, SliceRange::Source)
+                .iter()
+                .skip(1)
+                .map(|s| s.trim_start)
+                .collect();
+        assert_eq!(compute_slice_preview(&app, &sample), cuts);
+
+        app.dialogs.sample_editor_field = SampleField::BaseNote;
+        assert!(compute_slice_preview(&app, &sample).is_empty());
+    }
+
+    #[test]
+    fn a_slice_draws_its_loop_where_playback_loops() {
+        // The stored loop points are 0 and 0, which playback clamps into the
+        // slice. Drawing the stored values put the loop at the file's start.
+        let sample = Sample {
+            name: "amen_S02".into(),
+            data: vec![[0.0; 2]; 1000].into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 500,
+            trim_end: 750,
+            loop_enabled: true,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        };
+        let lines = render_waveform_colored(&sample, 100, 4, &[], &[], &[]);
+        assert_eq!(loop_columns(&lines), vec![50, 75]);
+    }
 }

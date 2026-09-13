@@ -169,6 +169,7 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 | `6xx` | Note delay | Delay note trigger by xx ticks |
 | `7xx` | Probability | Play the note with probability xx/255 (00 never, FF always) |
 | `8xx` | Randomize | Re-run this channel's last continuous effect, parameter varied by +/-xx |
+| `9xx` | Sample offset | Start the row's sample note xx/256 into its played span (00 start, 80 halfway) |
 | `Bxx` | Position jump | Jump to order position xx |
 | `Cxx` | MIDI CC | Send CC (controller from instrument col, value xx) |
 | `Dxx` | Pattern break | Break to row xx of next pattern |
@@ -176,6 +177,8 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 | `Fxx` | Set speed/tempo | xx < 20: ticks per row; xx >= 20: set BPM |
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
+
+`9xx` needs a note on the same row and affects samples only. The offset is a fraction of the slice's trimmed span, not ProTracker's fixed 256-frame steps, so one value marks the same point in slices of any length. A looping sample started past its loop end wraps into the loop.
 
 `7xx` and `8xx` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `8xx` varies only the continuous effects (`0xy`-`5xy`); it ignores structural ones, where a random parameter would scramble playback rather than colour it.
 
@@ -317,6 +320,7 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
 | `sliced-amen.rtrk` | Sample slicing -- 8 equal slices of amen.wav played sequentially (170 BPM) |
 | `drumloops.rtrk` | Looping drum slices -- 8 amen.wav slices with loop points enabled (130 BPM) |
+| `sample-offset.rtrk` | `9xx` sample offset -- the whole break retriggered at 8 offsets, then reordered, then offsets within slices, with transposition and a no-note `9xx` row (175 BPM) |
 
 ```sh
 rtrack examples/chord-progression.rtrk

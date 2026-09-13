@@ -142,6 +142,8 @@ enum AudioCommand {
         velocity: u8,
         channel: u8,
         action: NewNoteAction,
+        /// Start point as a fraction of the played span, in 256ths (`9xx`).
+        offset: u8,
     },
     SampleNoteOff {
         channel: u8,
@@ -522,6 +524,21 @@ pub struct AudioEngine {
 impl AudioEngine {
     /// Create audio engine with optional SF2 file. If sf2_path is None,
     /// only the built-in fundsp synth is used.
+    /// [`Self::new`], retrying without the SoundFont if starting with it
+    /// fails. A stale `sf2` path in the config then silences SF2 programs
+    /// only, not every sound. Returns why the SoundFont was dropped, if it was.
+    pub fn new_with_sf2_fallback(sf2_path: Option<&Path>) -> Result<(Self, Option<String>)> {
+        match Self::new(sf2_path) {
+            Ok(engine) => Ok((engine, None)),
+            // If the device was the problem, this fails too and reports that.
+            Err(e) if sf2_path.is_some() => {
+                let engine = Self::new(None)?;
+                Ok((engine, Some(format!("{e:#}; continuing without it"))))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn new(sf2_path: Option<&Path>) -> Result<Self> {
         let host = cpal::default_host();
         let device = host
@@ -818,6 +835,7 @@ impl AudioEngine {
     }
 
     /// Schedule a sample trigger at a specific frame.
+    #[allow(clippy::too_many_arguments)]
     pub fn sample_note_on_at(
         &mut self,
         frame: u64,
@@ -826,6 +844,7 @@ impl AudioEngine {
         velocity: u8,
         channel: u8,
         action: NewNoteAction,
+        offset: u8,
     ) {
         self.send_at(
             frame,
@@ -835,6 +854,7 @@ impl AudioEngine {
                 velocity,
                 channel,
                 action,
+                offset,
             },
         );
     }
@@ -928,6 +948,7 @@ impl AudioEngine {
         velocity: u8,
         channel: u8,
         action: NewNoteAction,
+        offset: u8,
     ) {
         self.send(AudioCommand::SampleNoteOn {
             sample_index,
@@ -935,6 +956,7 @@ impl AudioEngine {
             velocity,
             channel,
             action,
+            offset,
         });
     }
 
@@ -1248,13 +1270,14 @@ fn process_command(
             velocity,
             channel,
             action,
+            offset,
         } => {
             // Same path as the offline renderer takes, rather than a copy of
             // it: voice allocation, de-clicking and loop handling only stay
             // in step between live playback and export if there is one
             // implementation of them.
             if let Some(sample) = sample_bank.get(sample_index) {
-                sample_engine.note_on(
+                sample_engine.note_on_with_offset(
                     sample_index,
                     note,
                     velocity,
@@ -1262,6 +1285,7 @@ fn process_command(
                     sample,
                     sample_rate,
                     action,
+                    offset,
                 );
             }
         }
@@ -1388,6 +1412,17 @@ mod tests {
     fn test_audio_engine_requires_valid_sf2() {
         let result = AudioEngine::new(Some(Path::new("/nonexistent/file.sf2")));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_bad_sf2_costs_the_soundfont_not_the_audio() {
+        // Without a device (CI) both attempts fail, and the error must then be
+        // the device's, not the SoundFont's.
+        match AudioEngine::new_with_sf2_fallback(Some(Path::new("/nonexistent/file.sf2"))) {
+            Ok((_, Some(warning))) => assert!(warning.contains("SF2"), "{warning}"),
+            Ok((_, None)) => panic!("a missing SF2 went unreported"),
+            Err(e) => assert!(!format!("{e:#}").contains("SF2"), "{e:#}"),
+        }
     }
 
     #[test]
@@ -1673,6 +1708,43 @@ mod scheduler_tests {
             out[onset..].iter().any(|s| s.abs() > 1e-6),
             "output after the scheduled frame must be sounding"
         );
+    }
+
+    /// The live path carries `9xx` to the voice, as the offline renderer does.
+    #[test]
+    fn a_sample_note_on_starts_at_its_offset() {
+        let mut state = RenderState::for_test(SR);
+        let mut bank = SampleBank::new();
+        bank.samples[3] = Some(Arc::new(crate::sample::Sample {
+            name: "gap".into(),
+            data: vec![[0.2; 2]; 4000].into(),
+            sample_rate: SR,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        }));
+        apply(
+            &mut state,
+            AudioCommand::SetSampleBank {
+                bank: Arc::new(bank),
+            },
+        );
+        apply(
+            &mut state,
+            AudioCommand::SampleNoteOn {
+                sample_index: 3,
+                note: 60,
+                velocity: 127,
+                channel: 0,
+                action: NewNoteAction::Cut,
+                offset: 0x40,
+            },
+        );
+        assert_eq!(state.sample_engine.voices[0].position, 1000.0);
     }
 
     /// Whole-buffer application (the old behaviour) quantises every note to

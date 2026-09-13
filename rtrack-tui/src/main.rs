@@ -145,23 +145,25 @@ fn install_panic_hook() {
     }));
 }
 
+/// Build the app, returning it with any problem starting audio: no engine at
+/// all, or an engine without the configured SoundFont.
 fn setup_app(
     sf2_path: Option<PathBuf>,
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
     file: Option<PathBuf>,
-) -> Result<App> {
+) -> Result<(App, Option<String>)> {
     let mut app = App::new();
 
-    match rtrack_core::audio::AudioEngine::new(sf2_path.as_deref()) {
-        Ok(engine) => {
-            app.status_message = Some(engine.device_description().to_string());
-            app.core.audio = Some(engine);
-        }
-        Err(e) => {
-            app.status_message = Some(format!("No audio: {}", e));
-        }
-    }
+    let audio_problem =
+        match rtrack_core::audio::AudioEngine::new_with_sf2_fallback(sf2_path.as_deref()) {
+            Ok((engine, sf2_warning)) => {
+                app.status_message = Some(engine.device_description().to_string());
+                app.core.audio = Some(engine);
+                sf2_warning
+            }
+            Err(e) => Some(format!("No audio: {e:#}")),
+        };
 
     // Load song file first, since it resets sample bank and instruments
     if let Some(path) = file {
@@ -185,7 +187,12 @@ fn setup_app(
         app.load_sample_directory(&dir);
     }
 
-    Ok(app)
+    // Last, so a load message does not replace it before anyone reads it.
+    if let Some(problem) = &audio_problem {
+        app.status_message = Some(problem.clone());
+    }
+
+    Ok((app, audio_problem))
 }
 
 fn run_render(
@@ -195,7 +202,8 @@ fn run_render(
     sample_dir: Option<PathBuf>,
     output: PathBuf,
 ) -> Result<()> {
-    let app = setup_app(sf2_path, samples, sample_dir, file)?;
+    // Offline rendering does not use the audio device.
+    let (app, _) = setup_app(sf2_path, samples, sample_dir, file)?;
 
     let ext = output
         .extension()
@@ -257,7 +265,11 @@ fn run_headless(
     sample_dir: Option<PathBuf>,
     loops: u32,
 ) -> Result<()> {
-    let mut app = setup_app(sf2_path, samples, sample_dir, file)?;
+    let (mut app, audio_problem) = setup_app(sf2_path, samples, sample_dir, file)?;
+    // No TUI screen in this mode, so stderr is safe and the only place to say.
+    if let Some(problem) = audio_problem {
+        eprintln!("{problem}");
+    }
 
     let title = app.core.song.title.clone();
     let order_len = app.core.song.order.len();
@@ -297,7 +309,7 @@ fn run_app(
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
 ) -> Result<()> {
-    let mut app = setup_app(sf2_path, samples, sample_dir, file)?;
+    let (mut app, _) = setup_app(sf2_path, samples, sample_dir, file)?;
 
     loop {
         terminal.draw(|f| tui::draw(f, &app))?;

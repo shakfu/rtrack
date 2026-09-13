@@ -548,6 +548,8 @@ impl RtrackApp {
                     s.loop_enabled,
                     s.loop_start,
                     s.loop_end,
+                    s.effective_loop_start(),
+                    s.effective_loop_end(),
                     s.trim_start,
                     s.trim_end,
                 )
@@ -561,6 +563,8 @@ impl RtrackApp {
                 init_loop_enabled,
                 init_loop_start,
                 init_loop_end,
+                played_loop_start,
+                played_loop_end,
                 init_trim_start,
                 init_trim_end,
             )) = sample_info
@@ -630,10 +634,11 @@ impl RtrackApp {
                         );
                     }
 
-                    // Draw loop markers
+                    // Draw loop markers where playback loops, which for a
+                    // slice is clamped into its span.
                     if init_loop_enabled {
-                        let ls = rect.left() + (init_loop_start as f32 / sample_len as f32) * w;
-                        let le = rect.left() + (init_loop_end as f32 / sample_len as f32) * w;
+                        let ls = rect.left() + (played_loop_start as f32 / sample_len as f32) * w;
+                        let le = rect.left() + (played_loop_end as f32 / sample_len as f32) * w;
                         painter.line_segment(
                             [egui::pos2(ls, rect.top()), egui::pos2(ls, rect.bottom())],
                             egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 255, 100)),

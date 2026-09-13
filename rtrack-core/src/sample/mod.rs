@@ -32,7 +32,8 @@ pub enum SliceRange {
 ///
 /// Slicing writes into consecutive slots from its target, which is what makes
 /// a sliced break playable by walking instrument numbers up a pattern. That
-/// makes it destructive, and it is not undoable, so it asks first.
+/// can overwrite unrelated instruments, so it asks first. The core records no
+/// undo; each frontend snapshots the sample bank around the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliceOverwrite {
     /// Stop and report if anything unrelated is in the way. The default.
@@ -160,6 +161,35 @@ impl SampleBank {
             samples: (0..256).map(|_| None).collect(),
         }
     }
+}
+
+impl SampleBank {
+    /// First slot of the slice set `slot` belongs to.
+    ///
+    /// Walks back over directly preceding slices of the same file. A slot
+    /// that is not a slice starts at itself. Slicing with
+    /// [`SliceRange::Source`] from here replaces the whole set, where starting
+    /// mid-set would leave the earlier slices overlapping it.
+    pub fn slice_set_start(&self, slot: usize) -> usize {
+        let Some(source) = self.get(slot).map(|s| s.source_path.clone()) else {
+            return slot;
+        };
+        let in_set = |i: usize| self.get(i).is_some_and(|s| is_slice_of(s, &source));
+        let mut start = slot;
+        while in_set(start) && start > 0 && in_set(start - 1) {
+            start -= 1;
+        }
+        start
+    }
+}
+
+/// Whether `sample` is a slice (an `_Sxx` name) cut from the file `source`.
+///
+/// A sample without a source path has no provenance, so it is never one.
+pub(crate) fn is_slice_of(sample: &Sample, source: &Option<String>) -> bool {
+    source.is_some()
+        && sample.source_path == *source
+        && strip_slice_suffix(&sample.name) != sample.name
 }
 
 impl Default for SampleBank {
@@ -783,6 +813,103 @@ pub fn detect_transients_range(
     points
 }
 
+/// The slices [`crate::core::TrackerCore::slice_sample`] would write, without
+/// writing them. Equal division by `count`, or at transients found with
+/// `sensitivity`. A preview built from this cannot disagree with the result.
+pub fn plan_slices(
+    sample: &Sample,
+    count: usize,
+    sensitivity: f32,
+    use_transients: bool,
+    range: SliceRange,
+) -> Vec<Sample> {
+    if use_transients {
+        let (start, end) = sample.slice_bounds(range);
+        let points = detect_transients_range(sample, sensitivity, start, end);
+        slice_at_points(sample, &points, range)
+    } else {
+        slice_equal(sample, count, range)
+    }
+}
+
+/// The `(start, end)` spans of [`plan_slices`], kept until an input changes.
+///
+/// Transient detection reads every frame of the range, and an editor redraws
+/// its preview many times a second with the same inputs. The cache holds a
+/// reference to the last sample's buffer, so that buffer stays allocated
+/// until the next plan replaces it.
+#[derive(Default)]
+pub struct SlicePlanCache {
+    key: Option<PlanKey>,
+    spans: Vec<(usize, usize)>,
+    /// How many times the plan was actually computed.
+    computed: usize,
+}
+
+struct PlanKey {
+    // Held rather than compared by address: a freed buffer's address can be
+    // reused by a different sample.
+    data: Arc<[[f32; 2]]>,
+    trim_start: usize,
+    end: usize,
+    sample_rate: u64,
+    count: usize,
+    sensitivity: u32,
+    use_transients: bool,
+    range: SliceRange,
+}
+
+impl PlanKey {
+    fn same_as(&self, other: &PlanKey) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+            && (self.trim_start, self.end, self.sample_rate)
+                == (other.trim_start, other.end, other.sample_rate)
+            && (
+                self.count,
+                self.sensitivity,
+                self.use_transients,
+                self.range,
+            ) == (
+                other.count,
+                other.sensitivity,
+                other.use_transients,
+                other.range,
+            )
+    }
+}
+
+impl SlicePlanCache {
+    /// The spans [`plan_slices`] returns for these inputs.
+    pub fn spans(
+        &mut self,
+        sample: &Sample,
+        count: usize,
+        sensitivity: f32,
+        use_transients: bool,
+        range: SliceRange,
+    ) -> &[(usize, usize)] {
+        let key = PlanKey {
+            data: Arc::clone(&sample.data),
+            trim_start: sample.trim_start,
+            end: sample.end(),
+            sample_rate: sample.sample_rate.to_bits(),
+            count,
+            sensitivity: sensitivity.to_bits(),
+            use_transients,
+            range,
+        };
+        if !self.key.as_ref().is_some_and(|k| k.same_as(&key)) {
+            self.spans = plan_slices(sample, count, sensitivity, use_transients, range)
+                .iter()
+                .map(|s| (s.trim_start, s.end()))
+                .collect();
+            self.key = Some(key);
+            self.computed += 1;
+        }
+        &self.spans
+    }
+}
+
 /// Slice a sample at the given frame positions.
 /// Each slice runs from `points[i]` to `points[i+1]` (last slice runs to sample end).
 pub fn slice_at_points(sample: &Sample, points: &[usize], range: SliceRange) -> Vec<Sample> {
@@ -822,6 +949,76 @@ pub fn slice_at_points(sample: &Sample, points: &[usize], range: SliceRange) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn clicks(frames: usize) -> Sample {
+        // A hit every 250 ms, so transient detection has onsets to find.
+        let data: Vec<[f32; 2]> = (0..frames)
+            .map(|i| {
+                let v = if i % 11025 < 200 { 0.8 } else { 0.001 };
+                [v, v]
+            })
+            .collect();
+        Sample {
+            name: "clicks".into(),
+            data: data.into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        }
+    }
+
+    #[test]
+    fn slice_plan_cache_computes_once_for_the_same_inputs() {
+        let sample = clicks(44100);
+        let mut cache = SlicePlanCache::default();
+        let first = cache
+            .spans(&sample, 8, 0.5, true, SliceRange::Source)
+            .to_vec();
+        let second = cache
+            .spans(&sample, 8, 0.5, true, SliceRange::Source)
+            .to_vec();
+        assert_eq!(cache.computed, 1);
+        assert_eq!(first, second);
+        let direct: Vec<_> = plan_slices(&sample, 8, 0.5, true, SliceRange::Source)
+            .iter()
+            .map(|s| (s.trim_start, s.end()))
+            .collect();
+        assert!(direct.len() > 1, "the fixture has no onsets");
+        assert_eq!(first, direct);
+    }
+
+    #[test]
+    fn slice_plan_cache_recomputes_when_an_input_changes() {
+        let sample = clicks(44100);
+        let mut cache = SlicePlanCache::default();
+        cache.spans(&sample, 8, 0.5, true, SliceRange::Source);
+
+        cache.spans(&sample, 8, 0.9, true, SliceRange::Source);
+        assert_eq!(cache.computed, 2, "sensitivity");
+        cache.spans(&sample, 8, 0.9, false, SliceRange::Source);
+        assert_eq!(cache.computed, 3, "mode");
+
+        let mut trimmed = sample.clone();
+        trimmed.trim_start = 1000;
+        cache.spans(&trimmed, 8, 0.9, false, SliceRange::Span);
+        assert_eq!(cache.computed, 4, "range");
+        trimmed.trim_start = 2000;
+        cache.spans(&trimmed, 8, 0.9, false, SliceRange::Span);
+        assert_eq!(cache.computed, 5, "trim");
+
+        // Same frames, different buffer: a reloaded file is a new sample.
+        let reloaded = Sample {
+            data: sample.data.to_vec().into(),
+            ..trimmed.clone()
+        };
+        cache.spans(&reloaded, 8, 0.9, false, SliceRange::Span);
+        assert_eq!(cache.computed, 6, "buffer");
+    }
 
     #[test]
     fn test_sample_bank_new() {

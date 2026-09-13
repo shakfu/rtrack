@@ -68,6 +68,9 @@ pub enum TrackerEvent {
         midi_note: u8,
         velocity: u8,
         instrument: Option<u8>,
+        /// `9xx`: start a sample `xx`/256 of the way into its played span.
+        /// 0 for every other note, and ignored by synths and MIDI.
+        sample_offset: u8,
     },
     /// Note off on a channel.
     NoteOff { channel: usize },
@@ -548,11 +551,16 @@ impl TrackerEngine {
                                 channel: ch,
                                 semitone_offset: 0.0,
                             });
+                            let sample_offset = match effect {
+                                Some(EFFECT_SAMPLE_OFFSET) => param,
+                                _ => 0,
+                            };
                             self.emit(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
                                 velocity: scaled_vel,
                                 instrument,
+                                sample_offset,
                             });
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].active_instrument = instrument;
@@ -675,6 +683,8 @@ impl TrackerEngine {
                                 midi_note,
                                 velocity: vel,
                                 instrument: self.channel_states[ch].active_instrument,
+                                // The row's effect column holds the 6xx.
+                                sample_offset: 0,
                             });
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].volume = vel;
@@ -1388,6 +1398,62 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn sample_offsets(events: &[TrackerEvent]) -> Vec<u8> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TrackerEvent::NoteOn { sample_offset, .. } => Some(*sample_offset),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_engine_sample_offset_is_carried_by_the_note_on() {
+        let c5 = Some(Note::On {
+            value: NoteValue::C,
+            octave: 5,
+        });
+        let mut song = Song::new(1, 4);
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: c5,
+                effect: Some(EFFECT_SAMPLE_OFFSET),
+                effect_value: Some(0x80),
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                note: c5,
+                ..Cell::default()
+            },
+        );
+        // 9xx with no note has nothing to start.
+        song.set_cell(
+            0,
+            2,
+            0,
+            Cell {
+                effect: Some(EFFECT_SAMPLE_OFFSET),
+                effect_value: Some(0x40),
+                ..Cell::default()
+            },
+        );
+
+        let mut engine = TrackerEngine::new(&song, true);
+        assert_eq!(sample_offsets(engine.process_tick(&song)), vec![0x80]);
+        assert_eq!(sample_offsets(engine.process_tick(&song)), vec![0]);
+        assert!(sample_offsets(engine.process_tick(&song)).is_empty());
     }
 
     #[test]

@@ -26,7 +26,7 @@ Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout),
 - Modal editing (Normal/Insert modes) with piano keyboard note entry
 - Pattern editor with sub-column cursor (Note/Instrument/Volume/Effect)
 - 30 built-in synth patches, per-channel effects, send/return buses
-- Sample loading, waveform editing, transient-based slicing (of the whole sample or of a single slice)
+- Sample loading, waveform editing, equal or transient-based slicing (of the whole sample or of a single slice)
 - MIDI I/O with virtual ports and MIDI learn
 - Ableton Link tempo/transport sync
 - Export to WAV, FLAC, and standard MIDI files

@@ -4,7 +4,7 @@ use egui::{pos2, Color32, Painter, Rect, Stroke, Ui, Vec2};
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use rtrack_core::audio::{AudioEngine, VoiceSnapshot};
-use rtrack_core::sample::{SampleBank, SliceOverwrite, SliceRange};
+use rtrack_core::sample::{SampleBank, SliceOverwrite, SlicePlanCache, SliceRange};
 
 /// FFT size for spectrum analysis (must be power of 2).
 const FFT_SIZE: usize = 2048;
@@ -77,11 +77,14 @@ pub struct VisualizationState {
     /// and cleared when the settings change. Drives the "Slice anyway" button.
     pub slice_blocked: Option<String>,
     preview_slice_points: Vec<usize>,
+    /// Spans the current settings would slice into, reused across repaints.
+    slice_plan: SlicePlanCache,
     /// Set when parameters change (consumed by app to commit slices).
     pub pending_slice_action: Option<SliceAction>,
     /// The base slot slicing operates on (first slot of the sample, not the viewed slot).
     slice_source_slot: Option<usize>,
-    // Change tracking for auto-apply (mode, count, sensitivity_bits -- NOT slot)
+    // Change tracking for auto-apply (mode, count, sensitivity_bits, range).
+    // Reset to the current settings whenever a different slice set is viewed.
     last_applied: Option<(SliceMode, usize, u32, SliceRange)>,
 }
 
@@ -112,6 +115,7 @@ impl VisualizationState {
             slice_range: SliceRange::Source,
             slice_blocked: None,
             preview_slice_points: Vec::new(),
+            slice_plan: SlicePlanCache::default(),
             pending_slice_action: None,
             slice_source_slot: None,
             last_applied: None,
@@ -393,22 +397,11 @@ impl VisualizationState {
             );
         });
 
-        // Determine the source slot for slicing (first related slot, stable across clicks)
-        let source_slot = if let Some(ss) = self.slice_source_slot {
-            if related_slots.contains(&ss) {
-                ss
-            } else {
-                // Source slot no longer related (different sample), reset
-                let first = *related_slots.first().unwrap_or(&slot);
-                self.slice_source_slot = Some(first);
-                self.last_applied = None;
-                first
-            }
-        } else {
-            let first = *related_slots.first().unwrap_or(&slot);
-            self.slice_source_slot = Some(first);
-            first
-        };
+        // The first slot of the viewed slice set, which every slot in the set
+        // shares. The same file elsewhere in the bank is a different set.
+        let source_slot = sample_bank.slice_set_start(slot);
+        let new_set = self.slice_source_slot != Some(source_slot);
+        self.slice_source_slot = Some(source_slot);
 
         // Use the source slot's sample for slicing (always has full data)
         // `Source` replaces the whole slice set, so it starts from the slot
@@ -418,45 +411,36 @@ impl VisualizationState {
             SliceRange::Span => slot,
         };
         let source_sample = sample_bank.get(target_slot).unwrap_or(sample);
-        let (span_start, span_end) = source_sample.slice_bounds(self.slice_range);
-        let span_len = span_end.saturating_sub(span_start);
-        // Preview the range the pending action will divide, so the markers
-        // cannot promise boundaries that slicing will not produce.
-        self.preview_slice_points.clear();
-        if span_len > 0 {
-            match self.slice_mode {
-                SliceMode::Equal => {
-                    for i in 1..self.slice_count {
-                        self.preview_slice_points
-                            .push(span_start + (i * span_len) / self.slice_count);
-                    }
-                }
-                SliceMode::Transient => {
-                    let pts = rtrack_core::sample::detect_transients_range(
-                        source_sample,
-                        self.slice_sensitivity,
-                        span_start,
-                        span_end,
-                    );
-                    // Skip the first point (always the span start)
-                    for &p in pts.iter().skip(1) {
-                        self.preview_slice_points.push(p);
-                    }
-                }
-            }
-        }
+        // The spans slicing would write, from the core's own plan, so the
+        // markers and the Slice button cannot disagree with the result.
+        let planned = self
+            .slice_plan
+            .spans(
+                source_sample,
+                self.slice_count,
+                self.slice_sensitivity,
+                self.slice_mode == SliceMode::Transient,
+                self.slice_range,
+            )
+            .to_vec();
+        self.preview_slice_points = planned.iter().skip(1).map(|&(start, _)| start).collect();
 
         // Apply when the slice settings change -- but not while a drag is
-        // still in progress. Slicing overwrites consecutive slots and cannot
-        // be undone, so a slider dragged from 2 to 32 must be one destructive
-        // write on release, not thirty on the way there. The preview above
-        // still follows the drag live.
+        // still in progress. Each slice is one undo step, so a slider dragged
+        // from 2 to 32 must be one write on release, not thirty on the way
+        // there. The preview above still follows the drag live.
         let current_key = (
             self.slice_mode,
             self.slice_count,
             self.slice_sensitivity.to_bits(),
             self.slice_range,
         );
+        // Settings on arrival at a set are the baseline, not a change. Treating
+        // them as one sliced every sample as soon as it was viewed.
+        if new_set {
+            self.last_applied = Some(current_key);
+            self.slice_blocked = None;
+        }
         let settings_changed = self.last_applied != Some(current_key);
         if settings_changed {
             self.slice_blocked = None;
@@ -471,6 +455,33 @@ impl VisualizationState {
                 range: self.slice_range,
                 overwrite: SliceOverwrite::Refuse,
             });
+        }
+
+        // Arriving at a set does not apply the settings, so offer to when the
+        // set is not already what they would produce.
+        if !settings_changed
+            && self.pending_slice_action.is_none()
+            && self.slice_blocked.is_none()
+            && !set_holds(sample_bank, target_slot, source_slot, &planned)
+        {
+            let what = match self.slice_range {
+                SliceRange::Source => "Divide the whole sample",
+                SliceRange::Span => "Subdivide this slice",
+            };
+            let hover = format!(
+                "{what} into {} slices, from slot {target_slot:02X}",
+                planned.len()
+            );
+            if ui.button("Slice").on_hover_text(hover).clicked() {
+                self.pending_slice_action = Some(SliceAction {
+                    slot: target_slot,
+                    mode: self.slice_mode,
+                    count: self.slice_count,
+                    sensitivity: self.slice_sensitivity,
+                    range: self.slice_range,
+                    overwrite: SliceOverwrite::Refuse,
+                });
+            }
         }
 
         // Refused for want of free slots: say what is in the way and offer
@@ -510,6 +521,25 @@ impl VisualizationState {
             &self.preview_slice_points,
         );
     }
+}
+
+/// Whether the slice set starting at `source` holds exactly `planned` from
+/// `target` on. Empty `planned` counts as held: there is nothing to slice.
+///
+/// A further slice of the same set after the planned ones is a different
+/// division, so it does not match.
+fn set_holds(bank: &SampleBank, target: usize, source: usize, planned: &[(usize, usize)]) -> bool {
+    if planned.is_empty() {
+        return true;
+    }
+    let in_set = |i: usize| bank.get(i).is_some() && bank.slice_set_start(i) == source;
+    let spans_match = planned.iter().enumerate().all(|(i, &span)| {
+        in_set(target + i)
+            && bank
+                .get(target + i)
+                .is_some_and(|s| (s.trim_start, s.end()) == span)
+    });
+    spans_match && !in_set(target + planned.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -819,5 +849,246 @@ fn level_color(normalized: f32) -> Color32 {
     } else {
         let t = (normalized - 0.6) / 0.4;
         Color32::from_rgb(255, (255.0 * (1.0 - t * 0.8)) as u8, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtrack_core::sample::Sample;
+
+    fn slice(name: &str, start: usize, end: usize) -> Sample {
+        Sample {
+            name: name.into(),
+            data: vec![[0.1; 2]; 4000].into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: start,
+            trim_end: end,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: Some("/songs/amen.wav".into()),
+        }
+    }
+
+    /// One egui pass over the Samples tab, as the app draws it.
+    fn pass(
+        ctx: &egui::Context,
+        vis: &mut VisualizationState,
+        bank: &Arc<SampleBank>,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| vis.draw_samples_tab(ui, bank));
+        // No renderer here to take the font atlas upload.
+        out.textures_delta.clear();
+        out
+    }
+
+    fn draw_samples(vis: &mut VisualizationState, bank: &Arc<SampleBank>) {
+        pass(&egui::Context::default(), vis, bank, Vec::new());
+    }
+
+    /// Screen rectangle of the first text shape reading exactly `text`.
+    fn find_text(out: &egui::FullOutput, text: &str) -> Option<Rect> {
+        fn walk(shape: &egui::Shape, text: &str) -> Option<Rect> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == text => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| walk(s, text)),
+                _ => None,
+            }
+        }
+        out.shapes.iter().find_map(|c| walk(&c.shape, text))
+    }
+
+    /// Replace slot `slot` onward with what slicing it would write.
+    fn sliced(sample: &Sample, count: usize, slot: usize) -> Arc<SampleBank> {
+        let mut bank = SampleBank::new();
+        for (i, s) in
+            rtrack_core::sample::plan_slices(sample, count, 0.5, false, SliceRange::Source)
+                .into_iter()
+                .enumerate()
+        {
+            bank.samples[slot + i] = Some(Arc::new(s));
+        }
+        Arc::new(bank)
+    }
+
+    #[test]
+    fn set_holds_only_the_exact_planned_division() {
+        let whole = slice("amen", 0, 0);
+        let plan = |n| -> Vec<(usize, usize)> {
+            rtrack_core::sample::plan_slices(&whole, n, 0.5, false, SliceRange::Source)
+                .iter()
+                .map(|s| (s.trim_start, s.end()))
+                .collect()
+        };
+
+        let mut unsliced = SampleBank::new();
+        unsliced.samples[0] = Some(Arc::new(whole.clone()));
+        assert!(!set_holds(&unsliced, 0, 0, &plan(8)), "an unsliced sample");
+
+        let eight = sliced(&whole, 8, 0);
+        assert!(set_holds(&eight, 0, 0, &plan(8)), "the same division");
+        assert!(!set_holds(&eight, 0, 0, &plan(4)), "a different count");
+
+        // Four new slices followed by leftovers of an older division.
+        let mut leftover = (*eight).clone();
+        for (i, s) in rtrack_core::sample::plan_slices(&whole, 4, 0.5, false, SliceRange::Source)
+            .into_iter()
+            .enumerate()
+        {
+            leftover.samples[i] = Some(Arc::new(s));
+        }
+        assert!(
+            !set_holds(&leftover, 0, 0, &plan(4)),
+            "leftover slices after the set"
+        );
+
+        assert!(set_holds(&unsliced, 0, 0, &[]), "nothing to slice");
+    }
+
+    #[test]
+    fn the_slice_button_shows_until_the_set_matches_and_queues_a_slice() {
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(slice("amen", 0, 0)));
+        let bank = Arc::new(bank);
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+        vis.selected_sample_slot = Some(0);
+
+        let ctx = egui::Context::default();
+        let out = pass(&ctx, &mut vis, &bank, Vec::new());
+        let button = find_text(&out, "Slice").expect("no Slice button on an unsliced sample");
+        assert!(vis.pending_slice_action.is_none());
+
+        let at = button.center();
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        pass(
+            &ctx,
+            &mut vis,
+            &bank,
+            vec![egui::Event::PointerMoved(at), press(true)],
+        );
+        pass(&ctx, &mut vis, &bank, vec![press(false)]);
+        let action = vis
+            .pending_slice_action
+            .take()
+            .expect("clicking Slice queued nothing");
+        assert_eq!((action.slot, action.count), (0, 8));
+
+        // Once the bank holds that division, there is nothing to offer.
+        let done = sliced(&slice("amen", 0, 0), 8, 0);
+        let out = pass(&ctx, &mut vis, &done, Vec::new());
+        assert!(
+            find_text(&out, "Slice").is_none(),
+            "Slice offered on a matching set"
+        );
+    }
+
+    #[test]
+    fn preview_markers_are_where_slicing_cuts() {
+        // 4000 frames in 7: the old preview put slice 3 at 3 * 4000 / 7 = 1714,
+        // slicing at 3 * (4000 / 7) = 1713.
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(slice("amen", 0, 0)));
+        let bank = Arc::new(bank);
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+        vis.selected_sample_slot = Some(0);
+        vis.slice_count = 7;
+        draw_samples(&mut vis, &bank);
+
+        let starts: Vec<usize> = sliced(&slice("amen", 0, 0), 7, 0)
+            .samples
+            .iter()
+            .flatten()
+            .skip(1)
+            .map(|s| s.trim_start)
+            .collect();
+        assert_eq!(vis.preview_slice_points, starts);
+    }
+
+    fn one_whole_sample_and_a_slice_set() -> Arc<SampleBank> {
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(slice("amen", 0, 0)));
+        for i in 0..4 {
+            let name = format!("amen_S{i:02}");
+            bank.samples[10 + i] = Some(Arc::new(slice(&name, i * 1000, (i + 1) * 1000)));
+        }
+        Arc::new(bank)
+    }
+
+    #[test]
+    fn viewing_a_sample_does_not_slice_it() {
+        // The settings were applied to whatever was viewed first, so opening
+        // an unsliced sample cut it into eight.
+        let bank = one_whole_sample_and_a_slice_set();
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+        vis.selected_sample_slot = Some(0);
+        draw_samples(&mut vis, &bank);
+        assert!(vis.pending_slice_action.is_none());
+    }
+
+    #[test]
+    fn viewing_a_different_set_does_not_slice_it() {
+        let bank = one_whole_sample_and_a_slice_set();
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+        vis.selected_sample_slot = Some(12);
+        draw_samples(&mut vis, &bank);
+        vis.slice_count = 4;
+        draw_samples(&mut vis, &bank);
+        vis.pending_slice_action = None;
+
+        vis.selected_sample_slot = Some(0);
+        draw_samples(&mut vis, &bank);
+        assert!(vis.pending_slice_action.is_none());
+    }
+
+    #[test]
+    fn changing_a_setting_still_slices() {
+        let bank = one_whole_sample_and_a_slice_set();
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+        vis.selected_sample_slot = Some(12);
+        draw_samples(&mut vis, &bank);
+
+        vis.slice_count = 4;
+        draw_samples(&mut vis, &bank);
+        let action = vis
+            .pending_slice_action
+            .expect("the count change was not applied");
+        assert_eq!((action.slot, action.count), (10, 4));
+    }
+
+    #[test]
+    fn slicing_starts_at_the_viewed_set_not_the_first_copy_of_the_file() {
+        // The file loaded whole in slot 0 is not part of the slices in 10-13.
+        // Taking the lowest slot holding the file sliced from slot 0, writing
+        // over it and everything up to the set.
+        let bank = one_whole_sample_and_a_slice_set();
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+
+        vis.selected_sample_slot = Some(12);
+        draw_samples(&mut vis, &bank);
+        assert_eq!(vis.slice_source_slot, Some(10));
+
+        vis.selected_sample_slot = Some(0);
+        draw_samples(&mut vis, &bank);
+        assert_eq!(vis.slice_source_slot, Some(0));
     }
 }

@@ -165,13 +165,14 @@ impl RtrackApp {
         let mut core = TrackerCore::with_song_size(8, 64);
 
         // Try to start audio engine with SF2 from config
-        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
-            Ok(engine) => {
+        match rtrack_core::audio::AudioEngine::new_with_sf2_fallback(config.sf2.as_deref()) {
+            Ok((engine, sf2_warning)) => {
                 startup_notes.push(engine.device_description().to_string());
+                startup_notes.extend(sf2_warning);
                 core.audio = Some(engine);
             }
             Err(e) => {
-                startup_notes.push(format!("No audio: {}", e));
+                startup_notes.push(format!("No audio: {e:#}"));
             }
         }
 

@@ -364,8 +364,8 @@ fn transient_slicing_from_source_also_re_derives() {
 
 #[test]
 fn slicing_refuses_to_overwrite_unrelated_instruments() {
-    // Slicing writes into consecutive slots and cannot be undone, so it must
-    // not quietly eat an instrument it did not put there.
+    // Slicing writes into consecutive slots, so it must not quietly eat an
+    // instrument it did not put there.
     let (dir, wav) = workspace_with_amen("occupied");
 
     let mut core = TrackerCoreBuilder::new()
@@ -463,6 +463,152 @@ fn subdividing_refuses_to_eat_the_next_slice_of_another_sample() {
         err,
         rtrack_core::error::Error::SlotsOccupied { first: 2, count: 1 }
     ));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn re_slicing_into_fewer_pieces_clears_the_old_ones_past_the_end() {
+    // Going from 16 slices to 8 used to leave slots 8-15 holding the 16-way
+    // division, overlapping the new slices and still playable.
+    let (dir, wav) = workspace_with_amen("fewer_pieces");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(
+        0,
+        16,
+        0.5,
+        false,
+        SliceRange::Source,
+        SliceOverwrite::Refuse,
+    )
+    .unwrap();
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+
+    assert!(core.sample_bank.get(7).is_some());
+    for slot in 8..16 {
+        assert!(
+            core.sample_bank.get(slot).is_none(),
+            "slot {slot} still holds {}",
+            core.sample_bank.get(slot).unwrap().name
+        );
+        assert_eq!(core.instruments[slot].sample_index, None);
+        assert_eq!(core.instruments[slot].name, "");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_cleared_slices_come_back_with_the_snapshot() {
+    // Frontends undo a slice by restoring a snapshot taken before it.
+    let (dir, wav) = workspace_with_amen("fewer_pieces_undo");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(
+        0,
+        16,
+        0.5,
+        false,
+        SliceRange::Source,
+        SliceOverwrite::Refuse,
+    )
+    .unwrap();
+    let before = core.snapshot_samples();
+    core.slice_sample(0, 8, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+    core.restore_samples(before);
+
+    for slot in 0..16 {
+        assert!(
+            core.sample_bank.get(slot).is_some(),
+            "slot {slot} not restored"
+        );
+    }
+    assert_eq!(core.instruments[15].name, "amen_S15");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn subdividing_leaves_the_slices_after_it_alone() {
+    // `Span` replaces only the slots it writes; the rest of the set is still
+    // the division the user made.
+    let (dir, wav) = workspace_with_amen("subdivide_keeps_rest");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+    core.slice_sample(1, 2, 0.5, false, SliceRange::Span, SliceOverwrite::Refuse)
+        .unwrap();
+
+    assert_eq!(core.sample_bank.get(3).unwrap().name, "amen_S03");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clearing_stops_at_a_slot_that_is_not_a_slice() {
+    // The same file loaded whole is something the user put there, not part
+    // of the old division.
+    let (dir, wav) = workspace_with_amen("clear_stops");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+    core.load_sample(4, &wav).unwrap();
+    core.slice_sample(0, 2, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+
+    assert!(core.sample_bank.get(2).is_none());
+    assert!(core.sample_bank.get(3).is_none());
+    let whole = core
+        .sample_bank
+        .get(4)
+        .expect("the whole sample was cleared");
+    assert_eq!(whole.name, "amen");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_slice_set_starts_at_its_first_contiguous_slice() {
+    let (dir, wav) = workspace_with_amen("set_start");
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Refuse)
+        .unwrap();
+    core.load_sample(4, &wav).unwrap();
+
+    assert_eq!(core.sample_bank.slice_set_start(3), 0, "mid-set slice");
+    assert_eq!(core.sample_bank.slice_set_start(0), 0, "first slice");
+    assert_eq!(
+        core.sample_bank.slice_set_start(4),
+        4,
+        "the file loaded whole is not a slice"
+    );
+    assert_eq!(core.sample_bank.slice_set_start(9), 9, "empty slot");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

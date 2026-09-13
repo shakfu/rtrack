@@ -191,6 +191,33 @@ impl SamplePlaybackEngine {
         output_rate: f64,
         action: NewNoteAction,
     ) {
+        self.note_on_with_offset(
+            sample_index,
+            note,
+            velocity,
+            channel,
+            sample,
+            output_rate,
+            action,
+            0,
+        );
+    }
+
+    /// [`Self::note_on`], starting `offset`/256 of the way into the played
+    /// span (`9xx`). Relative to the span rather than a fixed frame count,
+    /// so the same parameter lands at the same point in a slice of any length.
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_on_with_offset(
+        &mut self,
+        sample_index: usize,
+        note: u8,
+        velocity: u8,
+        channel: u8,
+        sample: &Sample,
+        output_rate: f64,
+        action: NewNoteAction,
+        offset: u8,
+    ) {
         match action {
             NewNoteAction::Cut => {
                 // Fade rather than drop: the outgoing voice is stopped
@@ -219,7 +246,7 @@ impl SamplePlaybackEngine {
 
         self.voices.push(SampleVoice {
             sample_index,
-            position: sample.trim_start as f64,
+            position: (sample.trim_start + sample.played_len() * offset as usize / 256) as f64,
             rate,
             output_rate,
             velocity: vel,
@@ -426,6 +453,34 @@ mod tests {
         let mut bank = SampleBank::new();
         bank.samples[0] = Some(Arc::new(make_test_sample()));
         bank
+    }
+
+    #[test]
+    fn test_sample_offset_starts_part_way_into_the_played_span() {
+        let mut smp = make_test_sample();
+        smp.data = vec![[0.1; 2]; 4000].into();
+        smp.trim_start = 1000;
+        smp.trim_end = 3000;
+        for (offset, start) in [(0x00u8, 1000.0), (0x80, 2000.0), (0xFF, 2992.0)] {
+            let mut engine = SamplePlaybackEngine::new(8);
+            engine.note_on_with_offset(0, 60, 127, 0, &smp, 44100.0, NewNoteAction::Cut, offset);
+            assert_eq!(engine.voices[0].position, start, "offset {offset:02X}");
+        }
+        // Past the end of a loop, playback wraps into it rather than stopping.
+        smp.loop_enabled = true;
+        smp.loop_start = 1000;
+        smp.loop_end = 1500;
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(smp.clone()));
+        let mut engine = SamplePlaybackEngine::new(8);
+        engine.note_on_with_offset(0, 60, 127, 0, &smp, 44100.0, NewNoteAction::Cut, 0xC0);
+        let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
+        engine.render(&bank, &mut l, &mut r);
+        let pos = engine.voices[0].position;
+        assert!(
+            (1000.0..1500.0).contains(&pos),
+            "position {pos} left the loop"
+        );
     }
 
     #[test]

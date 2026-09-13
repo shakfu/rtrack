@@ -274,6 +274,7 @@ fn render_song_streaming(
                     midi_note,
                     velocity,
                     instrument,
+                    sample_offset,
                 } => {
                     let midi_ch = (*channel & 0x0F) as u8;
                     // Turn off previous note on this channel
@@ -294,7 +295,7 @@ fn render_song_streaming(
                     if has_sample {
                         let sample_idx = inst.unwrap().sample_index.unwrap();
                         let sample = bank.get(sample_idx).unwrap();
-                        sample_engine.note_on(
+                        sample_engine.note_on_with_offset(
                             sample_idx,
                             *midi_note,
                             *velocity,
@@ -302,6 +303,7 @@ fn render_song_streaming(
                             sample,
                             sr,
                             NewNoteAction::Cut,
+                            *sample_offset,
                         );
                     } else if let Some(sp) = inst.and_then(|i| i.synth_params.as_ref()) {
                         synth.note_on_with_params(midi_ch, *midi_note, *velocity, sp);
@@ -598,6 +600,78 @@ mod tests {
         let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
         let has_audio = samples.iter().any(|&s| s.abs() > 10);
         assert!(has_audio, "Expected non-silent output for sample note");
+    }
+
+    #[test]
+    fn test_render_sample_offset_skips_into_the_sample() {
+        // Silence, then a tone. Starting at 9 80 skips the silence.
+        let render = |effect: Option<u8>| -> Vec<f32> {
+            let mut song = Song::new(1, 1);
+            song.speed = 1;
+            song.set_cell(
+                0,
+                0,
+                0,
+                Cell {
+                    note: Some(Note::On {
+                        value: NoteValue::C,
+                        octave: 5,
+                    }),
+                    volume: Some(127),
+                    instrument: Some(0),
+                    effect,
+                    effect_value: effect.map(|_| 0x80),
+                },
+            );
+            let data: Vec<[f32; 2]> = (0..8000)
+                .map(|i| {
+                    let v = if i < 4000 {
+                        0.0
+                    } else {
+                        (i as f32 / 44100.0 * 440.0 * std::f32::consts::TAU).sin() * 0.5
+                    };
+                    [v, v]
+                })
+                .collect();
+            let mut bank = SampleBank::new();
+            bank.samples[0] = Some(std::sync::Arc::new(super::super::Sample {
+                name: "gap".into(),
+                data: data.into(),
+                sample_rate: 44100.0,
+                base_note: 60,
+                trim_start: 0,
+                trim_end: 0,
+                loop_enabled: false,
+                loop_start: 0,
+                loop_end: 0,
+                source_path: None,
+            }));
+            let mut instruments: Vec<ExportInstrument> = (0..256)
+                .map(|_| ExportInstrument {
+                    sample_index: None,
+                    midi_program: 0,
+                    synth_params: None,
+                })
+                .collect();
+            instruments[0].sample_index = Some(0);
+            render_song(&song, &bank, &instruments, &[], &[], 44100)
+                .unwrap()
+                .0
+        };
+        let peak = |x: &[f32]| x[200..3000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+
+        let plain = render(None);
+        let offset = render(Some(EFFECT_SAMPLE_OFFSET));
+        assert!(
+            peak(&plain) < 1e-3,
+            "the silent half was audible: {}",
+            peak(&plain)
+        );
+        assert!(
+            peak(&offset) > 0.05,
+            "9 80 did not skip the silence: {}",
+            peak(&offset)
+        );
     }
 
     #[test]

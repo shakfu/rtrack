@@ -34,6 +34,9 @@ pub struct DialogState {
     /// Set when a slice was refused for want of free slots: the next Enter
     /// on the same action goes ahead anyway.
     pub sample_slice_overwrite_armed: bool,
+    /// Spans the slice settings would produce, reused across redraws. A
+    /// `RefCell` because drawing borrows the app immutably.
+    pub sample_slice_plan: std::cell::RefCell<rtrack_core::sample::SlicePlanCache>,
     pub synth_editor_slot: usize,
     pub synth_editor_field: SynthField,
     pub midi_port_list: Vec<String>,
@@ -56,6 +59,7 @@ impl DialogState {
             sample_slice_sensitivity: 0.5,
             sample_slice_range: rtrack_core::sample::SliceRange::Source,
             sample_slice_overwrite_armed: false,
+            sample_slice_plan: Default::default(),
             synth_editor_slot: 0,
             synth_editor_field: SynthField::Waveform,
             midi_port_list: Vec::new(),
@@ -618,16 +622,24 @@ impl App {
     }
 
     pub fn slice_sample(&mut self, use_transients: bool) -> rtrack_core::error::Result<usize> {
-        let slot = self.dialogs.sample_editor_slot;
+        let range = self.dialogs.sample_slice_range;
+        // `Source` replaces the whole set, so it writes from the set's first
+        // slot rather than the one being edited. The GUI does the same.
+        let slot = match range {
+            rtrack_core::sample::SliceRange::Source => self
+                .core
+                .sample_bank
+                .slice_set_start(self.dialogs.sample_editor_slot),
+            rtrack_core::sample::SliceRange::Span => self.dialogs.sample_editor_slot,
+        };
         let count = self.dialogs.sample_slice_count;
         let sensitivity = self.dialogs.sample_slice_sensitivity;
         // Recorded before the write, so Ctrl+Z puts back whatever the
         // slices landed on.
         self.push_undo_with_samples();
-        let range = self.dialogs.sample_slice_range;
-        // Slicing overwrites consecutive slots and cannot be undone, so the
-        // first attempt refuses when anything unrelated is in the way; the
-        // arming flag is what a second Enter sets.
+        // Slicing overwrites consecutive slots, so the first attempt refuses
+        // when anything unrelated is in the way; the arming flag is what a
+        // second Enter sets.
         let overwrite = if self.dialogs.sample_slice_overwrite_armed {
             rtrack_core::sample::SliceOverwrite::Allow
         } else {
@@ -1194,6 +1206,7 @@ pub(crate) mod tests {
                 sample_slice_sensitivity: 0.5,
                 sample_slice_range: rtrack_core::sample::SliceRange::Source,
                 sample_slice_overwrite_armed: false,
+                sample_slice_plan: Default::default(),
                 synth_editor_slot: 0,
                 synth_editor_field: SynthField::Waveform,
                 help_scroll: 0,
@@ -2685,6 +2698,32 @@ pub(crate) mod tests {
 
         assert_eq!(slot_span(&app, 0).0, 0);
         assert_eq!(slot_span(&app, 7).1, total, "the second pass lost the tail");
+    }
+
+    #[test]
+    fn test_slicing_the_source_from_a_later_slice_replaces_the_whole_set() {
+        // Starting from the slot being edited left slots 0-2 holding the old
+        // division, overlapping the new slices written from slot 3.
+        let (mut app, _dir) = app_with_amen();
+        let total = app.core.sample_bank.get(0).unwrap().len();
+        app.dialogs.sample_slice_range = rtrack_core::sample::SliceRange::Source;
+        app.dialogs.sample_slice_count = 8;
+        app.slice_sample(false).unwrap();
+
+        app.dialogs.sample_editor_slot = 3;
+        app.dialogs.sample_slice_count = 4;
+        app.slice_sample(false).unwrap();
+
+        assert_eq!(
+            slot_span(&app, 0),
+            (0, total / 4),
+            "slot 0 kept the old slice"
+        );
+        assert_eq!(slot_span(&app, 3).1, total);
+        assert!(
+            app.core.sample_bank.get(4).is_none(),
+            "old slices remain past the new set"
+        );
     }
 
     #[test]
