@@ -31,7 +31,7 @@ cargo install rtrack-tui                 # installs the `rtrack` binary
 cargo install rtrack-gui                 # installs the `rtrack-gui` binary (optional)
 ```
 
-Requires Rust 1.89+ and CMake 3.14+ (for the Ableton Link C++ dependency).
+Requires Rust 1.89+ (1.95+ for `rtrack-gui`) and CMake 3.14+ (for the Ableton Link C++ dependency).
 
 ## Frontends
 
@@ -324,7 +324,7 @@ rtrack examples/chord-progression.rtrk
 
 ## Requirements
 
-- Rust 1.89+
+- Rust 1.89+ (1.95+ for `rtrack-gui`)
 
 - CMake 3.14+ (builds Ableton Link C++ dependency)
 

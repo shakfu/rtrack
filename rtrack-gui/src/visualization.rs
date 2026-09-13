@@ -461,7 +461,7 @@ impl VisualizationState {
         if settings_changed {
             self.slice_blocked = None;
         }
-        if settings_changed && !ui.ctx().is_using_pointer() {
+        if settings_changed && !ui.ctx().egui_is_using_pointer() {
             self.last_applied = Some(current_key);
             self.pending_slice_action = Some(SliceAction {
                 slot: target_slot,

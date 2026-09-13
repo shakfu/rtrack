@@ -30,6 +30,12 @@ All notable changes to rtrack will be documented in this file.
 
 - `Note::from_midi` replaces the MIDI-to-note arithmetic that `Note::transposed` carried inline, and `NoteValue` gained `name`, `from_name`, and one `PITCH_NAMES` table behind both `name` and `display_name`. The GUI instrument editor and TUI sample editor each held their own copy of a note-naming array and function; both now call `tracker::midi_note_name`. Displayed names are unchanged.
 
+- **rtrack-tui: ratatui 0.29 -> 0.30, crossterm 0.28 -> 0.29.** Clears RUSTSEC-2026-0002 and RUSTSEC-2026-0253, two soundness advisories against the `lru` 0.12 that ratatui 0.29 pinned. crossterm moves with it because ratatui 0.30's default backend is built on 0.29; keeping 0.28 would link two copies of crossterm with separate terminal state.
+
+- **rtrack-gui: eframe/egui 0.31 -> 0.36; `rust-version` 1.89 -> 1.95.** 0.36 requires Rust 1.95. rtrack-core and rtrack-tui keep 1.89, and the CI msrv job checks both floors. The upgrade clears the last three `cargo audit` findings: quick-xml RUSTSEC-2026-0194/0195, paste and ttf-parser. The `.cargo/audit.toml` ignores are removed.
+
+  The renderer stays glow, not wgpu, which eframe made the default in 0.34. This limits the upgrade to API changes and keeps the wgpu dependency tree out. On Wayland compositors without server-side decorations (GNOME), the Adwaita title bar no longer draws the window title. Drawing it pulls in `ab_glyph` and the unmaintained `ttf-parser`.
+
 ## [0.1.3] - 2026-08-26
 
 Note on versioning: the `0.1.2` published to crates.io is older than the

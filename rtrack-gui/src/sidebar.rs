@@ -1,10 +1,10 @@
 use crate::app::RtrackApp;
 
 impl RtrackApp {
-    pub fn draw_sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("order_list")
-            .default_width(90.0)
-            .show(ctx, |ui| {
+    pub fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("order_list")
+            .default_size(90.0)
+            .show(ui, |ui| {
                 self.draw_order_list(ui);
                 ui.separator();
                 self.draw_channel_list(ui);

@@ -5,9 +5,9 @@ use crate::app::RtrackApp;
 use crate::state::SubColumn;
 
 impl RtrackApp {
-    pub fn draw_menu_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
+    pub fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("menu_bar").show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New").clicked() {
                         let config = rtrack_core::config::load_config();
@@ -25,11 +25,11 @@ impl RtrackApp {
                         self.history.clear();
                         self.clipboard.clear();
                         self.status_message = Some("New song created".to_string());
-                        ui.close_menu();
+                        ui.close();
                     }
 
                     if ui.button("Open...").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("rtrack", &["rtrk"])
                             .pick_file()
@@ -54,12 +54,12 @@ impl RtrackApp {
                     }
 
                     if ui.button("Save  (Ctrl+S)").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         self.do_save();
                     }
 
                     if ui.button("Save As...").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("rtrack", &["rtrk"])
                             .save_file()
@@ -70,12 +70,12 @@ impl RtrackApp {
                     }
 
                     if ui.button("Load SF2...").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         self.draw_load_sf2();
                     }
 
                     if ui.button("Load Sample Dir...").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                             self.status_message =
                                 Some(match self.core.load_sample_directory(&dir) {
@@ -108,7 +108,7 @@ impl RtrackApp {
                                                 Some(format!("Load failed: {}", e));
                                         }
                                     }
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         });
@@ -117,21 +117,21 @@ impl RtrackApp {
                     ui.separator();
 
                     if ui.button("Export WAV").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         self.status_message = Some(match self.core.export_wav_to_default() {
                             Ok(path) => format!("Exported WAV: {}", path.display()),
                             Err(e) => format!("WAV export failed: {}", e),
                         });
                     }
                     if ui.button("Export FLAC").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         self.status_message = Some(match self.core.export_flac_to_default() {
                             Ok(path) => format!("Exported FLAC: {}", path.display()),
                             Err(e) => format!("FLAC export failed: {}", e),
                         });
                     }
                     if ui.button("Export MIDI").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         self.status_message = Some(match self.core.export_midi_to_default() {
                             Ok(path) => format!("Exported MIDI: {}", path.display()),
                             Err(e) => format!("MIDI export failed: {}", e),
@@ -141,11 +141,11 @@ impl RtrackApp {
                     ui.separator();
 
                     if ui.button("Quit").clicked() {
-                        ui.close_menu();
+                        ui.close();
                         if self.core.dirty {
                             self.show_quit_confirm = true;
                         } else {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            ui.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     }
                 });
@@ -156,7 +156,7 @@ impl RtrackApp {
                         .clicked()
                     {
                         self.apply_undo();
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -166,7 +166,7 @@ impl RtrackApp {
                         .clicked()
                     {
                         self.apply_redo();
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui
@@ -178,7 +178,7 @@ impl RtrackApp {
                             .get(self.cursor_row, self.cursor_channel);
                         self.clipboard.set_cell(cell);
                         self.status_message = Some("Copied".to_string());
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(true, egui::Button::new("Cut  (Ctrl+X)"))
@@ -201,7 +201,7 @@ impl RtrackApp {
                         );
                         self.core.dirty = true;
                         self.status_message = Some("Cut".to_string());
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui
                         .add_enabled(
@@ -227,19 +227,19 @@ impl RtrackApp {
                             self.core.dirty = true;
                             self.status_message = Some("Pasted".to_string());
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Song Settings").clicked() {
                         self.show_song_settings = !self.show_song_settings;
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
 
                 ui.menu_button("View", |ui| {
                     if ui.button("Instruments  (F7)").clicked() {
                         self.show_instrument_list = !self.show_instrument_list;
-                        ui.close_menu();
+                        ui.close();
                     }
                     let matrix_label = if self.show_pattern_matrix {
                         "Close Pattern Matrix  (Ctrl+P)"
@@ -251,11 +251,11 @@ impl RtrackApp {
                         if self.show_pattern_matrix {
                             self.matrix_cursor = self.edit_order;
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Help  (F1)").clicked() {
                         self.show_help = !self.show_help;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("MIDI Ports  (F2)").clicked() {
                         self.midi_port_list =
@@ -263,7 +263,7 @@ impl RtrackApp {
                         self.midi_input_port_list =
                             rtrack_core::midi::MidiInputEngine::list_ports().unwrap_or_default();
                         self.show_midi_ports = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     let vis_label = if self.show_visualization {
                         "Spectrum  (F4) [on]"
@@ -272,14 +272,14 @@ impl RtrackApp {
                     };
                     if ui.button(vis_label).clicked() {
                         self.show_visualization = !self.show_visualization;
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     let theme_label = format!("Theme: {} (F8)", self.theme.label());
                     if ui.button(theme_label).clicked() {
                         let new_theme = self.theme.toggle();
-                        self.set_theme(ctx, new_theme);
-                        ui.close_menu();
+                        self.set_theme(ui.ctx(), new_theme);
+                        ui.close();
                     }
                 });
             });

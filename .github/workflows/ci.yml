@@ -66,8 +66,17 @@ jobs:
         run: cargo xtask regen-examples --check
 
   msrv:
-    name: MSRV (1.89)
+    name: MSRV (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # egui 0.36 needs 1.95; the core and TUI keep the lower floor.
+          - toolchain: 1.89.0
+            packages: -p rtrack-core -p rtrack-tui -p xtask
+          - toolchain: 1.95.0
+            packages: --workspace
     steps:
       - uses: actions/checkout@v7
 
@@ -76,10 +85,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev cmake
 
-      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
 
       - uses: Swatinem/rust-cache@v2
 
       # Verifies the rust-version declared in Cargo.toml is honest.
       - name: Build
-        run: cargo build --workspace
+        run: cargo build ${{ matrix.packages }}

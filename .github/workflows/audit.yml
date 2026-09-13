@@ -47,10 +47,8 @@ jobs:
       # crates.io for other people to install. That combination is what makes
       # this worth a job of its own.
       #
-      # Vulnerabilities fail the job. Unmaintained and unsound notices are
-      # printed but do not: several have no fixed version to move to, and a
-      # job that is permanently red for something no commit can put right is a
-      # job people stop reading. Exceptions, with the reason and the way out
-      # for each, are in `.cargo/audit.toml`.
+      # Vulnerabilities, unmaintained and unsound notices fail the job.
+      # Exceptions, with the reason and the way out for each, are in
+      # `.cargo/audit.toml`.
       - name: Check dependencies against the RustSec advisory database
         run: cargo audit

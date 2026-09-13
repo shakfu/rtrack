@@ -209,17 +209,12 @@ impl RtrackApp {
         }
     }
 
-    fn handle_dropped_files(&mut self, files: Vec<egui::DroppedFile>) {
+    fn handle_dropped_files(&mut self, paths: &[&std::path::Path]) {
         let audio_exts = ["wav", "aif", "aiff"];
         let rtrk_ext = "rtrk";
         let mut loaded = 0usize;
 
-        for file in &files {
-            let path = match &file.path {
-                Some(p) => p.clone(),
-                None => continue,
-            };
-
+        for &path in paths {
             let ext = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -228,14 +223,14 @@ impl RtrackApp {
 
             if ext == rtrk_ext {
                 // Load as project file
-                match self.core.load_file(&path) {
+                match self.core.load_file(path) {
                     Ok(report) => {
                         self.cursor_row = 0;
                         self.cursor_channel = 0;
                         self.edit_order = 0;
                         self.first_visible_channel = 0;
                         self.history = EditHistory::new();
-                        rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                        rtrack_core::config::push_recent_file(&mut self.recent_files, path);
                         rtrack_core::config::save_recent_files(&self.recent_files);
                         self.status_message = Some(Self::describe_load(&report));
                     }
@@ -268,7 +263,7 @@ impl RtrackApp {
                 };
 
                 let mut bank = (*self.core.sample_bank).clone();
-                match bank.load(slot, &path) {
+                match bank.load(slot, path) {
                     Ok(()) => {
                         self.core.sample_bank = Arc::new(bank);
                         if let Some(ref mut audio) = self.core.audio {
@@ -322,7 +317,8 @@ fn idle_repaint_delay(midi_connected: bool, link_enabled: bool, dirty: bool) -> 
 }
 
 impl eframe::App for RtrackApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         // Tick playback
         self.core.sync_link();
         if self.core.is_playing() {
@@ -371,9 +367,10 @@ impl eframe::App for RtrackApp {
         }
 
         // Handle dropped files (drag-and-drop sample loading)
-        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
-            self.handle_dropped_files(dropped);
+            let paths: Vec<_> = dropped.iter().map(|f| f.path()).collect();
+            self.handle_dropped_files(&paths);
         }
 
         // Process keyboard input
@@ -386,15 +383,15 @@ impl eframe::App for RtrackApp {
         }
 
         // Menu bar
-        self.draw_menu_bar(ctx);
+        self.draw_menu_bar(ui);
 
         // Transport bar
-        egui::TopBottomPanel::top("transport").show(ctx, |ui| {
+        egui::Panel::top("transport").show(ui, |ui| {
             self.draw_transport(ui);
         });
 
         // Status bar
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if let Some(ref msg) = self.status_message {
                     ui.label(msg.as_str());
@@ -414,9 +411,9 @@ impl eframe::App for RtrackApp {
         // Visualization panel (bottom)
         if self.show_visualization {
             let sample_bank = self.core.sample_bank.clone();
-            egui::TopBottomPanel::bottom("visualization")
-                .exact_height(140.0)
-                .show(ctx, |ui| {
+            egui::Panel::bottom("visualization")
+                .exact_size(140.0)
+                .show(ui, |ui| {
                     self.vis.draw(ui, &sample_bank);
                 });
 
@@ -455,25 +452,25 @@ impl eframe::App for RtrackApp {
 
         if self.show_instrument_list {
             // Instrument editor: sidebar panel + central panel
-            egui::SidePanel::left("instrument_sidebar")
-                .exact_width(230.0)
-                .show(ctx, |ui| {
+            egui::Panel::left("instrument_sidebar")
+                .exact_size(230.0)
+                .show(ui, |ui| {
                     self.draw_instrument_sidebar(ui);
                 });
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 self.draw_instrument_panel_view(ui);
             });
         } else if self.show_pattern_matrix {
             // Pattern matrix (full-screen, replaces sidebar + grid)
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 self.draw_pattern_matrix(ui);
             });
         } else {
             // Order list & channels sidebar
-            self.draw_sidebar(ctx);
+            self.draw_sidebar(ui);
 
             // Pattern grid
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let order_pos = self.current_order_position();
                 let Some(pattern) = self.core.song.pattern_at(order_pos) else {
                     return;
@@ -574,13 +571,6 @@ mod tests {
         w.finalize().expect("finalize");
     }
 
-    fn dropped(path: &std::path::Path) -> egui::DroppedFile {
-        egui::DroppedFile {
-            path: Some(path.to_path_buf()),
-            ..Default::default()
-        }
-    }
-
     // -- Idle wake-ups (the GUI used to stall with a controller plugged in) --
 
     #[test]
@@ -627,7 +617,7 @@ mod tests {
         let mut app = RtrackApp::headless(4, 16);
         assert!(app.core.sample_bank.get(0).is_none());
 
-        app.handle_dropped_files(vec![dropped(&wav)]);
+        app.handle_dropped_files(&[&wav]);
 
         assert!(
             app.core.sample_bank.get(0).is_some(),
@@ -646,7 +636,7 @@ mod tests {
         write_wav(&b, 64);
 
         let mut app = RtrackApp::headless(4, 16);
-        app.handle_dropped_files(vec![dropped(&a), dropped(&b)]);
+        app.handle_dropped_files(&[&a, &b]);
 
         assert!(app.core.sample_bank.get(0).is_some());
         assert!(app.core.sample_bank.get(1).is_some());
@@ -660,7 +650,7 @@ mod tests {
         std::fs::write(&txt, b"not audio").expect("write");
 
         let mut app = RtrackApp::headless(4, 16);
-        app.handle_dropped_files(vec![dropped(&txt)]);
+        app.handle_dropped_files(&[&txt]);
 
         assert!(app.core.sample_bank.get(0).is_none());
         assert!(!app.core.dirty);
@@ -684,7 +674,7 @@ mod tests {
         app.cursor_channel = 2;
         app.first_visible_channel = 1;
 
-        app.handle_dropped_files(vec![dropped(&song_path)]);
+        app.handle_dropped_files(&[&song_path]);
 
         assert_eq!(app.core.song.title, "Dropped");
         assert_eq!(app.core.song.channels, 3);
@@ -711,19 +701,12 @@ mod tests {
         source.core.save().expect("save");
 
         let mut app = RtrackApp::headless(4, 16);
-        app.handle_dropped_files(vec![dropped(&song_path), dropped(&wav)]);
+        app.handle_dropped_files(&[&song_path, &wav]);
 
         assert!(
             app.core.sample_bank.get(0).is_none(),
             "the sample after the song should not have been loaded"
         );
-    }
-
-    #[test]
-    fn a_drop_with_no_path_is_ignored() {
-        let mut app = RtrackApp::headless(4, 16);
-        app.handle_dropped_files(vec![egui::DroppedFile::default()]);
-        assert!(app.status_message.is_none());
     }
 
     // -- Small helpers --
