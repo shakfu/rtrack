@@ -329,7 +329,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Tab: next field  Up/Down: +/-1  Left/Right: +/-10  Esc: close",
+            "  Tab: next field  Up/Down: +/-1  Left/Right: +/-10  z: snap loop to zero  Esc: close",
             Style::default().fg(Color::DarkGray),
         )));
     } else {

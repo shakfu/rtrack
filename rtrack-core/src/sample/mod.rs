@@ -141,6 +141,36 @@ impl Sample {
         self.end().saturating_sub(self.trim_start)
     }
 
+    /// Move the loop points to the nearest rising zero crossings.
+    ///
+    /// The frames either side of the seam are then both near zero and on the
+    /// same slope, so the wrap does not jump. Searches
+    /// [`crate::constants::ZERO_CROSSING_SEARCH_SECS`] either side of each
+    /// point, inside the played span. Returns whether either point moved.
+    pub fn snap_loop_to_zero_crossings(&mut self) -> bool {
+        let reach = (self.sample_rate * crate::constants::ZERO_CROSSING_SEARCH_SECS) as usize;
+        let (start, end) = (self.effective_loop_start(), self.effective_loop_end());
+        let snap = |frame| self.nearest_rising_crossing(frame, reach).unwrap_or(frame);
+        let (new_start, new_end) = (snap(start), snap(end));
+        if new_end <= new_start || (new_start, new_end) == (start, end) {
+            return false;
+        }
+        self.loop_start = new_start;
+        self.loop_end = new_end;
+        true
+    }
+
+    /// The frame nearest `frame`, within `reach`, where L+R goes from below
+    /// zero to zero or above. Both frames of the pair are in the played span.
+    fn nearest_rising_crossing(&self, frame: usize, reach: usize) -> Option<usize> {
+        let mono = |i: usize| self.data[i][0] + self.data[i][1];
+        let first = frame.saturating_sub(reach).max(self.trim_start + 1);
+        let last = (frame + reach).min(self.end().saturating_sub(1));
+        (first..=last)
+            .filter(|&i| mono(i - 1) < 0.0 && mono(i) >= 0.0)
+            .min_by_key(|&i| i.abs_diff(frame))
+    }
+
     /// Duration of the part that plays, in seconds.
     pub fn played_duration(&self) -> f64 {
         self.played_len() as f64 / self.sample_rate
@@ -180,6 +210,122 @@ impl SampleBank {
             start -= 1;
         }
         start
+    }
+}
+
+/// An edge of a sample that an editor can move by dragging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    TrimStart,
+    TrimEnd,
+    LoopStart,
+    LoopEnd,
+}
+
+/// Whether moving a trim edge also moves the matching edge of the adjacent
+/// slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coupling {
+    /// An edge shared with the adjacent slice of the same set moves both, so
+    /// the set stays contiguous.
+    Shared,
+    /// Only this slot moves. Shortening a slice's tail this way leaves a gap
+    /// rather than moving the next slice's start back into the tail.
+    Alone,
+}
+
+impl Sample {
+    /// Where `boundary` is, as it plays: loop points clamped into the span.
+    pub fn boundary(&self, boundary: Boundary) -> usize {
+        match boundary {
+            Boundary::TrimStart => self.trim_start,
+            Boundary::TrimEnd => self.end(),
+            Boundary::LoopStart => self.effective_loop_start(),
+            Boundary::LoopEnd => self.effective_loop_end(),
+        }
+    }
+}
+
+impl SampleBank {
+    /// The slots of the contiguous slice set `slot` belongs to. A slot that is
+    /// not a slice is a set of one.
+    pub fn slice_set(&self, slot: usize) -> std::ops::Range<usize> {
+        let start = self.slice_set_start(slot);
+        let mut end = slot + 1;
+        while self.get(end).is_some() && self.slice_set_start(end) == start {
+            end += 1;
+        }
+        start..end
+    }
+
+    /// Move `boundary` of `slot` to `frame`, and return where it landed.
+    ///
+    /// With [`Coupling::Shared`], a trim edge shared with the adjacent slice of
+    /// the same set moves that slice's edge too. Each move is clamped to keep
+    /// every span at least one frame long: a shared edge stays between the far
+    /// edges of the two slices, and a loop point stays inside the played span.
+    /// `Coupling` does not affect loop points. `None` if the slot is empty.
+    pub fn move_boundary(
+        &mut self,
+        slot: usize,
+        boundary: Boundary,
+        frame: usize,
+        coupling: Coupling,
+    ) -> Option<usize> {
+        let sample = self.get(slot)?;
+        let set = self.slice_set(slot);
+        let (start, end, len) = (sample.trim_start, sample.end(), sample.len());
+        let shares_edge = |other: usize, edge: usize, other_edge: fn(&Sample) -> usize| {
+            coupling == Coupling::Shared
+                && set.contains(&other)
+                && self.get(other).is_some_and(|o| other_edge(o) == edge)
+        };
+
+        let landed = match boundary {
+            Boundary::TrimStart => {
+                let prev = slot
+                    .checked_sub(1)
+                    .filter(|&p| shares_edge(p, start, Sample::end));
+                let lo = prev.map_or(0, |p| self.get(p).map_or(0, |s| s.trim_start + 1));
+                let at = frame.clamp(lo, end.saturating_sub(1).max(lo));
+                if let Some(p) = prev {
+                    self.edit(p, |s| s.trim_end = at);
+                }
+                self.edit(slot, |s| s.trim_start = at);
+                at
+            }
+            Boundary::TrimEnd => {
+                let next = Some(slot + 1).filter(|&n| shares_edge(n, end, |s| s.trim_start));
+                let hi = next.map_or(len, |n| {
+                    self.get(n).map_or(len, |s| s.end().saturating_sub(1))
+                });
+                let at = frame.clamp((start + 1).min(hi), hi);
+                if let Some(n) = next {
+                    self.edit(n, |s| s.trim_start = at);
+                }
+                self.edit(slot, |s| s.trim_end = at);
+                at
+            }
+            Boundary::LoopStart => {
+                let hi = sample.effective_loop_end().saturating_sub(1).max(start);
+                let at = frame.clamp(start, hi);
+                self.edit(slot, |s| s.loop_start = at);
+                at
+            }
+            Boundary::LoopEnd => {
+                let lo = (sample.effective_loop_start() + 1).min(end);
+                let at = frame.clamp(lo, end);
+                self.edit(slot, |s| s.loop_end = at);
+                at
+            }
+        };
+        Some(landed)
+    }
+
+    fn edit(&mut self, slot: usize, change: impl FnOnce(&mut Sample)) {
+        if let Some(arc) = self.samples.get_mut(slot).and_then(|s| s.as_mut()) {
+            change(Arc::make_mut(arc));
+        }
     }
 }
 
@@ -970,6 +1116,228 @@ mod tests {
             loop_end: 0,
             source_path: None,
         }
+    }
+
+    fn sine(hz: f64, frames: usize) -> Sample {
+        let data: Vec<[f32; 2]> = (0..frames)
+            .map(|i| {
+                let v = (std::f64::consts::TAU * hz * i as f64 / 44100.0).sin() as f32 * 0.5;
+                [v, v]
+            })
+            .collect();
+        Sample {
+            data: data.into(),
+            ..clicks(0)
+        }
+    }
+
+    fn mono(s: &Sample, i: usize) -> f32 {
+        s.data[i][0] + s.data[i][1]
+    }
+
+    #[test]
+    fn snapping_moves_both_loop_points_to_rising_zero_crossings() {
+        // 440 Hz over 5000 frames is 49.9 periods, so the seam jumps.
+        let mut s = sine(440.0, 20000);
+        s.loop_enabled = true;
+        s.loop_start = 1000;
+        s.loop_end = 6000;
+        let seam = |s: &Sample| (mono(s, s.loop_start) - mono(s, s.loop_end - 1)).abs();
+        let widest_step = (1..20000)
+            .map(|i| (mono(&s, i) - mono(&s, i - 1)).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            seam(&s) > 5.0 * widest_step,
+            "the fixture seam does not jump"
+        );
+
+        assert!(s.snap_loop_to_zero_crossings());
+        for p in [s.loop_start, s.loop_end] {
+            assert!(
+                mono(&s, p - 1) < 0.0 && mono(&s, p) >= 0.0,
+                "{p} is not a rising crossing"
+            );
+        }
+        assert!((s.loop_start as i64 - 1000).abs() < 101 && (s.loop_end as i64 - 6000).abs() < 101);
+        // Each side of the seam is within one step of zero.
+        assert!(
+            seam(&s) <= 2.0 * widest_step,
+            "seam {} vs step {widest_step}",
+            seam(&s)
+        );
+    }
+
+    #[test]
+    fn snapping_leaves_loop_points_with_no_crossing_nearby() {
+        let mut s = Sample {
+            data: vec![[0.3; 2]; 20000].into(),
+            loop_enabled: true,
+            loop_start: 1000,
+            loop_end: 6000,
+            ..clicks(0)
+        };
+        assert!(!s.snap_loop_to_zero_crossings());
+        assert_eq!((s.loop_start, s.loop_end), (1000, 6000));
+    }
+
+    #[test]
+    fn snapping_stays_inside_the_played_span() {
+        // A slice's loop defaults to 0..0, which plays as its whole span. The
+        // snapped points must be crossings inside that span, not near frame 0
+        // of the file.
+        let mut s = sine(440.0, 20000);
+        s.trim_start = 8000;
+        s.trim_end = 12000;
+        s.loop_enabled = true;
+        assert!(s.snap_loop_to_zero_crossings());
+        assert!(
+            s.loop_start >= 8000 && s.loop_end <= 12000,
+            "{}..{}",
+            s.loop_start,
+            s.loop_end
+        );
+        assert!(s.loop_start < s.loop_end);
+    }
+
+    /// Slot 0: the file loaded whole. Slots 1-4: it cut into 4 slices of
+    /// 2000 frames each.
+    fn whole_and_four_slices() -> SampleBank {
+        let whole = Sample {
+            name: "amen".into(),
+            data: vec![[0.1; 2]; 8000].into(),
+            source_path: Some("/songs/amen.wav".into()),
+            ..clicks(0)
+        };
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(whole.clone()));
+        for (i, s) in slice_equal(&whole, 4, SliceRange::Source)
+            .into_iter()
+            .enumerate()
+        {
+            bank.samples[1 + i] = Some(Arc::new(s));
+        }
+        bank
+    }
+
+    fn span(bank: &SampleBank, slot: usize) -> (usize, usize) {
+        let s = bank.get(slot).unwrap();
+        (s.trim_start, s.end())
+    }
+
+    #[test]
+    fn a_slice_set_is_its_contiguous_slices() {
+        let bank = whole_and_four_slices();
+        assert_eq!(bank.slice_set(3), 1..5);
+        assert_eq!(bank.slice_set(1), 1..5);
+        assert_eq!(bank.slice_set(0), 0..1, "the whole file is a set of one");
+        assert_eq!(bank.slice_set(9), 9..10, "an empty slot");
+    }
+
+    #[test]
+    fn moving_a_shared_edge_moves_both_slices() {
+        let mut bank = whole_and_four_slices();
+        assert_eq!(
+            bank.move_boundary(2, Boundary::TrimEnd, 4500, Coupling::Shared),
+            Some(4500)
+        );
+        assert_eq!(span(&bank, 2), (2000, 4500));
+        assert_eq!(span(&bank, 3), (4500, 6000));
+
+        assert_eq!(
+            bank.move_boundary(3, Boundary::TrimStart, 3500, Coupling::Shared),
+            Some(3500)
+        );
+        assert_eq!(span(&bank, 2), (2000, 3500));
+        assert_eq!(span(&bank, 3), (3500, 6000));
+    }
+
+    #[test]
+    fn a_shared_edge_cannot_pass_either_slice_far_edge() {
+        let mut bank = whole_and_four_slices();
+        assert_eq!(
+            bank.move_boundary(2, Boundary::TrimEnd, 99_999, Coupling::Shared),
+            Some(5999)
+        );
+        assert_eq!(
+            bank.move_boundary(2, Boundary::TrimEnd, 0, Coupling::Shared),
+            Some(2001)
+        );
+        assert_eq!(span(&bank, 2), (2000, 2001));
+        assert_eq!(span(&bank, 3), (2001, 6000));
+    }
+
+    #[test]
+    fn the_edges_of_a_set_move_one_slice() {
+        let mut bank = whole_and_four_slices();
+        assert_eq!(
+            bank.move_boundary(1, Boundary::TrimStart, 300, Coupling::Shared),
+            Some(300)
+        );
+        assert_eq!(span(&bank, 1), (300, 2000));
+        assert_eq!(
+            span(&bank, 0),
+            (0, 8000),
+            "the whole file is not the neighbour"
+        );
+
+        assert_eq!(
+            bank.move_boundary(4, Boundary::TrimEnd, 99_999, Coupling::Shared),
+            Some(8000)
+        );
+        assert_eq!(
+            bank.move_boundary(4, Boundary::TrimEnd, 7000, Coupling::Shared),
+            Some(7000)
+        );
+        assert_eq!(span(&bank, 4), (6000, 7000));
+    }
+
+    #[test]
+    fn moving_an_edge_alone_leaves_the_neighbour() {
+        let mut bank = whole_and_four_slices();
+        // Shortening a tail leaves a gap before the next slice.
+        assert_eq!(
+            bank.move_boundary(2, Boundary::TrimEnd, 3500, Coupling::Alone),
+            Some(3500)
+        );
+        assert_eq!(span(&bank, 2), (2000, 3500));
+        assert_eq!(span(&bank, 3), (4000, 6000));
+        // Asked for, an overlap is allowed: only the slot's own span is kept valid.
+        assert_eq!(
+            bank.move_boundary(3, Boundary::TrimStart, 1000, Coupling::Alone),
+            Some(1000)
+        );
+        assert_eq!(span(&bank, 3), (1000, 6000));
+        assert_eq!(span(&bank, 2), (2000, 3500));
+        assert_eq!(
+            bank.move_boundary(3, Boundary::TrimStart, 99_999, Coupling::Alone),
+            Some(5999)
+        );
+    }
+
+    #[test]
+    fn loop_points_stay_inside_the_played_span() {
+        let mut bank = whole_and_four_slices();
+        bank.edit(2, |s| s.loop_enabled = true);
+        assert_eq!(
+            bank.move_boundary(2, Boundary::LoopStart, 0, Coupling::Shared),
+            Some(2000)
+        );
+        assert_eq!(
+            bank.move_boundary(2, Boundary::LoopEnd, 99_999, Coupling::Shared),
+            Some(4000)
+        );
+        assert_eq!(
+            bank.move_boundary(2, Boundary::LoopEnd, 2600, Coupling::Shared),
+            Some(2600)
+        );
+        assert_eq!(
+            bank.move_boundary(2, Boundary::LoopStart, 3000, Coupling::Shared),
+            Some(2599)
+        );
+        assert_eq!(
+            bank.move_boundary(9, Boundary::LoopStart, 10, Coupling::Shared),
+            None
+        );
     }
 
     #[test]

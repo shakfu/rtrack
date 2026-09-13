@@ -280,23 +280,63 @@ impl App {
                     _ => {}
                 }
             }
-            KeyCode::Up => {
-                self.adjust_sample_field(slot, 1);
+            KeyCode::Up | KeyCode::Down | KeyCode::Right | KeyCode::Left => {
+                let delta = match key.code {
+                    KeyCode::Up => 1,
+                    KeyCode::Down => -1,
+                    KeyCode::Right => 10,
+                    _ => -10,
+                };
+                // Shift moves a trim edge on this slice only.
+                let coupling = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    rtrack_core::sample::Coupling::Alone
+                } else {
+                    rtrack_core::sample::Coupling::Shared
+                };
+                self.adjust_sample_field(slot, delta, coupling);
             }
-            KeyCode::Down => {
-                self.adjust_sample_field(slot, -1);
-            }
-            KeyCode::Right => {
-                self.adjust_sample_field(slot, 10);
-            }
-            KeyCode::Left => {
-                self.adjust_sample_field(slot, -10);
-            }
+            KeyCode::Char('z') => self.snap_sample_loop(slot),
             _ => {}
         }
     }
 
-    fn adjust_sample_field(&mut self, slot: usize, delta: i64) {
+    /// Move the slot's loop points to the nearest rising zero crossings, as
+    /// one undoable step.
+    fn snap_sample_loop(&mut self, slot: usize) {
+        let before = self.core.snapshot_samples();
+        let mut bank = (*self.core.sample_bank).clone();
+        let Some(sample) = bank
+            .samples
+            .get_mut(slot)
+            .and_then(|s| s.as_mut())
+            .map(Arc::make_mut)
+        else {
+            self.status_message = Some("No sample loaded in this slot".to_string());
+            return;
+        };
+        if !sample.snap_loop_to_zero_crossings() {
+            self.status_message =
+                Some("Loop unchanged: already on zero crossings, or none within 20 ms".to_string());
+            return;
+        }
+        let (start, end) = (sample.loop_start, sample.loop_end);
+        self.core.sample_bank = Arc::new(bank);
+        if let Some(ref mut audio) = self.core.audio {
+            audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
+        }
+        self.record_sample_field_edit(
+            rtrack_core::editor::EditSource::new("sample.loop_snap", slot),
+            before,
+        );
+        self.status_message = Some(format!("Loop snapped to zero crossings: {start}..{end}"));
+    }
+
+    fn adjust_sample_field(
+        &mut self,
+        slot: usize,
+        delta: i64,
+        coupling: rtrack_core::sample::Coupling,
+    ) {
         // Handle slice parameter fields (no sample mutation needed)
         match self.dialogs.sample_editor_field {
             SampleField::SliceCount => {
@@ -341,6 +381,35 @@ impl App {
         // Cheap: the bank is `Arc<Sample>` per slot, so nothing is copied.
         let before = self.core.snapshot_samples();
         let field = self.dialogs.sample_editor_field;
+
+        // Trim and loop edges go through the same rule as a GUI drag, so a
+        // shared slice edge moves both slices and loop points stay in the span.
+        use rtrack_core::sample::Boundary;
+        let boundary = match field {
+            SampleField::TrimStart => Some(Boundary::TrimStart),
+            SampleField::TrimEnd => Some(Boundary::TrimEnd),
+            SampleField::LoopStart => Some(Boundary::LoopStart),
+            SampleField::LoopEnd => Some(Boundary::LoopEnd),
+            _ => None,
+        };
+        if let Some(boundary) = boundary {
+            let mut bank = (*self.core.sample_bank).clone();
+            let Some(current) = bank.get(slot).map(|s| s.boundary(boundary)) else {
+                self.status_message = Some("No sample loaded in this slot".to_string());
+                return;
+            };
+            let target = (current as i64 + delta * 100).max(0) as usize;
+            bank.move_boundary(slot, boundary, target, coupling);
+            self.core.sample_bank = Arc::new(bank);
+            if let Some(ref mut audio) = self.core.audio {
+                audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
+            }
+            self.record_sample_field_edit(
+                rtrack_core::editor::EditSource::new(field.undo_control(), slot),
+                before,
+            );
+            return;
+        }
         let mut bank = (*self.core.sample_bank).clone();
         if let Some(sample) = bank
             .samples
@@ -353,35 +422,13 @@ impl App {
                     sample.base_note =
                         (sample.base_note as i64 + delta).clamp(0, MIDI_MAX_NOTE as i64) as u8;
                 }
-                SampleField::TrimStart => {
-                    sample.trim_start = (sample.trim_start as i64 + delta * 100)
-                        .clamp(0, sample.data.len() as i64 - 1)
-                        as usize;
-                }
-                SampleField::TrimEnd => {
-                    let max = sample.data.len();
-                    sample.trim_end = if sample.trim_end == 0 {
-                        (max as i64 + delta * 100).clamp(0, max as i64) as usize
-                    } else {
-                        (sample.trim_end as i64 + delta * 100).clamp(0, max as i64) as usize
-                    };
-                }
                 SampleField::LoopEnabled => {
                     sample.loop_enabled = !sample.loop_enabled;
                 }
-                SampleField::LoopStart => {
-                    let max = sample.effective_loop_end();
-                    sample.loop_start =
-                        (sample.loop_start as i64 + delta * 100).clamp(0, max as i64) as usize;
-                }
-                SampleField::LoopEnd => {
-                    let max = sample.end();
-                    sample.loop_end = if sample.loop_end == 0 {
-                        (max as i64 + delta * 100).clamp(0, max as i64) as usize
-                    } else {
-                        (sample.loop_end as i64 + delta * 100).clamp(0, max as i64) as usize
-                    };
-                }
+                SampleField::TrimStart
+                | SampleField::TrimEnd
+                | SampleField::LoopStart
+                | SampleField::LoopEnd => unreachable!(),
                 SampleField::SliceCount
                 | SampleField::SliceSensitivity
                 | SampleField::SliceRange

@@ -156,7 +156,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 
 ### Sample Editor (Enter on an instrument)
 
-Tab and Shift+Tab move between fields; Up/Down adjust by one, Right/Left by ten.
+Tab and Shift+Tab move between fields; Up/Down adjust by one, Right/Left by ten. Trim and loop fields step by 100 frames. A trim edge shared with the neighbouring slice moves both slices; hold Shift to move this slice only. Loop points stay inside the trimmed span. `z` moves both loop points to the nearest rising zero crossings within 20 ms, so the loop does not click where it wraps.
 
 | Field | Meaning |
 |---------|--------|
@@ -174,7 +174,8 @@ changing your mind about 8 versus 16 replaces the previous result. With
 `this slice only`, the slot being edited is subdivided and its pieces are
 named after it -- `amen_S03_S00`, `amen_S03_S01`.
 
-Slices land in consecutive slots starting at the one being sliced. If that
+Slices land in consecutive slots: from the first slot of the slice set with
+`whole sample`, and from the slot being edited with `this slice only`. If that
 would write over instruments the slicing did not itself create, the first
 Enter refuses and says what is in the way; a second Enter goes ahead. Either
 way `Ctrl+Z` puts back what was there.

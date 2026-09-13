@@ -2665,6 +2665,85 @@ pub(crate) mod tests {
         (app, dir)
     }
 
+    /// Enable looping on `slot` over `start..end`.
+    fn set_loop(app: &mut App, slot: usize, start: usize, end: usize) {
+        let mut bank = (*app.core.sample_bank).clone();
+        let s = Arc::make_mut(bank.samples[slot].as_mut().unwrap());
+        s.loop_enabled = true;
+        s.loop_start = start;
+        s.loop_end = end;
+        app.core.sample_bank = Arc::new(bank);
+    }
+
+    fn is_rising_crossing(app: &App, slot: usize, frame: usize) -> bool {
+        let s = app.core.sample_bank.get(slot).unwrap();
+        let mono = |i: usize| s.data[i][0] + s.data[i][1];
+        mono(frame - 1) < 0.0 && mono(frame) >= 0.0
+    }
+
+    /// The amen break in 8 slices, with the sample editor on slot 2's trim end.
+    fn app_on_slice_two(field: SampleField) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with_amen();
+        app.dialogs.sample_slice_count = 8;
+        app.slice_sample(false).unwrap();
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 2;
+        app.dialogs.sample_editor_field = field;
+        (app, dir)
+    }
+
+    #[test]
+    fn test_trim_keys_move_a_shared_edge_and_shift_moves_one_slice() {
+        let (mut app, _dir) = app_on_slice_two(SampleField::TrimEnd);
+        let (edge, next) = (slot_span(&app, 2).1, slot_span(&app, 3));
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(slot_span(&app, 2).1, edge + 100);
+        assert_eq!(
+            slot_span(&app, 3).0,
+            edge + 100,
+            "the next slice did not follow"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(slot_span(&app, 2).1, edge + 100 - 1000);
+        assert_eq!(
+            slot_span(&app, 3).0,
+            edge + 100,
+            "Shift moved the next slice"
+        );
+        assert_eq!(slot_span(&app, 3).1, next.1);
+    }
+
+    #[test]
+    fn test_loop_start_keys_stay_inside_the_played_span() {
+        let (mut app, _dir) = app_on_slice_two(SampleField::LoopStart);
+        let start = slot_span(&app, 2).0;
+        for _ in 0..50 {
+            app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        assert_eq!(app.core.sample_bank.get(2).unwrap().loop_start, start);
+    }
+
+    #[test]
+    fn test_z_snaps_the_loop_to_zero_crossings_and_undoes() {
+        let (mut app, _dir) = app_with_amen();
+        set_loop(&mut app, 0, 20000, 60000);
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 0;
+        app.dialogs.sample_editor_field = SampleField::LoopStart;
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+        let s = app.core.sample_bank.get(0).unwrap();
+        let (start, end) = (s.loop_start, s.loop_end);
+        assert_ne!((start, end), (20000, 60000), "nothing moved");
+        assert!(is_rising_crossing(&app, 0, start) && is_rising_crossing(&app, 0, end));
+
+        app.undo();
+        let s = app.core.sample_bank.get(0).unwrap();
+        assert_eq!((s.loop_start, s.loop_end), (20000, 60000));
+    }
+
     fn slot_span(app: &App, slot: usize) -> (usize, usize) {
         let s = app.core.sample_bank.get(slot).unwrap();
         (s.trim_start, s.end())

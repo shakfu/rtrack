@@ -4,7 +4,9 @@ use egui::{pos2, Color32, Painter, Rect, Stroke, Ui, Vec2};
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use rtrack_core::audio::{AudioEngine, VoiceSnapshot};
-use rtrack_core::sample::{SampleBank, SliceOverwrite, SlicePlanCache, SliceRange};
+use rtrack_core::sample::{
+    Boundary, Coupling, SampleBank, SliceOverwrite, SlicePlanCache, SliceRange,
+};
 
 /// FFT size for spectrum analysis (must be power of 2).
 const FFT_SIZE: usize = 2048;
@@ -46,6 +48,22 @@ pub struct SliceAction {
     pub overwrite: SliceOverwrite,
 }
 
+/// One step of dragging a boundary on the sample waveform, for the app to
+/// apply. A gesture is a run of these from `started` to `finished`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundaryEdit {
+    pub slot: usize,
+    pub boundary: Boundary,
+    pub frame: usize,
+    /// Alt at the press moves the slot alone, not a shared edge.
+    pub coupling: Coupling,
+    pub started: bool,
+    pub finished: bool,
+}
+
+/// How far from a boundary, in pixels, a press still grabs it.
+const HANDLE_REACH: f32 = 6.0;
+
 /// State for the spectrum analyzer, level meters, and sample viewer.
 pub struct VisualizationState {
     // Tab
@@ -79,6 +97,10 @@ pub struct VisualizationState {
     preview_slice_points: Vec<usize>,
     /// Spans the current settings would slice into, reused across repaints.
     slice_plan: SlicePlanCache,
+    /// Set while a boundary is dragged (consumed by app to apply it).
+    pub pending_boundary_edit: Option<BoundaryEdit>,
+    /// The boundary being dragged, how, and the frame it was last dragged to.
+    dragging: Option<(usize, Boundary, Coupling, usize)>,
     /// Set when parameters change (consumed by app to commit slices).
     pub pending_slice_action: Option<SliceAction>,
     /// The base slot slicing operates on (first slot of the sample, not the viewed slot).
@@ -116,6 +138,8 @@ impl VisualizationState {
             slice_blocked: None,
             preview_slice_points: Vec::new(),
             slice_plan: SlicePlanCache::default(),
+            pending_boundary_edit: None,
+            dragging: None,
             pending_slice_action: None,
             slice_source_slot: None,
             last_applied: None,
@@ -509,7 +533,7 @@ impl VisualizationState {
         // Waveform
         let avail = ui.available_size();
         let (response, painter) =
-            ui.allocate_painter(Vec2::new(avail.x, avail.y), egui::Sense::hover());
+            ui.allocate_painter(Vec2::new(avail.x, avail.y), egui::Sense::drag());
         let rect = response.rect;
 
         draw_sample_waveform(
@@ -519,6 +543,121 @@ impl VisualizationState {
             &voice_positions,
             &slice_boundaries,
             &self.preview_slice_points,
+        );
+
+        // Dragging a trim, slice or loop edge.
+        let total_len = sample.len();
+        let handles = drag_handles(sample_bank, slot);
+        draw_handle_tabs(&painter, rect, total_len, &handles);
+        let frame_under = |x: f32| {
+            (((x - rect.left()) / rect.width()).clamp(0.0, 1.0) * total_len as f32).round() as usize
+        };
+        if response.drag_started() {
+            let coupling = if ui.input(|i| i.modifiers.alt) {
+                Coupling::Alone
+            } else {
+                Coupling::Shared
+            };
+            self.dragging = ui
+                .input(|i| i.pointer.press_origin())
+                .and_then(|p| grab_handle(&handles, rect, total_len, p))
+                .map(|(slot, boundary)| (slot, boundary, coupling, 0));
+        }
+        if let Some((drag_slot, boundary, coupling, last)) = self.dragging {
+            let frame = response
+                .interact_pointer_pos()
+                .map_or(last, |p| frame_under(p.x));
+            self.pending_boundary_edit = Some(BoundaryEdit {
+                slot: drag_slot,
+                boundary,
+                frame,
+                coupling,
+                started: response.drag_started(),
+                finished: response.drag_stopped(),
+            });
+            self.dragging =
+                (!response.drag_stopped()).then_some((drag_slot, boundary, coupling, frame));
+        }
+        let over_handle = response
+            .hover_pos()
+            .and_then(|p| grab_handle(&handles, rect, total_len, p))
+            .is_some();
+        if self.dragging.is_some() || over_handle {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+    }
+}
+
+/// The draggable edges of the viewed slot's slice set, as `(slot, boundary,
+/// frame)`. A shared edge appears once, as the earlier slice's end; moving it
+/// moves the later slice's start too. Loop points are the viewed slot's.
+fn drag_handles(bank: &SampleBank, slot: usize) -> Vec<(usize, Boundary, usize)> {
+    let set = bank.slice_set(slot);
+    let mut handles = Vec::new();
+    if let Some(first) = bank.get(set.start) {
+        handles.push((set.start, Boundary::TrimStart, first.trim_start));
+    }
+    for i in set {
+        if let Some(s) = bank.get(i) {
+            handles.push((i, Boundary::TrimEnd, s.end()));
+        }
+    }
+    if let Some(s) = bank.get(slot).filter(|s| s.loop_enabled) {
+        handles.push((slot, Boundary::LoopStart, s.effective_loop_start()));
+        handles.push((slot, Boundary::LoopEnd, s.effective_loop_end()));
+    }
+    handles
+}
+
+fn is_loop(boundary: Boundary) -> bool {
+    matches!(boundary, Boundary::LoopStart | Boundary::LoopEnd)
+}
+
+fn frame_x(rect: Rect, total_len: usize, frame: usize) -> f32 {
+    rect.left() + frame as f32 / total_len.max(1) as f32 * rect.width()
+}
+
+/// The handle a press at `pos` grabs: the nearest within [`HANDLE_REACH`].
+///
+/// A default loop start sits on the trim start, so position alone cannot tell
+/// them apart. The lower half of the waveform grabs loop points when there
+/// are any, and the upper half grabs trim and slice edges.
+fn grab_handle(
+    handles: &[(usize, Boundary, usize)],
+    rect: Rect,
+    total_len: usize,
+    pos: egui::Pos2,
+) -> Option<(usize, Boundary)> {
+    let has_loop = handles.iter().any(|&(_, b, _)| is_loop(b));
+    let want_loop = has_loop && pos.y >= rect.center().y;
+    handles
+        .iter()
+        .filter(|&&(_, b, _)| is_loop(b) == want_loop)
+        .map(|&(slot, b, frame)| ((frame_x(rect, total_len, frame) - pos.x).abs(), slot, b))
+        .filter(|&(distance, ..)| distance <= HANDLE_REACH)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, slot, b)| (slot, b))
+}
+
+/// Small tabs marking what can be dragged: trim and slice edges at the top,
+/// loop points at the bottom, matching where [`grab_handle`] looks for them.
+fn draw_handle_tabs(
+    painter: &Painter,
+    rect: Rect,
+    total_len: usize,
+    handles: &[(usize, Boundary, usize)],
+) {
+    for &(_, boundary, frame) in handles {
+        let x = frame_x(rect, total_len, frame);
+        let (y, color) = if is_loop(boundary) {
+            (rect.bottom() - 3.0, Color32::from_rgb(100, 255, 100))
+        } else {
+            (rect.top() + 3.0, Color32::from_rgb(255, 200, 60))
+        };
+        painter.rect_filled(
+            Rect::from_center_size(pos2(x, y), Vec2::new(6.0, 6.0)),
+            1.0,
+            color,
         );
     }
 }
@@ -918,6 +1057,132 @@ mod tests {
             bank.samples[slot + i] = Some(Arc::new(s));
         }
         Arc::new(bank)
+    }
+
+    /// Slot 0: an 8000-frame file loaded whole. Slots 1-4: it in 4 slices.
+    fn whole_and_four_slices() -> Arc<SampleBank> {
+        let whole = slice("amen", 0, 0);
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(Sample {
+            data: vec![[0.1; 2]; 8000].into(),
+            ..whole
+        }));
+        let src = bank.get(0).unwrap().clone();
+        for (i, s) in rtrack_core::sample::plan_slices(&src, 4, 0.5, false, SliceRange::Source)
+            .into_iter()
+            .enumerate()
+        {
+            bank.samples[1 + i] = Some(Arc::new(s));
+        }
+        Arc::new(bank)
+    }
+
+    /// The waveform's rectangle, found by its background fill.
+    fn waveform_rect(out: &egui::FullOutput) -> Rect {
+        fn walk(shape: &egui::Shape) -> Option<Rect> {
+            match shape {
+                egui::Shape::Rect(r) if r.fill == Color32::from_rgb(15, 15, 20) => Some(r.rect),
+                egui::Shape::Vec(v) => v.iter().find_map(walk),
+                _ => None,
+            }
+        }
+        out.shapes
+            .iter()
+            .find_map(|c| walk(&c.shape))
+            .expect("no waveform drawn")
+    }
+
+    fn pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Drag the edge between slots 2 and 3 an eighth of the waveform right,
+    /// holding `modifiers`, and collect the edits the tab reports.
+    fn drag_shared_edge(modifiers: egui::Modifiers) -> Vec<BoundaryEdit> {
+        let bank = whole_and_four_slices();
+        let mut vis = VisualizationState::new();
+        vis.tab = VisTab::Samples;
+        vis.selected_sample_slot = Some(2);
+        let ctx = egui::Context::default();
+        let rect = waveform_rect(&pass(&ctx, &mut vis, &bank, Vec::new()));
+        let from = egui::pos2(frame_x(rect, 8000, 4000), rect.top() + rect.height() * 0.25);
+        let to = from + Vec2::new(rect.width() / 8.0, 0.0);
+        let mut edits = Vec::new();
+        for mut events in [
+            vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(from),
+                pointer(from, true),
+            ],
+            vec![egui::Event::PointerMoved(from + Vec2::new(10.0, 0.0))],
+            vec![egui::Event::PointerMoved(to)],
+            vec![pointer(to, false)],
+        ] {
+            let input = egui::RawInput {
+                events: std::mem::take(&mut events),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| vis.draw_samples_tab(ui, &bank));
+            out.textures_delta.clear();
+            edits.extend(vis.pending_boundary_edit.take());
+        }
+        edits
+    }
+
+    #[test]
+    fn alt_dragging_moves_the_slot_alone() {
+        let edits = drag_shared_edge(egui::Modifiers::ALT);
+        assert!(!edits.is_empty());
+        assert!(
+            edits.iter().all(|e| e.coupling == Coupling::Alone),
+            "{edits:?}"
+        );
+        let plain = drag_shared_edge(egui::Modifiers::NONE);
+        assert!(plain.iter().all(|e| e.coupling == Coupling::Shared));
+    }
+
+    #[test]
+    fn dragging_a_slice_edge_reports_a_gesture() {
+        // The edge between slots 2 and 3 is at frame 4000; the drag covers
+        // an eighth of the waveform, 1000 frames.
+        let edits = drag_shared_edge(egui::Modifiers::NONE);
+        assert!(edits.len() >= 2, "{edits:?}");
+        assert!(edits.first().unwrap().started && edits.last().unwrap().finished);
+        assert!(edits
+            .iter()
+            .all(|e| (e.slot, e.boundary) == (2, Boundary::TrimEnd)));
+        let last = edits.last().unwrap().frame as i64;
+        assert!((last - 5000).abs() <= 20, "released at frame {last}");
+    }
+
+    #[test]
+    fn the_lower_half_grabs_loop_points_where_they_meet_a_trim_edge() {
+        let mut bank = (*whole_and_four_slices()).clone();
+        let mut s = bank.get(2).unwrap().clone();
+        s.loop_enabled = true; // loop 0..0 plays as the span, starting on its trim start
+        bank.samples[2] = Some(Arc::new(s));
+        let handles = drag_handles(&bank, 2);
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(800.0, 100.0));
+        let x = frame_x(rect, 8000, 2000);
+
+        assert_eq!(
+            grab_handle(&handles, rect, 8000, egui::pos2(x, 20.0)),
+            Some((1, Boundary::TrimEnd)),
+            "upper half: the edge shared by slots 1 and 2"
+        );
+        assert_eq!(
+            grab_handle(&handles, rect, 8000, egui::pos2(x, 80.0)),
+            Some((2, Boundary::LoopStart))
+        );
+        assert_eq!(
+            grab_handle(&handles, rect, 8000, egui::pos2(x + 20.0, 20.0)),
+            None
+        );
     }
 
     #[test]

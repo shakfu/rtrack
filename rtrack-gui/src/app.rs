@@ -71,6 +71,9 @@ pub struct RtrackApp {
     // Visualization
     pub vis: VisualizationState,
     pub show_visualization: bool,
+    /// The sample bank before the boundary drag in progress, and whether the
+    /// drag has moved anything yet. The gesture is one undo step.
+    pub boundary_drag: Option<(rtrack_core::core::SampleSnapshot, bool)>,
 }
 
 impl RtrackApp {
@@ -113,6 +116,7 @@ impl RtrackApp {
             last_autosave: Instant::now(),
             vis: VisualizationState::new(),
             show_visualization: true,
+            boundary_drag: None,
         }
     }
 
@@ -424,6 +428,10 @@ impl eframe::App for RtrackApp {
                     self.core
                         .preview_note_with_instrument(0, 60, 100, Some(slot as u8));
                 }
+            }
+
+            if let Some(edit) = self.vis.pending_boundary_edit.take() {
+                self.apply_boundary_edit(edit);
             }
 
             // Apply slicing action from visualization panel

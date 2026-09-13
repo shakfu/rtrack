@@ -39,6 +39,10 @@ pub struct SampleVoice {
     pub note: u8,
     pub active: bool,
     pub envelope: SampleEnvelope,
+    /// Whether the voice has wrapped from the loop end back to its start at
+    /// least once. Until then, the frame before the loop start is audio that
+    /// really did play just before it.
+    pub looped: bool,
 }
 
 impl SampleVoice {
@@ -93,6 +97,8 @@ fn render_voice(
     let loop_start = sample.effective_loop_start() as f64;
     let loop_end = sample.effective_loop_end() as f64;
     let looping = sample.loop_enabled && loop_end > loop_start;
+    let (loop_start_frame, loop_end_frame) = (loop_start as usize, loop_end as usize);
+    let loop_len = loop_end_frame.saturating_sub(loop_start_frame).max(1);
 
     // Length of the tail fade, in source frames. A voice reading at twice
     // the rate covers twice as many frames in the same amount of time, so
@@ -124,10 +130,23 @@ fn render_voice(
         let idx = pos as usize;
         let frac = (pos - idx as f64) as f32;
 
-        let fm1 = sample.frame_at(idx.saturating_sub(1));
-        let f0 = sample.frame_at(idx);
-        let f1 = sample.frame_at(idx + 1);
-        let f2 = sample.frame_at(idx + 2);
+        // Inside a loop the frame after `loop_end - 1` is `loop_start`, so
+        // the interpolator reads across the seam, not into the audio past it.
+        let ahead = |i: usize| {
+            if looping && i >= loop_end_frame {
+                sample.frame_at(loop_start_frame + (i - loop_end_frame) % loop_len)
+            } else {
+                sample.frame_at(i)
+            }
+        };
+        let fm1 = if looping && voice.looped && idx == loop_start_frame {
+            sample.frame_at(loop_end_frame - 1)
+        } else {
+            sample.frame_at(idx.saturating_sub(1))
+        };
+        let f0 = ahead(idx);
+        let f1 = ahead(idx + 1);
+        let f2 = ahead(idx + 2);
 
         let l = cubic_hermite(fm1[0], f0[0], f1[0], f2[0], frac);
         let r = cubic_hermite(fm1[1], f0[1], f1[1], f2[1], frac);
@@ -155,6 +174,7 @@ fn render_voice(
                 // end and never come back.
                 let len = loop_end - loop_start;
                 voice.position = loop_start + (voice.position - loop_start).rem_euclid(len);
+                voice.looped = true;
             }
         } else if voice.position >= end {
             voice.active = false;
@@ -254,6 +274,7 @@ impl SamplePlaybackEngine {
             note,
             active: true,
             envelope: Envelope::sample_default(output_rate as f32),
+            looped: false,
         });
     }
 
@@ -453,6 +474,52 @@ mod tests {
         let mut bank = SampleBank::new();
         bank.samples[0] = Some(Arc::new(make_test_sample()));
         bank
+    }
+
+    #[test]
+    fn test_loop_seam_interpolates_across_the_wrap_not_past_it() {
+        // Eight whole periods of a 50-frame sine loop seamlessly, and the
+        // audio around the loop is a constant 1.0. At a non-integer rate the
+        // interpolator reads frames either side of the seam; reading the
+        // audio outside the loop bends the waveform once per pass.
+        const PERIOD: f64 = 50.0;
+        let data: Vec<[f32; 2]> = (0..1000)
+            .map(|i| {
+                let v = if (100..500).contains(&i) {
+                    (std::f64::consts::TAU * (i - 100) as f64 / PERIOD).sin() as f32
+                } else {
+                    1.0
+                };
+                [v, v]
+            })
+            .collect();
+        let smp = Sample {
+            data: data.into(),
+            trim_start: 100,
+            loop_enabled: true,
+            loop_start: 100,
+            loop_end: 500,
+            ..make_test_sample()
+        };
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(smp.clone()));
+        let mut engine = SamplePlaybackEngine::new(8);
+        engine.note_on(0, 61, 127, 0, &smp, 44100.0, NewNoteAction::Cut);
+        let rate = engine.voices[0].rate;
+
+        let frames = 4000;
+        let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
+        engine.render(&bank, &mut l, &mut r);
+
+        // Past the 2 ms attack, every output frame is the sine at the voice's
+        // position. Hermite error on a 50-frame period is under 0.001.
+        let worst = (200..frames)
+            .map(|n| {
+                let ideal = (std::f64::consts::TAU * (n as f64 * rate) / PERIOD).sin();
+                (l[n] as f64 - ideal).abs()
+            })
+            .fold(0.0, f64::max);
+        assert!(worst < 0.001, "deviation {worst} at the loop seam");
     }
 
     #[test]

@@ -164,6 +164,10 @@ pub const PREVIEW_ONE_SHOT_MAX_MS: u64 = 10_000;
 /// make room for a new one.
 pub const SAMPLE_DECLICK_SECS: f32 = 0.005;
 
+/// How far either side of a loop point to look for a zero crossing to snap
+/// it to, in seconds. 20 ms holds half a period of a 25 Hz tone.
+pub const ZERO_CROSSING_SEARCH_SECS: f64 = 0.02;
+
 /// Envelope level below which a voice is inaudible and can be dropped
 /// outright rather than faded.
 pub const SAMPLE_INAUDIBLE_LEVEL: f32 = 0.001;

@@ -224,9 +224,12 @@ In order. Size is a rough guess.
    dispatch, `position` set at note-on. Largest capability gain per line of
    code. Done 2026-09-13.
 4. **Wrapped interpolation at loops plus zero-crossing snap (2b).** Small.
+   Done 2026-09-13. The 440 Hz seam from 2b drops from 10.4x to 1.4x the
+   99th-percentile step after snapping.
 5. **Clickable and draggable trim, loop and slice boundaries in the GUI (4).**
    Medium. Uses the adjacent-span model. TUI keeps numeric fields, with a
-   snap-to-zero-crossing key.
+   snap-to-zero-crossing key. Done 2026-09-13, in the Samples tab only
+   (`SampleBank::move_boundary`).
 6. **Per-instrument sample envelope, gain and reverse flag (2c, 5).** Medium.
    `.rtrk` format addition, backward compatible if the fields default.
 7. **Decide on aliasing (2a).** Mip levels or a documented "no". Medium if

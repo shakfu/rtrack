@@ -661,6 +661,7 @@ impl RtrackApp {
                 let mut trim_start = init_trim_start;
                 let mut trim_end_val = init_trim_end;
                 let mut changed = false;
+                let mut snap_loop = false;
 
                 egui::Grid::new(format!("sample_params_{}", idx))
                     .num_columns(4)
@@ -725,6 +726,16 @@ impl RtrackApp {
                                 changed = true;
                             }
                             ui.end_row();
+
+                            ui.label("");
+                            snap_loop = ui
+                                .button("Snap to zero")
+                                .on_hover_text(
+                                    "Move both loop points to the nearest rising zero \
+                                     crossings, so the loop does not click where it wraps.",
+                                )
+                                .clicked();
+                            ui.end_row();
                         }
                     });
 
@@ -744,6 +755,9 @@ impl RtrackApp {
                         audio.set_sample_bank(self.core.sample_bank.clone());
                     }
                     self.core.dirty = true;
+                }
+                if snap_loop {
+                    self.snap_loop_to_zero_crossings(slot);
                 }
             } else {
                 ui.label("No sample loaded. Click 'Load Sample' above.");
@@ -776,6 +790,70 @@ impl RtrackApp {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /// Apply one step of a boundary drag from the sample waveform.
+    ///
+    /// Each step changes the bank, so playback follows the drag. The gesture
+    /// from press to release is one undo step, and one that moved nothing is
+    /// none.
+    pub(crate) fn apply_boundary_edit(&mut self, edit: crate::visualization::BoundaryEdit) {
+        use rtrack_core::sample::Boundary;
+        if edit.started || self.boundary_drag.is_none() {
+            self.boundary_drag = Some((self.core.snapshot_samples(), false));
+        }
+        let mut bank = (*self.core.sample_bank).clone();
+        let was = bank.get(edit.slot).map(|s| s.boundary(edit.boundary));
+        if let Some(landed) =
+            bank.move_boundary(edit.slot, edit.boundary, edit.frame, edit.coupling)
+        {
+            if Some(landed) != was {
+                self.core.sample_bank = Arc::new(bank);
+                if let Some(ref mut audio) = self.core.audio {
+                    audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
+                }
+                self.core.dirty = true;
+                if let Some((_, moved)) = &mut self.boundary_drag {
+                    *moved = true;
+                }
+            }
+            let what = match edit.boundary {
+                Boundary::TrimStart => "Trim start",
+                Boundary::TrimEnd => "Trim end",
+                Boundary::LoopStart => "Loop start",
+                Boundary::LoopEnd => "Loop end",
+            };
+            self.status_message = Some(format!("{what}: {landed} (slot {:02X})", edit.slot));
+        }
+        if edit.finished {
+            if let Some((before, true)) = self.boundary_drag.take() {
+                self.history.push_bank(before, self.core.snapshot_samples());
+            }
+        }
+    }
+
+    /// Move the slot's loop points to the nearest rising zero crossings, as
+    /// one undoable step.
+    pub(crate) fn snap_loop_to_zero_crossings(&mut self, slot: usize) {
+        let before = self.core.snapshot_samples();
+        let mut bank = (*self.core.sample_bank).clone();
+        let Some(sample) = bank.samples.get_mut(slot).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        let sample = Arc::make_mut(sample);
+        if !sample.snap_loop_to_zero_crossings() {
+            self.status_message =
+                Some("Loop unchanged: already on zero crossings, or none within 20 ms".to_string());
+            return;
+        }
+        let (start, end) = (sample.loop_start, sample.loop_end);
+        self.core.sample_bank = Arc::new(bank);
+        if let Some(ref mut audio) = self.core.audio {
+            audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
+        }
+        self.history.push_bank(before, self.core.snapshot_samples());
+        self.core.dirty = true;
+        self.status_message = Some(format!("Loop snapped to zero crossings: {start}..{end}"));
+    }
 
     fn find_empty_instrument_slot(&self) -> Option<usize> {
         let max = self.core.instruments.len().min(MAX_INSTRUMENTS);
@@ -925,6 +1003,104 @@ mod tests {
 
         assert_eq!(span(&app, 0).0, 0);
         assert_eq!(span(&app, 7).1, total, "the second pass lost the tail");
+    }
+
+    fn drag(
+        slot: usize,
+        boundary: rtrack_core::sample::Boundary,
+        frames: &[usize],
+    ) -> Vec<crate::visualization::BoundaryEdit> {
+        frames
+            .iter()
+            .enumerate()
+            .map(|(i, &frame)| crate::visualization::BoundaryEdit {
+                slot,
+                boundary,
+                frame,
+                coupling: rtrack_core::sample::Coupling::Shared,
+                started: i == 0,
+                finished: i + 1 == frames.len(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_boundary_drag_moves_both_slices_live_and_undoes_as_one_step() {
+        use rtrack_core::sample::Boundary;
+        let (mut app, _dir) = app_with_amen();
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+        let depth = app.history.undo_depth();
+        let (edge, next_end) = (span(&app, 2).1, span(&app, 3).1);
+
+        let steps = drag(2, Boundary::TrimEnd, &[edge, edge + 500, edge + 1000]);
+        app.apply_boundary_edit(steps[0]);
+        app.apply_boundary_edit(steps[1]);
+        assert_eq!(span(&app, 2).1, edge + 500, "the drag is not applied live");
+        app.apply_boundary_edit(steps[2]);
+        assert_eq!(span(&app, 2).1, edge + 1000);
+        assert_eq!(span(&app, 3), (edge + 1000, next_end));
+        assert_eq!(
+            app.history.undo_depth(),
+            depth + 1,
+            "the gesture is not one step"
+        );
+
+        app.apply_undo();
+        assert_eq!(span(&app, 2).1, edge);
+        assert_eq!(span(&app, 3).0, edge);
+    }
+
+    #[test]
+    fn an_alt_drag_moves_one_slice() {
+        use rtrack_core::sample::{Boundary, Coupling};
+        let (mut app, _dir) = app_with_amen();
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+        let (edge, next) = (span(&app, 2).1, span(&app, 3));
+        for mut step in drag(2, Boundary::TrimEnd, &[edge, edge - 500]) {
+            step.coupling = Coupling::Alone;
+            app.apply_boundary_edit(step);
+        }
+        assert_eq!(span(&app, 2).1, edge - 500);
+        assert_eq!(span(&app, 3), next, "the next slice moved");
+    }
+
+    #[test]
+    fn a_drag_that_moves_nothing_is_not_an_undo_step() {
+        use rtrack_core::sample::Boundary;
+        let (mut app, _dir) = app_with_amen();
+        app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
+        let depth = app.history.undo_depth();
+        let edge = span(&app, 2).1;
+        for step in drag(2, Boundary::TrimEnd, &[edge, edge]) {
+            app.apply_boundary_edit(step);
+        }
+        assert_eq!(app.history.undo_depth(), depth);
+    }
+
+    #[test]
+    fn snapping_the_loop_moves_it_to_zero_crossings_and_undoes() {
+        let (mut app, _dir) = app_with_amen();
+        let mut bank = (*app.core.sample_bank).clone();
+        let s = std::sync::Arc::make_mut(bank.samples[0].as_mut().unwrap());
+        s.loop_enabled = true;
+        s.loop_start = 20000;
+        s.loop_end = 60000;
+        app.core.sample_bank = std::sync::Arc::new(bank);
+
+        app.snap_loop_to_zero_crossings(0);
+        let s = app.core.sample_bank.get(0).unwrap();
+        let mono = |i: usize| s.data[i][0] + s.data[i][1];
+        for p in [s.loop_start, s.loop_end] {
+            assert!(
+                mono(p - 1) < 0.0 && mono(p) >= 0.0,
+                "{p} is not a rising crossing"
+            );
+        }
+        assert_ne!((s.loop_start, s.loop_end), (20000, 60000));
+
+        app.apply_undo();
+        let s = app.core.sample_bank.get(0).unwrap();
+        assert_eq!((s.loop_start, s.loop_end), (20000, 60000));
     }
 
     #[test]
