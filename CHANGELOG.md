@@ -56,12 +56,7 @@ All notable changes to rtrack will be documented in this file.
 
 ## [0.1.3] - 2026-08-26
 
-Note on versioning: the `0.1.2` published to crates.io is older than the
-`0.1.2` that sat in this repository -- the published `rtrack-core` has no
-`editor`, `error`, `fs` or `keymap` module. The version was reused across
-substantively different code. 0.1.3 is the first release where the tag, the
-published crates and the repository describe the same thing, and the release
-commit is the one tagged.
+Note on versioning: the `0.1.2` published to crates.io is older than the `0.1.2` that sat in this repository -- the published `rtrack-core` has no `editor`, `error`, `fs` or `keymap` module. The version was reused across substantively different code. 0.1.3 is the first release where the tag, the published crates and the repository describe the same thing, and the release commit is the one tagged.
 
 ### Fixed
 
