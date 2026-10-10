@@ -323,3 +323,43 @@ Steps 1-7 of the suggested order are implemented. Step 8 is not: it applies only
 - G9: swing converts to the nearest tick pair. `SPD` replaces the groove for the rest of playback.
 - G6: AHD envelope and LFO sources only. There is no ADSR or tracking source, and no slot-to-slot modulation.
 
+
+## Remaining
+
+After steps 1-7, and the external MIDI clock fix.
+
+### Not built
+
+- G12 option 2: a chord command (`CHD`). G8 was its only dependency, so it is the one open recommendation.
+- G11: live launch. Option 2, queueing the next order position at the pattern end, if live use becomes a goal.
+- G3 option 1: a play position per channel. Only if per-track launch becomes a goal. Aliases that loop and tables already give polymeter within a pattern.
+
+### Built smaller than recommended
+
+- G9: one groove for the song. Per-channel grooves (`GRV`) need per-channel step timing, which is G3.
+- G10: one scale for the song. No per-channel scale (`SCA`) and no microtonal detune.
+- G6: envelope and LFO sources only. No ADSR or tracking source, and no slot-to-slot modulation.
+- G7: no tick-rate map modes and no `HOP`. Tables do not extend to Renoise-style phrases with a keymap.
+- G5: the instrument stage runs per channel. Overlapping voices on one channel, such as previews or samples that ring on, share one filter.
+- G2: transpose exists on aliases only, not per order entry. The order-entry transpose was not recommended.
+
+### Limits the changes introduced
+
+- Instrument edits are not undoable: undo snapshots the song, and instruments are stored outside it. This covers type, filter and drive, modulation, table link and fixed pitch. It is the most serious item here.
+- Arpeggio, table and modulation pitch reach a MIDI instrument as pitch bend, limited by the device's bend range. At the default 2 semitones an octave step fails.
+- MIDI output needs a MIDI instrument. Songs that drove gear from plain channels send nothing until they have one.
+- Inserting or deleting a row shifts the pattern's own columns only. An aliased column keeps reading its source, so the two can fall out of step.
+- The TUI pattern view needs about 111 columns for 4 channels. There is no narrow layout.
+- Under external MIDI clock, playback follows the sender, but the displayed BPM does not.
+- The new TUI popups and GUI sections were tested by unit tests only, not by hand.
+
+### Outside this document
+
+- M8 mixer processing: master EQ, limiter, OTT, DJ filter, and EQ banks.
+- Renoise automation lanes, and group and send tracks inside the grid.
+
+### Next
+
+1. Undo for instrument edits.
+2. `CHD`.
+3. A hands-on pass of both frontends' new editors.

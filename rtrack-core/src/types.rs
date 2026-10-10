@@ -23,8 +23,6 @@ pub struct PlaybackTiming {
     pub clock_tick_accumulator: f64,
     /// Total elapsed playback time (seconds).
     pub playback_elapsed: f64,
-    /// Counter for incoming external MIDI clock ticks.
-    pub ext_clock_count: u32,
     /// Last polled Ableton Link beat position.
     pub last_link_beat: f64,
 
@@ -56,7 +54,6 @@ impl PlaybackTiming {
             tick_accumulator: 0.0,
             clock_tick_accumulator: 0.0,
             playback_elapsed: 0.0,
-            ext_clock_count: 0,
             last_link_beat: 0.0,
             next_tick_frame: 0,
             last_clock_frame: 0,
@@ -78,7 +75,6 @@ impl PlaybackTiming {
         self.tick_accumulator = 0.0;
         self.clock_tick_accumulator = 0.0;
         self.playback_elapsed = 0.0;
-        self.ext_clock_count = 0;
         self.last_link_beat = 0.0;
         self.next_tick_frame = 0;
         self.last_clock_frame = 0;

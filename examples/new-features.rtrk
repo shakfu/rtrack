@@ -1,0 +1,1270 @@
+{
+  "version": 3,
+  "title": "New Features",
+  "bpm": 124,
+  "speed": 6,
+  "patterns": [
+    {
+      "rows": 16,
+      "channels": 4,
+      "data": [
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 0,
+            "volume": 127
+          },
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 2
+              }
+            },
+            "instrument": 16,
+            "volume": 112
+          },
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 17,
+            "volume": 96
+          },
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 3
+              }
+            },
+            "instrument": 19,
+            "fx": [
+              "CCN4A",
+              "CCV40"
+            ]
+          }
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 2
+              }
+            },
+            "instrument": 16,
+            "volume": 80
+          },
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 2,
+            "volume": 127
+          },
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "Ds",
+                "octave": 2
+              }
+            },
+            "instrument": 16
+          },
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 4,
+            "volume": 127
+          },
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 1
+              }
+            },
+            "instrument": 16,
+            "fx": [
+              "VIB44",
+              "SLD02"
+            ]
+          },
+          {
+            "note": {
+              "On": {
+                "value": "Ds",
+                "octave": 5
+              }
+            },
+            "instrument": 17,
+            "volume": 96
+          },
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 2
+              }
+            },
+            "instrument": 19,
+            "fx": [
+              "PRG27",
+              null
+            ]
+          }
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 1,
+            "volume": 127,
+            "fx": [
+              "DLY02",
+              null
+            ]
+          },
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 6,
+            "volume": 127,
+            "fx": [
+              "OFS40",
+              null
+            ]
+          },
+          {
+            "note": {
+              "On": {
+                "value": "As",
+                "octave": 1
+              }
+            },
+            "instrument": 16
+          },
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 4
+              }
+            },
+            "instrument": 17,
+            "volume": 96,
+            "fx": [
+              "ARP37",
+              null
+            ]
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 3,
+            "volume": 127,
+            "fx": [
+              "TBL01",
+              "CHAA0"
+            ]
+          },
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ]
+      ]
+    },
+    {
+      "rows": 16,
+      "channels": 4,
+      "data": [
+        [
+          {},
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "As",
+                "octave": 4
+              }
+            },
+            "instrument": 17,
+            "volume": 96
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 17,
+            "volume": 96,
+            "fx": [
+              "SLU08",
+              null
+            ]
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 4
+              }
+            },
+            "instrument": 17,
+            "volume": 96
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "F",
+                "octave": 4
+              }
+            },
+            "instrument": 17,
+            "volume": 96,
+            "fx": [
+              "DLY03",
+              null
+            ]
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ]
+      ],
+      "aliases": [
+        {
+          "source": 0,
+          "transpose": 2
+        },
+        {
+          "source": 0,
+          "transpose": 2
+        },
+        null,
+        {
+          "source": 0,
+          "transpose": 2
+        }
+      ]
+    },
+    {
+      "rows": 32,
+      "channels": 4,
+      "data": [
+        [
+          {},
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 4
+              }
+            },
+            "instrument": 18,
+            "volume": 80,
+            "fx": [
+              "TPO82",
+              null
+            ]
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "Gs",
+                "octave": 3
+              }
+            },
+            "instrument": 18,
+            "volume": 80
+          },
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ]
+      ],
+      "aliases": [
+        {
+          "source": 0
+        },
+        {
+          "source": 3
+        }
+      ]
+    },
+    {
+      "rows": 8,
+      "channels": 4,
+      "data": [
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 2
+              }
+            },
+            "instrument": 16,
+            "volume": 96
+          },
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 3
+              }
+            },
+            "instrument": 16,
+            "volume": 96
+          },
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 2
+              }
+            },
+            "instrument": 16,
+            "volume": 96
+          },
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "As",
+                "octave": 2
+              }
+            },
+            "instrument": 16,
+            "volume": 96
+          },
+          {},
+          {}
+        ],
+        [
+          {},
+          {},
+          {},
+          {}
+        ]
+      ]
+    }
+  ],
+  "order": [
+    0,
+    1,
+    2,
+    1
+  ],
+  "order_repeats": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "channels": 4,
+  "rows_per_pattern": 16,
+  "highlight_beat": 4,
+  "highlight_bar": 16,
+  "groove": [
+    7,
+    5
+  ],
+  "scale": {
+    "root": "C",
+    "scale": "minor"
+  },
+  "tables": [
+    {
+      "rows": [
+        {
+          "transpose": 0,
+          "volume": 127
+        },
+        {
+          "transpose": 12,
+          "volume": 96
+        },
+        {
+          "transpose": 7
+        },
+        {
+          "transpose": 12,
+          "volume": 48
+        },
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {}
+      ],
+      "length": 4,
+      "tic": 3
+    },
+    {
+      "rows": [
+        {
+          "volume": 127
+        },
+        {
+          "volume": 0
+        },
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {}
+      ],
+      "length": 2,
+      "tic": 2
+    }
+  ],
+  "instruments": [
+    {
+      "slot": 0,
+      "name": "amen_S00",
+      "kind": {
+        "type": "sample",
+        "slot": 0
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 1,
+      "name": "amen_S01",
+      "kind": {
+        "type": "sample",
+        "slot": 1
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 2,
+      "name": "amen_S02",
+      "kind": {
+        "type": "sample",
+        "slot": 2
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 3,
+      "name": "amen_S03",
+      "kind": {
+        "type": "sample",
+        "slot": 3
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 4,
+      "name": "amen_S04",
+      "kind": {
+        "type": "sample",
+        "slot": 4
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 5,
+      "name": "amen_S05",
+      "kind": {
+        "type": "sample",
+        "slot": 5
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 6,
+      "name": "amen_S06",
+      "kind": {
+        "type": "sample",
+        "slot": 6
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 7,
+      "name": "amen_S07",
+      "kind": {
+        "type": "sample",
+        "slot": 7
+      },
+      "fixed_pitch": true
+    },
+    {
+      "slot": 16,
+      "name": "bass",
+      "kind": {
+        "type": "synth",
+        "params": {
+          "waveform": 9,
+          "attack": 0.003,
+          "decay": 0.15,
+          "sustain": 0.6,
+          "release": 0.08,
+          "filter_cutoff": 2.0,
+          "filter_resonance": 0.6,
+          "filter_env": 2.5,
+          "detune": 6.0,
+          "filter_type": "LowPass",
+          "sub_osc": 0.5,
+          "fm_ratio": 0.0,
+          "fm_index": 0.0,
+          "pulse_width": 0.25
+        }
+      },
+      "fx": {
+        "filter_enabled": true,
+        "filter_cutoff": 300.0,
+        "filter_resonance": 0.4,
+        "distortion_enabled": true,
+        "distortion_drive": 3.0
+      },
+      "mods": [
+        {
+          "source": {
+            "type": "envelope",
+            "attack": 0,
+            "hold": 2,
+            "decay": 10
+          },
+          "dest": "cutoff",
+          "amount": 48
+        },
+        null
+      ]
+    },
+    {
+      "slot": 17,
+      "name": "lead",
+      "kind": {
+        "type": "synth",
+        "params": {
+          "waveform": 12,
+          "attack": 0.005,
+          "decay": 0.1,
+          "sustain": 0.8,
+          "release": 0.1,
+          "filter_cutoff": 5.0,
+          "filter_resonance": 0.5,
+          "filter_env": 2.0,
+          "detune": 12.0,
+          "filter_type": "LowPass",
+          "sub_osc": 0.3,
+          "fm_ratio": 0.0,
+          "fm_index": 0.0,
+          "pulse_width": 0.25
+        }
+      },
+      "table": 0,
+      "mods": [
+        {
+          "source": {
+            "type": "lfo",
+            "shape": "sine",
+            "period": 12
+          },
+          "dest": "pitch",
+          "amount": 2
+        },
+        null
+      ]
+    },
+    {
+      "slot": 18,
+      "name": "pad",
+      "kind": {
+        "type": "synth",
+        "params": {
+          "waveform": 11,
+          "attack": 0.3,
+          "decay": 0.5,
+          "sustain": 0.7,
+          "release": 0.8,
+          "filter_cutoff": 3.0,
+          "filter_resonance": 0.2,
+          "filter_env": 1.0,
+          "detune": 15.0,
+          "filter_type": "LowPass",
+          "sub_osc": 0.2,
+          "fm_ratio": 0.0,
+          "fm_index": 0.0,
+          "pulse_width": 0.25
+        }
+      },
+      "mods": [
+        {
+          "source": {
+            "type": "lfo",
+            "shape": "triangle",
+            "period": 48
+          },
+          "dest": "volume",
+          "amount": -30
+        },
+        null
+      ]
+    },
+    {
+      "slot": 19,
+      "name": "ext bass",
+      "kind": {
+        "type": "midi",
+        "channel": 1,
+        "program": 38
+      }
+    }
+  ],
+  "sample_refs": [
+    {
+      "slot": 0,
+      "name": "amen_S00",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 0,
+      "trim_end": 15120,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 1,
+      "name": "amen_S01",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 15120,
+      "trim_end": 30240,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 2,
+      "name": "amen_S02",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 30240,
+      "trim_end": 45360,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 3,
+      "name": "amen_S03",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 45360,
+      "trim_end": 60480,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 4,
+      "name": "amen_S04",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 60480,
+      "trim_end": 75600,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 5,
+      "name": "amen_S05",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 75600,
+      "trim_end": 90720,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 6,
+      "name": "amen_S06",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 90720,
+      "trim_end": 105840,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    },
+    {
+      "slot": 7,
+      "name": "amen_S07",
+      "path": "data/amen.wav",
+      "base_note": 60,
+      "trim_start": 105840,
+      "trim_end": 120960,
+      "loop_enabled": false,
+      "loop_start": 0,
+      "loop_end": 0
+    }
+  ],
+  "channels_config": [
+    {
+      "muted": false,
+      "name": "drums",
+      "default_instrument": null,
+      "volume": 1.0,
+      "pan": 0.0,
+      "effects_params": {
+        "filter_enabled": false,
+        "filter_cutoff": 8000.0,
+        "filter_resonance": 0.0,
+        "distortion_enabled": false,
+        "distortion_drive": 1.0,
+        "chorus_enabled": false,
+        "chorus_rate": 1.5,
+        "chorus_depth": 3.0,
+        "chorus_mix": 0.3,
+        "delay_enabled": false,
+        "delay_time": 250.0,
+        "delay_feedback": 0.4,
+        "delay_mix": 0.3,
+        "reverb_enabled": false,
+        "reverb_size": 0.5,
+        "reverb_damp": 0.5,
+        "reverb_mix": 0.3,
+        "send_levels": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "muted": false,
+      "name": "bass",
+      "default_instrument": null,
+      "volume": 1.0,
+      "pan": 0.0,
+      "effects_params": {
+        "filter_enabled": false,
+        "filter_cutoff": 8000.0,
+        "filter_resonance": 0.0,
+        "distortion_enabled": false,
+        "distortion_drive": 1.0,
+        "chorus_enabled": false,
+        "chorus_rate": 1.5,
+        "chorus_depth": 3.0,
+        "chorus_mix": 0.3,
+        "delay_enabled": false,
+        "delay_time": 250.0,
+        "delay_feedback": 0.4,
+        "delay_mix": 0.3,
+        "reverb_enabled": false,
+        "reverb_size": 0.5,
+        "reverb_damp": 0.5,
+        "reverb_mix": 0.3,
+        "send_levels": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "muted": false,
+      "name": "lead/pad",
+      "default_instrument": null,
+      "volume": 1.0,
+      "pan": 0.0,
+      "effects_params": {
+        "filter_enabled": false,
+        "filter_cutoff": 8000.0,
+        "filter_resonance": 0.0,
+        "distortion_enabled": false,
+        "distortion_drive": 1.0,
+        "chorus_enabled": false,
+        "chorus_rate": 1.5,
+        "chorus_depth": 3.0,
+        "chorus_mix": 0.3,
+        "delay_enabled": false,
+        "delay_time": 250.0,
+        "delay_feedback": 0.4,
+        "delay_mix": 0.3,
+        "reverb_enabled": false,
+        "reverb_size": 0.5,
+        "reverb_damp": 0.5,
+        "reverb_mix": 0.3,
+        "send_levels": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "muted": false,
+      "name": "midi",
+      "default_instrument": null,
+      "volume": 1.0,
+      "pan": 0.0,
+      "effects_params": {
+        "filter_enabled": false,
+        "filter_cutoff": 8000.0,
+        "filter_resonance": 0.0,
+        "distortion_enabled": false,
+        "distortion_drive": 1.0,
+        "chorus_enabled": false,
+        "chorus_rate": 1.5,
+        "chorus_depth": 3.0,
+        "chorus_mix": 0.3,
+        "delay_enabled": false,
+        "delay_time": 250.0,
+        "delay_feedback": 0.4,
+        "delay_mix": 0.3,
+        "reverb_enabled": false,
+        "reverb_size": 0.5,
+        "reverb_damp": 0.5,
+        "reverb_mix": 0.3,
+        "send_levels": [
+          0.0,
+          0.0
+        ]
+      }
+    }
+  ],
+  "send_buses": [
+    {
+      "enabled": false,
+      "label": "",
+      "effect_type": "Delay",
+      "delay_time": 300.0,
+      "delay_feedback": 0.4,
+      "reverb_size": 0.6,
+      "reverb_damp": 0.5
+    },
+    {
+      "enabled": false,
+      "label": "",
+      "effect_type": "Delay",
+      "delay_time": 300.0,
+      "delay_feedback": 0.4,
+      "reverb_size": 0.6,
+      "reverb_damp": 0.5
+    }
+  ]
+}

@@ -59,6 +59,7 @@ type Example = (&'static str, fn(&Path, &Path) -> Result<String>);
 const EXAMPLES: &[Example] = &[
     ("sliced-amen.rtrk", build_sliced_amen),
     ("sample-offset.rtrk", build_sample_offset),
+    ("new-features.rtrk", build_new_features),
 ];
 
 fn regen_examples(check_only: bool) -> Result<()> {
@@ -266,6 +267,314 @@ fn build_sample_offset(root: &Path, target: &Path) -> Result<String> {
             }
             core.song.set_cell(pattern, row, 0, cell);
         }
+    }
+
+    core.build_song_file(target)
+        .to_json()
+        .context("failed to serialize the generated song")
+}
+
+/// One cell: an optional note, instrument, volume and both effect slots.
+fn cell(
+    note: Option<(NoteValue, u8)>,
+    inst: Option<u8>,
+    vol: Option<u8>,
+    fx: [Option<Fx>; FX_COLUMNS],
+) -> Cell {
+    Cell {
+        note: note.map(|(value, octave)| Note::On { value, octave }),
+        instrument: inst,
+        volume: vol,
+        fx,
+    }
+}
+
+fn fx1(cmd: FxCmd, p: u8) -> [Option<Fx>; FX_COLUMNS] {
+    Fx::only(cmd, p)
+}
+
+fn fx2(a: (FxCmd, u8), b: (FxCmd, u8)) -> [Option<Fx>; FX_COLUMNS] {
+    [Some(Fx::new(a.0, a.1)), Some(Fx::new(b.0, b.1))]
+}
+
+/// Build `new-features.rtrk`: one song using what format 3 added.
+///
+/// - Typed instruments: amen slices (Sample, fixed pitch), a bass, lead and
+///   pad (Synth), and a MIDI instrument on channel 2 doubling the bass.
+/// - The bass has its own filter and drive, with an envelope on the cutoff;
+///   the lead runs table 00 and an LFO on pitch; the pad an LFO on volume.
+/// - Named effects, two per cell: `VIB`+`SLD`, `TBL`+`CHA`, `CCN`+`CCV`.
+/// - Song scale C minor and groove `7 5`.
+/// - Pattern 01 aliases pattern 00's drums and bass 2 semitones up: the bass
+///   snaps into C minor, the fixed-pitch drums do not move. Pattern 02 loops
+///   pattern 03's 8-row bass phrase under 32 rows.
+fn build_new_features(root: &Path, target: &Path) -> Result<String> {
+    use rtrack_core::audio::synth::SynthParams;
+    use rtrack_core::modulation::{LfoShape, ModDest, ModSlot, ModSource};
+    use rtrack_core::theory::{Scale, ScaleSetting};
+    use rtrack_core::tracker::{ColumnAlias, Pattern, Table, TableRow};
+    use rtrack_core::{InstrumentKind, MidiOut};
+    use FxCmd::*;
+    use NoteValue::*;
+
+    const DRUMS: usize = 0;
+    const BASS: usize = 1;
+    const LEAD: usize = 2;
+    const MIDI: usize = 3;
+    const BASS_I: u8 = 0x10;
+    const LEAD_I: u8 = 0x11;
+    const PAD_I: u8 = 0x12;
+    const EXT_I: u8 = 0x13;
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(4, 16)
+        .headless()
+        .build();
+
+    // Drums: the break in eight slices, exempt from transposes.
+    load_amen(&mut core, root, 0)?;
+    let made = core
+        .slice_sample(
+            0,
+            8,
+            0.5,
+            false,
+            rtrack_core::sample::SliceRange::Source,
+            rtrack_core::sample::SliceOverwrite::Refuse,
+        )
+        .map_err(|e| anyhow::anyhow!("slicing failed: {e}"))?;
+    if made != 8 {
+        bail!("expected 8 slices, got {made}");
+    }
+    for slot in 0..8 {
+        core.instruments[slot].fixed_pitch = true;
+    }
+
+    let synth = |patch: u8| InstrumentKind::Synth {
+        params: SynthParams::from_patch(patch),
+    };
+    let bass = &mut core.instruments[BASS_I as usize];
+    bass.name = "bass".into();
+    bass.kind = synth(9);
+    bass.fx.filter_enabled = true;
+    bass.fx.filter_cutoff = 300.0;
+    bass.fx.filter_resonance = 0.4;
+    bass.fx.distortion_enabled = true;
+    bass.fx.distortion_drive = 3.0;
+    bass.mods[0] = Some(ModSlot {
+        source: ModSource::Envelope {
+            attack: 0,
+            hold: 2,
+            decay: 10,
+        },
+        dest: ModDest::Cutoff,
+        amount: 48,
+    });
+
+    let lead = &mut core.instruments[LEAD_I as usize];
+    lead.name = "lead".into();
+    lead.kind = synth(12);
+    lead.table = Some(0);
+    lead.mods[0] = Some(ModSlot {
+        source: ModSource::Lfo {
+            shape: LfoShape::Sine,
+            period: 12,
+        },
+        dest: ModDest::Pitch,
+        amount: 2,
+    });
+
+    let pad = &mut core.instruments[PAD_I as usize];
+    pad.name = "pad".into();
+    pad.kind = synth(11);
+    pad.mods[0] = Some(ModSlot {
+        source: ModSource::Lfo {
+            shape: LfoShape::Triangle,
+            period: 48,
+        },
+        dest: ModDest::Volume,
+        amount: -30,
+    });
+
+    let ext = &mut core.instruments[EXT_I as usize];
+    ext.name = "ext bass".into();
+    ext.kind = InstrumentKind::Midi(MidiOut {
+        channel: 1,
+        program: Some(38),
+    });
+
+    // Table 00: an octave-and-fifth arpeggio that fades. Table 01: a
+    // gate that chops a drum hit.
+    let row = |transpose, volume| TableRow {
+        transpose,
+        volume,
+        fx: None,
+    };
+    let mut arp = Table {
+        length: 4,
+        tic: 3,
+        ..Table::default()
+    };
+    arp.rows[0] = row(Some(0), Some(0x7F));
+    arp.rows[1] = row(Some(12), Some(0x60));
+    arp.rows[2] = row(Some(7), None);
+    arp.rows[3] = row(Some(12), Some(0x30));
+    let mut gate = Table {
+        length: 2,
+        tic: 2,
+        ..Table::default()
+    };
+    gate.rows[0] = row(None, Some(0x7F));
+    gate.rows[1] = row(None, Some(0x00));
+
+    let song = &mut core.song;
+    song.title = "New Features".to_string();
+    song.bpm = 124;
+    song.groove = vec![7, 5];
+    song.scale = Some(ScaleSetting::new(C, Scale::Minor));
+    song.tables = vec![arp, gate];
+    song.patterns.push(Pattern::new(16, 4));
+    song.patterns.push(Pattern::new(32, 4));
+    song.patterns.push(Pattern::new(8, 4));
+    song.order = vec![0, 1, 2, 1];
+    song.sync_order_repeats();
+
+    let none = [None; FX_COLUMNS];
+    let set = |song: &mut rtrack_core::tracker::Song, p: usize, r: usize, ch: usize, c: Cell| {
+        song.edit_cell(p, r, ch, |dst| *dst = c);
+    };
+
+    // Pattern 00
+    for (r, slice, fx) in [
+        (0, 0, none),
+        (4, 2, none),
+        (8, 4, none),
+        (10, 1, fx1(Delay, 2)),
+        (12, 6, fx1(Offset, 0x40)),
+        (14, 3, fx2((Table, 1), (Chance, 0xA0))),
+    ] {
+        set(
+            song,
+            0,
+            r,
+            DRUMS,
+            cell(Some((C, 5)), Some(slice), Some(0x7F), fx),
+        );
+    }
+    for (r, note, vol, fx) in [
+        (0, (C, 2), Some(0x70), none),
+        (3, (C, 2), Some(0x50), none),
+        (6, (Ds, 2), None, none),
+        (8, (G, 1), None, fx2((Vibrato, 0x44), (SlideDown, 0x02))),
+        (12, (As, 1), None, none),
+    ] {
+        set(song, 0, r, BASS, cell(Some(note), Some(BASS_I), vol, fx));
+    }
+    for (r, note, fx) in [
+        (0, (C, 5), none),
+        (8, (Ds, 5), none),
+        (12, (G, 4), fx1(Arp, 0x37)),
+    ] {
+        set(
+            song,
+            0,
+            r,
+            LEAD,
+            cell(Some(note), Some(LEAD_I), Some(0x60), fx),
+        );
+    }
+    set(
+        song,
+        0,
+        0,
+        MIDI,
+        cell(
+            Some((C, 3)),
+            Some(EXT_I),
+            None,
+            fx2((CcNumber, 74), (CcValue, 0x40)),
+        ),
+    );
+    set(
+        song,
+        0,
+        8,
+        MIDI,
+        cell(Some((G, 2)), Some(EXT_I), None, fx1(Program, 39)),
+    );
+
+    // Pattern 01: drums and bass reused two semitones up, a new lead line
+    let up2 = ColumnAlias {
+        source: 0,
+        transpose: 2,
+    };
+    for ch in [DRUMS, BASS, MIDI] {
+        song.set_alias(1, ch, up2)
+            .map_err(|e| anyhow::anyhow!("alias failed: {e}"))?;
+    }
+    for (r, note, fx) in [
+        (0, (As, 4), none),
+        (4, (C, 5), fx1(SlideUp, 0x08)),
+        (8, (G, 4), none),
+        (12, (F, 4), fx1(Delay, 3)),
+    ] {
+        set(
+            song,
+            1,
+            r,
+            LEAD,
+            cell(Some(note), Some(LEAD_I), Some(0x60), fx),
+        );
+    }
+
+    // Pattern 03: an 8-row bass phrase, played only through pattern 02
+    for (r, note) in [(0, (C, 2)), (2, (C, 3)), (4, (G, 2)), (6, (As, 2))] {
+        set(
+            song,
+            3,
+            r,
+            BASS,
+            cell(Some(note), Some(BASS_I), Some(0x60), none),
+        );
+    }
+
+    // Pattern 02: 32 rows over a 16-row drum alias and the 8-row phrase,
+    // each looping; a pad on top, and a tempo change.
+    song.set_alias(
+        2,
+        DRUMS,
+        ColumnAlias {
+            source: 0,
+            transpose: 0,
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("alias failed: {e}"))?;
+    song.set_alias(
+        2,
+        BASS,
+        ColumnAlias {
+            source: 3,
+            transpose: 0,
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("alias failed: {e}"))?;
+    set(
+        song,
+        2,
+        0,
+        LEAD,
+        cell(Some((C, 4)), Some(PAD_I), Some(0x50), fx1(Tempo, 0x82)),
+    );
+    set(
+        song,
+        2,
+        16,
+        LEAD,
+        cell(Some((Gs, 3)), Some(PAD_I), Some(0x50), none),
+    );
+
+    for (ch, name) in ["drums", "bass", "lead/pad", "midi"].iter().enumerate() {
+        core.channels[ch].name = name.to_string();
     }
 
     core.build_song_file(target)

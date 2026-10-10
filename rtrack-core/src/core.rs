@@ -850,30 +850,22 @@ impl TrackerCore {
     /// Switch between internal and external MIDI clock mode.
     pub fn toggle_clock_mode(&mut self) {
         self.clock_mode = match self.clock_mode {
-            ClockMode::Internal => {
-                self.timing.ext_clock_count = 0;
-                ClockMode::ExternalMidi
-            }
+            ClockMode::Internal => ClockMode::ExternalMidi,
             ClockMode::ExternalMidi => ClockMode::Internal,
         };
     }
 
-    /// Process an incoming external MIDI clock tick (advances playback when in external mode).
+    /// Process an incoming external MIDI clock pulse (advances playback when in external mode).
+    ///
+    /// An engine tick is one MIDI clock: 24 per beat, the rate clock output
+    /// sends at. So each pulse is one tick.
     pub fn handle_external_clock(&mut self) {
         if self.clock_mode != ClockMode::ExternalMidi || !self.playing {
             return;
         }
-
-        self.timing.ext_clock_count += 1;
-
-        let clocks_per_tick = (24u32 / self.engine.speed as u32).max(1);
-        if self.timing.ext_clock_count >= clocks_per_tick {
-            self.timing.ext_clock_count = 0;
-            self.process_tick();
-
-            let spt = self.engine.seconds_per_tick(&self.song);
-            self.timing.playback_elapsed += spt;
-        }
+        self.process_tick();
+        let spt = self.engine.seconds_per_tick(&self.song);
+        self.timing.playback_elapsed += spt;
     }
 
     /// Handle an external MIDI Start message (reset and begin playback).
@@ -884,7 +876,6 @@ impl TrackerCore {
         self.playing = true;
         self.engine.reset(&self.song, 0, 0);
         self.sync_engine_channel_info();
-        self.timing.ext_clock_count = 0;
         self.timing.playback_elapsed = 0.0;
     }
 
@@ -906,7 +897,6 @@ impl TrackerCore {
             return;
         }
         self.playing = true;
-        self.timing.ext_clock_count = 0;
     }
 
     // -----------------------------------------------------------------------
@@ -2450,5 +2440,33 @@ mod tests {
         core.channels[3].default_instrument = Some(1);
         core.send_program_change(3, 7);
         assert_eq!(core.midi.sent, vec![vec![0xC9, 7]]);
+    }
+
+    #[test]
+    fn one_external_clock_pulse_is_one_tick() {
+        // 24 pulses are one beat; at speed 6 a beat is 4 rows, as it is
+        // under the internal clock.
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        core.toggle_clock_mode();
+        core.handle_external_start();
+        for _ in 0..24 {
+            core.handle_external_clock();
+        }
+        assert_eq!(core.engine.row, 4);
+        assert_eq!(core.engine.tick, 0);
+    }
+
+    #[test]
+    fn external_clock_is_ignored_in_internal_mode() {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        core.play(0, 0);
+        core.handle_external_clock();
+        assert_eq!((core.engine.row, core.engine.tick), (0, 0));
     }
 }
