@@ -89,46 +89,6 @@ impl PlaybackTiming {
 /// Re-export ChannelState from the engine module.
 pub use crate::engine::ChannelState;
 
-/// The sound source type for a tracker channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChannelType {
-    /// Route notes to an external MIDI device.
-    Midi,
-    /// Use the built-in synthesizer.
-    Synth,
-    /// Play loaded audio samples.
-    Sample,
-}
-
-impl ChannelType {
-    /// Short display label for the channel type header (e.g. `[MID]`).
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Midi => "[MID]",
-            Self::Synth => "[SYN]",
-            Self::Sample => "[SMP]",
-        }
-    }
-
-    /// Cycle to the next channel type (Midi -> Synth -> Sample -> Midi).
-    pub fn next(self) -> Self {
-        match self {
-            Self::Midi => Self::Synth,
-            Self::Synth => Self::Sample,
-            Self::Sample => Self::Midi,
-        }
-    }
-
-    /// Cycle to the previous channel type.
-    pub fn prev(self) -> Self {
-        match self {
-            Self::Midi => Self::Sample,
-            Self::Synth => Self::Midi,
-            Self::Sample => Self::Synth,
-        }
-    }
-}
-
 /// A channel effects parameter that can be targeted by MIDI learn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LearnableParam {
@@ -254,7 +214,7 @@ pub enum ClockMode {
     ExternalMidi,
 }
 
-/// Per-channel configuration (audio routing, effects, naming).
+/// Per-channel configuration (mixer state, effects, naming).
 ///
 /// Serialized into the .rtrk file so that mixer state survives a save/load
 /// cycle. Every field carries a serde default so that files written by
@@ -265,9 +225,7 @@ pub struct ChannelConfig {
     pub muted: bool,
     #[serde(default)]
     pub name: String,
-    #[serde(default = "default_channel_type")]
-    pub channel_type: ChannelType,
-    /// Default instrument for this track (Synth tracks auto-fill on note entry)
+    /// Instrument a note with an empty instrument column plays on this channel.
     #[serde(default)]
     pub default_instrument: Option<u8>,
     #[serde(default = "default_channel_volume")]
@@ -276,51 +234,195 @@ pub struct ChannelConfig {
     pub pan: f32,
     #[serde(default)]
     pub effects_params: ChannelEffectsParams,
-    /// MIDI channel this tracker channel maps to (0-15)
-    #[serde(default)]
-    pub midi_channel: u8,
-}
-
-fn default_channel_type() -> ChannelType {
-    ChannelType::Midi
+    /// `channel_type` from format version 1 files. Read only to migrate
+    /// `default_instrument`, which a `"Midi"` channel ignored.
+    #[serde(default, rename = "channel_type", skip_serializing)]
+    pub(crate) legacy_type: Option<String>,
 }
 
 fn default_channel_volume() -> f32 {
     1.0
 }
 
-impl ChannelConfig {
-    /// Create a new channel config with defaults for the given MIDI channel.
-    pub fn new(midi_channel: u8) -> Self {
+impl Default for ChannelConfig {
+    fn default() -> Self {
         Self {
             muted: false,
             name: String::new(),
-            channel_type: ChannelType::Midi,
             default_instrument: None,
             volume: 1.0,
             pan: 0.0,
             effects_params: ChannelEffectsParams::default(),
-            midi_channel,
+            legacy_type: None,
         }
     }
 }
 
-/// An instrument definition binding a name to a sound source.
-///
-/// Each instrument can route to one of: a loaded sample (via `sample_index`),
-/// custom synth parameters, a MIDI program number, or the default built-in synth.
-#[derive(Default, Clone)]
+impl ChannelConfig {
+    /// Apply format version 1 semantics: a `"Midi"` channel never filled its
+    /// default instrument, so drop it rather than start playing it.
+    pub(crate) fn migrate_legacy(&mut self) {
+        if self.legacy_type.take().as_deref() == Some("Midi") {
+            self.default_instrument = None;
+        }
+    }
+}
+
+/// External MIDI destination of a [`InstrumentKind::Midi`] instrument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiOut {
+    /// MIDI channel, 0-15.
+    pub channel: u8,
+    /// Program sent before the first note, and again whenever it changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<u8>,
+}
+
+/// What an instrument sounds through.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InstrumentKind {
+    /// The built-in synth's preset patch numbered by the instrument's slot.
+    #[default]
+    Preset,
+    /// The built-in synth with these parameters.
+    Synth {
+        params: crate::audio::synth::SynthParams,
+    },
+    /// A slot in the sample bank.
+    Sample { slot: usize },
+    /// An external MIDI device. Sends no audio.
+    Midi(MidiOut),
+}
+
+impl InstrumentKind {
+    /// Three-letter tag for lists and headers.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Preset => "PRE",
+            Self::Synth { .. } => "SYN",
+            Self::Sample { .. } => "SMP",
+            Self::Midi(_) => "MID",
+        }
+    }
+
+    /// The next kind in the order Preset, Synth, Sample, Midi, for an
+    /// instrument in `slot`. A new kind starts from that slot's defaults:
+    /// its preset patch, its sample bank slot, MIDI channel 1.
+    pub fn cycled(&self, slot: usize, forward: bool) -> Self {
+        let at = match self {
+            Self::Preset => 0,
+            Self::Synth { .. } => 1,
+            Self::Sample { .. } => 2,
+            Self::Midi(_) => 3,
+        };
+        let next = if forward { (at + 1) % 4 } else { (at + 3) % 4 };
+        match next {
+            0 => Self::Preset,
+            1 => Self::Synth {
+                params: crate::audio::synth::SynthParams::from_patch(slot as u8),
+            },
+            2 => Self::Sample { slot },
+            _ => Self::Midi(MidiOut {
+                channel: 0,
+                program: None,
+            }),
+        }
+    }
+}
+
+/// An instrument slot: a name, a sound source, and its MIDI pitch-bend range.
+#[derive(Debug, Default, Clone)]
 pub struct Instrument {
     /// Display name shown in the instrument list.
     pub name: String,
-    /// MIDI program change number (0-127).
-    pub midi_program: Option<u8>,
-    /// Index into the sample bank (if this instrument plays a sample).
-    pub sample_index: Option<usize>,
-    /// Custom synthesizer parameters (overrides preset patches).
-    pub synth_params: Option<crate::audio::synth::SynthParams>,
+    pub kind: InstrumentKind,
     /// Pitch bend range in semitones (None = use default of 2).
     pub pitch_bend_range: Option<f64>,
+    /// Table in `Song::tables` that runs with each note.
+    pub table: Option<u8>,
+    /// Ignore transposes from column aliases and the song scale: for drums
+    /// and effects, whose note picks a sound rather than a pitch.
+    pub fixed_pitch: bool,
+    /// The instrument's own filter and drive, before the channel's effects.
+    pub fx: crate::audio::channel_effects::InstrumentFx,
+    /// Modulation slots, restarted with each note.
+    pub mods: [Option<crate::modulation::ModSlot>; crate::modulation::MOD_SLOTS],
+}
+
+impl Instrument {
+    /// True for a slot nothing has been set on. Such slots are not saved.
+    pub fn is_empty(&self) -> bool {
+        self.name.is_empty()
+            && matches!(self.kind, InstrumentKind::Preset)
+            && self.pitch_bend_range.is_none()
+            && self.table.is_none()
+            && !self.fixed_pitch
+            && self.fx == Default::default()
+            && self.mods.iter().all(Option::is_none)
+    }
+
+    /// The sample bank slot this instrument plays, if it is a sampler.
+    pub fn sample_slot(&self) -> Option<usize> {
+        match self.kind {
+            InstrumentKind::Sample { slot } => Some(slot),
+            _ => None,
+        }
+    }
+
+    /// The MIDI destination, if this is a MIDI instrument.
+    pub fn midi_out(&self) -> Option<MidiOut> {
+        match self.kind {
+            InstrumentKind::Midi(out) => Some(out),
+            _ => None,
+        }
+    }
+
+    /// What the instrument plays, for display: the patch name, sample slot,
+    /// or MIDI channel and program.
+    pub fn describe(&self, slot: usize) -> String {
+        use crate::audio::synth::Patch;
+        match &self.kind {
+            InstrumentKind::Preset => Patch::from_program(slot as u8).name().to_string(),
+            InstrumentKind::Synth { params } => {
+                Patch::from_program(params.waveform).name().to_string()
+            }
+            InstrumentKind::Sample { slot } => format!("sample {:02X}", slot),
+            InstrumentKind::Midi(out) => match out.program {
+                Some(p) => format!("ch {} prg {}", out.channel + 1, p),
+                None => format!("ch {}", out.channel + 1),
+            },
+        }
+    }
+}
+
+/// How one note is sounded, resolved from its instrument.
+///
+/// Live playback and the offline renderer both route through
+/// [`resolve_voice`], so a song renders the way it plays.
+#[derive(Debug, Clone)]
+pub enum Voice {
+    /// No instrument: the built-in synth's default sound, or the SoundFont
+    /// when one is loaded (live only).
+    Default,
+    Synth(Box<crate::audio::synth::SynthParams>),
+    Sample(usize),
+    Midi(MidiOut),
+}
+
+/// Resolve the voice for a note played with `instrument`.
+pub fn resolve_voice(instruments: &[Instrument], instrument: Option<u8>) -> Voice {
+    let Some(idx) = instrument else {
+        return Voice::Default;
+    };
+    match instruments.get(idx as usize).map(|i| &i.kind) {
+        Some(InstrumentKind::Synth { params }) => Voice::Synth(Box::new(params.clone())),
+        Some(InstrumentKind::Sample { slot }) => Voice::Sample(*slot),
+        Some(InstrumentKind::Midi(out)) => Voice::Midi(*out),
+        Some(InstrumentKind::Preset) | None => {
+            Voice::Synth(Box::new(crate::audio::synth::SynthParams::from_patch(idx)))
+        }
+    }
 }
 
 /// Compute the auto-save path for a given song file path.
@@ -438,7 +540,7 @@ pub fn resolve_relative(base: &std::path::Path, rel: &str) -> crate::error::Resu
 
 /// Create default channel configs for N channels.
 pub fn default_channel_configs(n: usize) -> Vec<ChannelConfig> {
-    (0..n).map(|i| ChannelConfig::new(i as u8)).collect()
+    vec![ChannelConfig::default(); n]
 }
 
 #[cfg(test)]

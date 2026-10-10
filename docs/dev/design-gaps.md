@@ -310,3 +310,16 @@ Ordered by dependency, then by benefit per unit of cost:
 7. G6: mod slots.
 
 8. G3 option 1 and G11 option 1, only if per-track launch becomes a goal.
+
+## Status
+
+Steps 1-7 of the suggested order are implemented. Step 8 is not: it applies only if per-track launch becomes a goal. CHANGELOG, Unreleased, has the details. Where the build departs from a recommendation above:
+
+- G4: notes with no instrument play the built-in synth and send no MIDI. MIDI output now needs a MIDI instrument.
+- G8: named commands, as recommended. `Cxx` became `CCN` then `CCV`, so the instrument column no longer carries a controller number.
+- G7: tables live in a pool, `Song.tables`. An instrument refers to one by index, and `TBL` selects one per note. There are no TIC map modes and no `HOP`; `length` shortens a table instead.
+- G1/G2: a shorter alias source loops. This also gives option 3 of G3, a per-column loop length within one pattern. The transpose opt-out is `Instrument.fixed_pitch`, shared with G10.
+- G5: the instrument stage runs per channel, not per voice. The channel keeps its own filter and drive as a second stage, because MIDI learn and aftertouch drive them.
+- G9: swing converts to the nearest tick pair. `SPD` replaces the groove for the rest of playback.
+- G6: AHD envelope and LFO sources only. There is no ADSR or tracking source, and no slot-to-slot modulation.
+

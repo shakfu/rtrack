@@ -102,6 +102,151 @@ impl Default for ChannelEffectsParams {
 }
 
 /// Number of comb filters in the Schroeder reverb.
+/// An instrument's own filter and drive, applied to its channel's audio
+/// before the channel's effects (`docs/dev/design-gaps.md` G5).
+///
+/// The sound of an instrument belongs to the instrument; mixing belongs to
+/// the channel. A channel's filter and drive stay, as a second stage, because
+/// MIDI learn and aftertouch drive them live.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InstrumentFx {
+    #[serde(default)]
+    pub filter_enabled: bool,
+    #[serde(default = "default_cutoff")]
+    pub filter_cutoff: f32,
+    #[serde(default)]
+    pub filter_resonance: f32,
+    #[serde(default)]
+    pub distortion_enabled: bool,
+    #[serde(default = "default_drive")]
+    pub distortion_drive: f32,
+}
+
+fn default_cutoff() -> f32 {
+    8000.0
+}
+
+fn default_drive() -> f32 {
+    1.0
+}
+
+impl Default for InstrumentFx {
+    fn default() -> Self {
+        Self {
+            filter_enabled: false,
+            filter_cutoff: default_cutoff(),
+            filter_resonance: 0.0,
+            distortion_enabled: false,
+            distortion_drive: default_drive(),
+        }
+    }
+}
+
+impl InstrumentFx {
+    pub fn any_enabled(&self) -> bool {
+        self.filter_enabled || self.distortion_enabled
+    }
+
+    /// These settings with modulation applied: cutoff moved by
+    /// `cutoff_octaves`, drive by `drive`, each kept in range.
+    pub fn modulated(self, cutoff_octaves: f64, drive: f64) -> Self {
+        Self {
+            filter_cutoff: (self.filter_cutoff * 2f32.powf(cutoff_octaves as f32))
+                .clamp(20.0, 20000.0),
+            distortion_drive: (self.distortion_drive + drive as f32).clamp(1.0, 20.0),
+            ..self
+        }
+    }
+}
+
+/// Two-pole state variable low-pass, stereo.
+///
+/// The "Cytomic SVF" / Andrew Simper's linear trapezoidal integration, with
+/// independent state per stereo channel for correct stereo imaging.
+#[derive(Debug, Clone, Copy, Default)]
+struct Svf {
+    ic1eq_l: f32,
+    ic2eq_l: f32,
+    ic1eq_r: f32,
+    ic2eq_r: f32,
+}
+
+impl Svf {
+    #[inline]
+    fn tick(
+        &mut self,
+        l: f32,
+        r: f32,
+        cutoff: f32,
+        resonance: f32,
+        sample_rate: f64,
+    ) -> (f32, f32) {
+        let cutoff = cutoff.clamp(20.0, 20000.0);
+        let res = resonance.clamp(0.0, 1.0);
+
+        let g = (std::f32::consts::PI * cutoff / sample_rate as f32).tan();
+        let k = 2.0 - 2.0 * res;
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
+
+        let v3_l = l - self.ic2eq_l;
+        let v1_l = a1 * self.ic1eq_l + a2 * v3_l;
+        let v2_l = self.ic2eq_l + a2 * self.ic1eq_l + a3 * v3_l;
+        self.ic1eq_l = 2.0 * v1_l - self.ic1eq_l;
+        self.ic2eq_l = 2.0 * v2_l - self.ic2eq_l;
+
+        let v3_r = r - self.ic2eq_r;
+        let v1_r = a1 * self.ic1eq_r + a2 * v3_r;
+        let v2_r = self.ic2eq_r + a2 * self.ic1eq_r + a3 * v3_r;
+        self.ic1eq_r = 2.0 * v1_r - self.ic1eq_r;
+        self.ic2eq_r = 2.0 * v2_r - self.ic2eq_r;
+
+        (v2_l, v2_r)
+    }
+}
+
+/// The instrument stage of one channel: its playing instrument's
+/// [`InstrumentFx`], with the filter state that persists across notes.
+pub struct InsertFx {
+    pub params: InstrumentFx,
+    sample_rate: f64,
+    svf: Svf,
+}
+
+impl InsertFx {
+    pub fn new(sample_rate: f64) -> Self {
+        Self {
+            params: InstrumentFx::default(),
+            sample_rate,
+            svf: Svf::default(),
+        }
+    }
+
+    /// Drive then filter, in place, as the channel stage orders them.
+    pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if !self.params.any_enabled() {
+            return;
+        }
+        let p = self.params;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            if p.distortion_enabled {
+                *l = (*l * p.distortion_drive).tanh();
+                *r = (*r * p.distortion_drive).tanh();
+            }
+            if p.filter_enabled {
+                (*l, *r) = self.svf.tick(
+                    *l,
+                    *r,
+                    p.filter_cutoff,
+                    p.filter_resonance,
+                    self.sample_rate,
+                );
+            }
+        }
+    }
+}
+
 const REVERB_COMBS: usize = 4;
 /// Number of allpass filters in the Schroeder reverb.
 const REVERB_ALLPASSES: usize = 2;
@@ -111,11 +256,7 @@ pub struct ChannelEffects {
     pub params: ChannelEffectsParams,
     sample_rate: f64,
 
-    // SVF filter state (2-pole state variable filter, one per stereo channel)
-    svf_ic1eq_l: f32,
-    svf_ic2eq_l: f32,
-    svf_ic1eq_r: f32,
-    svf_ic2eq_r: f32,
+    svf: Svf,
 
     // Chorus delay line (circular buffer, max ~50ms at 48kHz = 2400 samples)
     chorus_buffer_l: Vec<f32>,
@@ -162,10 +303,7 @@ impl ChannelEffects {
         Self {
             params: ChannelEffectsParams::default(),
             sample_rate,
-            svf_ic1eq_l: 0.0,
-            svf_ic2eq_l: 0.0,
-            svf_ic1eq_r: 0.0,
-            svf_ic2eq_r: 0.0,
+            svf: Svf::default(),
             chorus_buffer_l: vec![0.0; chorus_buf_size],
             chorus_buffer_r: vec![0.0; chorus_buf_size],
             chorus_write_pos: 0,
@@ -248,35 +386,10 @@ impl ChannelEffects {
         }
     }
 
-    /// SVF (state variable filter) low-pass tick for stereo.
-    /// Uses the "Cytomic SVF" / Andrew Simper's linear trapezoidal integration.
-    /// Independent filter state per stereo channel for correct stereo imaging.
     #[inline]
     fn svf_tick(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let cutoff = self.params.filter_cutoff.clamp(20.0, 20000.0);
-        let res = self.params.filter_resonance.clamp(0.0, 1.0);
-
-        let g = (std::f32::consts::PI * cutoff / self.sample_rate as f32).tan();
-        let k = 2.0 - 2.0 * res;
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let a2 = g * a1;
-        let a3 = g * a2;
-
-        // Left channel
-        let v3_l = l - self.svf_ic2eq_l;
-        let v1_l = a1 * self.svf_ic1eq_l + a2 * v3_l;
-        let v2_l = self.svf_ic2eq_l + a2 * self.svf_ic1eq_l + a3 * v3_l;
-        self.svf_ic1eq_l = 2.0 * v1_l - self.svf_ic1eq_l;
-        self.svf_ic2eq_l = 2.0 * v2_l - self.svf_ic2eq_l;
-
-        // Right channel
-        let v3_r = r - self.svf_ic2eq_r;
-        let v1_r = a1 * self.svf_ic1eq_r + a2 * v3_r;
-        let v2_r = self.svf_ic2eq_r + a2 * self.svf_ic1eq_r + a3 * v3_r;
-        self.svf_ic1eq_r = 2.0 * v1_r - self.svf_ic1eq_r;
-        self.svf_ic2eq_r = 2.0 * v2_r - self.svf_ic2eq_r;
-
-        (v2_l, v2_r)
+        let (cutoff, res) = (self.params.filter_cutoff, self.params.filter_resonance);
+        self.svf.tick(l, r, cutoff, res, self.sample_rate)
     }
 
     /// Chorus tick: LFO-modulated delay with wet/dry mix.
@@ -406,10 +519,7 @@ impl ChannelEffects {
     /// Reset all internal DSP state (e.g., on song start).
     #[cfg(test)]
     fn reset(&mut self) {
-        self.svf_ic1eq_l = 0.0;
-        self.svf_ic2eq_l = 0.0;
-        self.svf_ic1eq_r = 0.0;
-        self.svf_ic2eq_r = 0.0;
+        self.svf = Svf::default();
         self.chorus_buffer_l.fill(0.0);
         self.chorus_buffer_r.fill(0.0);
         self.chorus_write_pos = 0;
@@ -435,6 +545,38 @@ impl ChannelEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_disabled_instrument_stage_passes_audio_through() {
+        let mut insert = InsertFx::new(44100.0);
+        let mut l = vec![0.5, -0.25];
+        let mut r = vec![0.1, 0.2];
+        insert.process(&mut l, &mut r);
+        assert_eq!((l, r), (vec![0.5, -0.25], vec![0.1, 0.2]));
+    }
+
+    #[test]
+    fn the_instrument_stage_drives_then_filters() {
+        let mut insert = InsertFx::new(44100.0);
+        insert.params.distortion_enabled = true;
+        insert.params.distortion_drive = 4.0;
+        let mut l = vec![0.5];
+        let mut r = vec![0.5];
+        insert.process(&mut l, &mut r);
+        assert!((l[0] - (2.0f32).tanh()).abs() < 1e-6);
+
+        // A 100 Hz low-pass all but removes a Nyquist-rate square.
+        let mut insert = InsertFx::new(44100.0);
+        insert.params.filter_enabled = true;
+        insert.params.filter_cutoff = 100.0;
+        let mut l: Vec<f32> = (0..4410)
+            .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
+            .collect();
+        let mut r = l.clone();
+        insert.process(&mut l, &mut r);
+        let peak = l[2000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak < 0.01, "peak {peak}");
+    }
 
     #[test]
     fn test_channel_effects_default_passthrough() {

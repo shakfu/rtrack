@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use rtrack_core::audio::effects::SendBusType;
 use rtrack_core::core::{TrackerCore, TrackerCoreBuilder};
-use rtrack_core::tracker::{Cell, Note, NoteValue, SongFile};
-use rtrack_core::types::{ChannelType, LearnableParam, MidiCcMapping};
+use rtrack_core::tracker::{Cell, Fx, FxCmd, Note, NoteValue, SongFile};
+use rtrack_core::types::{InstrumentKind, LearnableParam, MidiCcMapping, MidiOut};
 
 fn headless(channels: usize, rows: usize) -> TrackerCore {
     TrackerCoreBuilder::new()
@@ -100,16 +100,13 @@ fn channel_configuration_survives_a_round_trip() {
     let mut core = headless(4, 16);
 
     core.channels[0].name = "kick".to_string();
-    core.channels[0].channel_type = ChannelType::Sample;
     core.channels[0].muted = true;
     core.channels[0].volume = 0.42;
     core.channels[0].pan = -0.75;
-    core.channels[0].midi_channel = 9;
     core.channels[0].default_instrument = Some(3);
     core.channels[0].effects_params.filter_enabled = true;
     core.channels[0].effects_params.filter_cutoff = 880.0;
     core.channels[0].effects_params.reverb_enabled = true;
-    core.channels[1].channel_type = ChannelType::Synth;
     core.channels[1].name = "lead".to_string();
 
     core.send_bus_params[0].enabled = true;
@@ -130,16 +127,13 @@ fn channel_configuration_survives_a_round_trip() {
     reloaded.load_file(&path).unwrap();
 
     assert_eq!(reloaded.channels[0].name, "kick");
-    assert_eq!(reloaded.channels[0].channel_type, ChannelType::Sample);
     assert!(reloaded.channels[0].muted);
     assert_eq!(reloaded.channels[0].volume, 0.42);
     assert_eq!(reloaded.channels[0].pan, -0.75);
-    assert_eq!(reloaded.channels[0].midi_channel, 9);
     assert_eq!(reloaded.channels[0].default_instrument, Some(3));
     assert!(reloaded.channels[0].effects_params.filter_enabled);
     assert_eq!(reloaded.channels[0].effects_params.filter_cutoff, 880.0);
     assert!(reloaded.channels[0].effects_params.reverb_enabled);
-    assert_eq!(reloaded.channels[1].channel_type, ChannelType::Synth);
     assert_eq!(reloaded.channels[1].name, "lead");
 
     assert!(reloaded.send_bus_params[0].enabled);
@@ -185,8 +179,7 @@ fn files_without_channel_state_still_load() {
     assert_eq!(core.song.title, "Legacy");
     assert_eq!(core.song.bpm, 140);
     assert_eq!(core.channels.len(), 2);
-    assert_eq!(core.channels[0].channel_type, ChannelType::Midi);
-    assert_eq!(core.channels[1].midi_channel, 1);
+    assert_eq!(core.channels[0].default_instrument, None);
 
     let _ = std::fs::remove_file(&path);
 }
@@ -305,8 +298,7 @@ fn empty_cells_cost_far_less_than_full_ones() {
                     }),
                     instrument: Some(1),
                     volume: Some(64),
-                    effect: Some(1),
-                    effect_value: Some(32),
+                    fx: Fx::only(FxCmd::SlideUp, 32),
                 },
             );
         }
@@ -337,8 +329,7 @@ fn a_sparse_song_round_trips_exactly() {
         3,
         Cell {
             volume: Some(0x40),
-            effect: Some(4),
-            effect_value: Some(0x82),
+            fx: Fx::only(FxCmd::Vibrato, 0x82),
             ..Cell::default()
         },
     );
@@ -356,8 +347,7 @@ fn a_sparse_song_round_trips_exactly() {
     );
     let cell = reloaded.song.cell_at(0, 17, 3);
     assert_eq!(cell.volume, Some(0x40));
-    assert_eq!(cell.effect, Some(4));
-    assert_eq!(cell.effect_value, Some(0x82));
+    assert_eq!(cell.fx, Fx::only(FxCmd::Vibrato, 0x82));
     assert!(reloaded.song.cell_at(0, 1, 0).is_empty());
     // Geometry survives even though most cells wrote nothing.
     assert_eq!(reloaded.song.patterns[0].rows, 64);
@@ -439,8 +429,7 @@ fn omitted_cell_fields_deserialize_as_empty() {
     assert!(core.song.cell_at(0, 0, 0).note.is_some());
     assert!(core.song.cell_at(0, 0, 1).is_empty());
     assert_eq!(core.song.cell_at(0, 1, 0).volume, Some(64));
-    assert_eq!(core.song.cell_at(0, 1, 1).effect, Some(1));
-    assert_eq!(core.song.cell_at(0, 1, 1).effect_value, Some(32));
+    assert_eq!(core.song.cell_at(0, 1, 1).fx, Fx::only(FxCmd::SlideUp, 32));
 
     let _ = std::fs::remove_file(&path);
 }
@@ -643,4 +632,110 @@ fn a_sample_path_that_walks_out_of_the_song_directory_is_reported() {
         "the traversal was resolved instead of reported"
     );
     assert!(reloaded.sample_bank.get(0).is_none());
+}
+
+#[test]
+fn typed_instruments_survive_a_round_trip() {
+    let path = scratch("typed_instruments");
+    let mut core = headless(2, 16);
+    core.instruments[1].kind = InstrumentKind::Midi(MidiOut {
+        channel: 9,
+        program: Some(5),
+    });
+    core.instruments[2].kind = InstrumentKind::Synth {
+        params: rtrack_core::audio::synth::SynthParams::from_patch(7),
+    };
+    core.instruments[2].name = "pad".into();
+    core.instruments[2].fx.filter_enabled = true;
+    core.instruments[2].fx.filter_cutoff = 640.0;
+    let lfo = rtrack_core::modulation::ModSlot {
+        source: rtrack_core::modulation::ModSource::Lfo {
+            shape: rtrack_core::modulation::LfoShape::Triangle,
+            period: 12,
+        },
+        dest: rtrack_core::modulation::ModDest::Cutoff,
+        amount: -20,
+    };
+    core.instruments[2].mods[1] = Some(lfo);
+    core.file_path = Some(path.clone());
+    core.save().unwrap();
+
+    let mut reloaded = headless(2, 16);
+    let report = reloaded.load_file(&path).unwrap();
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(
+        reloaded.instruments[1].midi_out(),
+        Some(MidiOut {
+            channel: 9,
+            program: Some(5)
+        })
+    );
+    assert!(matches!(
+        reloaded.instruments[2].kind,
+        InstrumentKind::Synth { .. }
+    ));
+    assert_eq!(reloaded.instruments[2].name, "pad");
+    assert!(reloaded.instruments[2].fx.filter_enabled);
+    assert_eq!(reloaded.instruments[2].fx.filter_cutoff, 640.0);
+    assert_eq!(reloaded.instruments[2].mods, [None, Some(lfo)]);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_version_1_midi_channel_drops_its_default_instrument() {
+    // Version 1 ignored the default instrument on Midi-typed channels.
+    // Honouring it now would change what an old song plays.
+    let path = scratch("v1_channel_types");
+    let json = r#"{
+        "version": 1,
+        "title": "V1",
+        "bpm": 120,
+        "speed": 6,
+        "patterns": [{"rows": 1, "channels": 2, "data": [[{}, {}]]}],
+        "order": [0],
+        "channels": 2,
+        "rows_per_pattern": 1,
+        "channels_config": [
+            {"channel_type": "Midi", "midi_channel": 3, "default_instrument": 4},
+            {"channel_type": "Sample", "midi_channel": 1, "default_instrument": 5}
+        ]
+    }"#;
+    std::fs::write(&path, json).unwrap();
+    let mut core = headless(2, 16);
+    core.load_file(&path).unwrap();
+    assert_eq!(core.channels[0].default_instrument, None);
+    assert_eq!(core.channels[1].default_instrument, Some(5));
+
+    core.save().unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(!saved.contains("channel_type"), "legacy field re-written");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn tables_and_instrument_table_links_survive_a_round_trip() {
+    use rtrack_core::tracker::{Table, TableRow};
+    let path = scratch("tables");
+    let mut core = headless(1, 16);
+    let mut table = Table {
+        length: 4,
+        tic: 3,
+        ..Table::default()
+    };
+    table.rows[1] = TableRow {
+        transpose: Some(-5),
+        volume: Some(0x20),
+        fx: Some(Fx::new(FxCmd::Arp, 0x37)),
+    };
+    core.song.tables.push(table.clone());
+    core.instruments[4].table = Some(0);
+    core.file_path = Some(path.clone());
+    core.save().unwrap();
+
+    let mut reloaded = headless(1, 16);
+    let report = reloaded.load_file(&path).unwrap();
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(reloaded.song.tables, vec![table]);
+    assert_eq!(reloaded.instruments[4].table, Some(0));
+    let _ = std::fs::remove_file(&path);
 }

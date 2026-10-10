@@ -100,7 +100,7 @@ fn current_sample_slot(app: &App) -> Option<usize> {
     let ch = app.cursor_channel;
     let instruments = &app.core.instruments;
     if ch < instruments.len() {
-        instruments[ch].sample_index
+        instruments[ch].sample_slot()
     } else {
         None
     }

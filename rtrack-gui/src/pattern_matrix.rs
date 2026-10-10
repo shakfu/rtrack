@@ -25,9 +25,11 @@ impl RtrackApp {
             .song
             .patterns
             .iter()
-            .map(|pat| {
+            .enumerate()
+            .map(|(p, pat)| {
+                let song = &self.core.song;
                 (0..channels)
-                    .map(|ch| (0..pat.rows).any(|r| !pat.get(r, ch).is_empty()))
+                    .map(|ch| (0..pat.rows).any(|r| !song.cell(p, r, ch).is_empty()))
                     .collect()
             })
             .collect();

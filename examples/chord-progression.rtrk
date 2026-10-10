@@ -1,4 +1,5 @@
 {
+  "version": 3,
   "title": "Chord Progression (I-V-vi-IV)",
   "bpm": 100,
   "speed": 6,
@@ -16,9 +17,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -28,9 +27,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -40,106 +37,78 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
@@ -151,9 +120,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -163,9 +130,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -175,106 +140,78 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
@@ -286,9 +223,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -298,9 +233,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -310,106 +243,78 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": "Off",
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
@@ -421,9 +326,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -433,9 +336,7 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": {
@@ -445,106 +346,78 @@
               }
             },
             "instrument": 0,
-            "volume": 80,
-            "effect": null,
-            "effect_value": null
+            "volume": 80
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ],
         [
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           },
           {
             "note": null,
             "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "volume": null
           }
         ]
       ]
@@ -560,7 +433,25 @@
     {
       "slot": 0,
       "name": "Organ Pad",
-      "midi_program": 6
+      "kind": {
+        "type": "synth",
+        "params": {
+          "waveform": 6,
+          "attack": 0.008,
+          "decay": 0.0,
+          "sustain": 1.0,
+          "release": 0.05,
+          "filter_cutoff": 8.0,
+          "filter_resonance": 0.15,
+          "filter_env": 0.5,
+          "detune": 4.0,
+          "filter_type": "LowPass",
+          "sub_osc": 0.0,
+          "fm_ratio": 0.0,
+          "fm_index": 0.0,
+          "pulse_width": 0.25
+        }
+      }
     }
   ]
 }

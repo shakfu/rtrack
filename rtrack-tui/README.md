@@ -24,7 +24,7 @@ Press **Esc** to enter Insert mode, play notes with the keyboard (piano layout),
 ## Features
 
 - Modal editing (Normal/Insert modes) with piano keyboard note entry
-- Pattern editor with sub-column cursor (Note/Instrument/Volume/Effect)
+- Pattern editor with sub-column cursor (Note/Instrument/Volume/two effect slots)
 - 30 built-in synth patches, per-channel effects, send/return buses
 - Sample loading, waveform editing, equal or transient-based slicing (of the whole sample or of a single slice)
 - MIDI I/O with virtual ports and MIDI learn
@@ -103,7 +103,8 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Key | Action |
 |-----|--------|
 | Piano keys | Enter note (see [Note Entry](#note-entry)) |
-| `0`-`9`, `a`-`f` | Hex digit (instrument / volume / effect columns) |
+| `0`-`9`, `a`-`f` | Hex digit (instrument / volume columns, effect parameter) |
+| Letters (effect column) | Spell an effect command name, e.g. `VI` for `VIB` |
 | Delete / Backspace | Clear cell |
 | `=` | Note off (`===`) |
 
@@ -112,7 +113,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Command | Action |
 |---------|--------|
 | `:p` / `:pattern` | Open pattern matrix |
-| `:set` / `:settings` | Song settings, including the note-entry scale (`C# dorian`, or `off`) |
+| `:set` / `:settings` | Song settings, including the groove (`7 5`, or `off`) and the scale (`C# dorian`, or `off`) |
 | `:fx` / `:effects` | Track config / effects editor |
 | `:inst` / `:instruments` | Instrument list |
 | `:midi` | MIDI port selector |
@@ -128,6 +129,8 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:load` | Open file browser to load a sample |
 | `:open` | Open file browser to load a song (same as Ctrl+O) |
 | `:recent` | Open recent files list (last 3 songs) |
+| `:alias P [T]` | Play pattern P's (hex) copy of the cursor's channel here, transposed T semitones |
+| `:unalias` | Give an aliased channel its own copy of what it plays |
 | `:audio` / `:astat` | Report dropped or rescheduled audio commands |
 
 ### Track Config (Enter on channel)
@@ -135,11 +138,10 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Key | Action |
 |---------|--------|
 | Up / Down / Tab | Navigate fields |
-| Left / Right | Adjust value (type, instrument, effect params, sample select) |
+| Left / Right | Adjust value (default instrument, effect params) |
 | Type chars | Edit channel name (when on name field) |
 | L | MIDI learn: bind next incoming CC to current parameter |
 | U | Remove MIDI learn mapping for current parameter |
-| Enter | Open file browser (on Sample field for Sample tracks) |
 | Enter / Esc | Save and close |
 
 ### Instrument List (F7)
@@ -149,10 +151,31 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Up / Down | Navigate instruments |
 | PgUp / PgDn | Jump 16 slots |
 | Enter | Open sample editor for selected instrument |
-| Tab | Open synth editor for selected instrument |
+| Tab | Open synth editor for selected instrument (a preset becomes a synth) |
+| Ctrl+T | Cycle the instrument type: preset, synth, sample, MIDI |
+| Ctrl+E | Edit the instrument's table (creates one if it has none) |
+| Ctrl+X | Edit the instrument's own filter and drive |
+| Ctrl+G | Edit the instrument's two modulation slots |
+| Ctrl+F | Toggle fixed pitch: ignore alias transposes and the song scale |
+| Left / Right | MIDI instrument: MIDI channel |
+| Ctrl+Left / Ctrl+Right | MIDI instrument: program (none, 0-127) |
 | Type chars | Edit instrument name |
 | Backspace | Delete character from name |
 | Esc / F7 | Close |
+
+### Table Editor (Ctrl+E on an instrument)
+
+| Key | Action |
+|---------|--------|
+| Up / Down | Move between rows |
+| Left / Right / Tab | Move between transpose, volume and effect |
+| + / - | Transpose up or down a semitone |
+| `0`-`9`, `a`-`f` | Volume (hex) |
+| Letters, then hex | Effect command name and parameter |
+| Delete | Clear the field |
+| [ / ] | Shorten or lengthen the table |
+| < / > | Slower or faster: ticks per row |
+| Esc | Close |
 
 ### Sample Editor (Enter on an instrument)
 

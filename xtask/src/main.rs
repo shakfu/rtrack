@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use rtrack_core::core::TrackerCoreBuilder;
-use rtrack_core::tracker::{Cell, Note, NoteValue};
+use rtrack_core::tracker::{Cell, Fx, FxCmd, Note, NoteValue, FX_COLUMNS};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -174,7 +174,6 @@ fn build_sliced_amen(root: &Path, target: &Path) -> Result<String> {
 ///    file; `9xx` with a transposed note; and a `9xx` row with no note, which
 ///    must not retrigger anything.
 fn build_sample_offset(root: &Path, target: &Path) -> Result<String> {
-    use rtrack_core::constants::EFFECT_SAMPLE_OFFSET;
     const ROWS: usize = 32;
 
     let mut core = TrackerCoreBuilder::new()
@@ -251,8 +250,10 @@ fn build_sample_offset(root: &Path, target: &Path) -> Result<String> {
     for (pattern, hits) in patterns.iter().enumerate() {
         for &(row, octave, instrument, offset) in *hits {
             let mut cell = Cell {
-                effect: offset.map(|_| EFFECT_SAMPLE_OFFSET),
-                effect_value: offset,
+                fx: match offset {
+                    Some(p) => Fx::only(FxCmd::Offset, p),
+                    None => [None; FX_COLUMNS],
+                },
                 ..Cell::default()
             };
             if let Some(octave) = octave {

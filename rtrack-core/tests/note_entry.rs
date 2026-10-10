@@ -37,7 +37,7 @@ fn every_row_of_the_sliced_amen_example_previews_a_sample() {
             .resolve_edit_instrument(0, row, 0)
             .unwrap_or_else(|| panic!("row {row} resolved to no instrument"));
         let sample_index = core.instruments[instrument as usize]
-            .sample_index
+            .sample_slot()
             .unwrap_or_else(|| panic!("row {row} resolved to a non-sample instrument"));
         assert!(
             core.sample_bank.get(sample_index).is_some(),
@@ -105,8 +105,7 @@ fn a_looping_sample_preview_is_still_stopped_by_the_timeout() {
     };
     bank.samples[0] = Some(Arc::new(sample));
     core.sample_bank = Arc::new(bank);
-    core.instruments[0].sample_index = Some(0);
-    core.channels[0].channel_type = rtrack_core::types::ChannelType::Sample;
+    core.instruments[0].kind = rtrack_core::types::InstrumentKind::Sample { slot: 0 };
     core.channels[0].default_instrument = Some(0);
 
     core.preview_note_for_cell(0, 0, 0, 60, 100);

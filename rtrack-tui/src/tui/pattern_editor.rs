@@ -10,16 +10,35 @@ use crate::app::App;
 pub use crate::app::SubColumn;
 
 // Layout constants
-const ROW_NUM_WIDTH: u16 = 3; // "00 "
+pub(crate) const ROW_NUM_WIDTH: u16 = 3; // "00 "
 const NOTE_WIDTH: u16 = 3; // "C-4"
 const INST_WIDTH: u16 = 2; // "01"
 const VOL_WIDTH: u16 = 2; // "80"
-const FX_WIDTH: u16 = 3; // "000"
-#[allow(dead_code)]
-const GAPS: u16 = 6; // spaces between sub-columns (2 per gap)
-#[allow(dead_code)]
-const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
-const SEPARATOR_WIDTH: u16 = 3; // " | "
+const FX_WIDTH: u16 = 5; // "ARP37"
+const GAP: u16 = 2; // between note, instrument, volume and the effects
+const FX_GAP: u16 = 1; // between the two effect slots
+pub(crate) const CHANNEL_WIDTH: u16 =
+    NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + 2 * FX_WIDTH + 3 * GAP + FX_GAP;
+
+/// The field at `offset` columns into a channel, gaps going to the field on
+/// their left.
+pub(crate) fn sub_column_at(offset: u16) -> SubColumn {
+    let fields = [
+        (NOTE_WIDTH + GAP, SubColumn::Note),
+        (INST_WIDTH + GAP, SubColumn::Instrument),
+        (VOL_WIDTH + GAP, SubColumn::Volume),
+        (FX_WIDTH + FX_GAP, SubColumn::Fx1),
+    ];
+    let mut end = 0;
+    for (width, sub) in fields {
+        end += width;
+        if offset < end {
+            return sub;
+        }
+    }
+    SubColumn::Fx2
+}
+pub(crate) const SEPARATOR_WIDTH: u16 = 3; // " | "
 pub use rtrack_core::constants::MAX_CHANNEL_NAME;
 
 #[allow(dead_code)]
@@ -33,7 +52,8 @@ pub fn channel_total_width(num_channels: usize) -> u16 {
 pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let buf = f.buffer_mut();
 
-    let pattern = match app.core.song.pattern_at(app.current_order_position()) {
+    let order_idx = app.current_order_position();
+    let pattern = match app.core.song.pattern_at(order_idx) {
         Some(p) => p,
         // A song with no resolvable pattern at the cursor has nothing to
         // draw. Bail out rather than panicking inside the draw loop.
@@ -76,23 +96,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 .get(ch)
                 .map(|c| &c.name)
                 .filter(|n| !n.is_empty());
-            let ch_type = app
+            // The default instrument's kind, if the channel has one.
+            let default_kind = app
                 .core
                 .channels
                 .get(ch)
-                .map(|c| c.channel_type)
-                .unwrap_or(crate::app::ChannelType::Midi);
-            let type_label = ch_type.label();
+                .and_then(|c| c.default_instrument)
+                .and_then(|i| app.core.instruments.get(i as usize))
+                .map(|inst| &inst.kind);
+            // An aliased column shows its source pattern instead.
+            let alias = pattern.alias(ch);
+            let type_label: String = match (alias, default_kind) {
+                (Some(a), _) if a.transpose != 0 => format!("={:02X}{:+}", a.source, a.transpose)
+                    .chars()
+                    .take(5)
+                    .collect(),
+                (Some(a), _) => format!("={:02X}  ", a.source),
+                (None, Some(kind)) => format!("[{}]", kind.tag()),
+                (None, None) => "     ".to_string(),
+            };
+            let type_label = type_label.as_str();
             let type_style = Style::default()
-                .fg(match ch_type {
-                    crate::app::ChannelType::Midi => theme.header_bpm,
-                    crate::app::ChannelType::Synth => theme.header_octave,
-                    crate::app::ChannelType::Sample => theme.effect_set,
+                .fg(match default_kind {
+                    Some(rtrack_core::InstrumentKind::Midi(_)) => theme.header_bpm,
+                    Some(rtrack_core::InstrumentKind::Sample { .. }) => theme.effect_set,
+                    _ => theme.header_octave,
                 })
                 .add_modifier(Modifier::BOLD);
 
             // Layout: <name> <pad> [TYP] M   (right-justified type + indicator)
-            let w = CHANNEL_WIDTH as usize; // 16
+            let w = CHANNEL_WIDTH as usize;
             let name_str: String = if let Some(name) = ch_name {
                 name.chars().take(MAX_CHANNEL_NAME).collect()
             } else {
@@ -217,7 +250,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 x += SEPARATOR_WIDTH;
             }
 
-            let cell = pattern.get(row_idx, ch);
+            let cell = &app
+                .core
+                .song
+                .cell(app.core.song.order[order_idx], row_idx, ch);
 
             // Check if this cell is inside a block selection
             let in_block = app.block_bounds().is_some_and(|(r0, r1, c0, c1)| {
@@ -256,12 +292,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             } else {
                 theme.volume_empty
             };
-            let fx_fg = if is_muted {
-                theme.muted_dim
-            } else if cell.effect.is_some() || cell.effect_value.is_some() {
-                theme.effect_set
-            } else {
-                theme.effect_empty
+            let fx_fg = |slot: usize| {
+                if is_muted {
+                    theme.muted_dim
+                } else if cell.fx[slot].is_some() {
+                    theme.effect_set
+                } else {
+                    theme.effect_empty
+                }
             };
 
             // Highlight the cursor sub-column
@@ -307,12 +345,22 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             x += VOL_WIDTH;
 
             write_str(buf, x, y, "  ", Style::default().bg(base_bg));
-            x += 2;
+            x += GAP;
 
-            // Effect
-            let fx_str = cell.display_effect();
-            write_str(buf, x, y, &fx_str, cursor_on(SubColumn::Effect).fg(fx_fg));
-            x += FX_WIDTH;
+            // Effects. A partly typed command name shows in place.
+            for (slot, sub) in [(0, SubColumn::Fx1), (1, SubColumn::Fx2)] {
+                if slot > 0 {
+                    write_str(buf, x, y, " ", Style::default().bg(base_bg));
+                    x += FX_GAP;
+                }
+                let pos = (order_idx, row_idx, ch, slot);
+                let fx_str = match app.fx_typing.pending_at(pos) {
+                    Some(pending) => format!("{:-<5}", pending),
+                    None => cell.display_fx(slot),
+                };
+                write_str(buf, x, y, &fx_str, cursor_on(sub).fg(fx_fg(slot)));
+                x += FX_WIDTH;
+            }
         }
     }
 }
@@ -335,18 +383,34 @@ mod tests {
     fn test_sub_column_navigation() {
         assert_eq!(SubColumn::Note.next(), SubColumn::Instrument);
         assert_eq!(SubColumn::Instrument.next(), SubColumn::Volume);
-        assert_eq!(SubColumn::Volume.next(), SubColumn::Effect);
-        assert_eq!(SubColumn::Effect.next(), SubColumn::Note);
+        assert_eq!(SubColumn::Volume.next(), SubColumn::Fx1);
+        assert_eq!(SubColumn::Fx1.next(), SubColumn::Fx2);
+        assert_eq!(SubColumn::Fx2.next(), SubColumn::Note);
 
-        assert_eq!(SubColumn::Note.prev(), SubColumn::Effect);
-        assert_eq!(SubColumn::Effect.prev(), SubColumn::Volume);
+        assert_eq!(SubColumn::Note.prev(), SubColumn::Fx2);
+        assert_eq!(SubColumn::Fx1.prev(), SubColumn::Volume);
     }
 
     #[test]
     fn test_channel_total_width() {
-        // 1 channel: 3 (row) + 3 (sep) + 16 (channel) = 22
-        assert_eq!(channel_total_width(1), 22);
-        // 4 channels: 3 + 3 + 4*16 + 3*3 = 79
-        assert_eq!(channel_total_width(4), 79);
+        // "C-4  01  40  ARP37 VIB44": 24 columns per channel.
+        assert_eq!(CHANNEL_WIDTH, 24);
+        // 1 channel: 3 (row) + 3 (sep) + 24 (channel) = 30
+        assert_eq!(channel_total_width(1), 30);
+        // 4 channels: 3 + 3 + 4*24 + 3*3 = 111
+        assert_eq!(channel_total_width(4), 111);
+    }
+
+    #[test]
+    fn clicks_map_to_the_field_under_them() {
+        let at = |x| sub_column_at(x);
+        assert_eq!(at(0), SubColumn::Note);
+        assert_eq!(at(4), SubColumn::Note, "a gap belongs to its left field");
+        assert_eq!(at(5), SubColumn::Instrument);
+        assert_eq!(at(9), SubColumn::Volume);
+        assert_eq!(at(13), SubColumn::Fx1);
+        assert_eq!(at(18), SubColumn::Fx1);
+        assert_eq!(at(19), SubColumn::Fx2);
+        assert_eq!(at(23), SubColumn::Fx2);
     }
 }

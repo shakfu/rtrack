@@ -5,12 +5,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{MAX_CHANNELS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
-use super::{Cell, Note, Pattern};
+use super::{Cell, ColumnAlias, Note, Pattern, Table, MAX_TABLES};
+use crate::audio::channel_effects::InstrumentFx;
 use crate::audio::effects::SendBusParams;
 use crate::audio::synth::SynthParams;
 use crate::fs::write_atomic;
+use crate::modulation::{ModSlot, MOD_SLOTS};
 use crate::theory::ScaleSetting;
-use crate::types::{ChannelConfig, MidiCcMapping};
+use crate::types::{ChannelConfig, Instrument, InstrumentKind, MidiCcMapping};
 
 /// A tempo change point in the song
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,14 +29,91 @@ pub struct InstrumentDef {
     // Every optional field needs `default` as well as `skip_serializing_if`:
     // without it, serde treats an omitted field as an error, so a file we
     // wrote ourselves would fail to load back.
+    /// Absent in format version 1 files, which carry the legacy fields below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub midi_program: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sample_index: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub synth_params: Option<SynthParams>,
+    pub kind: Option<InstrumentKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_bend_range: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<u8>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed_pitch: bool,
+    #[serde(default, skip_serializing_if = "is_default_fx")]
+    pub fx: InstrumentFx,
+    #[serde(default, skip_serializing_if = "no_mods")]
+    pub mods: [Option<ModSlot>; MOD_SLOTS],
+    #[serde(default, rename = "midi_program", skip_serializing)]
+    legacy_midi_program: Option<u8>,
+    #[serde(default, rename = "sample_index", skip_serializing)]
+    legacy_sample_index: Option<usize>,
+    #[serde(default, rename = "synth_params", skip_serializing)]
+    legacy_synth_params: Option<SynthParams>,
+}
+
+fn no_mods(mods: &[Option<ModSlot>; MOD_SLOTS]) -> bool {
+    mods.iter().all(Option::is_none)
+}
+
+fn is_default_fx(fx: &InstrumentFx) -> bool {
+    *fx == InstrumentFx::default()
+}
+
+impl InstrumentDef {
+    /// Describe an instrument for saving.
+    pub fn from_instrument(inst: &Instrument) -> Self {
+        Self {
+            name: inst.name.clone(),
+            kind: Some(inst.kind.clone()),
+            pitch_bend_range: inst.pitch_bend_range,
+            table: inst.table,
+            fixed_pitch: inst.fixed_pitch,
+            fx: inst.fx,
+            mods: inst.mods,
+            legacy_midi_program: None,
+            legacy_sample_index: None,
+            legacy_synth_params: None,
+        }
+    }
+
+    /// Build the instrument, migrating version 1 fields when `kind` is absent.
+    ///
+    /// Version 1 routed by precedence: a sample, then synth parameters, then
+    /// the slot's preset patch. A MIDI program alone never reached a device,
+    /// so it migrates to `Preset` and is returned as a note for the load
+    /// report.
+    pub fn into_instrument(self) -> (Instrument, Option<String>) {
+        let mut note = None;
+        let kind = match self.kind {
+            Some(kind) => kind,
+            None => {
+                if let Some(slot) = self.legacy_sample_index {
+                    InstrumentKind::Sample { slot }
+                } else if let Some(params) = self.legacy_synth_params {
+                    InstrumentKind::Synth { params }
+                } else {
+                    if let Some(program) = self.legacy_midi_program {
+                        note = Some(format!(
+                            "instrument \"{}\": MIDI program {} dropped; set the instrument type to MIDI to use it",
+                            self.name, program
+                        ));
+                    }
+                    InstrumentKind::Preset
+                }
+            }
+        };
+        (
+            Instrument {
+                name: self.name,
+                kind,
+                pitch_bend_range: self.pitch_bend_range,
+                table: self.table,
+                fixed_pitch: self.fixed_pitch,
+                fx: self.fx,
+                mods: self.mods,
+            },
+            note,
+        )
+    }
 }
 
 /// Serializable sample reference (metadata only, no audio data)
@@ -103,12 +182,18 @@ pub struct SampleRefEntry {
     pub sample_ref: SampleRef,
 }
 
+/// Most entries a groove can hold.
+pub const MAX_GROOVE_STEPS: usize = 16;
+
 /// Current .rtrk format version, written into every saved file.
 ///
-/// Files predating the field deserialize as version 0. Nothing branches on
-/// this yet; it exists so that a future format change has something to
-/// branch on, which is not something that can be added retroactively.
-pub const FORMAT_VERSION: u32 = 1;
+/// Files predating the field deserialize as version 0.
+///
+/// - 2: typed instruments (`kind`); channels lose `channel_type` and
+///   `midi_channel`; cells hold two named effects (`fx`) in place of
+///   `effect` and `effect_value`.
+/// - 3: `groove` replaces `swing`.
+pub const FORMAT_VERSION: u32 = 3;
 
 impl SongFile {
     /// True if this file was written by a newer version of rtrack than this
@@ -180,6 +265,38 @@ impl SongFile {
     }
 }
 
+/// What [`Song::edit_cell`] stored, and where: the stored cells either side,
+/// for an undo record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellWrite {
+    pub pattern: usize,
+    pub row: usize,
+    pub channel: usize,
+    pub old: Cell,
+    pub new: Cell,
+}
+
+/// Why [`Song::set_alias`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AliasError {
+    NoSuchPattern,
+    SelfAlias,
+    /// The source column is an alias, or this column is a source.
+    Chain,
+}
+
+impl std::fmt::Display for AliasError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AliasError::NoSuchPattern => "no such pattern or channel",
+            AliasError::SelfAlias => "a pattern cannot alias itself",
+            AliasError::Chain => {
+                "aliases cannot chain: the source is an alias, or this column is aliased"
+            }
+        })
+    }
+}
+
 /// A song is a collection of patterns with an order list
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Song {
@@ -199,15 +316,24 @@ pub struct Song {
     /// Row highlight interval for bars (default 16)
     #[serde(default = "default_highlight_bar")]
     pub highlight_bar: usize,
-    /// Swing amount: 50 = none, 0-100 (even rows get swing% of pair time, odd rows get rest)
-    #[serde(default = "default_swing")]
-    pub swing: u8,
+    /// Ticks per row, cycling by row within the pattern (M8 groove,
+    /// `docs/dev/design-gaps.md` G9). Empty: every row takes `speed` ticks.
+    /// `[7, 5]` is a swing; `[4, 4, 4]` against 4 rows of 6 is a triplet feel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groove: Vec<u8>,
+    /// `swing` from files before format version 3, converted to a groove by
+    /// `repair`.
+    #[serde(default, rename = "swing", skip_serializing)]
+    pub(crate) legacy_swing: Option<u8>,
     /// Tempo automation points (order, row, bpm)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_map: Vec<TempoPoint>,
     /// Scale constraining keyboard note entry. `None` means chromatic entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<ScaleSetting>,
+    /// Tables, referenced by index from instruments and `TBL`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<Table>,
 }
 
 fn default_highlight_beat() -> usize {
@@ -215,9 +341,6 @@ fn default_highlight_beat() -> usize {
 }
 fn default_highlight_bar() -> usize {
     16
-}
-fn default_swing() -> u8 {
-    50
 }
 
 impl Song {
@@ -234,9 +357,11 @@ impl Song {
             rows_per_pattern,
             highlight_beat: 4,
             highlight_bar: 16,
-            swing: 50,
+            groove: Vec::new(),
+            legacy_swing: None,
             tempo_map: Vec::new(),
             scale: None,
+            tables: Vec::new(),
         }
     }
 
@@ -263,6 +388,7 @@ impl Song {
             + self.order.capacity() * std::mem::size_of::<usize>()
             + self.order_repeats.capacity()
             + self.tempo_map.capacity() * std::mem::size_of::<TempoPoint>()
+            + self.tables.capacity() * std::mem::size_of::<Table>()
             + self.title.capacity()
             + std::mem::size_of::<Self>()
     }
@@ -360,18 +486,59 @@ impl Song {
         1.0 / ticks_per_second
     }
 
-    /// Seconds per tick with swing applied. Even rows get swing% of a pair, odd rows get the rest.
-    pub fn swing_seconds_per_tick(&self, row: usize) -> f64 {
-        let base = self.seconds_per_tick();
-        if self.swing == 50 {
-            return base;
+    /// Ticks the given pattern row takes: the groove's entry for it, or
+    /// `speed` with no groove.
+    pub fn ticks_for_row(&self, row: usize) -> u8 {
+        match self.groove.len() {
+            0 => self.speed.max(1),
+            n => self.groove[row % n].max(1),
         }
-        let swing_f = self.swing as f64;
-        if row.is_multiple_of(2) {
-            base * swing_f / 50.0
-        } else {
-            base * (100.0 - swing_f) / 50.0
+    }
+
+    /// The groove as typed in a settings field: ticks separated by spaces,
+    /// or `off`.
+    pub fn groove_text(&self) -> String {
+        if self.groove.is_empty() {
+            return "off".to_string();
         }
+        let ticks: Vec<String> = self.groove.iter().map(u8::to_string).collect();
+        ticks.join(" ")
+    }
+
+    /// Parse [`Song::groove_text`]'s form: up to 16 tick counts of 1-255,
+    /// or `off` (or nothing) for no groove.
+    pub fn parse_groove(text: &str) -> Result<Vec<u8>, String> {
+        let text = text.trim();
+        if text.is_empty() || text.eq_ignore_ascii_case("off") {
+            return Ok(Vec::new());
+        }
+        let ticks = text
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|t| !t.is_empty())
+            .map(|t| match t.parse::<u8>() {
+                Ok(0) | Err(_) => Err(format!("{t:?} is not 1-255 ticks")),
+                Ok(n) => Ok(n),
+            })
+            .collect::<Result<Vec<u8>, String>>()?;
+        if ticks.len() > MAX_GROOVE_STEPS {
+            return Err(format!("a groove has at most {MAX_GROOVE_STEPS} steps"));
+        }
+        Ok(ticks)
+    }
+
+    /// The groove nearest an old `swing` setting at `speed`.
+    ///
+    /// Swing gave even rows `swing`% of a pair of rows. A groove counts
+    /// whole ticks, so the pair `2 * speed` ticks long is split as near that
+    /// share as it goes, keeping at least one tick on each side. Swing 50 is
+    /// no groove.
+    pub fn groove_from_swing(speed: u8, swing: u8) -> Vec<u8> {
+        if swing == 50 {
+            return Vec::new();
+        }
+        let total = 2 * speed.max(1) as u32;
+        let even = ((total * swing.min(100) as u32 + 50) / 100).clamp(1, total.max(2) - 1);
+        vec![even as u8, (total - even) as u8]
     }
 
     /// Look up a tempo automation point at the given position.
@@ -429,45 +596,168 @@ impl Song {
         order_idx.min(self.order.len().saturating_sub(1))
     }
 
-    /// Read a cell by order position. Returns an empty cell for any
-    /// out-of-range coordinate rather than panicking.
-    pub fn cell_at(&self, order_idx: usize, row: usize, channel: usize) -> &Cell {
-        static EMPTY: Cell = Cell {
-            note: None,
-            instrument: None,
-            volume: None,
-            effect: None,
-            effect_value: None,
-        };
-        self.order
-            .get(order_idx)
-            .and_then(|&p| self.patterns.get(p))
-            .filter(|p| row < p.rows && channel < p.channels)
-            .map(|p| p.get(row, channel))
-            .unwrap_or(&EMPTY)
-    }
-
-    /// Mutable cell access by order position. Returns None if the
-    /// coordinate does not resolve to a pattern cell.
-    pub fn cell_at_mut(
-        &mut self,
-        order_idx: usize,
+    /// Where the cell at (`pattern`, `row`, `channel`) is stored, and the
+    /// transpose a read applies. An aliased column resolves to its source
+    /// column, looping a shorter source. `None` if out of range.
+    pub fn resolve(
+        &self,
+        pattern: usize,
         row: usize,
         channel: usize,
-    ) -> Option<&mut Cell> {
-        let pattern_idx = *self.order.get(order_idx)?;
-        let pattern = self.patterns.get_mut(pattern_idx)?;
-        if row >= pattern.rows || channel >= pattern.channels {
+    ) -> Option<(usize, usize, i8)> {
+        let p = self.patterns.get(pattern)?;
+        if row >= p.rows || channel >= p.channels {
             return None;
         }
-        Some(&mut pattern.data[row][channel])
+        match p.alias(channel) {
+            Some(alias) => {
+                let src = self.patterns.get(alias.source)?;
+                if channel >= src.channels || src.rows == 0 {
+                    return None;
+                }
+                Some((alias.source, row % src.rows, alias.transpose))
+            }
+            None => Some((pattern, row, 0)),
+        }
+    }
+
+    /// The cell at (`pattern`, `row`, `channel`) as it plays: an aliased
+    /// column reads its source, transposed. Empty when out of range.
+    pub fn cell(&self, pattern: usize, row: usize, channel: usize) -> Cell {
+        match self.resolve(pattern, row, channel) {
+            Some((p, r, t)) => self.patterns[p].data[r][channel].transposed(t),
+            None => Cell::default(),
+        }
+    }
+
+    /// Change the cell at (`pattern`, `row`, `channel`) as it plays.
+    ///
+    /// `f` sees the cell as [`Song::cell`] returns it. An aliased column
+    /// stores the change in its source, transposed back. Returns what was
+    /// stored where, for undo; `None` if the position is out of range.
+    pub fn edit_cell(
+        &mut self,
+        pattern: usize,
+        row: usize,
+        channel: usize,
+        f: impl FnOnce(&mut Cell),
+    ) -> Option<CellWrite> {
+        let (p, r, t) = self.resolve(pattern, row, channel)?;
+        let old = self.patterns[p].data[r][channel];
+        let mut view = old.transposed(t);
+        f(&mut view);
+        let new = view.transposed(t.wrapping_neg());
+        self.patterns[p].data[r][channel] = new;
+        Some(CellWrite {
+            pattern: p,
+            row: r,
+            channel,
+            old,
+            new,
+        })
+    }
+
+    /// The stored cell at an order position, untransposed, and the transpose
+    /// an alias applies to it. The engine uses this so an instrument with
+    /// `fixed_pitch` can refuse the transpose.
+    pub fn played_cell(&self, order_idx: usize, row: usize, channel: usize) -> (Cell, i8) {
+        let resolved = self
+            .order
+            .get(order_idx)
+            .and_then(|&p| self.resolve(p, row, channel));
+        match resolved {
+            Some((p, r, t)) => (self.patterns[p].data[r][channel], t),
+            None => (Cell::default(), 0),
+        }
+    }
+
+    /// Read a cell by order position. Returns an empty cell for any
+    /// out-of-range coordinate rather than panicking.
+    pub fn cell_at(&self, order_idx: usize, row: usize, channel: usize) -> Cell {
+        match self.order.get(order_idx) {
+            Some(&p) => self.cell(p, row, channel),
+            None => Cell::default(),
+        }
     }
 
     /// Write a cell by order position. Out-of-range coordinates are ignored.
     pub fn set_cell(&mut self, order_idx: usize, row: usize, channel: usize, cell: Cell) {
-        if let Some(slot) = self.cell_at_mut(order_idx, row, channel) {
-            *slot = cell;
+        if let Some(&p) = self.order.get(order_idx) {
+            self.edit_cell(p, row, channel, |c| *c = cell);
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Column aliases
+    // -------------------------------------------------------------------
+
+    /// Make `channel` of `pattern` play the same channel of `alias.source`.
+    ///
+    /// The column's own cells are cleared: an aliased column stores nothing,
+    /// so the source is the only copy. Refused for a missing or identical
+    /// source, and for chains: the source column may not be an alias, and a
+    /// column other patterns alias may not become one.
+    pub fn set_alias(
+        &mut self,
+        pattern: usize,
+        channel: usize,
+        alias: ColumnAlias,
+    ) -> Result<(), AliasError> {
+        let p = self
+            .patterns
+            .get(pattern)
+            .ok_or(AliasError::NoSuchPattern)?;
+        if channel >= p.channels {
+            return Err(AliasError::NoSuchPattern);
+        }
+        let src = self
+            .patterns
+            .get(alias.source)
+            .ok_or(AliasError::NoSuchPattern)?;
+        if alias.source == pattern {
+            return Err(AliasError::SelfAlias);
+        }
+        if channel >= src.channels || src.alias(channel).is_some() {
+            return Err(AliasError::Chain);
+        }
+        if self.is_alias_source(pattern, channel) {
+            return Err(AliasError::Chain);
+        }
+        let p = &mut self.patterns[pattern];
+        for row in &mut p.data {
+            row[channel] = Cell::default();
+        }
+        if p.aliases.len() <= channel {
+            p.aliases.resize(channel + 1, None);
+        }
+        p.aliases[channel] = Some(alias);
+        Ok(())
+    }
+
+    /// Give an aliased column its own copy of what it plays, and drop the
+    /// alias. Does nothing to a column that is not an alias.
+    pub fn unalias(&mut self, pattern: usize, channel: usize) {
+        let Some(p) = self.patterns.get(pattern) else {
+            return;
+        };
+        if p.alias(channel).is_none() {
+            return;
+        }
+        let cells: Vec<Cell> = (0..p.rows)
+            .map(|r| self.cell(pattern, r, channel))
+            .collect();
+        let p = &mut self.patterns[pattern];
+        p.aliases[channel] = None;
+        for (row, cell) in p.data.iter_mut().zip(cells) {
+            row[channel] = cell;
+        }
+    }
+
+    /// Whether any pattern aliases `channel` of `pattern`.
+    pub fn is_alias_source(&self, pattern: usize, channel: usize) -> bool {
+        self.patterns
+            .iter()
+            .any(|p| p.alias(channel).is_some_and(|a| a.source == pattern))
     }
 
     // -------------------------------------------------------------------
@@ -617,6 +907,27 @@ impl Song {
         }
         self.sync_order_repeats();
 
+        // Aliases must name another pattern, whose column is not an alias.
+        let snapshot: Vec<Vec<Option<ColumnAlias>>> =
+            self.patterns.iter().map(|p| p.aliases.clone()).collect();
+        let channels: Vec<usize> = self.patterns.iter().map(|p| p.channels).collect();
+        for (i, pattern) in self.patterns.iter_mut().enumerate() {
+            for (ch, slot) in pattern.aliases.iter_mut().enumerate() {
+                let Some(alias) = *slot else { continue };
+                let valid = alias.source != i
+                    && alias.source < snapshot.len()
+                    && ch < channels[alias.source]
+                    && snapshot[alias.source].get(ch).copied().flatten().is_none();
+                if !valid {
+                    *slot = None;
+                    repairs.push(format!(
+                        "pattern {i} channel {ch}: alias to pattern {} dropped",
+                        alias.source
+                    ));
+                }
+            }
+        }
+
         // Tempo automation must point at real positions.
         let order_len = self.order.len();
         let before = self.tempo_map.len();
@@ -635,9 +946,37 @@ impl Song {
         if self.highlight_bar == 0 {
             self.highlight_bar = default_highlight_bar();
         }
-        if self.swing > 100 {
-            self.swing = default_swing();
-            repairs.push("swing out of range, reset to 50".to_string());
+        if let Some(swing) = self.legacy_swing.take() {
+            if swing != 50 && self.groove.is_empty() {
+                self.groove = Song::groove_from_swing(self.speed, swing);
+                repairs.push(format!(
+                    "swing {swing} converted to groove {:?}",
+                    self.groove
+                ));
+            }
+        }
+        if self.groove.len() > MAX_GROOVE_STEPS || self.groove.contains(&0) {
+            self.groove.truncate(MAX_GROOVE_STEPS);
+            for t in &mut self.groove {
+                *t = (*t).max(1);
+            }
+            repairs.push("groove clamped to 16 steps of 1 or more ticks".to_string());
+        }
+
+        if self.tables.len() > MAX_TABLES {
+            repairs.push(format!(
+                "dropped {} tables past the maximum of {}",
+                self.tables.len() - MAX_TABLES,
+                MAX_TABLES
+            ));
+            self.tables.truncate(MAX_TABLES);
+        }
+        for (i, table) in self.tables.iter_mut().enumerate() {
+            if table.repair() {
+                repairs.push(format!(
+                    "table {i}: length or tick rate out of range, clamped"
+                ));
+            }
         }
 
         repairs
@@ -648,6 +987,7 @@ impl Song {
 mod tests {
     use super::*;
     use crate::theory::ScaleSetting;
+    use crate::tracker::{AliasError, ColumnAlias, Fx, FxCmd, Pattern};
     use crate::tracker::{Note, NoteValue};
 
     #[test]
@@ -747,8 +1087,7 @@ mod tests {
                 }),
                 instrument: Some(0x0A),
                 volume: Some(0x60),
-                effect: Some(3),
-                effect_value: Some(0xFF),
+                fx: Fx::only(FxCmd::Portamento, 0xFF),
             },
         );
 
@@ -772,8 +1111,7 @@ mod tests {
         );
         assert_eq!(cell.instrument, Some(0x0A));
         assert_eq!(cell.volume, Some(0x60));
-        assert_eq!(cell.effect, Some(3));
-        assert_eq!(cell.effect_value, Some(0xFF));
+        assert_eq!(cell.fx, Fx::only(FxCmd::Portamento, 0xFF));
 
         let _ = std::fs::remove_file(tmp);
     }
@@ -787,23 +1125,24 @@ mod tests {
             instruments: vec![
                 InstrumentEntry {
                     slot: 0,
-                    def: InstrumentDef {
+                    def: InstrumentDef::from_instrument(&Instrument {
                         name: "Kick".to_string(),
-                        midi_program: None,
-                        sample_index: Some(0),
-                        synth_params: None,
+                        kind: InstrumentKind::Sample { slot: 0 },
                         pitch_bend_range: None,
-                    },
+                        ..Default::default()
+                    }),
                 },
                 InstrumentEntry {
                     slot: 5,
-                    def: InstrumentDef {
+                    def: InstrumentDef::from_instrument(&Instrument {
                         name: "Lead".to_string(),
-                        midi_program: Some(80),
-                        sample_index: None,
-                        synth_params: None,
+                        kind: InstrumentKind::Midi(crate::types::MidiOut {
+                            channel: 3,
+                            program: Some(80),
+                        }),
                         pitch_bend_range: None,
-                    },
+                        ..Default::default()
+                    }),
                 },
             ],
             sample_refs: vec![SampleRefEntry {
@@ -830,15 +1169,222 @@ mod tests {
         assert_eq!(loaded.instruments.len(), 2);
         assert_eq!(loaded.instruments[0].slot, 0);
         assert_eq!(loaded.instruments[0].def.name, "Kick");
-        assert_eq!(loaded.instruments[0].def.sample_index, Some(0));
+        let (kick, _) = loaded.instruments[0].def.clone().into_instrument();
+        assert_eq!(kick.sample_slot(), Some(0));
         assert_eq!(loaded.instruments[1].slot, 5);
-        assert_eq!(loaded.instruments[1].def.midi_program, Some(80));
+        let (lead, _) = loaded.instruments[1].def.clone().into_instrument();
+        assert_eq!(
+            lead.midi_out(),
+            Some(crate::types::MidiOut {
+                channel: 3,
+                program: Some(80)
+            })
+        );
         assert_eq!(loaded.sample_refs.len(), 1);
         assert_eq!(loaded.sample_refs[0].slot, 0);
         assert_eq!(loaded.sample_refs[0].sample_ref.base_note, 36);
         assert_eq!(loaded.sample_refs[0].sample_ref.path, "samples/0-kick.wav");
 
         let _ = std::fs::remove_file(tmp);
+    }
+
+    fn c(octave: u8) -> Cell {
+        Cell {
+            note: Some(Note::On {
+                value: crate::tracker::NoteValue::C,
+                octave,
+            }),
+            ..Cell::default()
+        }
+    }
+
+    /// Pattern 0: 4 rows. Pattern 1: 8 rows, channel 1 aliased to pattern 0.
+    fn aliased_song(transpose: i8) -> Song {
+        let mut song = Song::new(2, 4);
+        song.patterns.push(Pattern::new(8, 2));
+        song.patterns[0].data[0][1] = c(4);
+        song.patterns[0].data[2][1] = c(5);
+        song.set_alias(
+            1,
+            1,
+            ColumnAlias {
+                source: 0,
+                transpose,
+            },
+        )
+        .unwrap();
+        song
+    }
+
+    #[test]
+    fn an_alias_reads_its_source_and_loops_a_shorter_one() {
+        let song = aliased_song(0);
+        assert_eq!(song.cell(1, 0, 1), c(4));
+        assert_eq!(song.cell(1, 2, 1), c(5));
+        assert_eq!(song.cell(1, 4, 1), c(4), "row 4 loops to source row 0");
+        assert_eq!(song.cell(1, 6, 1), c(5));
+        assert_eq!(song.cell(1, 0, 0), Cell::default(), "channel 0 is its own");
+    }
+
+    #[test]
+    fn an_alias_transposes_reads_and_untransposes_writes() {
+        let mut song = aliased_song(12);
+        assert_eq!(song.cell(1, 0, 1), c(5));
+        let w = song.edit_cell(1, 5, 1, |cell| *cell = c(6)).unwrap();
+        assert_eq!((w.pattern, w.row), (0, 1), "stored in the source, looped");
+        assert_eq!(song.patterns[0].data[1][1], c(5), "stored an octave down");
+        assert_eq!(song.cell(1, 5, 1), c(6));
+    }
+
+    #[test]
+    fn edits_through_either_side_of_an_alias_are_one_edit() {
+        let mut song = aliased_song(0);
+        song.edit_cell(0, 3, 1, |cell| *cell = c(3));
+        assert_eq!(song.cell(1, 3, 1), c(3));
+        assert_eq!(song.cell(1, 7, 1), c(3));
+    }
+
+    #[test]
+    fn aliases_cannot_chain_or_point_at_themselves() {
+        let mut song = aliased_song(0);
+        song.patterns.push(Pattern::new(4, 2));
+        let to = |source| ColumnAlias {
+            source,
+            transpose: 0,
+        };
+        assert_eq!(song.set_alias(2, 1, to(1)), Err(AliasError::Chain));
+        assert_eq!(song.set_alias(0, 1, to(2)), Err(AliasError::Chain));
+        assert_eq!(song.set_alias(2, 1, to(2)), Err(AliasError::SelfAlias));
+        assert_eq!(song.set_alias(2, 1, to(9)), Err(AliasError::NoSuchPattern));
+        assert_eq!(song.set_alias(2, 1, to(0)), Ok(()));
+    }
+
+    #[test]
+    fn unalias_keeps_what_the_column_played() {
+        let mut song = aliased_song(12);
+        song.unalias(1, 1);
+        assert_eq!(song.patterns[1].alias(1), None);
+        assert_eq!(song.patterns[1].data[4][1], c(5), "looped and transposed");
+        song.edit_cell(0, 0, 1, |cell| *cell = Cell::default());
+        assert_eq!(song.cell(1, 0, 1), c(5), "no longer follows the source");
+    }
+
+    #[test]
+    fn repair_drops_aliases_that_chain_or_dangle() {
+        let mut song = aliased_song(0);
+        song.patterns[0].aliases = vec![
+            None,
+            Some(ColumnAlias {
+                source: 1,
+                transpose: 0,
+            }),
+        ];
+        song.patterns[1].aliases.push(Some(ColumnAlias {
+            source: 7,
+            transpose: 0,
+        }));
+        let repairs = song.repair();
+        assert_eq!(repairs.len(), 2, "{repairs:?}");
+        assert_eq!(
+            song.patterns[1].alias(1),
+            None,
+            "its source became an alias"
+        );
+    }
+
+    #[test]
+    fn aliases_round_trip_and_unaliased_patterns_write_none() {
+        let song = aliased_song(-3);
+        let json = serde_json::to_string(&song).unwrap();
+        assert_eq!(json.matches("aliases").count(), 1, "{json}");
+        let loaded: Song = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            loaded.patterns[1].alias(1),
+            Some(ColumnAlias {
+                source: 0,
+                transpose: -3
+            })
+        );
+    }
+
+    #[test]
+    fn swing_converts_to_the_nearest_tick_pair() {
+        assert_eq!(Song::groove_from_swing(6, 50), Vec::<u8>::new());
+        assert_eq!(Song::groove_from_swing(6, 75), vec![9, 3]);
+        assert_eq!(Song::groove_from_swing(6, 58), vec![7, 5]);
+        assert_eq!(
+            Song::groove_from_swing(1, 100),
+            vec![1, 1],
+            "keeps a tick each"
+        );
+        assert_eq!(Song::groove_from_swing(3, 0), vec![1, 5]);
+    }
+
+    #[test]
+    fn an_old_swing_setting_becomes_a_groove_on_repair() {
+        let json = r#"{"title":"s","bpm":120,"speed":6,"patterns":[],"order":[],
+            "channels":1,"rows_per_pattern":4,"swing":67}"#;
+        let mut song: Song = serde_json::from_str(json).unwrap();
+        let repairs = song.repair();
+        assert_eq!(song.groove, vec![8, 4]);
+        assert!(
+            repairs.iter().any(|r| r.contains("swing 67")),
+            "{repairs:?}"
+        );
+        let json = serde_json::to_string(&song).unwrap();
+        assert!(!json.contains("swing"), "{json}");
+    }
+
+    fn migrate(json: &str) -> (Instrument, Option<String>) {
+        serde_json::from_str::<InstrumentDef>(json)
+            .unwrap()
+            .into_instrument()
+    }
+
+    #[test]
+    fn version_1_instruments_migrate_by_routing_precedence() {
+        // A sample won over synth parameters.
+        let (inst, note) =
+            migrate(r#"{"name":"a","sample_index":4,"synth_params":null,"midi_program":9}"#);
+        assert_eq!(inst.sample_slot(), Some(4));
+        assert_eq!(note, None);
+
+        let (inst, _) = migrate(
+            &serde_json::json!({
+                "name": "b",
+                "synth_params": SynthParams::from_patch(3),
+            })
+            .to_string(),
+        );
+        assert!(matches!(inst.kind, InstrumentKind::Synth { .. }));
+
+        let (inst, note) = migrate(r#"{"name":"c"}"#);
+        assert!(matches!(inst.kind, InstrumentKind::Preset));
+        assert_eq!(note, None);
+    }
+
+    #[test]
+    fn a_version_1_midi_program_alone_is_reported_not_silently_dropped() {
+        let (inst, note) = migrate(r#"{"name":"strings","midi_program":48}"#);
+        assert!(matches!(inst.kind, InstrumentKind::Preset));
+        let note = note.expect("a dropped program is reported");
+        assert!(note.contains("strings") && note.contains("48"), "{note}");
+    }
+
+    #[test]
+    fn typed_instruments_write_no_legacy_fields() {
+        let def = InstrumentDef::from_instrument(&Instrument {
+            name: "k".into(),
+            kind: InstrumentKind::Sample { slot: 2 },
+            pitch_bend_range: None,
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(!json.contains("sample_index"), "{json}");
+        assert!(
+            json.contains(r#""kind":{"type":"sample","slot":2}"#),
+            "{json}"
+        );
     }
 
     /// The replacement has to be able to read what the deprecated one wrote,
@@ -1010,7 +1556,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        assert!(song.cell_at_mut(99, 0, 0).is_none());
+        assert!(song.edit_cell(99, 0, 0, |_| {}).is_none());
     }
 
     #[test]

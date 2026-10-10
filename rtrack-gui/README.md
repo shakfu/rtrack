@@ -25,7 +25,7 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 - **Menu bar** -- File (New, Open, Save, Save As, Load SF2, Load Sample Dir, Recent Files, Export WAV/FLAC/MIDI, Quit), Edit (Undo, Redo, Copy, Cut, Paste, Song Settings), View (Instruments, Pattern Matrix, Help, MIDI Ports, Spectrum, Theme)
 - **Sidebar** -- clickable order list with append, channel list with mute/solo toggles
 - **Visualization panel** -- real-time FFT spectrum analyzer (64 log-frequency bars, -72 to 0 dB range) with stereo level meters and peak hold; sample waveform viewer with trim/loop markers, playhead tracking across sliced samples, and interactive slicing controls
-- **Instrument editor** -- scrollable sidebar with type indicators ([SYN]/[SMP]/[MID]), create/clear buttons; central panel with name editing, type selector (Empty/Synth/Sample/MIDI), pitch bend range
+- **Instrument editor** -- scrollable sidebar with type indicators ([SYN]/[SMP]/[MID]), create/clear buttons; central panel with name editing, type selector (Preset/Synth/Sample/MIDI), MIDI channel and program for MIDI instruments, pitch bend range
   - Synth: patch selector (30 presets), ADSR envelope sliders, filter (LP/HP/BP with cutoff/resonance/env amount), oscillator (detune/sub-osc/pulse width), FM synthesis (ratio/index)
   - Sample: load file or directory via native dialog, waveform preview with trim/loop markers, base note, trim start/end, loop enable/start/end, and *Snap to zero*, which moves both loop points to the nearest rising zero crossings
   - MIDI: program number selector
@@ -33,8 +33,8 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
   - Drag edges on the waveform: trim and slice edges from the upper half (tabs at the top), loop points from the lower half (tabs at the bottom). An edge shared by two slices moves both; Alt-drag moves one slice only. One drag is one undo step
   - Slices land in consecutive slots from the target. Slicing over instruments it did not itself create stops and says what is in the way, with a "Slice anyway" button; either way the result can be undone
 - **Pattern matrix** -- full-screen view of order list with per-channel data indicators, pattern assignment, repeat counts; create, clone, duplicate, and remove order entries
-- **Track config dialog** -- per-channel name, type, MIDI channel, default instrument, volume, pan; effects chain (filter, distortion, chorus, delay, reverb) with per-parameter sliders; MIDI learn/unlearn for all effect parameters
-- **Song settings dialog** -- title, BPM, speed, beat/bar highlight intervals, swing, note-entry scale, rows per pattern, channel count
+- **Track config dialog** -- per-channel name, default instrument, volume, pan; effects chain (filter, distortion, chorus, delay, reverb) with per-parameter sliders; MIDI learn/unlearn for all effect parameters
+- **Song settings dialog** -- title, BPM, speed, beat/bar highlight intervals, groove, scale, rows per pattern, channel count
 - **MIDI ports dialog** -- output/input port selection, virtual port creation, clock source (Internal/External MIDI), MIDI clock output toggle, refresh
 - **Help dialog** -- categorized keyboard shortcut reference
 - **Drag-and-drop** -- drop `.rtrk` files to open songs, drop WAV/AIFF files to load into sample slots (targets instrument editor selection or first empty slot)
@@ -73,7 +73,7 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 | Key | Action |
 |-----|--------|
 | Up / Down | Move cursor row |
-| Left / Right | Move sub-column (Note/Instrument/Volume/Effect) |
+| Left / Right | Move sub-column (Note/Instrument/Volume/FX1/FX2) |
 | Tab / Shift+Tab | Next / previous channel |
 | Page Up / Page Down | Jump 16 rows |
 | Home / End | First / last row |
@@ -86,7 +86,8 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 | z s x d c v g b h n j m | Notes C C# D D# E F F# G G# A A# B (lower octave) |
 | q 2 w 3 e r 5 t 6 y 7 u | Notes C C# D D# E F F# G G# A A# B (upper octave) |
 | = (equals) | Note off (`===`) |
-| 0-9, a-f | Hex digit (instrument/volume/effect columns) |
+| 0-9, a-f | Hex digit (instrument/volume columns, effect parameter) |
+| Letters (effect column) | Spell an effect command name, e.g. `VI` for `VIB` |
 | Delete | Clear cell |
 | Insert | Insert row |
 | Backspace | Delete row |

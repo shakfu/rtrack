@@ -4,38 +4,26 @@ use rtrack_core::audio::synth::{FilterType, Patch, SynthParams};
 use rtrack_core::constants::MAX_INSTRUMENTS;
 use rtrack_core::sample::{SliceOverwrite, SliceRange};
 use rtrack_core::tracker::midi_note_name;
-use rtrack_core::Instrument;
+use rtrack_core::{Instrument, InstrumentKind, MidiOut};
 
 use crate::app::RtrackApp;
 
 /// Instrument type for the sidebar display and type selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstType {
-    Empty,
+    Preset,
     Synth,
     Sample,
     Midi,
 }
 
 impl InstType {
-    fn label(self) -> &'static str {
-        match self {
-            InstType::Empty => "[---]",
-            InstType::Synth => "[SYN]",
-            InstType::Sample => "[SMP]",
-            InstType::Midi => "[MID]",
-        }
-    }
-
     fn from_instrument(inst: &Instrument) -> Self {
-        if inst.synth_params.is_some() {
-            InstType::Synth
-        } else if inst.sample_index.is_some() {
-            InstType::Sample
-        } else if inst.midi_program.is_some() {
-            InstType::Midi
-        } else {
-            InstType::Empty
+        match inst.kind {
+            InstrumentKind::Preset => InstType::Preset,
+            InstrumentKind::Synth { .. } => InstType::Synth,
+            InstrumentKind::Sample { .. } => InstType::Sample,
+            InstrumentKind::Midi(_) => InstType::Midi,
         }
     }
 }
@@ -62,7 +50,9 @@ impl RtrackApp {
             if ui.button("+ Synth").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
                     self.core.instruments[slot].name = format!("Synth {:02X}", slot);
-                    self.core.instruments[slot].synth_params = Some(SynthParams::from_patch(0));
+                    self.core.instruments[slot].kind = InstrumentKind::Synth {
+                        params: SynthParams::from_patch(0),
+                    };
                     self.selected_instrument = Some(slot);
                     self.core.dirty = true;
                 }
@@ -70,7 +60,7 @@ impl RtrackApp {
             if ui.button("+ Sample").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
                     self.core.instruments[slot].name = format!("Sample {:02X}", slot);
-                    self.core.instruments[slot].sample_index = Some(slot);
+                    self.core.instruments[slot].kind = InstrumentKind::Sample { slot };
                     self.selected_instrument = Some(slot);
                     self.core.dirty = true;
                 }
@@ -87,8 +77,7 @@ impl RtrackApp {
             .show(ui, |ui| {
                 for i in 0..num_instruments {
                     let inst = &self.core.instruments[i];
-                    let itype = InstType::from_instrument(inst);
-                    let is_empty = itype == InstType::Empty;
+                    let is_empty = inst.is_empty();
 
                     if is_empty && i >= 16 {
                         continue;
@@ -100,7 +89,7 @@ impl RtrackApp {
                         inst.name.clone()
                     };
 
-                    let label = format!("{:02X} {} {}", i, itype.label(), display_name);
+                    let label = format!("{:02X} [{}] {}", i, inst.kind.tag(), display_name);
                     let selected = self.selected_instrument == Some(i);
 
                     let text = if selected {
@@ -128,7 +117,7 @@ impl RtrackApp {
             let has_sel = self.selected_instrument.is_some();
             if ui
                 .add_enabled(has_sel, egui::Button::new("Clear"))
-                .on_hover_text("Reset instrument to empty")
+                .on_hover_text("Reset instrument to its preset patch")
                 .clicked()
             {
                 if let Some(idx) = self.selected_instrument {
@@ -181,7 +170,7 @@ impl RtrackApp {
             ui.label("Type:");
 
             let mut new_type = itype;
-            ui.selectable_value(&mut new_type, InstType::Empty, "Empty");
+            ui.selectable_value(&mut new_type, InstType::Preset, "Preset");
             ui.selectable_value(&mut new_type, InstType::Synth, "Synth");
             ui.selectable_value(&mut new_type, InstType::Sample, "Sample");
             ui.selectable_value(&mut new_type, InstType::Midi, "MIDI");
@@ -191,8 +180,8 @@ impl RtrackApp {
             }
         });
 
-        // Pitch bend range (common to all non-empty types)
-        if itype != InstType::Empty {
+        // Pitch bend range (common to all types but the preset)
+        if itype != InstType::Preset {
             ui.horizontal(|ui| {
                 ui.label("Pitch Bend Range:");
                 let mut pbr = self.core.instruments[idx].pitch_bend_range.unwrap_or(2.0) as f32;
@@ -206,6 +195,17 @@ impl RtrackApp {
             });
         }
 
+        if ui
+            .checkbox(&mut self.core.instruments[idx].fixed_pitch, "Fixed pitch")
+            .on_hover_text("Ignore transposes from column aliases and the song scale, for drums")
+            .changed()
+        {
+            self.core.dirty = true;
+        }
+        self.draw_instrument_fx(ui, idx);
+        self.draw_modulation(ui, idx);
+        self.draw_table_section(ui, idx);
+
         ui.separator();
 
         // Type-specific editor
@@ -213,8 +213,11 @@ impl RtrackApp {
             .id_salt("inst_editor_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| match itype {
-                InstType::Empty => {
-                    ui.label("Choose a type above to configure this instrument.");
+                InstType::Preset => {
+                    ui.label(format!(
+                        "Plays the built-in patch {}. Choose a type above to configure it.",
+                        Patch::from_program(idx as u8).name()
+                    ));
                 }
                 InstType::Synth => {
                     self.draw_synth_params(ui, idx);
@@ -228,31 +231,272 @@ impl RtrackApp {
             });
     }
 
+    /// The instrument's own filter and drive, ahead of the channel's effects.
+    fn draw_instrument_fx(&mut self, ui: &mut egui::Ui, idx: usize) {
+        let fx = &mut self.core.instruments[idx].fx;
+        let before = *fx;
+        egui::CollapsingHeader::new("Filter and drive")
+            .id_salt(("inst_fx", idx))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut fx.filter_enabled, "Filter");
+                    ui.add_enabled(
+                        fx.filter_enabled,
+                        egui::Slider::new(&mut fx.filter_cutoff, 20.0..=20000.0)
+                            .logarithmic(true)
+                            .suffix(" Hz"),
+                    );
+                    ui.add_enabled(
+                        fx.filter_enabled,
+                        egui::Slider::new(&mut fx.filter_resonance, 0.0..=1.0).text("res"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut fx.distortion_enabled, "Drive");
+                    ui.add_enabled(
+                        fx.distortion_enabled,
+                        egui::Slider::new(&mut fx.distortion_drive, 1.0..=20.0),
+                    );
+                });
+            });
+        if *fx != before {
+            self.core.dirty = true;
+        }
+    }
+
+    /// The instrument's modulation slots.
+    fn draw_modulation(&mut self, ui: &mut egui::Ui, idx: usize) {
+        use rtrack_core::modulation::{LfoShape, ModDest, ModSlot, ModSource};
+        let mods = &mut self.core.instruments[idx].mods;
+        let before = *mods;
+        egui::CollapsingHeader::new("Modulation")
+            .id_salt(("inst_mods", idx))
+            .show(ui, |ui| {
+                for (s, slot) in mods.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Slot {}", s + 1));
+                        let mut kind = match slot.map(|m| m.source) {
+                            None => 0,
+                            Some(ModSource::Envelope { .. }) => 1,
+                            Some(ModSource::Lfo { .. }) => 2,
+                        };
+                        let was = kind;
+                        egui::ComboBox::from_id_salt(("mod_kind", idx, s))
+                            .selected_text(["Off", "Envelope", "LFO"][kind])
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut kind, 0, "Off");
+                                ui.selectable_value(&mut kind, 1, "Envelope");
+                                ui.selectable_value(&mut kind, 2, "LFO");
+                            });
+                        if kind != was {
+                            let keep = slot.unwrap_or_default();
+                            *slot = match kind {
+                                0 => None,
+                                1 => Some(ModSlot {
+                                    source: ModSource::Envelope {
+                                        attack: 0,
+                                        hold: 6,
+                                        decay: 24,
+                                    },
+                                    ..keep
+                                }),
+                                _ => Some(ModSlot {
+                                    source: ModSource::Lfo {
+                                        shape: LfoShape::Sine,
+                                        period: 24,
+                                    },
+                                    ..keep
+                                }),
+                            };
+                        }
+                        let Some(m) = slot.as_mut() else { return };
+                        egui::ComboBox::from_id_salt(("mod_dest", idx, s))
+                            .selected_text(m.dest.name())
+                            .show_ui(ui, |ui| {
+                                for d in ModDest::ALL {
+                                    ui.selectable_value(&mut m.dest, d, d.name());
+                                }
+                            });
+                        ui.add(egui::DragValue::new(&mut m.amount).range(-128..=127).prefix("amount "));
+                        match &mut m.source {
+                            ModSource::Envelope {
+                                attack,
+                                hold,
+                                decay,
+                            } => {
+                                ui.add(egui::DragValue::new(attack).prefix("A "));
+                                ui.add(egui::DragValue::new(hold).prefix("H "));
+                                ui.add(egui::DragValue::new(decay).prefix("D "));
+                            }
+                            ModSource::Lfo { shape, period } => {
+                                egui::ComboBox::from_id_salt(("mod_shape", idx, s))
+                                    .selected_text(shape.name())
+                                    .show_ui(ui, |ui| {
+                                        for sh in LfoShape::ALL {
+                                            ui.selectable_value(shape, sh, sh.name());
+                                        }
+                                    });
+                                ui.add(egui::DragValue::new(period).range(1..=255).prefix("period "));
+                            }
+                        }
+                    });
+                }
+                ui.label(
+                    egui::RichText::new("Times in engine ticks; amounts: volume steps, pitch /8 semitones, cutoff and drive /16.")
+                        .weak(),
+                );
+            });
+        if *mods != before {
+            self.core.dirty = true;
+        }
+    }
+
+    /// The instrument's table: which one, and its rows.
+    fn draw_table_section(&mut self, ui: &mut egui::Ui, idx: usize) {
+        use rtrack_core::tracker::{Fx, Table, MAX_TABLES, TABLE_ROWS};
+
+        let tables = self.core.song.tables.len();
+        let current = self.core.instruments[idx]
+            .table
+            .filter(|&t| (t as usize) < tables);
+        ui.horizontal(|ui| {
+            ui.label("Table:");
+            let mut on = current.is_some();
+            if ui.checkbox(&mut on, "").changed() {
+                self.core.instruments[idx].table = if on { Some(0) } else { None };
+                self.core.dirty = true;
+            }
+            if let Some(t) = current {
+                let mut v = t as i32;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut v)
+                            .range(0..=tables as i32 - 1)
+                            .hexadecimal(2, false, true),
+                    )
+                    .changed()
+                {
+                    self.core.instruments[idx].table = Some(v as u8);
+                    self.core.dirty = true;
+                }
+            }
+            if ui
+                .add_enabled(tables < MAX_TABLES, egui::Button::new("New"))
+                .on_hover_text("Give this instrument a new, empty table")
+                .clicked()
+            {
+                let before = self.core.song.clone();
+                self.core.song.tables.push(Table::default());
+                self.record_settings_edit("table.new", before);
+                self.core.instruments[idx].table = Some(tables as u8);
+            }
+        });
+        // `New` may have just added one.
+        let Some(t) = self.core.instruments[idx]
+            .table
+            .map(|t| t as usize)
+            .filter(|&t| t < self.core.song.tables.len())
+        else {
+            return;
+        };
+
+        let old = self.core.song.tables[t].clone();
+        let mut table = old.clone();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::DragValue::new(&mut table.length)
+                    .range(1..=TABLE_ROWS as u8)
+                    .prefix("Length "),
+            );
+            ui.add(
+                egui::DragValue::new(&mut table.tic)
+                    .range(1..=255)
+                    .prefix("Ticks/row "),
+            );
+        });
+        egui::Grid::new(("table_grid", t))
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Row");
+                ui.label("Transpose");
+                ui.label("Volume");
+                ui.label("FX");
+                ui.end_row();
+                for (i, row) in table.rows.iter_mut().enumerate() {
+                    let text = egui::RichText::new(format!("{i:02}")).monospace();
+                    ui.label(if i < old.length as usize {
+                        text
+                    } else {
+                        text.weak()
+                    });
+                    ui.horizontal(|ui| {
+                        let mut on = row.transpose.is_some();
+                        if ui.checkbox(&mut on, "").changed() {
+                            row.transpose = on.then_some(0);
+                        }
+                        if let Some(ref mut tr) = row.transpose {
+                            ui.add(egui::DragValue::new(tr).range(-48..=48));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        let mut on = row.volume.is_some();
+                        if ui.checkbox(&mut on, "").changed() {
+                            row.volume = on.then_some(0x7F);
+                        }
+                        if let Some(ref mut v) = row.volume {
+                            ui.add(
+                                egui::DragValue::new(v)
+                                    .range(0..=0x7F)
+                                    .hexadecimal(2, false, true),
+                            );
+                        }
+                    });
+                    // Typed text is kept until it parses or loses focus.
+                    let key = (t, i);
+                    let buf = self
+                        .table_fx_text
+                        .entry(key)
+                        .or_insert_with(|| row.fx.map(Fx::display).unwrap_or_default());
+                    let response = ui.add(
+                        egui::TextEdit::singleline(buf)
+                            .desired_width(48.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    if response.changed() {
+                        let trimmed = buf.trim();
+                        if trimmed.is_empty() {
+                            row.fx = None;
+                        } else if let Some(fx) = Fx::parse(&trimmed.to_ascii_uppercase()) {
+                            row.fx = Some(fx);
+                        }
+                    }
+                    if response.lost_focus() || !response.has_focus() && !response.changed() {
+                        self.table_fx_text.remove(&key);
+                    }
+                    ui.end_row();
+                }
+            });
+        if table != old {
+            self.core.song.tables[t] = table;
+            let mut before = self.core.song.clone();
+            before.tables[t] = old;
+            self.record_settings_edit("table.rows", before);
+        }
+    }
+
     /// Change instrument type, preserving name and pitch bend range.
     fn change_instrument_type(&mut self, idx: usize, new_type: InstType) {
-        let inst = &mut self.core.instruments[idx];
-        let name = inst.name.clone();
-        let pbr = inst.pitch_bend_range;
-
-        inst.synth_params = None;
-        inst.sample_index = None;
-        inst.midi_program = None;
-
-        match new_type {
-            InstType::Synth => {
-                inst.synth_params = Some(SynthParams::from_patch(0));
-            }
-            InstType::Sample => {
-                inst.sample_index = Some(idx);
-            }
-            InstType::Midi => {
-                inst.midi_program = Some(0);
-            }
-            InstType::Empty => {}
-        }
-
-        inst.name = name;
-        inst.pitch_bend_range = pbr;
+        self.core.instruments[idx].kind = match new_type {
+            InstType::Preset => InstrumentKind::Preset,
+            InstType::Synth => InstrumentKind::Synth {
+                params: SynthParams::from_patch(idx as u8),
+            },
+            InstType::Sample => InstrumentKind::Sample { slot: idx },
+            InstType::Midi => InstrumentKind::Midi(MidiOut {
+                channel: 0,
+                program: None,
+            }),
+        };
         self.core.dirty = true;
     }
 
@@ -261,9 +505,9 @@ impl RtrackApp {
     // ------------------------------------------------------------------
 
     fn draw_synth_params(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let params = match self.core.instruments[idx].synth_params.as_mut() {
-            Some(p) => p,
-            None => return, // type was just changed away from Synth
+        let params = match self.core.instruments[idx].kind {
+            InstrumentKind::Synth { ref mut params } => params,
+            _ => return, // type was just changed away from Synth
         };
 
         let mut changed = false;
@@ -497,13 +741,13 @@ impl RtrackApp {
                     .add_filter("Audio", &["wav", "aif", "aiff"])
                     .pick_file()
                 {
-                    let slot = self.core.instruments[idx].sample_index.unwrap_or(idx);
+                    let slot = self.core.instruments[idx].sample_slot().unwrap_or(idx);
 
                     let mut bank = (*self.core.sample_bank).clone();
                     match bank.load(slot, &path) {
                         Ok(()) => {
                             self.core.sample_bank = Arc::new(bank);
-                            self.core.instruments[idx].sample_index = Some(slot);
+                            self.core.instruments[idx].kind = InstrumentKind::Sample { slot };
                             if let Some(ref mut audio) = self.core.audio {
                                 audio.set_sample_bank(self.core.sample_bank.clone());
                             }
@@ -529,7 +773,7 @@ impl RtrackApp {
 
         ui.separator();
 
-        let sample_slot = self.core.instruments[idx].sample_index;
+        let sample_slot = self.core.instruments[idx].sample_slot();
         if let Some(slot) = sample_slot {
             // Extract sample data before entering closures to avoid borrow conflicts
             let waveform_peaks: Vec<f32> = self
@@ -772,17 +1016,41 @@ impl RtrackApp {
     // ------------------------------------------------------------------
 
     fn draw_midi_params(&mut self, ui: &mut egui::Ui, idx: usize) {
-        ui.heading("MIDI Program");
-        let mut prog = self.core.instruments[idx].midi_program.unwrap_or(0) as i32;
+        let InstrumentKind::Midi(ref mut out) = self.core.instruments[idx].kind else {
+            return;
+        };
+        ui.heading("MIDI Out");
+        let mut changed = false;
+        let mut channel = out.channel as i32 + 1;
         if ui
             .add(
-                egui::DragValue::new(&mut prog)
-                    .range(0..=127)
-                    .prefix("Program: "),
+                egui::DragValue::new(&mut channel)
+                    .range(1..=16)
+                    .prefix("Channel: "),
             )
             .changed()
         {
-            self.core.instruments[idx].midi_program = Some(prog as u8);
+            out.channel = (channel - 1) as u8;
+            changed = true;
+        }
+        ui.horizontal(|ui| {
+            let mut send = out.program.is_some();
+            if ui.checkbox(&mut send, "Program").changed() {
+                out.program = send.then_some(0);
+                changed = true;
+            }
+            if let Some(ref mut program) = out.program {
+                let mut p = *program as i32;
+                if ui
+                    .add(egui::DragValue::new(&mut p).range(0..=127))
+                    .changed()
+                {
+                    *program = p as u8;
+                    changed = true;
+                }
+            }
+        });
+        if changed {
             self.core.dirty = true;
         }
     }
@@ -856,18 +1124,11 @@ impl RtrackApp {
     }
 
     fn find_empty_instrument_slot(&self) -> Option<usize> {
-        let max = self.core.instruments.len().min(MAX_INSTRUMENTS);
-        for i in 0..max {
-            let inst = &self.core.instruments[i];
-            if inst.name.is_empty()
-                && inst.synth_params.is_none()
-                && inst.sample_index.is_none()
-                && inst.midi_program.is_none()
-            {
-                return Some(i);
-            }
-        }
-        None
+        self.core
+            .instruments
+            .iter()
+            .take(MAX_INSTRUMENTS)
+            .position(Instrument::is_empty)
     }
 
     pub(crate) fn do_equal_slice(

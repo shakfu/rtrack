@@ -14,9 +14,9 @@ rtrack makes sound out of the box -- no external synth, DAW, or SoundFont requir
 
 - **Ableton Link** -- bidirectional tempo and transport sync with any Link-enabled application
 
-- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, optional scale-constrained note entry and transpose (26 scales), block selection, interpolation, undo/redo, 14 effect commands
+- **Pattern editing** -- modal input (Normal/Insert), piano keyboard layout, optional scale for note entry, transpose and playback (26 scales), block selection, interpolation, undo/redo, 18 named effect commands in two slots
 
-- **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects
+- **Song structure** -- multiple patterns with per-pattern row counts, order list with repeats, position jump and pattern break effects, column aliases with transpose, per-note tables
 
 - **Export** -- offline render to WAV/FLAC (no audio device needed), standard MIDI file import/export
 
@@ -56,7 +56,7 @@ Once running, open a song with `Ctrl+O` (or `:open`), reopen a recent one with `
 rtrack-gui                               # launch GUI frontend
 ```
 
-Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI program), interactive sample slicing (equal or transient detection with live preview, dividing either the whole sample or one slice), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. MIDI file *import* is currently TUI-only; the GUI exports MIDI but cannot open a `.mid`. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
+Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI channel and program), interactive sample slicing (equal or transient detection with live preview, dividing either the whole sample or one slice), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. MIDI file *import* is currently TUI-only; the GUI exports MIDI but cannot open a `.mid`. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
 
 ### CLI (Headless)
 
@@ -73,18 +73,20 @@ rtrack --play --loops 0 song.rtrk        # loop forever (Ctrl+C to stop)
 
 A tracker arranges music in **patterns** -- grids where each row is a point in time and each column is a channel. Patterns are sequenced in an **order list** to form a full song.
 
-Each cell has four fields:
+Each cell has a note, an instrument, a volume and two effect slots:
 
 ```text
-C-4 01 80 000
- |   |  |  |
- |   |  |  +-- Effect command + parameter
- |   |  +----- Volume (00-FF, maps to velocity)
- |   +-------- Instrument number (00-FF)
- +------------ Note (C-4, F#5, etc.) or === (note off)
+C-4  01  80  ARP37 VIB44
+ |    |   |    |     |
+ |    |   |    +-----+-- Effects: command name + hex parameter, applied left to right
+ |    |   +------------- Volume (00-FF, maps to velocity)
+ |    +----------------- Instrument number (00-FF)
+ +---------------------- Note (C-4, F#5, etc.) or === (note off)
 ```
 
-Empty fields display as dashes: `--- -- -- ---`
+Empty fields display as dashes: `---  --  --  ----- -----`
+
+In an effect slot, letters spell a command name; the command is set once the letters name one, so `VI` gives `VIB`. Hex digits then fill the parameter. Delete clears the slot.
 
 ## Audio Modes
 
@@ -96,7 +98,9 @@ rtrack supports three ways to produce sound, and they can be combined:
 | **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
 | **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
-All modes output through [cpal](https://crates.io/crates/cpal) with per-channel effects and a master stereo delay. MIDI output runs in parallel regardless of audio mode.
+All modes output through [cpal](https://crates.io/crates/cpal) with per-channel effects and a master stereo delay.
+
+Each instrument has one type: preset patch, synth, sample, or MIDI. A MIDI instrument sends notes, its program and channel messages to its own MIDI channel, and makes no sound itself. Only MIDI instruments send MIDI.
 
 ```sh
 rtrack --sf2 gm.sf2                                # SoundFont mode
@@ -109,7 +113,7 @@ rtrack --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
 
 ### Built-in Synth Patches
 
-30 patches selectable via `Exx` program change or per-instrument synth configuration:
+30 patches selectable via `PRG` program change or per-instrument synth configuration:
 
 | # | Name | Oscillator | Character |
 |---|------|-----------|-----------|
@@ -160,27 +164,51 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 
 | Cmd | Name | Description |
 |-----|------|-------------|
-| `0xy` | Arpeggio | Cycle note, note+x, note+y semitones each tick |
-| `1xx` | Portamento up | Slide pitch up by xx per tick |
-| `2xx` | Portamento down | Slide pitch down by xx per tick |
-| `3xx` | Tone portamento | Glide toward target note at speed xx |
-| `4xy` | Vibrato | Pitch vibrato (speed x, depth y) |
-| `5xy` | Volume slide | Slide volume up by x, down by y per tick |
-| `6xx` | Note delay | Delay note trigger by xx ticks |
-| `7xx` | Probability | Play the note with probability xx/255 (00 never, FF always) |
-| `8xx` | Randomize | Re-run this channel's last continuous effect, parameter varied by +/-xx |
-| `9xx` | Sample offset | Start the row's sample note xx/256 into its played span (00 start, 80 halfway) |
-| `Bxx` | Position jump | Jump to order position xx |
-| `Cxx` | MIDI CC | Send CC (controller from instrument col, value xx) |
-| `Dxx` | Pattern break | Break to row xx of next pattern |
-| `Exx` | Program change | Select synth patch or send MIDI program change |
-| `Fxx` | Set speed/tempo | xx < 20: ticks per row; xx >= 20: set BPM |
+| `ARPxy` | Arpeggio | Cycle note, note+x, note+y semitones each tick |
+| `SLUxx` | Slide up | Slide pitch up by xx/16 semitone per tick |
+| `SLDxx` | Slide down | Slide pitch down by xx/16 semitone per tick |
+| `PORxx` | Portamento | Glide toward the row's note at speed xx |
+| `VIBxy` | Vibrato | Pitch vibrato (speed x, depth y) |
+| `VSLxy` | Volume slide | Slide volume up by x, down by y per tick |
+| `DLYxx` | Note delay | Delay note trigger by xx ticks |
+| `CHAxx` | Chance | Play the note with probability xx/255 (00 never, FF always) |
+| `RNDxx` | Randomize | Re-run this channel's last continuous effect, parameter varied by +/-xx |
+| `OFSxx` | Sample offset | Start the row's sample note xx/256 into its played span (00 start, 80 halfway) |
+| `JMPxx` | Position jump | Jump to order position xx |
+| `BRKxx` | Pattern break | Break to row xx of next pattern |
+| `CCNxx` | CC number | Set the channel's MIDI CC number for `CCV` |
+| `CCVxx` | CC value | Send value xx on the channel's CC number |
+| `PRGxx` | Program change | Select SoundFont program or send MIDI program change |
+| `SPDxx` | Speed | Ticks per row |
+| `TPOxx` | Tempo | BPM |
+
+Pitch effects in both slots combine: `SLU10 VIB44` slides and wobbles at once. Version 1 songs, which stored one hex effect per cell (`0xy`..`Fxx`), load with each effect renamed; `Cxx` becomes `CCN` (from the instrument column) and `CCV`.
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 
-`9xx` needs a note on the same row and affects samples only. The offset is a fraction of the slice's trimmed span, not ProTracker's fixed 256-frame steps, so one value marks the same point in slices of any length. A looping sample started past its loop end wraps into the loop.
+`OFS` needs a note on the same row and affects samples only. The offset is a fraction of the slice's trimmed span, not ProTracker's fixed 256-frame steps, so one value marks the same point in slices of any length. A looping sample started past its loop end wraps into the loop.
 
-`7xx` and `8xx` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `8xx` varies only the continuous effects (`0xy`-`5xy`); it ignores structural ones, where a random parameter would scramble playback rather than colour it.
+`CHA` and `RND` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `RND` varies only the continuous effects (`ARP`, `SLU`, `SLD`, `VIB`, `VSL`); it ignores structural ones, where a random parameter would scramble playback rather than colour it.
+
+### Column Aliases
+
+A channel of one pattern can play the same channel of another pattern, transposed. The aliased column stores nothing: editing it edits the source, so four sections that share a drum part hold it once, and a riff played over a chord progression is one riff with one alias per chord. A source shorter than the pattern loops, so an 8-row phrase fills a 64-row pattern; a longer one is cut off. Aliases cannot chain.
+
+In the TUI, `:alias 05 +7` makes the cursor's channel play pattern 05's copy, 7 semitones up, and `:unalias` gives it back its own copy of what it played. In the GUI, the channel dialog has the same controls for the pattern being edited. The channel header shows the source, e.g. `=05+7`. An instrument marked *fixed pitch* ignores the transpose, for drums sharing a column with a bass line.
+
+### Instrument Filter and Drive
+
+Each instrument can have its own low-pass filter and drive. They process the instrument's notes before the channel's effects, so an instrument sounds the same on any channel, and two instruments on one channel keep their own sound. The channel keeps its effects and sends for mixing. Edit them with Ctrl+X in the TUI instrument list, or under *Filter and drive* in the GUI instrument editor.
+
+### Modulation
+
+Each instrument has two modulation slots. A slot runs an envelope (attack, hold, decay) or an LFO (sine, triangle, square or saw, with a period) from the start of each note, and adds it to volume, pitch, or the instrument's filter cutoff or drive. Times are in engine ticks, so modulation follows the tempo. Amounts are signed: volume steps, pitch in eighths of a semitone, cutoff and drive in sixteenths of an octave or drive unit. Edit them with Ctrl+G in the TUI instrument list, or under *Modulation* in the GUI instrument editor.
+
+### Tables
+
+A table is 16 rows that run beside a note, stepping every *tick rate* engine ticks and looping over the first *length* rows. Each row can transpose the note, scale its volume (00-7F, 7F unchanged) and run one effect. An instrument can have a table that starts with each of its notes, and `TBLxx` on a row selects table `xx` for that note. An octave arpeggio is two rows: `+00` and `+12`.
+
+Edit tables with Ctrl+E in the TUI instrument list, or in the *Table* section of the GUI instrument editor. Jumps, breaks, speed, tempo, delay, chance, randomize, sample offset, portamento and `TBL` do nothing inside a table.
 
 ### Instruments & Samples
 
@@ -236,7 +264,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 - External MIDI clock input for slaving to incoming clock
 
-- Per-channel MIDI channel mapping
+- MIDI instruments: each sends on its own MIDI channel, with an optional program
 
 ### Sync
 
@@ -246,9 +274,11 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 ### Timing & Groove
 
-- **Swing**: configurable groove amount (0-100%, 50% = straight)
+- **Groove**: ticks per row, cycling by row: `7 5` swings, `off` is straight. Version 2 songs' swing converts to the nearest groove on load
 
-- **Tempo automation**: BPM changes via `Fxx` effect or `tempo_map` in the song file
+- **Scale**: constrains note entry and transpose, and at playback snaps alias transposes, arpeggio steps and table transposes into the scale. Notes as written always play as written. Instruments marked *fixed pitch* are exempt
+
+- **Tempo automation**: BPM changes via `TPO` effect or `tempo_map` in the song file
 
 - **Configurable row highlighting**: beat and bar intervals supporting time signatures like 3/4, 6/8, 5/4
 
@@ -272,21 +302,22 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 ```json
 {
+  "version": 3,
   "title": "My Song",
-  "bpm": 140, "speed": 6, "swing": 50,
+  "bpm": 140, "speed": 6, "groove": [7, 5],
   "channels": 4, "rows_per_pattern": 64,
   "highlight_beat": 4, "highlight_bar": 16,
   "patterns": [ ... ],
   "order": [0, 1, 2],
   "instruments": [
-    { "slot": 0, "name": "Kick", "sample_index": 0 },
-    { "slot": 5, "name": "Lead", "midi_program": 80 },
-    { "slot": 10, "name": "Pad", "synth_params": {
+    { "slot": 0, "name": "Kick", "kind": { "type": "sample", "slot": 0 } },
+    { "slot": 5, "name": "Lead", "kind": { "type": "midi", "channel": 3, "program": 80 } },
+    { "slot": 10, "name": "Pad", "kind": { "type": "synth", "params": {
         "waveform": 11, "attack": 0.3, "decay": 0.5, "sustain": 0.7,
         "release": 0.8, "filter_cutoff": 3.0, "filter_resonance": 0.2,
         "filter_env": 1.0, "detune": 15.0, "filter_type": "LowPass",
         "sub_osc": 0.2, "fm_ratio": 0.0, "fm_index": 0.0,
-        "pulse_width": 0.25 } }
+        "pulse_width": 0.25 } } }
   ],
   "sample_refs": [
     { "slot": 0, "name": "kick", "path": "samples/0-kick.wav",
@@ -295,9 +326,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 }
 ```
 
-- **Instruments**: only non-empty slots are saved (name, MIDI program, sample assignment, synth params)
-
-- **Synth params**: optional per-instrument synthesis parameters. When present, overrides the channel's default patch. New fields use serde defaults for backwards compatibility.
+- **Instruments**: only non-empty slots are saved: name, `kind` (`preset`, `synth` with params, `sample` with a bank slot, or `midi` with channel and program), and pitch bend range. Version 1 files, which stored `sample_index`, `synth_params` and `midi_program` instead, still load.
 
 - **Sample refs**: file paths stored relative to the `.rtrk` file, plus metadata (base note, trim, loop points). Audio data is not embedded -- samples are reloaded from disk on open. Missing files produce a warning but do not block loading.
 
@@ -312,15 +341,15 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `c-major-scale.rtrk` | Basic note entry -- ascending C major scale on one channel |
 | `four-on-the-floor.rtrk` | Multi-channel beat -- kick, snare, hi-hat, bass with volume variation |
 | `chord-progression.rtrk` | Polyphony -- I-V-vi-IV chords voiced across 3 channels |
-| `arpeggio-demo.rtrk` | Effects -- `0xy` arpeggio, `4xy` vibrato, `Exx` program change |
-| `portamento-slide.rtrk` | Effects -- `1xx` porta up, `3xx` tone portamento, `5xy` volume slide |
-| `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `Bxx` position jump |
-| `all-patches.rtrk` | Built-in synth patches cycled with `Exx` program change |
+| `arpeggio-demo.rtrk` | Effects -- `ARP` arpeggio, `VIB` vibrato, `PRG` program change |
+| `portamento-slide.rtrk` | Effects -- `SLU` slide up, `POR` portamento, `VSL` volume slide |
+| `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `JMP` position jump |
+| `all-patches.rtrk` | Built-in synth patches cycled with `PRG` program change |
 | `fundsp-pad.rtrk` | FundspPad patch (program 8) -- pad chord progression using fundsp synthesis |
-| `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
+| `speed-tempo.rtrk` | `SPD` speed and `TPO` tempo changes |
 | `sliced-amen.rtrk` | Sample slicing -- 8 equal slices of amen.wav played sequentially (170 BPM) |
 | `drumloops.rtrk` | Looping drum slices -- 8 amen.wav slices with loop points enabled (130 BPM) |
-| `sample-offset.rtrk` | `9xx` sample offset -- the whole break retriggered at 8 offsets, then reordered, then offsets within slices, with transposition and a no-note `9xx` row (175 BPM) |
+| `sample-offset.rtrk` | `OFS` sample offset -- the whole break retriggered at 8 offsets, then reordered, then offsets within slices, with transposition and a no-note `OFS` row (175 BPM) |
 
 ```sh
 rtrack examples/chord-progression.rtrk

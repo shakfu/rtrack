@@ -1,5 +1,4 @@
 use egui::{FontId, Pos2, Rect, Ui};
-use rtrack_core::tracker::Pattern;
 
 use crate::state::{GridColors, Mode, SubColumn};
 
@@ -28,13 +27,23 @@ const ROW_HEIGHT: f32 = 18.0;
 const NOTE_CHARS: usize = 3;
 const INST_CHARS: usize = 2;
 const VOL_CHARS: usize = 2;
-const FX_CHARS: usize = 3;
+const FX_CHARS: usize = 5;
 const GAP_CHARS: usize = 2;
+/// Between the two effect slots.
+const FX_GAP_CHARS: usize = 1;
 const ROW_NUM_CHARS: usize = 3;
 const SEPARATOR_CHARS: usize = 3;
 
 fn channel_width_chars() -> usize {
-    NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS + VOL_CHARS + GAP_CHARS + FX_CHARS
+    NOTE_CHARS
+        + GAP_CHARS
+        + INST_CHARS
+        + GAP_CHARS
+        + VOL_CHARS
+        + GAP_CHARS
+        + FX_CHARS
+        + FX_GAP_CHARS
+        + FX_CHARS
 }
 
 /// How many channels fit in the given pixel width.
@@ -65,6 +74,8 @@ pub struct GridParams {
     pub block_start: Option<(usize, usize)>,
     pub block_end: Option<(usize, usize)>,
     pub colors: GridColors,
+    /// A partly typed effect name: (row, channel, slot, letters).
+    pub fx_pending: Option<(usize, usize, usize, String)>,
 }
 
 /// Where the grid was laid out, as far as hit-testing needs to know.
@@ -123,6 +134,7 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
     let vol_start = inst_start + (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
     let vol_end = vol_start + VOL_CHARS as f32 * CHAR_WIDTH;
     let fx_start = vol_start + (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+    let fx2_start = fx_start + (FX_CHARS + FX_GAP_CHARS) as f32 * CHAR_WIDTH;
 
     // The gaps between fields, and the separator past the effect column,
     // resolve to the field on their left rather than to nothing: a click a
@@ -133,8 +145,10 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
         SubColumn::Instrument
     } else if within_ch >= vol_start && within_ch < vol_end {
         SubColumn::Volume
+    } else if within_ch >= fx2_start {
+        SubColumn::Fx2
     } else if within_ch >= fx_start {
-        SubColumn::Effect
+        SubColumn::Fx1
     } else if within_ch < inst_start {
         SubColumn::Note
     } else if within_ch < vol_start {
@@ -146,7 +160,13 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
     Some((row_idx, ch_idx, sub))
 }
 
-pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<GridAction> {
+pub fn draw_grid(
+    ui: &mut Ui,
+    song: &rtrack_core::tracker::Song,
+    pattern_idx: usize,
+    params: &GridParams,
+) -> Vec<GridAction> {
+    let pattern = &song.patterns[pattern_idx];
     let font = FontId::monospace(13.0);
     let available = ui.available_size();
     let (response, painter) = ui.allocate_painter(available, egui::Sense::click_and_drag());
@@ -294,7 +314,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
                 );
             }
 
-            let cell = pattern.get(row_idx, ch_idx);
+            let cell = &song.cell(pattern_idx, row_idx, ch_idx);
             let is_muted = if let Some(solo) = params.solo_channel {
                 ch_idx != solo
             } else {
@@ -305,7 +325,12 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             let note_text = cell.display_note();
             let inst_text = cell.display_instrument();
             let vol_text = cell.display_volume();
-            let fx_text = cell.display_effect();
+            let fx_text = |slot: usize| match &params.fx_pending {
+                Some((r, ch, s, pending)) if *r == row_idx && *ch == ch_idx && *s == slot => {
+                    format!("{:-<5}", pending)
+                }
+                _ => cell.display_fx(slot),
+            };
 
             let note_fg = if is_muted {
                 c.fg_muted
@@ -328,12 +353,14 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             } else {
                 c.fg_vol_empty
             };
-            let fx_fg = if is_muted {
-                c.fg_muted
-            } else if cell.effect.is_some() || cell.effect_value.is_some() {
-                c.fg_fx_set
-            } else {
-                c.fg_fx_empty
+            let fx_fg = |slot: usize| {
+                if is_muted {
+                    c.fg_muted
+                } else if cell.fx[slot].is_some() {
+                    c.fg_fx_set
+                } else {
+                    c.fg_fx_empty
+                }
             };
 
             // Positions
@@ -387,15 +414,18 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             );
             x += (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
 
-            // Effect
-            draw_sub(x, FX_CHARS, SubColumn::Effect, &painter);
-            painter.text(
-                Pos2::new(x, y + 2.0),
-                egui::Align2::LEFT_TOP,
-                &fx_text,
-                font.clone(),
-                fx_fg,
-            );
+            // Effects
+            for (slot, sub) in [(0, SubColumn::Fx1), (1, SubColumn::Fx2)] {
+                draw_sub(x, FX_CHARS, sub, &painter);
+                painter.text(
+                    Pos2::new(x, y + 2.0),
+                    egui::Align2::LEFT_TOP,
+                    fx_text(slot),
+                    font.clone(),
+                    fx_fg(slot),
+                );
+                x += (FX_CHARS + FX_GAP_CHARS) as f32 * CHAR_WIDTH;
+            }
         }
     }
 
@@ -573,12 +603,24 @@ mod tests {
             NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS + VOL_CHARS + GAP_CHARS,
             FX_CHARS,
         );
+        let fx2 = mid(
+            NOTE_CHARS
+                + GAP_CHARS
+                + INST_CHARS
+                + GAP_CHARS
+                + VOL_CHARS
+                + GAP_CHARS
+                + FX_CHARS
+                + FX_GAP_CHARS,
+            FX_CHARS,
+        );
 
         for (x, expected) in [
             (note, SubColumn::Note),
             (inst, SubColumn::Instrument),
             (vol, SubColumn::Volume),
-            (fx, SubColumn::Effect),
+            (fx, SubColumn::Fx1),
+            (fx2, SubColumn::Fx2),
         ] {
             let hit = hit_test(Pos2::new(x, row_y(2)), &geom());
             assert_eq!(hit, Some((2, 1, expected)), "at x={x}");

@@ -30,7 +30,7 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
 
     let mut lines = Vec::new();
 
-    if let Some(ref params) = app.core.instruments[slot].synth_params {
+    if let rtrack_core::InstrumentKind::Synth { ref params } = app.core.instruments[slot].kind {
         let patch = Patch::from_program(params.waveform);
 
         let filter_type_str = match params.filter_type {

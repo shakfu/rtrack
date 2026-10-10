@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use super::{App, ChannelType, Mode, SampleField, SettingsField, SubColumn};
+use super::{App, Mode, SampleField, SettingsField, SubColumn};
 use rtrack_core::constants::*;
 use rtrack_core::theory::ScaleSetting;
-use rtrack_core::tracker::Note;
+use rtrack_core::tracker::{Note, Song};
 
 impl App {
     // -- Song settings dialog --
@@ -31,7 +31,7 @@ impl App {
             SettingsField::Rows => self.core.song.rows_per_pattern.to_string(),
             SettingsField::HighlightBeat => self.core.song.highlight_beat.to_string(),
             SettingsField::HighlightBar => self.core.song.highlight_bar.to_string(),
-            SettingsField::Swing => self.core.song.swing.to_string(),
+            SettingsField::Groove => self.core.song.groove_text(),
             SettingsField::Scale => match self.core.song.scale {
                 Some(sc) => sc.display(),
                 None => "off".to_string(),
@@ -90,12 +90,9 @@ impl App {
                             pat.channels = v;
                         }
                         // Grow or shrink channel configs to match new channel count
-                        while self.core.channels.len() < v {
-                            let idx = self.core.channels.len();
-                            self.core
-                                .channels
-                                .push(super::ChannelConfig::new(idx as u8));
-                        }
+                        self.core
+                            .channels
+                            .resize_with(v, super::ChannelConfig::default);
                         self.core.channels.truncate(v);
                         if self.cursor_channel >= v {
                             self.cursor_channel = v - 1;
@@ -126,13 +123,13 @@ impl App {
                     self.core.song.highlight_bar = v;
                 }
             }
-            SettingsField::Swing => {
-                if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u8>() {
-                    let v = v.clamp(0, 100);
+            SettingsField::Groove => match Song::parse_groove(&self.dialogs.settings_edit_buf) {
+                Ok(groove) => {
                     self.push_undo();
-                    self.core.song.swing = v;
+                    self.core.song.groove = groove;
                 }
-            }
+                Err(e) => self.status_message = Some(format!("Groove unchanged: {e}")),
+            },
             SettingsField::Scale => match ScaleSetting::parse(&self.dialogs.settings_edit_buf) {
                 Ok(parsed) if parsed != self.core.song.scale => {
                     self.push_undo();
@@ -226,6 +223,53 @@ impl App {
             KeyCode::Tab => {
                 // Open synth editor for current instrument
                 self.open_synth_editor();
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_table_editor();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.dialogs.mod_field = 0;
+                self.prev_mode = self.mode;
+                self.mode = Mode::Modulation;
+            }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.dialogs.inst_fx_field = 0;
+                self.prev_mode = self.mode;
+                self.mode = Mode::InstrumentFx;
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let inst = &mut self.core.instruments[self.dialogs.instrument_cursor];
+                inst.fixed_pitch = !inst.fixed_pitch;
+                self.core.dirty = true;
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let slot = self.dialogs.instrument_cursor;
+                let inst = &mut self.core.instruments[slot];
+                inst.kind = inst.kind.cycled(slot, true);
+                self.core.dirty = true;
+            }
+            KeyCode::Left | KeyCode::Right => {
+                // MIDI instruments: channel, or program with Ctrl.
+                let slot = self.dialogs.instrument_cursor;
+                let up = key.code == KeyCode::Right;
+                if let super::InstrumentKind::Midi(ref mut out) = self.core.instruments[slot].kind {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        out.program = match (out.program, up) {
+                            (None, true) => Some(0),
+                            (None, false) => None,
+                            (Some(0), false) => None,
+                            (Some(p), true) => Some((p + 1).min(MIDI_MAX_VALUE)),
+                            (Some(p), false) => Some(p - 1),
+                        };
+                    } else {
+                        out.channel = if up {
+                            (out.channel + 1).min(15)
+                        } else {
+                            out.channel.saturating_sub(1)
+                        };
+                    }
+                    self.core.dirty = true;
+                }
             }
             KeyCode::Char(c) => {
                 self.core.instruments[self.dialogs.instrument_cursor]
@@ -480,11 +524,10 @@ impl App {
                 self.adjust_synth_field(slot, -10);
             }
             KeyCode::Delete => {
-                // Clear custom synth params (revert to channel default)
-                self.core.instruments[slot].synth_params = None;
+                // Back to the slot's preset patch.
+                self.core.instruments[slot].kind = super::InstrumentKind::Preset;
                 self.core.dirty = true;
-                self.status_message =
-                    Some("Synth params cleared (using channel default)".to_string());
+                self.status_message = Some("Synth params cleared (using preset)".to_string());
                 self.mode = self.prev_mode;
             }
             _ => {}
@@ -495,7 +538,7 @@ impl App {
         use crate::app::SynthField;
         use rtrack_core::audio::synth::Patch;
 
-        if let Some(ref mut params) = self.core.instruments[slot].synth_params {
+        if let super::InstrumentKind::Synth { ref mut params } = self.core.instruments[slot].kind {
             match self.dialogs.synth_editor_field {
                 SynthField::Waveform => {
                     let max = Patch::count() as i32;
@@ -555,6 +598,177 @@ impl App {
         }
     }
 
+    fn handle_table_editor_key(&mut self, key: KeyEvent) {
+        use rtrack_core::tracker::{FxKey, TABLE_ROWS};
+        let t = self.dialogs.table_index;
+        if t >= self.core.song.tables.len() {
+            self.mode = self.prev_mode;
+            return;
+        }
+        let row = self.dialogs.table_row;
+        let field = self.dialogs.table_field;
+        // Edit a copy, and record an undo step only if it changed.
+        let mut table = self.core.song.tables[t].clone();
+        let r = &mut table.rows[row];
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = self.prev_mode;
+                return;
+            }
+            KeyCode::Up => self.dialogs.table_row = row.saturating_sub(1),
+            KeyCode::Down => self.dialogs.table_row = (row + 1).min(TABLE_ROWS - 1),
+            KeyCode::Left => self.dialogs.table_field = field.saturating_sub(1),
+            KeyCode::Right | KeyCode::Tab => self.dialogs.table_field = (field + 1).min(2),
+            KeyCode::Delete | KeyCode::Backspace => match field {
+                0 => r.transpose = None,
+                1 => r.volume = None,
+                _ => r.fx = None,
+            },
+            KeyCode::Char('[') => table.length = table.length.saturating_sub(1).max(1),
+            KeyCode::Char(']') => table.length = (table.length + 1).min(TABLE_ROWS as u8),
+            KeyCode::Char('<') => table.tic = table.tic.saturating_sub(1).max(1),
+            KeyCode::Char('>') => table.tic = table.tic.saturating_add(1),
+            KeyCode::Char(c @ ('+' | '=' | '-')) if field == 0 => {
+                let step = if c == '-' { -1 } else { 1 };
+                r.transpose = Some(r.transpose.unwrap_or(0).saturating_add(step).clamp(-48, 48));
+            }
+            KeyCode::Char(c) if field == 1 => {
+                if let Some(d) = c.to_digit(16) {
+                    r.volume = Some((r.volume.unwrap_or(0) << 4) | d as u8);
+                }
+            }
+            KeyCode::Char(c) if field == 2 => {
+                let pos = (t, row, 0, 0);
+                if self.dialogs.table_typing.at(pos).key(&mut r.fx, c) == FxKey::Rejected {
+                    self.status_message = Some(format!("No effect command starts that way: {c}"));
+                }
+            }
+            _ => {}
+        }
+        if self.dialogs.table_row != row || self.dialogs.table_field != field {
+            self.dialogs.table_typing.reset();
+        }
+        if table != self.core.song.tables[t] {
+            if let Some(fx) = table.rows[row].fx {
+                if !rtrack_core::tracker::allowed_in_table(fx.cmd) {
+                    self.status_message =
+                        Some(format!("{} does nothing in a table", fx.cmd.name()));
+                }
+            }
+            self.push_undo();
+            self.core.song.tables[t] = table;
+            self.core.dirty = true;
+        }
+    }
+
+    /// The instrument's own filter and drive: 0 filter on, 1 cutoff,
+    /// 2 resonance, 3 drive on, 4 drive amount.
+    fn handle_instrument_fx_key(&mut self, key: KeyEvent) {
+        let field = self.dialogs.inst_fx_field;
+        let fx = &mut self.core.instruments[self.dialogs.instrument_cursor].fx;
+        let dir = match key.code {
+            KeyCode::Right => 1.0,
+            KeyCode::Left => -1.0,
+            _ => 0.0,
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.mode = self.prev_mode,
+            KeyCode::Up => self.dialogs.inst_fx_field = field.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => self.dialogs.inst_fx_field = (field + 1).min(4),
+            KeyCode::Left | KeyCode::Right => {
+                match field {
+                    0 => fx.filter_enabled = !fx.filter_enabled,
+                    // Cutoff moves by a semitone's ratio, so the range is even.
+                    1 => {
+                        fx.filter_cutoff =
+                            (fx.filter_cutoff * 2f32.powf(dir / 12.0)).clamp(20.0, 20000.0)
+                    }
+                    2 => fx.filter_resonance = (fx.filter_resonance + 0.05 * dir).clamp(0.0, 1.0),
+                    3 => fx.distortion_enabled = !fx.distortion_enabled,
+                    _ => fx.distortion_drive = (fx.distortion_drive + 0.5 * dir).clamp(1.0, 20.0),
+                }
+                self.core.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Modulation slots. Each slot has `MOD_FIELDS` fields: source, dest,
+    /// amount, then the source's own: attack, hold, decay for an envelope;
+    /// shape, period for an LFO.
+    fn handle_modulation_key(&mut self, key: KeyEvent) {
+        use rtrack_core::modulation::{LfoShape, ModDest, ModSlot, ModSource, MOD_SLOTS};
+        let last = MOD_SLOTS * super::MOD_FIELDS - 1;
+        let at = self.dialogs.mod_field;
+        let step: i32 = match key.code {
+            KeyCode::Right => 1,
+            KeyCode::Left => -1,
+            KeyCode::PageUp => 16,
+            KeyCode::PageDown => -16,
+            _ => 0,
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.mode = self.prev_mode;
+                return;
+            }
+            KeyCode::Up => self.dialogs.mod_field = at.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => self.dialogs.mod_field = (at + 1).min(last),
+            _ => {}
+        }
+        if step == 0 {
+            return;
+        }
+        let (slot, field) = (at / super::MOD_FIELDS, at % super::MOD_FIELDS);
+        let mods = &mut self.core.instruments[self.dialogs.instrument_cursor].mods;
+        let cycle = |i: usize, n: usize| (i as i32 + step.signum()).rem_euclid(n as i32) as usize;
+        let nudge = |v: u8, lo: u8| (v as i32 + step).clamp(lo as i32, 255) as u8;
+        if field == 0 {
+            // Off, envelope, LFO
+            let now = match mods[slot].map(|m| m.source) {
+                None => 0,
+                Some(ModSource::Envelope { .. }) => 1,
+                Some(ModSource::Lfo { .. }) => 2,
+            };
+            mods[slot] = match cycle(now, 3) {
+                0 => None,
+                1 => Some(ModSlot {
+                    source: ModSource::Envelope {
+                        attack: 0,
+                        hold: 6,
+                        decay: 24,
+                    },
+                    ..mods[slot].unwrap_or_default()
+                }),
+                _ => Some(ModSlot {
+                    source: ModSource::Lfo {
+                        shape: LfoShape::Sine,
+                        period: 24,
+                    },
+                    ..mods[slot].unwrap_or_default()
+                }),
+            };
+        } else if let Some(m) = mods[slot].as_mut() {
+            match (field, &mut m.source) {
+                (1, _) => {
+                    let i = ModDest::ALL.iter().position(|d| *d == m.dest).unwrap_or(0);
+                    m.dest = ModDest::ALL[cycle(i, ModDest::ALL.len())];
+                }
+                (2, _) => m.amount = (m.amount as i32 + step).clamp(-128, 127) as i8,
+                (3, ModSource::Envelope { attack, .. }) => *attack = nudge(*attack, 0),
+                (4, ModSource::Envelope { hold, .. }) => *hold = nudge(*hold, 0),
+                (5, ModSource::Envelope { decay, .. }) => *decay = nudge(*decay, 0),
+                (3, ModSource::Lfo { shape, .. }) => {
+                    let i = LfoShape::ALL.iter().position(|s| s == shape).unwrap_or(0);
+                    *shape = LfoShape::ALL[cycle(i, LfoShape::ALL.len())];
+                }
+                (4, ModSource::Lfo { period, .. }) => *period = nudge(*period, 1),
+                _ => {}
+            }
+        }
+        self.core.dirty = true;
+    }
+
     fn handle_quit_confirm_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -588,58 +802,34 @@ impl App {
         self.mode = Mode::TrackConfig;
     }
 
-    // Track config fields:
-    // Midi:   0=Name, 1=Type (2 fields)
-    // Synth:  0=Name, 1=Type, 2=Instrument, 3..16=Effects (17 fields)
-    // Sample: 0=Name, 1=Type, 2..15=Effects (16 fields)
+    // Track config fields: 0=Name, 1=Instrument (default), 2.. effects.
     //
     // Effects (relative to fx_off):
     //  +0=Filter, +1=Cutoff, +2=Resonance,
     //  +3=Distortion, +4=Drive,
     //  +5=Chorus, +6=Rate, +7=Depth, +8=Mix,
     //  +9=Delay, +10=Time, +11=Feedback, +12=Mix,
-    //  +13=Reverb, +14=Size, +15=Damp, +16=Mix  (but wait, that's not right)
-    // 3 + 2 + 4 + 4 + 4 = 17 effect fields total
+    //  +13=Reverb, +14=Size, +15=Damp, +16=Mix
     const EFFECT_FIELDS: usize = 17;
 
+    /// Field index where the effects fields start.
+    pub(crate) const TRACK_FX_OFFSET: usize = 2;
+
     fn track_config_num_fields(&self) -> usize {
-        let ch = self.cursor_channel;
-        let ch_type = self
-            .core
-            .channels
-            .get(ch)
-            .map(|c| c.channel_type)
-            .unwrap_or(ChannelType::Midi);
-        match ch_type {
-            ChannelType::Midi => 2,
-            ChannelType::Synth => 3 + Self::EFFECT_FIELDS, // Name, Type, Instrument + effects
-            ChannelType::Sample => 3 + Self::EFFECT_FIELDS, // Name, Type, Load + effects
-        }
+        Self::TRACK_FX_OFFSET + Self::EFFECT_FIELDS
     }
 
-    /// Returns the field index offset where effects fields start (varies by track type).
     fn track_config_fx_offset(&self) -> usize {
-        let ch = self.cursor_channel;
-        let ch_type = self
-            .core
-            .channels
-            .get(ch)
-            .map(|c| c.channel_type)
-            .unwrap_or(ChannelType::Midi);
-        match ch_type {
-            ChannelType::Synth | ChannelType::Sample => 3, // after Name, Type, Instrument/Load
-            ChannelType::Midi => 2,                        // after Name, Type
-        }
+        Self::TRACK_FX_OFFSET
     }
 
     fn handle_track_config_key(&mut self, key: KeyEvent) {
         let ch = self.cursor_channel;
         // Ensure channel config exists
-        while ch >= self.core.channels.len() {
-            let idx = self.core.channels.len();
+        if ch >= self.core.channels.len() {
             self.core
                 .channels
-                .push(super::ChannelConfig::new(idx as u8));
+                .resize_with(ch + 1, super::ChannelConfig::default);
         }
         let num_fields = self.track_config_num_fields();
         match key.code {
@@ -665,20 +855,6 @@ impl App {
                 self.adjust_track_config_field(ch, 1);
             }
             KeyCode::Enter => {
-                let ch_type = self
-                    .core
-                    .channels
-                    .get(ch)
-                    .map(|c| c.channel_type)
-                    .unwrap_or(ChannelType::Midi);
-                // On the Load field for Sample tracks, open file browser
-                if self.ch_fx_field == 2 && ch_type == ChannelType::Sample {
-                    self.open_file_browser(
-                        super::FileBrowserAction::LoadSample(ch),
-                        vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
-                    );
-                    return;
-                }
                 // Save name
                 self.core.channels[ch].name = self.rename_buf.clone();
                 // Send effects to audio engine
@@ -739,78 +915,21 @@ impl App {
         match self.ch_fx_field {
             0 => {} // Name: typed, not adjusted
             1 => {
-                // Type: cycle
-                if ch < self.core.channels.len() {
-                    self.core.channels[ch].channel_type = if dir > 0 {
-                        self.core.channels[ch].channel_type.next()
-                    } else {
-                        self.core.channels[ch].channel_type.prev()
-                    };
-                    // Clamp field index if switching (field count changes)
-                    let new_num = self.track_config_num_fields();
-                    if self.ch_fx_field >= new_num {
-                        self.ch_fx_field = new_num - 1;
-                    }
+                // Default instrument: none, then 00..FF.
+                let next = match (self.core.channels[ch].default_instrument, dir > 0) {
+                    (None, true) => Some(0),
+                    (None, false) => None,
+                    (Some(0), false) => None,
+                    (Some(v), true) => Some(v.saturating_add(1)),
+                    (Some(v), false) => Some(v - 1),
+                };
+                self.core.channels[ch].default_instrument = next;
+                if let Some(inst) = next {
+                    let note = self.current_octave * 12 + 12; // C at current octave
+                    self.core
+                        .preview_note_with_instrument(ch, note, 100, Some(inst));
                 }
-            }
-            2 => {
-                let ch_type = self
-                    .core
-                    .channels
-                    .get(ch)
-                    .map(|c| c.channel_type)
-                    .unwrap_or(ChannelType::Midi);
-                match ch_type {
-                    ChannelType::Synth => {
-                        // Instrument field
-                        match self.core.channels[ch].default_instrument {
-                            None => self.core.channels[ch].default_instrument = Some(0),
-                            Some(v) => {
-                                let next = (v as i32 + dir).clamp(0, 255) as u8;
-                                self.core.channels[ch].default_instrument = Some(next);
-                            }
-                        }
-                    }
-                    ChannelType::Sample => {
-                        // Cycle through loaded sample bank slots
-                        let slots = self.core.sample_bank.loaded_slots();
-                        if slots.is_empty() {
-                            // No samples loaded -- fall back to file browser
-                            self.open_file_browser(
-                                super::FileBrowserAction::LoadSample(ch),
-                                vec!["wav".to_string(), "aif".to_string(), "aiff".to_string()],
-                            );
-                            return;
-                        }
-                        let current = self.core.channels[ch]
-                            .default_instrument
-                            .map(|i| i as usize);
-                        let cur_idx = current.and_then(|c| slots.iter().position(|&s| s == c));
-                        let next_idx = match cur_idx {
-                            Some(i) => {
-                                if dir > 0 {
-                                    (i + 1) % slots.len()
-                                } else {
-                                    (i + slots.len() - 1) % slots.len()
-                                }
-                            }
-                            None => 0,
-                        };
-                        let slot = slots[next_idx];
-                        self.core.channels[ch].default_instrument = Some(slot as u8);
-                        // Preview the selected sample
-                        let midi_ch = self.core.midi_channel_for(ch);
-                        let note = self.current_octave * 12 + 12; // C at current octave
-                        self.core.preview_note_with_instrument(
-                            midi_ch,
-                            note,
-                            100,
-                            Some(slot as u8),
-                        );
-                        self.core.dirty = true;
-                    }
-                    _ => {}
-                }
+                self.core.dirty = true;
             }
             f if f == fx_off => {
                 self.core.channels[ch].effects_params.filter_enabled =
@@ -1177,6 +1296,11 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &str) {
+        if let Some(args) = cmd.strip_prefix("alias ") {
+            self.mode = Mode::Normal;
+            self.alias_column(args);
+            return;
+        }
         match cmd {
             "p" | "pattern" => {
                 self.open_pattern_matrix();
@@ -1242,6 +1366,20 @@ impl App {
             "recent" => {
                 self.open_recent_files();
             }
+            "unalias" => {
+                self.mode = Mode::Normal;
+                let pattern = self.core.song.order[self.current_order_position()];
+                if self.core.song.patterns[pattern]
+                    .alias(self.cursor_channel)
+                    .is_some()
+                {
+                    self.push_undo();
+                    self.core.song.unalias(pattern, self.cursor_channel);
+                    self.status_message = Some("Column now holds its own copy".to_string());
+                } else {
+                    self.status_message = Some("This column is not an alias".to_string());
+                }
+            }
             "audio" | "astat" => {
                 self.mode = Mode::Normal;
                 self.status_message = Some(match self.core.audio_stats() {
@@ -1286,10 +1424,11 @@ impl App {
             } else {
                 (self.cursor_channel, anchor_ch)
             };
-            let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    pattern.get_mut(r, c).transpose_note(steps, scale);
+                    self.core
+                        .song
+                        .edit_cell(pattern_idx, r, c, |cell| cell.transpose_note(steps, scale));
                 }
             }
             let unit = if scale.is_some() {
@@ -1299,10 +1438,10 @@ impl App {
             };
             self.status_message = Some(format!("Transposed block by {} {}", steps, unit));
         } else {
-            let pattern = &mut self.core.song.patterns[pattern_idx];
-            pattern
-                .get_mut(self.cursor_row, self.cursor_channel)
-                .transpose_note(steps, scale);
+            let (row, ch) = (self.cursor_row, self.cursor_channel);
+            self.core.song.edit_cell(pattern_idx, row, ch, |cell| {
+                cell.transpose_note(steps, scale)
+            });
         }
     }
 
@@ -1343,17 +1482,16 @@ impl App {
         }
 
         // Calculate which channel/sub-column was clicked
-        let row_num_width: u16 = 3;
-        let sep_width: u16 = 3;
-        let channel_width: u16 = 17; // 16 (channel) + 1 for alignment
-
-        if x < area_x + row_num_width + sep_width {
+        use crate::tui::pattern_editor::{
+            sub_column_at, CHANNEL_WIDTH, ROW_NUM_WIDTH, SEPARATOR_WIDTH,
+        };
+        if x < area_x + ROW_NUM_WIDTH + SEPARATOR_WIDTH {
             return;
         }
-        let col_x = x - area_x - row_num_width - sep_width;
+        let col_x = x - area_x - ROW_NUM_WIDTH - SEPARATOR_WIDTH;
 
-        // Each channel is channel_width + separator_width (except first)
-        let stride = channel_width + sep_width;
+        // Each channel is followed by a separator
+        let stride = CHANNEL_WIDTH + SEPARATOR_WIDTH;
         let ch = (col_x / stride) as usize;
         let within = col_x % stride;
 
@@ -1361,16 +1499,7 @@ impl App {
         let actual_ch = self.track_page * CHANNELS_PER_PAGE + ch;
         if actual_ch < pattern.channels && actual_ch < self.core.song.channels {
             self.cursor_channel = actual_ch;
-            // note=0..3, gap=3..5, inst=5..7, gap=7..9, vol=9..11, gap=11..13, fx=13..16
-            if within < 5 {
-                self.cursor_sub = SubColumn::Note;
-            } else if within < 9 {
-                self.cursor_sub = SubColumn::Instrument;
-            } else if within < 13 {
-                self.cursor_sub = SubColumn::Volume;
-            } else {
-                self.cursor_sub = SubColumn::Effect;
-            }
+            self.cursor_sub = sub_column_at(within.min(CHANNEL_WIDTH - 1));
         }
     }
 
@@ -1395,6 +1524,9 @@ impl App {
             Mode::InstrumentList => self.handle_instrument_list_key(key),
             Mode::SampleEditor => self.handle_sample_editor_key(key),
             Mode::SynthEditor => self.handle_synth_editor_key(key),
+            Mode::TableEditor => self.handle_table_editor_key(key),
+            Mode::InstrumentFx => self.handle_instrument_fx_key(key),
+            Mode::Modulation => self.handle_modulation_key(key),
             Mode::QuitConfirm => self.handle_quit_confirm_key(key),
             Mode::TrackConfig => self.handle_track_config_key(key),
             Mode::PatternMatrix => self.handle_pattern_matrix_key(key),
@@ -1765,9 +1897,7 @@ impl App {
             // Piano keyboard note entry
             KeyCode::Char(c) => match self.cursor_sub {
                 SubColumn::Note => self.try_enter_note(c),
-                SubColumn::Instrument => self.try_enter_hex_digit(c, SubColumn::Instrument),
-                SubColumn::Volume => self.try_enter_hex_digit(c, SubColumn::Volume),
-                SubColumn::Effect => self.try_enter_hex_digit(c, SubColumn::Effect),
+                sub => self.type_into_field(c, sub),
             },
 
             _ => {}
@@ -1852,78 +1982,105 @@ impl App {
             );
         }
 
-        let Some(cell) = self.core.song.cell_at_mut(order, self.cursor_row, ch) else {
+        let Some(&pattern_idx) = self.core.song.order.get(order) else {
             return;
         };
-        cell.note = Some(note);
-        if let Some(inst) = instrument {
-            cell.instrument = Some(inst);
-        }
+        self.core
+            .song
+            .edit_cell(pattern_idx, self.cursor_row, ch, |cell| {
+                cell.note = Some(note);
+                if let Some(inst) = instrument {
+                    cell.instrument = Some(inst);
+                }
+            });
 
         // Advance cursor
         self.move_cursor_down(self.edit_step);
     }
 
-    fn try_enter_hex_digit(&mut self, c: char, sub: SubColumn) {
-        let digit = match c {
-            '0'..='9' => c as u8 - b'0',
-            'a'..='f' => c as u8 - b'a' + 10,
-            _ => return,
+    /// `:alias P [T]`: play pattern P's copy of the cursor's channel here,
+    /// transposed T semitones. P is hex, as the pattern matrix shows it.
+    fn alias_column(&mut self, args: &str) {
+        let mut parts = args.split_whitespace();
+        let source = parts.next().and_then(|p| usize::from_str_radix(p, 16).ok());
+        let transpose = match parts.next() {
+            None => Some(0),
+            Some(t) => t.trim_start_matches('+').parse::<i8>().ok(),
         };
-
-        self.push_undo();
-
-        let pattern_idx = self.core.song.order[self.current_order_position()];
-        let cell =
-            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-
-        match sub {
-            SubColumn::Instrument => {
-                let current = cell.instrument.unwrap_or(0);
-                // Shift left and add new digit (2 hex digits max)
-                cell.instrument = Some((current << 4) | digit);
+        let (Some(source), Some(transpose)) = (source, transpose) else {
+            self.status_message = Some("Usage: :alias <pattern hex> [transpose]".to_string());
+            return;
+        };
+        let pattern = self.core.song.order[self.current_order_position()];
+        let before = self.core.song.clone();
+        let alias = rtrack_core::tracker::ColumnAlias { source, transpose };
+        match self
+            .core
+            .song
+            .set_alias(pattern, self.cursor_channel, alias)
+        {
+            Ok(()) => {
+                // The snapshot was taken before the change, as push_undo would.
+                self.pending_undo = Some(super::PendingUndo {
+                    song: before,
+                    samples: None,
+                });
+                self.history.clear_redo();
+                self.status_message = Some(format!(
+                    "Channel {} plays pattern {:02X}{}",
+                    self.cursor_channel + 1,
+                    source,
+                    if transpose != 0 {
+                        format!(" {transpose:+}")
+                    } else {
+                        String::new()
+                    }
+                ));
             }
-            SubColumn::Volume => {
-                let current = cell.volume.unwrap_or(0);
-                cell.volume = Some((current << 4) | digit);
-            }
-            SubColumn::Effect => {
-                // Effect is 1 hex digit for command + 2 hex digits for value
-                // Simple approach: rotate through effect then effect_value
-                if cell.effect.is_none() {
-                    cell.effect = Some(digit);
-                } else {
-                    let current_val = cell.effect_value.unwrap_or(0);
-                    cell.effect_value = Some((current_val << 4) | digit);
-                }
-            }
-            SubColumn::Note => {} // handled separately
+            Err(e) => self.status_message = Some(format!("Alias refused: {e}")),
+        }
+    }
+
+    /// Type into the instrument, volume or an effect slot at the cursor.
+    fn type_into_field(&mut self, c: char, sub: SubColumn) {
+        let order = self.current_order_position();
+        let pos = (
+            order,
+            self.cursor_row,
+            self.cursor_channel,
+            sub.fx_slot().unwrap_or(usize::MAX),
+        );
+        let mut cell = self
+            .core
+            .song
+            .cell_at(order, self.cursor_row, self.cursor_channel);
+        let key = rtrack_core::editor::type_into(&mut cell, sub, c, self.fx_typing.at(pos));
+        if key == rtrack_core::tracker::FxKey::Changed {
+            self.push_undo();
+            self.core
+                .song
+                .set_cell(order, self.cursor_row, self.cursor_channel, cell);
         }
     }
 
     fn enter_note_off(&mut self) {
         self.push_undo();
         let pattern_idx = self.core.song.order[self.current_order_position()];
-        let cell =
-            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-        cell.note = Some(Note::Off);
+        let (row, ch) = (self.cursor_row, self.cursor_channel);
+        self.core
+            .song
+            .edit_cell(pattern_idx, row, ch, |cell| cell.note = Some(Note::Off));
         self.move_cursor_down(self.edit_step);
     }
 
     fn delete_at_cursor(&mut self) {
         self.push_undo();
         let pattern_idx = self.core.song.order[self.current_order_position()];
-        let cell =
-            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-        match self.cursor_sub {
-            SubColumn::Note => cell.note = None,
-            SubColumn::Instrument => cell.instrument = None,
-            SubColumn::Volume => cell.volume = None,
-            SubColumn::Effect => {
-                cell.effect = None;
-                cell.effect_value = None;
-            }
-        }
+        let (row, ch, sub) = (self.cursor_row, self.cursor_channel, self.cursor_sub);
+        self.core.song.edit_cell(pattern_idx, row, ch, |cell| {
+            rtrack_core::editor::clear_field(cell, sub)
+        });
+        self.fx_typing.reset();
     }
 
     // -- Cursor movement --
@@ -1985,7 +2142,7 @@ impl App {
         if self.cursor_sub == SubColumn::Note {
             if self.cursor_channel > 0 {
                 self.cursor_channel -= 1;
-                self.cursor_sub = SubColumn::Effect;
+                self.cursor_sub = SubColumn::LAST;
                 self.track_page = self.cursor_channel / CHANNELS_PER_PAGE;
             }
         } else {
@@ -1994,7 +2151,7 @@ impl App {
     }
 
     pub(crate) fn move_cursor_right(&mut self) {
-        if self.cursor_sub == SubColumn::Effect {
+        if self.cursor_sub == SubColumn::LAST {
             if self.cursor_channel < self.core.song.channels - 1 {
                 self.cursor_channel += 1;
                 self.cursor_sub = SubColumn::Note;
@@ -2039,15 +2196,10 @@ impl App {
     fn copy_block(&mut self) {
         if let Some((r0, r1, c0, c1)) = self.block_bounds() {
             let pattern_idx = self.core.song.order[self.current_order_position()];
-            let pattern = &self.core.song.patterns[pattern_idx];
-            let mut block = Vec::new();
-            for r in r0..=r1 {
-                let mut row = Vec::new();
-                for c in c0..=c1 {
-                    row.push(*pattern.get(r, c));
-                }
-                block.push(row);
-            }
+            let song = &self.core.song;
+            let block: Vec<Vec<rtrack_core::tracker::Cell>> = (r0..=r1)
+                .map(|r| (c0..=c1).map(|c| song.cell(pattern_idx, r, c)).collect())
+                .collect();
             self.clipboard.set_block(block);
             let rows = r1 - r0 + 1;
             let cols = c1 - c0 + 1;
@@ -2061,10 +2213,11 @@ impl App {
         if let Some((r0, r1, c0, c1)) = self.block_bounds() {
             self.push_undo();
             let pattern_idx = self.core.song.order[self.current_order_position()];
-            let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    pattern.set_cell(r, c, rtrack_core::tracker::Cell::default());
+                    self.core
+                        .song
+                        .edit_cell(pattern_idx, r, c, |cell| *cell = Default::default());
                 }
             }
             self.block_anchor = None;
@@ -2090,32 +2243,29 @@ impl App {
 
         self.push_undo();
         let pattern_idx = self.core.song.order[self.current_order_position()];
-        let pattern = &mut self.core.song.patterns[pattern_idx];
+        let song = &mut self.core.song;
         let steps = (r1 - r0) as f64;
 
         for c in c0..=c1 {
-            let first = *pattern.get(r0, c);
-            let last = *pattern.get(r1, c);
-
-            // Interpolate volume
-            if let (Some(v0), Some(v1)) = (first.volume, last.volume) {
-                for r in r0..=r1 {
-                    let t = (r - r0) as f64 / steps;
-                    let v = v0 as f64 + (v1 as f64 - v0 as f64) * t;
-                    pattern.get_mut(r, c).volume = Some(v.round() as u8);
-                }
-            }
-
-            // Interpolate effect_value (when both endpoints have the same effect command)
-            if first.effect == last.effect && first.effect.is_some() {
-                if let (Some(ev0), Some(ev1)) = (first.effect_value, last.effect_value) {
-                    for r in r0..=r1 {
-                        let t = (r - r0) as f64 / steps;
-                        let ev = ev0 as f64 + (ev1 as f64 - ev0 as f64) * t;
-                        pattern.get_mut(r, c).effect = first.effect;
-                        pattern.get_mut(r, c).effect_value = Some(ev.round() as u8);
+            let first = song.cell(pattern_idx, r0, c);
+            let last = song.cell(pattern_idx, r1, c);
+            for r in r0..=r1 {
+                let t = (r - r0) as f64 / steps;
+                song.edit_cell(pattern_idx, r, c, |cell| {
+                    // Volume, and each effect slot whose endpoints hold the
+                    // same command
+                    if let (Some(v0), Some(v1)) = (first.volume, last.volume) {
+                        let v = v0 as f64 + (v1 as f64 - v0 as f64) * t;
+                        cell.volume = Some(v.round() as u8);
                     }
-                }
+                    for slot in 0..rtrack_core::tracker::FX_COLUMNS {
+                        if let Some(fx) =
+                            rtrack_core::editor::interpolate_fx(&first, &last, slot, t)
+                        {
+                            cell.fx[slot] = Some(fx);
+                        }
+                    }
+                });
             }
         }
 
@@ -2127,17 +2277,12 @@ impl App {
         if let Some(block) = self.clipboard.block().cloned() {
             self.push_undo();
             let pattern_idx = self.core.song.order[self.current_order_position()];
-            let pattern = &mut self.core.song.patterns[pattern_idx];
             for (ri, row) in block.iter().enumerate() {
-                let r = self.cursor_row + ri;
-                if r >= pattern.rows {
-                    break;
-                }
                 for (ci, cell) in row.iter().enumerate() {
-                    let c = self.cursor_channel + ci;
-                    if c < pattern.channels {
-                        pattern.set_cell(r, c, *cell);
-                    }
+                    let (r, c) = (self.cursor_row + ri, self.cursor_channel + ci);
+                    self.core
+                        .song
+                        .edit_cell(pattern_idx, r, c, |dst| *dst = *cell);
                 }
             }
             self.status_message = Some("Pasted block".to_string());

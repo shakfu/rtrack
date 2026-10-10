@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::constants::*;
 use crate::engine::{TrackerEngine, TrackerEvent};
-use crate::tracker::{Note, NoteValue, Pattern, Song, TempoPoint};
+use crate::tracker::{Fx, FxCmd, Note, NoteValue, Pattern, Song, TempoPoint};
 
 /// Events collected during MIDI import
 #[derive(Debug, Clone)]
@@ -650,18 +650,15 @@ pub fn import_midi_with_report(path: &Path) -> Result<(Song, Vec<String>)> {
                 ImportEvent::CC {
                     controller, value, ..
                 } => {
-                    // Map CC to Cxx effect (controller in instrument column, value in effect)
-                    // Only if the cell does not already have an effect
-                    if cell.effect.is_none() {
-                        cell.effect = Some(0x0C); // MIDI CC effect
-                        cell.effect_value = Some(*value);
-                        cell.instrument = Some(*controller);
+                    // `CCN` then `CCV`, if the cell has both slots free.
+                    if cell.fx.iter().all(Option::is_none) {
+                        cell.fx[0] = Some(Fx::new(FxCmd::CcNumber, *controller));
+                        cell.fx[1] = Some(Fx::new(FxCmd::CcValue, *value));
                     }
                 }
                 ImportEvent::ProgramChange { program, .. } => {
-                    if cell.effect.is_none() {
-                        cell.effect = Some(0x0E); // Program change effect
-                        cell.effect_value = Some(*program);
+                    if let Some(slot) = cell.fx.iter_mut().find(|f| f.is_none()) {
+                        *slot = Some(Fx::new(FxCmd::Program, *program));
                     }
                 }
             }
@@ -700,9 +697,11 @@ pub fn import_midi_with_report(path: &Path) -> Result<(Song, Vec<String>)> {
         rows_per_pattern,
         highlight_beat: 4,
         highlight_bar: 16,
-        swing: 50,
+        groove: Vec::new(),
+        legacy_swing: None,
         tempo_map,
         scale: None,
+        tables: Vec::new(),
     };
     notes.extend(song.repair());
     Ok((song, notes))
@@ -771,6 +770,7 @@ fn read_byte(data: &[u8], pos: &mut usize) -> Result<u8> {
 mod tests {
     use super::*;
     use crate::tracker::Cell;
+    use crate::tracker::FX_COLUMNS;
     use std::io::Write as _;
 
     #[test]
@@ -855,8 +855,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: Some(100),
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
         song.set_cell(
@@ -870,8 +869,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: None,
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
         song.set_cell(
@@ -882,8 +880,7 @@ mod tests {
                 note: Some(Note::Off),
                 instrument: None,
                 volume: None,
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
         // Second channel
@@ -898,8 +895,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: Some(80),
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
 
@@ -991,8 +987,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: Some(100),
-                effect: Some(0x01),       // porta up
-                effect_value: Some(0x10), // speed
+                fx: Fx::only(FxCmd::SlideUp, 0x10),
             },
         );
         let tmp = std::env::temp_dir().join("rtrack_test_porta.mid");
@@ -1023,8 +1018,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: Some(100),
-                effect: Some(0x05),       // volume slide
-                effect_value: Some(0x01), // slide down by 1 per tick
+                fx: Fx::only(FxCmd::VolumeSlide, 0x01),
             },
         );
         let tmp = std::env::temp_dir().join("rtrack_test_volslide.mid");
@@ -1052,8 +1046,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: None,
-                effect: Some(0x04),       // vibrato
-                effect_value: Some(0x44), // speed 4, depth 4
+                fx: Fx::only(FxCmd::Vibrato, 0x44),
             },
         );
         let tmp = std::env::temp_dir().join("rtrack_test_vibrato.mid");
@@ -1079,8 +1072,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: None,
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
 
@@ -1097,8 +1089,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: Some(100),
-                effect: Some(0x01),
-                effect_value: Some(0x10),
+                fx: Fx::only(FxCmd::SlideUp, 0x10),
             },
         );
 
@@ -1152,8 +1143,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: None,
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
         song.set_cell(
@@ -1164,8 +1154,7 @@ mod tests {
                 note: None,
                 instrument: None,
                 volume: None,
-                effect: Some(0x0F),       // Fxx set speed/tempo
-                effect_value: Some(0x80), // 128 BPM (>= 0x20 = tempo)
+                fx: Fx::only(FxCmd::Tempo, 0x80),
             },
         );
 
@@ -1217,8 +1206,7 @@ mod tests {
                 }),
                 instrument: None,
                 volume: None,
-                effect: None,
-                effect_value: None,
+                fx: [None; FX_COLUMNS],
             },
         );
 

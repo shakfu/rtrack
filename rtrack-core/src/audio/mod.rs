@@ -18,7 +18,9 @@ use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 use crate::sample::playback::{NewNoteAction, SamplePlaybackEngine};
 use crate::sample::SampleBank;
 
-use channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
+use channel_effects::{
+    ChannelEffects, ChannelEffectsParams, InsertFx, InstrumentFx, MAX_EFFECT_CHANNELS,
+};
 use effects::EffectsChain;
 use synth::{BuiltinSynth, SynthParams};
 
@@ -157,6 +159,11 @@ enum AudioCommand {
         channel: u8,
         params: Box<ChannelEffectsParams>,
     },
+    /// The instrument stage of a channel, switched as a note starts.
+    SetInstrumentFx {
+        channel: u8,
+        fx: InstrumentFx,
+    },
     SetSendBusParams {
         bus: u8,
         params: Box<effects::SendBusParams>,
@@ -204,6 +211,8 @@ struct RenderState {
     builtin_synth: BuiltinSynth,
     effects: EffectsChain,
     channel_effects: Vec<ChannelEffects>,
+    /// Per channel, the playing instrument's filter and drive.
+    inserts: Vec<InsertFx>,
     send_buses: Vec<effects::SendBus>,
     sample_engine: SamplePlaybackEngine,
     sample_bank: Arc<SampleBank>,
@@ -242,6 +251,9 @@ impl RenderState {
             effects: EffectsChain::new(sample_rate),
             channel_effects: (0..MAX_EFFECT_CHANNELS)
                 .map(|_| ChannelEffects::new(sample_rate))
+                .collect(),
+            inserts: (0..MAX_EFFECT_CHANNELS)
+                .map(|_| InsertFx::new(sample_rate))
                 .collect(),
             send_buses: (0..effects::MAX_SEND_BUSES)
                 .map(|_| effects::SendBus::new(sample_rate, capacity))
@@ -342,7 +354,8 @@ impl RenderState {
             sf2.render(left, right);
         }
 
-        let any_ch_fx = self.channel_effects.iter().any(|fx| fx.any_enabled());
+        let any_ch_fx = self.channel_effects.iter().any(|fx| fx.any_enabled())
+            || self.inserts.iter().any(|fx| fx.params.any_enabled());
         let any_send_bus = self.send_buses.iter().any(|b| b.params.enabled);
 
         if any_ch_fx || any_send_bus {
@@ -388,6 +401,10 @@ impl RenderState {
             let left = &mut self.scratch_left[start..end];
             let right = &mut self.scratch_right[start..end];
             for ch in 0..MAX_EFFECT_CHANNELS {
+                self.inserts[ch].process(
+                    &mut self.ch_buf_left[ch][start..end],
+                    &mut self.ch_buf_right[ch][start..end],
+                );
                 self.channel_effects[ch].process(
                     &mut self.ch_buf_left[ch][start..end],
                     &mut self.ch_buf_right[ch][start..end],
@@ -642,6 +659,9 @@ impl AudioEngine {
                 builtin_synth,
                 effects,
                 channel_effects,
+                inserts: (0..MAX_EFFECT_CHANNELS)
+                    .map(|_| InsertFx::new(sr_f64))
+                    .collect(),
                 send_buses,
                 sample_engine,
                 sample_bank,
@@ -984,6 +1004,11 @@ impl AudioEngine {
         });
     }
 
+    /// Switch a channel's instrument stage at `frame` (0: now).
+    pub fn set_instrument_fx_at(&mut self, frame: u64, channel: u8, fx: InstrumentFx) {
+        self.send_at(frame, AudioCommand::SetInstrumentFx { channel, fx });
+    }
+
     /// Set parameters for a send/return bus
     pub fn set_send_bus_params(&mut self, bus: u8, params: &effects::SendBusParams) {
         self.send(AudioCommand::SetSendBusParams {
@@ -1177,6 +1202,7 @@ fn process_command(
         builtin_synth,
         effects,
         channel_effects,
+        inserts,
         send_buses,
         sample_engine,
         sample_bank,
@@ -1307,6 +1333,11 @@ fn process_command(
                 std::mem::swap(&mut channel_effects[ch].params, &mut params);
             }
             hand_back(Reclaimed::ChannelEffects(params));
+        }
+        AudioCommand::SetInstrumentFx { channel, fx } => {
+            if let Some(insert) = inserts.get_mut(channel as usize) {
+                insert.params = fx;
+            }
         }
         AudioCommand::SetSendBusParams { bus, params } => {
             let idx = bus as usize;

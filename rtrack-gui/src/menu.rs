@@ -174,8 +174,10 @@ impl RtrackApp {
                         .clicked()
                     {
                         let pattern_idx = self.core.song.order[self.edit_order];
-                        let cell = *self.core.song.patterns[pattern_idx]
-                            .get(self.cursor_row, self.cursor_channel);
+                        let cell =
+                            self.core
+                                .song
+                                .cell(pattern_idx, self.cursor_row, self.cursor_channel);
                         self.clipboard.set_cell(cell);
                         self.status_message = Some("Copied".to_string());
                         ui.close();
@@ -185,20 +187,14 @@ impl RtrackApp {
                         .clicked()
                     {
                         let pattern_idx = self.core.song.order[self.edit_order];
-                        let old_cell = *self.core.song.patterns[pattern_idx]
-                            .get(self.cursor_row, self.cursor_channel);
-                        self.clipboard.set_cell(old_cell);
-                        let cell = self.core.song.patterns[pattern_idx]
-                            .get_mut(self.cursor_row, self.cursor_channel);
-                        *cell = Cell::default();
-                        let new_cell = *cell;
-                        self.record_cell_edit(
-                            pattern_idx,
-                            self.cursor_row,
-                            self.cursor_channel,
-                            old_cell,
-                            new_cell,
-                        );
+                        let (row, ch) = (self.cursor_row, self.cursor_channel);
+                        self.clipboard
+                            .set_cell(self.core.song.cell(pattern_idx, row, ch));
+                        if let Some(e) =
+                            self.edit_view(pattern_idx, row, ch, |c| *c = Cell::default())
+                        {
+                            self.history.push(vec![e]);
+                        }
                         self.core.dirty = true;
                         self.status_message = Some("Cut".to_string());
                         ui.close();
@@ -212,18 +208,10 @@ impl RtrackApp {
                     {
                         if let Some(clip) = self.clipboard.cell() {
                             let pattern_idx = self.core.song.order[self.edit_order];
-                            let old_cell = *self.core.song.patterns[pattern_idx]
-                                .get(self.cursor_row, self.cursor_channel);
-                            let cell = self.core.song.patterns[pattern_idx]
-                                .get_mut(self.cursor_row, self.cursor_channel);
-                            *cell = clip;
-                            self.record_cell_edit(
-                                pattern_idx,
-                                self.cursor_row,
-                                self.cursor_channel,
-                                old_cell,
-                                clip,
-                            );
+                            let (row, ch) = (self.cursor_row, self.cursor_channel);
+                            if let Some(e) = self.edit_view(pattern_idx, row, ch, |c| *c = clip) {
+                                self.history.push(vec![e]);
+                            }
                             self.core.dirty = true;
                             self.status_message = Some("Pasted".to_string());
                         }
@@ -389,7 +377,7 @@ mod tests {
         let mut app = RtrackApp::headless(4, 16);
         app.cursor_row = 11;
         app.cursor_channel = 3;
-        app.cursor_sub = SubColumn::Effect;
+        app.cursor_sub = SubColumn::Fx2;
         app.edit_order = 2;
 
         app.reset_cursor_state();

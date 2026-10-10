@@ -31,6 +31,9 @@ pub struct MidiEngine {
     pub send_error_count: u32,
     /// Last error message
     pub last_error: Option<String>,
+    /// Every message sent, connected or not, for tests to inspect.
+    #[cfg(test)]
+    pub(crate) sent: Vec<Vec<u8>>,
 }
 
 impl MidiEngine {
@@ -42,6 +45,8 @@ impl MidiEngine {
             clock_enabled: false,
             send_error_count: 0,
             last_error: None,
+            #[cfg(test)]
+            sent: Vec::new(),
         }
     }
 }
@@ -226,6 +231,8 @@ impl MidiEngine {
     }
 
     fn send(&mut self, message: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        self.sent.push(message.to_vec());
         if let Some(conn) = &mut self.connection {
             match conn.send(message) {
                 Ok(()) => {

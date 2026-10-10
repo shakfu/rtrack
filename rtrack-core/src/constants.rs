@@ -42,26 +42,6 @@ pub const MIDI_CLOCKS_PER_BEAT: f64 = 24.0;
 pub const SEMITONES_PER_OCTAVE: u8 = 12;
 
 // ---------------------------------------------------------------------------
-// Tracker effect commands (single hex digit, stored in Cell.effect)
-// ---------------------------------------------------------------------------
-
-pub const EFFECT_ARPEGGIO: u8 = 0x0; // 0xy: cycle note, note+x, note+y
-pub const EFFECT_PORTA_UP: u8 = 0x1; // 1xx: slide pitch up by xx per tick
-pub const EFFECT_PORTA_DOWN: u8 = 0x2; // 2xx: slide pitch down by xx per tick
-pub const EFFECT_TONE_PORTA: u8 = 0x3; // 3xx: slide toward target note at speed xx
-pub const EFFECT_VIBRATO: u8 = 0x4; // 4xy: vibrato speed x, depth y
-pub const EFFECT_VOLUME_SLIDE: u8 = 0x5; // 5xy: volume slide up x, down y per tick
-pub const EFFECT_NOTE_DELAY: u8 = 0x6; // 6xx: delay note trigger by xx ticks
-pub const EFFECT_PROBABILITY: u8 = 0x7; // 7xx: play the note with probability xx/255
-pub const EFFECT_RANDOMIZE: u8 = 0x8; // 8xx: re-run this channel's last continuous effect, parameter varied by +/-xx
-pub const EFFECT_SAMPLE_OFFSET: u8 = 0x9; // 9xx: start the row's sample note xx/256 of the way into its played span
-pub const EFFECT_POSITION_JUMP: u8 = 0xB; // Bxx: jump to order position xx
-pub const EFFECT_MIDI_CC: u8 = 0xC; // Cxx: send MIDI CC (controller from instrument col, value xx)
-pub const EFFECT_PATTERN_BREAK: u8 = 0xD; // Dxx: break to row xx of next pattern
-pub const EFFECT_PROGRAM_CHANGE: u8 = 0xE; // Exx: program change to program xx
-pub const EFFECT_SET_SPEED: u8 = 0xF; // Fxx: xx<0x20 = set speed, xx>=0x20 = set BPM
-
-// ---------------------------------------------------------------------------
 // Tracker defaults and limits
 // ---------------------------------------------------------------------------
 

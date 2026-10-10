@@ -497,7 +497,7 @@ fn re_slicing_into_fewer_pieces_clears_the_old_ones_past_the_end() {
             "slot {slot} still holds {}",
             core.sample_bank.get(slot).unwrap().name
         );
-        assert_eq!(core.instruments[slot].sample_index, None);
+        assert_eq!(core.instruments[slot].sample_slot(), None);
         assert_eq!(core.instruments[slot].name, "");
     }
 

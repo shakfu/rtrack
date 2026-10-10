@@ -84,14 +84,31 @@ impl RtrackApp {
                         }
                         ui.end_row();
 
-                        // Swing
-                        ui.label("Swing:");
-                        let mut swing = self.core.song.swing;
-                        ui.add(egui::DragValue::new(&mut swing).range(0..=100).suffix("%"));
-                        if swing != self.core.song.swing {
-                            let before = self.core.song.clone();
-                            self.core.song.swing = swing;
-                            self.record_settings_edit("song.swing", before);
+                        // Groove: ticks per row, cycling by row
+                        ui.label("Groove:");
+                        let text = self
+                            .groove_text
+                            .get_or_insert_with(|| self.core.song.groove_text());
+                        let response = ui
+                            .add(egui::TextEdit::singleline(text).desired_width(120.0))
+                            .on_hover_text(
+                                "Ticks per row, cycling: e.g. 7 5 for swing, off for none",
+                            );
+                        if response.lost_focus() {
+                            let typed = self.groove_text.take().unwrap_or_default();
+                            match rtrack_core::tracker::Song::parse_groove(&typed) {
+                                Ok(groove) if groove != self.core.song.groove => {
+                                    let before = self.core.song.clone();
+                                    self.core.song.groove = groove;
+                                    self.record_settings_edit("song.groove", before);
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.status_message = Some(format!("Groove unchanged: {e}"))
+                                }
+                            }
+                        } else if !response.has_focus() {
+                            self.groove_text = None;
                         }
                         ui.end_row();
 
@@ -187,13 +204,9 @@ impl RtrackApp {
                                 }
                                 pat.channels = ch_count;
                             }
-                            while self.core.channels.len() < ch_count {
-                                let idx = self.core.channels.len();
-                                self.core
-                                    .channels
-                                    .push(rtrack_core::ChannelConfig::new(idx as u8));
-                            }
-                            self.core.channels.truncate(ch_count);
+                            self.core
+                                .channels
+                                .resize_with(ch_count, rtrack_core::ChannelConfig::default);
                             if self.cursor_channel >= ch_count {
                                 self.cursor_channel = ch_count.saturating_sub(1);
                             }
@@ -256,6 +269,65 @@ impl RtrackApp {
             });
     }
 
+    /// Alias this channel of the edited pattern to another pattern's copy.
+    fn draw_alias_controls(&mut self, ui: &mut egui::Ui, ch: usize) {
+        use rtrack_core::tracker::ColumnAlias;
+        let Some(&pattern) = self.core.song.order.get(self.edit_order) else {
+            return;
+        };
+        let current = self.core.song.patterns[pattern].alias(ch);
+        let last = self.core.song.patterns.len().saturating_sub(1);
+        let mut source = current.map_or(if pattern == 0 { 1 } else { 0 }, |a| a.source);
+        let mut transpose = current.map_or(0, |a| a.transpose);
+        let mut on = current.is_some();
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            changed |= ui
+                .checkbox(&mut on, format!("Play another pattern here (pattern {pattern:02X})"))
+                .on_hover_text("This channel plays the same channel of the chosen pattern. Edits here change that pattern.")
+                .changed();
+        });
+        if on {
+            ui.horizontal(|ui| {
+                ui.label("Pattern");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut source)
+                            .range(0..=last)
+                            .hexadecimal(2, false, true),
+                    )
+                    .changed();
+                ui.label("Transpose");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut transpose).range(-48..=48))
+                    .changed();
+            });
+        }
+        if !changed {
+            return;
+        }
+        let before = self.core.song.clone();
+        let result = if on {
+            if current.is_some() {
+                // Re-point without clearing anything: drop the old alias first.
+                self.core.song.patterns[pattern].aliases[ch] = None;
+            }
+            self.core
+                .song
+                .set_alias(pattern, ch, ColumnAlias { source, transpose })
+        } else {
+            self.core.song.unalias(pattern, ch);
+            Ok(())
+        };
+        match result {
+            Ok(()) => self.record_settings_edit("alias", before),
+            Err(e) => {
+                self.core.song = before;
+                self.status_message = Some(format!("Alias refused: {e}"));
+            }
+        }
+    }
+
     fn draw_track_config(&mut self, ctx: &egui::Context) {
         let ch_idx = match self.show_track_config {
             Some(idx) => idx,
@@ -288,41 +360,40 @@ impl RtrackApp {
                         ui.checkbox(&mut self.core.channels[ch_idx].muted, "");
                         ui.end_row();
 
-                        // Type
-                        ui.label("Type:");
-                        let current_type = self.core.channels[ch_idx].channel_type;
+                        // Default instrument, for notes with an empty
+                        // instrument column.
+                        ui.label("Instrument:");
                         ui.horizontal(|ui| {
-                            if ui.button("<").clicked() {
-                                self.core.channels[ch_idx].channel_type = current_type.prev();
+                            let default = self.core.channels[ch_idx].default_instrument;
+                            let mut on = default.is_some();
+                            if ui.checkbox(&mut on, "").changed() {
+                                self.core.channels[ch_idx].default_instrument =
+                                    on.then_some(default.unwrap_or(0));
                             }
-                            ui.label(current_type.label());
-                            if ui.button(">").clicked() {
-                                self.core.channels[ch_idx].channel_type = current_type.next();
+                            if let Some(inst) = default {
+                                let mut v = inst as i32;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut v)
+                                            .range(0..=255)
+                                            .hexadecimal(2, false, true),
+                                    )
+                                    .changed()
+                                {
+                                    self.core.channels[ch_idx].default_instrument = Some(v as u8);
+                                }
+                                let i = &self.core.instruments[inst as usize];
+                                ui.label(format!(
+                                    "[{}] {}",
+                                    i.kind.tag(),
+                                    if i.name.is_empty() {
+                                        i.describe(inst as usize)
+                                    } else {
+                                        i.name.clone()
+                                    }
+                                ));
                             }
                         });
-                        ui.end_row();
-
-                        // MIDI Channel
-                        ui.label("MIDI Ch:");
-                        let mut midi_ch = self.core.channels[ch_idx].midi_channel as i32;
-                        if ui
-                            .add(egui::DragValue::new(&mut midi_ch).range(0..=15))
-                            .changed()
-                        {
-                            self.core.channels[ch_idx].midi_channel = midi_ch as u8;
-                        }
-                        ui.end_row();
-
-                        // Default Instrument
-                        ui.label("Instrument:");
-                        let mut inst =
-                            self.core.channels[ch_idx].default_instrument.unwrap_or(0) as i32;
-                        if ui
-                            .add(egui::DragValue::new(&mut inst).range(0..=255))
-                            .changed()
-                        {
-                            self.core.channels[ch_idx].default_instrument = Some(inst as u8);
-                        }
                         ui.end_row();
 
                         // Volume
@@ -342,9 +413,12 @@ impl RtrackApp {
                         ui.end_row();
                     });
 
-                // Per-channel effects section (only for Synth/Sample types)
-                let ch_type = self.core.channels[ch_idx].channel_type;
-                if ch_type != rtrack_core::ChannelType::Midi {
+                // Column alias in the pattern being edited
+                ui.separator();
+                self.draw_alias_controls(ui, ch_idx);
+
+                // Per-channel effects section
+                {
                     ui.separator();
                     ui.heading("Effects");
                     ui.add_space(4.0);
@@ -616,7 +690,8 @@ impl RtrackApp {
                             ("z s x d c v g b h n j m", "Notes C C# D D# E F F# G G# A A# B (lower octave)"),
                             ("q 2 w 3 e r 5 t 6 y 7 u", "Notes C C# D D# E F F# G G# A A# B (upper octave)"),
                             ("= (equals)", "Note off"),
-                            ("0-9 a-f", "Hex digit (instrument/volume/effect columns)"),
+                            ("0-9 a-f", "Hex digit (instrument/volume, effect parameter)"),
+                            ("Letters", "Effect command name, e.g. VI for VIB"),
                             ("Delete", "Clear cell"),
                             ("Insert", "Insert row"),
                             ("Backspace", "Delete row"),
@@ -657,7 +732,7 @@ impl RtrackApp {
                         ui.heading("Sub-columns");
                         ui.label(
                             egui::RichText::new(
-                                "Each channel has 4 sub-columns: Note | Instrument | Volume | Effect\n\
+                                "Each channel has 5 sub-columns: Note | Instrument | Volume | FX1 | FX2\n\
                                  Use Left/Right arrows to move between them."
                             ).color(dim),
                         );

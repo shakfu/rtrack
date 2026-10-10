@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::constants::{MIDI_MAX_NOTE, SEMITONES_PER_OCTAVE};
 use crate::theory::ScaleSetting;
 
+use super::fx::{Fx, FxCmd, FX_COLUMNS};
+
 /// A musical note pitch (C, C#, D, ... B)
 ///
 /// Sharps serialize as `Cs`, `Ds`, ... . The `#`-spelled aliases are accepted
@@ -183,6 +185,7 @@ pub fn midi_note_name(midi: u8) -> String {
 /// empty, and spelling out five nulls per cell dominated the file: a 4x16
 /// pattern with one note cost about 5.9 KB before this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "CellRepr")]
 pub struct Cell {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<Note>,
@@ -190,10 +193,44 @@ pub struct Cell {
     pub instrument: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_value: Option<u8>,
+    /// Effect slots, applied left to right.
+    #[serde(default, skip_serializing_if = "no_fx")]
+    pub fx: [Option<Fx>; FX_COLUMNS],
+}
+
+fn no_fx(fx: &[Option<Fx>; FX_COLUMNS]) -> bool {
+    fx.iter().all(Option::is_none)
+}
+
+/// What a cell deserializes from: the current fields, plus version 1's single
+/// hex effect, converted by [`Fx::from_legacy`].
+#[derive(Deserialize)]
+struct CellRepr {
+    #[serde(default)]
+    note: Option<Note>,
+    #[serde(default)]
+    instrument: Option<u8>,
+    #[serde(default)]
+    volume: Option<u8>,
+    #[serde(default)]
+    fx: Option<[Option<Fx>; FX_COLUMNS]>,
+    #[serde(default)]
+    effect: Option<u8>,
+    #[serde(default)]
+    effect_value: Option<u8>,
+}
+
+impl From<CellRepr> for Cell {
+    fn from(r: CellRepr) -> Self {
+        Cell {
+            note: r.note,
+            instrument: r.instrument,
+            volume: r.volume,
+            fx: r
+                .fx
+                .unwrap_or_else(|| Fx::from_legacy(r.effect, r.effect_value, r.instrument)),
+        }
+    }
 }
 
 impl Cell {
@@ -214,10 +251,26 @@ impl Cell {
 
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.note.is_none()
-            && self.instrument.is_none()
-            && self.volume.is_none()
-            && self.effect.is_none()
+        self.note.is_none() && self.instrument.is_none() && self.volume.is_none() && no_fx(&self.fx)
+    }
+
+    /// The effects set in this cell, left to right.
+    pub fn effects(&self) -> impl Iterator<Item = Fx> + '_ {
+        self.fx.iter().flatten().copied()
+    }
+
+    /// The first effect with this command, if any.
+    pub fn find_fx(&self, cmd: FxCmd) -> Option<Fx> {
+        self.effects().find(|fx| fx.cmd == cmd)
+    }
+
+    /// This cell with its note moved by `semitones`. A note that would leave
+    /// the MIDI range stays where it is, as [`Note::transposed`] does.
+    pub fn transposed(mut self, semitones: i8) -> Cell {
+        if semitones != 0 {
+            self.note = self.note.map(|n| n.transposed(semitones));
+        }
+        self
     }
 
     /// Format the cell for display: "C-4 01 80 000"
@@ -242,16 +295,12 @@ impl Cell {
         }
     }
 
-    pub fn display_effect(&self) -> String {
-        let cmd = match self.effect {
-            Some(e) => format!("{:01X}", e & 0x0F),
-            None => "-".to_string(),
-        };
-        let val = match self.effect_value {
-            Some(v) => format!("{:02X}", v),
-            None => "--".to_string(),
-        };
-        format!("{}{}", cmd, val)
+    /// One effect slot, e.g. `ARP37`, or `-----` when empty.
+    pub fn display_fx(&self, slot: usize) -> String {
+        match self.fx.get(slot).copied().flatten() {
+            Some(fx) => fx.display(),
+            None => "-----".to_string(),
+        }
     }
 }
 
@@ -259,14 +308,42 @@ impl Cell {
 // Pattern (multi-channel grid -- the song's only note storage)
 // ---------------------------------------------------------------------------
 
+/// One channel of a pattern played from the same channel of another
+/// pattern (Renoise's block alias, `docs/dev/design-gaps.md` G1).
+///
+/// The aliased column stores nothing: reads and writes go to the source. A
+/// source shorter than the pattern loops; a longer one is cut off. Notes are
+/// read `transpose` semitones up, and written back down by the same amount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnAlias {
+    /// Index into `Song::patterns`.
+    pub source: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub transpose: i8,
+}
+
+fn is_zero(t: &i8) -> bool {
+    *t == 0
+}
+
 /// A pattern is a grid of rows x channels. Patterns are addressed
 /// indirectly through `Song::order`, so one pattern may appear at several
 /// positions in the song.
+///
+/// Read cells through [`crate::tracker::Song::cell`], which follows aliases;
+/// `get` and `data` are the raw storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pattern {
     pub rows: usize,
     pub channels: usize,
     pub data: Vec<Vec<Cell>>, // data[row][channel]
+    /// Per channel, the column this one plays instead of its own.
+    #[serde(default, skip_serializing_if = "no_aliases")]
+    pub aliases: Vec<Option<ColumnAlias>>,
+}
+
+fn no_aliases(aliases: &[Option<ColumnAlias>]) -> bool {
+    aliases.iter().all(Option::is_none)
 }
 
 impl Pattern {
@@ -275,7 +352,13 @@ impl Pattern {
             rows,
             channels,
             data: vec![vec![Cell::default(); channels]; rows],
+            aliases: Vec::new(),
         }
+    }
+
+    /// The alias on `channel`, if it has one.
+    pub fn alias(&self, channel: usize) -> Option<ColumnAlias> {
+        self.aliases.get(channel).copied().flatten()
     }
 
     /// Roughly how much heap this pattern holds.
@@ -340,6 +423,7 @@ impl Pattern {
         while self.data.len() < rows {
             self.data.push(vec![Cell::default(); channels]);
         }
+        self.aliases.truncate(channels);
     }
 
     /// Resize the pattern to a new number of rows, truncating or padding with empty rows.
@@ -425,7 +509,7 @@ mod tests {
         assert_eq!(cell.display_note(), "---");
         assert_eq!(cell.display_instrument(), "--");
         assert_eq!(cell.display_volume(), "--");
-        assert_eq!(cell.display_effect(), "---");
+        assert_eq!(cell.display_fx(0), "-----");
     }
 
     #[test]
@@ -578,8 +662,7 @@ mod tests {
             }),
             instrument: Some(1),
             volume: Some(0x40),
-            effect: None,
-            effect_value: None,
+            fx: [None; FX_COLUMNS],
         };
         pat.set_cell(10, 2, cell);
         let got = pat.get(10, 2);

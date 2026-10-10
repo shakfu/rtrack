@@ -28,51 +28,121 @@
 use std::collections::VecDeque;
 
 use crate::constants::{MAX_UNDO_BYTES, MAX_UNDO_STEPS};
-use crate::tracker::{Cell, Song};
+use crate::tracker::{Cell, Fx, FxKey, FxTyping, Song};
 
 /// Which field within a channel the edit cursor is on.
 ///
-/// A tracker cell is four fields, and which one has the cursor decides what a
-/// keypress means: a letter is a note in the first and a hex digit in the
-/// others.
+/// A tracker cell is a note, an instrument, a volume and
+/// [`FX_COLUMNS`](crate::tracker::FX_COLUMNS)
+/// effect slots, and which one has the cursor decides what a keypress means:
+/// a letter is a note in the first, a hex digit in the next two, and part of
+/// a command name or a hex digit in an effect slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SubColumn {
     #[default]
     Note,
     Instrument,
     Volume,
-    Effect,
+    Fx1,
+    Fx2,
 }
 
 impl SubColumn {
+    /// The rightmost field.
+    pub const LAST: Self = Self::Fx2;
+
     /// The next field to the right, wrapping back to the note column.
     ///
     /// Wrapping is what both frontends already did, and it is what makes Tab
-    /// walk the cursor along a row rather than parking it on the effect
-    /// column.
+    /// walk the cursor along a row rather than parking it on the last effect
+    /// slot.
     pub fn next(self) -> Self {
         match self {
             Self::Note => Self::Instrument,
             Self::Instrument => Self::Volume,
-            Self::Volume => Self::Effect,
-            Self::Effect => Self::Note,
+            Self::Volume => Self::Fx1,
+            Self::Fx1 => Self::Fx2,
+            Self::Fx2 => Self::Note,
         }
     }
 
-    /// The next field to the left, wrapping round to the effect column.
+    /// The next field to the left, wrapping round to the last effect slot.
     pub fn prev(self) -> Self {
         match self {
-            Self::Note => Self::Effect,
+            Self::Note => Self::Fx2,
             Self::Instrument => Self::Note,
             Self::Volume => Self::Instrument,
-            Self::Effect => Self::Volume,
+            Self::Fx1 => Self::Volume,
+            Self::Fx2 => Self::Fx1,
         }
     }
 
     /// Every field, left to right.
-    pub fn all() -> [Self; 4] {
-        [Self::Note, Self::Instrument, Self::Volume, Self::Effect]
+    pub fn all() -> [Self; 5] {
+        [
+            Self::Note,
+            Self::Instrument,
+            Self::Volume,
+            Self::Fx1,
+            Self::Fx2,
+        ]
     }
+
+    /// The effect slot this field edits, if it is one.
+    pub fn fx_slot(self) -> Option<usize> {
+        match self {
+            Self::Fx1 => Some(0),
+            Self::Fx2 => Some(1),
+            _ => None,
+        }
+    }
+}
+
+/// Type a character into a non-note field of `cell`.
+///
+/// Hex digits shift into the instrument and volume. Effect slots go through
+/// `typing`, which spells command names. Shared by both frontends so they
+/// cannot drift apart.
+pub fn type_into(cell: &mut Cell, sub: SubColumn, c: char, typing: &mut FxTyping) -> FxKey {
+    if let Some(slot) = sub.fx_slot() {
+        return typing.key(&mut cell.fx[slot], c);
+    }
+    let Some(digit) = c.to_digit(16).map(|d| d as u8) else {
+        return FxKey::Rejected;
+    };
+    match sub {
+        SubColumn::Instrument => {
+            cell.instrument = Some((cell.instrument.unwrap_or(0) << 4) | digit)
+        }
+        SubColumn::Volume => cell.volume = Some((cell.volume.unwrap_or(0) << 4) | digit),
+        _ => return FxKey::Rejected,
+    }
+    FxKey::Changed
+}
+
+/// Clear one field of `cell`.
+pub fn clear_field(cell: &mut Cell, sub: SubColumn) {
+    match sub {
+        SubColumn::Note => cell.note = None,
+        SubColumn::Instrument => cell.instrument = None,
+        SubColumn::Volume => cell.volume = None,
+        SubColumn::Fx1 | SubColumn::Fx2 => {
+            if let Some(slot) = sub.fx_slot() {
+                cell.fx[slot] = None;
+            }
+        }
+    }
+}
+
+/// The effect at fraction `t` of the way from `first` to `last` in `slot`,
+/// if both ends hold the same command.
+pub fn interpolate_fx(first: &Cell, last: &Cell, slot: usize, t: f64) -> Option<Fx> {
+    let (a, b) = (first.fx[slot]?, last.fx[slot]?);
+    if a.cmd != b.cmd {
+        return None;
+    }
+    let p = a.param as f64 + (b.param as f64 - a.param as f64) * t;
+    Some(Fx::new(a.cmd, p.round() as u8))
 }
 
 /// One cell's value either side of an edit.
@@ -83,6 +153,20 @@ pub struct CellEdit {
     pub channel: usize,
     pub old_cell: Cell,
     pub new_cell: Cell,
+}
+
+impl From<crate::tracker::CellWrite> for CellEdit {
+    /// Record a [`crate::tracker::Song::edit_cell`]: the stored cells where
+    /// they are stored, which for an aliased column is the source pattern.
+    fn from(w: crate::tracker::CellWrite) -> Self {
+        CellEdit {
+            pattern_idx: w.pattern,
+            row: w.row,
+            channel: w.channel,
+            old_cell: w.old,
+            new_cell: w.new,
+        }
+    }
 }
 
 /// A sample-bank change, as the state either side of it.
@@ -543,7 +627,8 @@ mod tests {
         for expected in [
             SubColumn::Instrument,
             SubColumn::Volume,
-            SubColumn::Effect,
+            SubColumn::Fx1,
+            SubColumn::Fx2,
             SubColumn::Note,
         ] {
             at = at.next();
@@ -555,7 +640,8 @@ mod tests {
     fn sub_columns_walk_left_and_wrap() {
         let mut at = SubColumn::Note;
         for expected in [
-            SubColumn::Effect,
+            SubColumn::Fx2,
+            SubColumn::Fx1,
             SubColumn::Volume,
             SubColumn::Instrument,
             SubColumn::Note,
@@ -571,6 +657,59 @@ mod tests {
             assert_eq!(sub.next().prev(), sub, "{sub:?}");
             assert_eq!(sub.prev().next(), sub, "{sub:?}");
         }
+    }
+
+    #[test]
+    fn every_effect_slot_has_a_sub_column() {
+        use crate::tracker::FX_COLUMNS;
+        let slots: Vec<usize> = SubColumn::all()
+            .iter()
+            .filter_map(|s| s.fx_slot())
+            .collect();
+        assert_eq!(slots, (0..FX_COLUMNS).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn typing_fills_hex_fields_and_effect_slots() {
+        use crate::tracker::FxCmd;
+        let mut cell = Cell::default();
+        let mut typing = FxTyping::default();
+        type_into(&mut cell, SubColumn::Instrument, '1', &mut typing);
+        type_into(&mut cell, SubColumn::Instrument, 'f', &mut typing);
+        assert_eq!(cell.instrument, Some(0x1F));
+        assert_eq!(
+            type_into(&mut cell, SubColumn::Volume, 'z', &mut typing),
+            FxKey::Rejected
+        );
+        for c in "tpo8c".chars() {
+            type_into(&mut cell, SubColumn::Fx2, c, &mut typing);
+        }
+        assert_eq!(cell.fx, [None, Some(Fx::new(FxCmd::Tempo, 0x8C))]);
+        clear_field(&mut cell, SubColumn::Fx2);
+        assert_eq!(cell.fx, [None, None]);
+    }
+
+    #[test]
+    fn effects_interpolate_only_between_matching_commands() {
+        use crate::tracker::FxCmd;
+        let a = Cell {
+            fx: Fx::only(FxCmd::VolumeSlide, 0x00),
+            ..Cell::default()
+        };
+        let b = Cell {
+            fx: Fx::only(FxCmd::VolumeSlide, 0x40),
+            ..Cell::default()
+        };
+        let c = Cell {
+            fx: Fx::only(FxCmd::Vibrato, 0x40),
+            ..Cell::default()
+        };
+        assert_eq!(
+            interpolate_fx(&a, &b, 0, 0.5),
+            Some(Fx::new(FxCmd::VolumeSlide, 0x20))
+        );
+        assert_eq!(interpolate_fx(&a, &c, 0, 0.5), None);
+        assert_eq!(interpolate_fx(&a, &b, 1, 0.5), None);
     }
 
     // -- History --

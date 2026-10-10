@@ -10,6 +10,30 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+/// Render `song` with 256 preset instruments and the given channel effects
+/// and send buses.
+fn render(
+    path: &std::path::Path,
+    song: &Song,
+    bank: &rtrack_core::sample::SampleBank,
+    channel_fx: &[rtrack_core::audio::channel_effects::ChannelEffectsParams],
+    send_buses: &[rtrack_core::audio::effects::SendBusParams],
+) -> anyhow::Result<()> {
+    let instruments = vec![rtrack_core::Instrument::default(); 256];
+    rtrack_core::sample::export::render_to_wav(
+        path,
+        &rtrack_core::sample::export::RenderSetup {
+            song,
+            bank,
+            instruments: &instruments,
+            channel_fx: channel_fx.to_vec(),
+            send_buses,
+            channel_info: Vec::new(),
+            sample_rate: 44100,
+        },
+    )
+}
+
 /// Create an App with a simple song: one pattern, one note on row 0.
 fn app_with_note() -> App {
     let mut app = App::new();
@@ -34,29 +58,10 @@ fn app_with_note() -> App {
 #[test]
 fn test_export_wav_roundtrip() {
     let app = app_with_note();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = app
-        .core
-        .instruments
-        .iter()
-        .map(|i| rtrack_core::sample::export::ExportInstrument {
-            sample_index: i.sample_index,
-            midi_program: i.midi_program.unwrap_or(0),
-            synth_params: i.synth_params.clone(),
-        })
-        .collect();
-
     let dir = std::env::temp_dir();
     let path = dir.join("rtrack_integration_test.wav");
 
-    let result = rtrack_core::sample::export::render_to_wav(
-        &path,
-        &app.core.song,
-        &app.core.sample_bank,
-        &instruments,
-        &app.core.channel_effects_params_slice(),
-        &app.core.send_bus_params,
-        44100,
-    );
+    let result = rtrack_core::sample::export::render_to_wav(&path, &app.core.render_setup());
     assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
     // Verify WAV has audio content
@@ -276,25 +281,10 @@ fn test_multi_pattern_song_renders() {
     );
 
     let bank = rtrack_core::sample::SampleBank::new();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
-        .map(|_| rtrack_core::sample::export::ExportInstrument {
-            sample_index: None,
-            midi_program: 0,
-            synth_params: None,
-        })
-        .collect();
 
     let dir = std::env::temp_dir();
     let path = dir.join("rtrack_integration_multi.wav");
-    let result = rtrack_core::sample::export::render_to_wav(
-        &path,
-        &song,
-        &bank,
-        &instruments,
-        &[],
-        &[],
-        44100,
-    );
+    let result = render(&path, &song, &bank, &[], &[]);
     assert!(
         result.is_ok(),
         "Multi-pattern render failed: {:?}",
@@ -332,27 +322,11 @@ fn test_channel_effects_in_render() {
     );
 
     let bank = rtrack_core::sample::SampleBank::new();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
-        .map(|_| rtrack_core::sample::export::ExportInstrument {
-            sample_index: None,
-            midi_program: 0,
-            synth_params: None,
-        })
-        .collect();
 
     // Render without effects
     let dir = std::env::temp_dir();
     let path_dry = dir.join("rtrack_int_dry.wav");
-    rtrack_core::sample::export::render_to_wav(
-        &path_dry,
-        &song,
-        &bank,
-        &instruments,
-        &[],
-        &[],
-        44100,
-    )
-    .unwrap();
+    render(&path_dry, &song, &bank, &[], &[]).unwrap();
 
     // Render with filter effect on channel 0
     let ch_fx = rtrack_core::audio::channel_effects::ChannelEffectsParams {
@@ -362,16 +336,7 @@ fn test_channel_effects_in_render() {
     };
 
     let path_wet = dir.join("rtrack_int_wet.wav");
-    rtrack_core::sample::export::render_to_wav(
-        &path_wet,
-        &song,
-        &bank,
-        &instruments,
-        &[ch_fx],
-        &[],
-        44100,
-    )
-    .unwrap();
+    render(&path_wet, &song, &bank, &[ch_fx], &[]).unwrap();
 
     let r1 = hound::WavReader::open(&path_dry).unwrap();
     let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
@@ -417,27 +382,11 @@ fn test_send_bus_in_render() {
     );
 
     let bank = rtrack_core::sample::SampleBank::new();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
-        .map(|_| rtrack_core::sample::export::ExportInstrument {
-            sample_index: None,
-            midi_program: 0,
-            synth_params: None,
-        })
-        .collect();
 
     // Render without send bus
     let dir = std::env::temp_dir();
     let path_dry = dir.join("rtrack_int_send_dry.wav");
-    rtrack_core::sample::export::render_to_wav(
-        &path_dry,
-        &song,
-        &bank,
-        &instruments,
-        &[],
-        &[],
-        44100,
-    )
-    .unwrap();
+    render(&path_dry, &song, &bank, &[], &[]).unwrap();
 
     // Render with send bus (delay) and channel 0 sending to it
     let mut ch_fx = rtrack_core::audio::channel_effects::ChannelEffectsParams::default();
@@ -452,16 +401,7 @@ fn test_send_bus_in_render() {
     };
 
     let path_wet = dir.join("rtrack_int_send_wet.wav");
-    rtrack_core::sample::export::render_to_wav(
-        &path_wet,
-        &song,
-        &bank,
-        &instruments,
-        &[ch_fx],
-        &[bus_params],
-        44100,
-    )
-    .unwrap();
+    render(&path_wet, &song, &bank, &[ch_fx], &[bus_params]).unwrap();
 
     let r1 = hound::WavReader::open(&path_dry).unwrap();
     let s1: Vec<i16> = r1.into_samples::<i16>().map(|s| s.unwrap()).collect();
@@ -565,13 +505,12 @@ fn test_sliced_sample_song_round_trips() {
     let instruments: Vec<InstrumentEntry> = (0..num_slices)
         .map(|i| InstrumentEntry {
             slot: i,
-            def: InstrumentDef {
+            def: InstrumentDef::from_instrument(&rtrack_core::Instrument {
                 name: slices[i].name.clone(),
-                midi_program: None,
-                sample_index: Some(i),
-                synth_params: None,
+                kind: rtrack_core::InstrumentKind::Sample { slot: i },
                 pitch_bend_range: None,
-            },
+                ..Default::default()
+            }),
         })
         .collect();
 

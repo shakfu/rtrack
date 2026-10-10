@@ -222,32 +222,14 @@ fn run_render(
         output.display()
     );
 
-    let instruments = app.core.export_instruments();
-    let sample_rate = app.core.export_sample_rate();
-    let channel_fx = app.core.channel_effects_params_slice();
+    let setup = app.core.render_setup();
 
     match ext.as_str() {
         "wav" => {
-            rtrack_core::sample::export::render_to_wav(
-                &output,
-                &app.core.song,
-                &app.core.sample_bank,
-                &instruments,
-                &channel_fx,
-                &app.core.send_bus_params,
-                sample_rate,
-            )?;
+            rtrack_core::sample::export::render_to_wav(&output, &setup)?;
         }
         "flac" => {
-            rtrack_core::sample::export::render_to_flac(
-                &output,
-                &app.core.song,
-                &app.core.sample_bank,
-                &instruments,
-                &channel_fx,
-                &app.core.send_bus_params,
-                sample_rate,
-            )?;
+            rtrack_core::sample::export::render_to_flac(&output, &setup)?;
         }
         _ => {
             anyhow::bail!("Unsupported output format \".{}\". Use .wav or .flac", ext);

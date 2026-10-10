@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "title": "Sample Offset (9xx)",
   "bpm": 175,
   "speed": 6,
@@ -18,8 +18,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 0
+            "fx": [
+              "OFS00",
+              null
+            ]
           }
         ],
         [
@@ -41,8 +43,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 32
+            "fx": [
+              "OFS20",
+              null
+            ]
           }
         ],
         [
@@ -64,8 +68,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 64
+            "fx": [
+              "OFS40",
+              null
+            ]
           }
         ],
         [
@@ -87,8 +93,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 96
+            "fx": [
+              "OFS60",
+              null
+            ]
           }
         ],
         [
@@ -110,8 +118,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 128
+            "fx": [
+              "OFS80",
+              null
+            ]
           }
         ],
         [
@@ -133,8 +143,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 160
+            "fx": [
+              "OFSA0",
+              null
+            ]
           }
         ],
         [
@@ -156,8 +168,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 192
+            "fx": [
+              "OFSC0",
+              null
+            ]
           }
         ],
         [
@@ -179,8 +193,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 224
+            "fx": [
+              "OFSE0",
+              null
+            ]
           }
         ],
         [
@@ -208,8 +224,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 0
+            "fx": [
+              "OFS00",
+              null
+            ]
           }
         ],
         [
@@ -231,8 +249,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 64
+            "fx": [
+              "OFS40",
+              null
+            ]
           }
         ],
         [
@@ -254,8 +274,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 32
+            "fx": [
+              "OFS20",
+              null
+            ]
           }
         ],
         [
@@ -277,8 +299,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 96
+            "fx": [
+              "OFS60",
+              null
+            ]
           }
         ],
         [
@@ -300,8 +324,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 0
+            "fx": [
+              "OFS00",
+              null
+            ]
           }
         ],
         [
@@ -323,8 +349,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 160
+            "fx": [
+              "OFSA0",
+              null
+            ]
           }
         ],
         [
@@ -346,8 +374,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 192
+            "fx": [
+              "OFSC0",
+              null
+            ]
           }
         ],
         [
@@ -363,8 +393,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 192
+            "fx": [
+              "OFSC0",
+              null
+            ]
           }
         ],
         [
@@ -380,8 +412,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 224
+            "fx": [
+              "OFSE0",
+              null
+            ]
           }
         ],
         [
@@ -397,8 +431,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 224
+            "fx": [
+              "OFSE0",
+              null
+            ]
           }
         ],
         [
@@ -435,8 +471,10 @@
             },
             "instrument": 1,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 128
+            "fx": [
+              "OFS80",
+              null
+            ]
           }
         ],
         [
@@ -488,8 +526,10 @@
             },
             "instrument": 5,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 128
+            "fx": [
+              "OFS80",
+              null
+            ]
           }
         ],
         [
@@ -526,8 +566,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 128
+            "fx": [
+              "OFS80",
+              null
+            ]
           }
         ],
         [
@@ -549,8 +591,10 @@
             },
             "instrument": 0,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 192
+            "fx": [
+              "OFSC0",
+              null
+            ]
           }
         ],
         [
@@ -558,25 +602,10 @@
         ],
         [
           {
-            "effect": 9,
-            "effect_value": 64
-          }
-        ],
-        [
-          {}
-        ],
-        [
-          {
-            "note": {
-              "On": {
-                "value": "C",
-                "octave": 5
-              }
-            },
-            "instrument": 8,
-            "volume": 127,
-            "effect": 9,
-            "effect_value": 0
+            "fx": [
+              "OFS40",
+              null
+            ]
           }
         ],
         [
@@ -592,8 +621,10 @@
             },
             "instrument": 8,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 64
+            "fx": [
+              "OFS00",
+              null
+            ]
           }
         ],
         [
@@ -609,8 +640,10 @@
             },
             "instrument": 8,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 128
+            "fx": [
+              "OFS40",
+              null
+            ]
           }
         ],
         [
@@ -626,8 +659,29 @@
             },
             "instrument": 8,
             "volume": 127,
-            "effect": 9,
-            "effect_value": 192
+            "fx": [
+              "OFS80",
+              null
+            ]
+          }
+        ],
+        [
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 5
+              }
+            },
+            "instrument": 8,
+            "volume": 127,
+            "fx": [
+              "OFSC0",
+              null
+            ]
           }
         ],
         [
@@ -648,52 +702,78 @@
   "rows_per_pattern": 32,
   "highlight_beat": 4,
   "highlight_bar": 16,
-  "swing": 50,
   "instruments": [
     {
       "slot": 0,
       "name": "amen (whole)",
-      "sample_index": 0
+      "kind": {
+        "type": "sample",
+        "slot": 0
+      }
     },
     {
       "slot": 1,
       "name": "amen_S00",
-      "sample_index": 1
+      "kind": {
+        "type": "sample",
+        "slot": 1
+      }
     },
     {
       "slot": 2,
       "name": "amen_S01",
-      "sample_index": 2
+      "kind": {
+        "type": "sample",
+        "slot": 2
+      }
     },
     {
       "slot": 3,
       "name": "amen_S02",
-      "sample_index": 3
+      "kind": {
+        "type": "sample",
+        "slot": 3
+      }
     },
     {
       "slot": 4,
       "name": "amen_S03",
-      "sample_index": 4
+      "kind": {
+        "type": "sample",
+        "slot": 4
+      }
     },
     {
       "slot": 5,
       "name": "amen_S04",
-      "sample_index": 5
+      "kind": {
+        "type": "sample",
+        "slot": 5
+      }
     },
     {
       "slot": 6,
       "name": "amen_S05",
-      "sample_index": 6
+      "kind": {
+        "type": "sample",
+        "slot": 6
+      }
     },
     {
       "slot": 7,
       "name": "amen_S06",
-      "sample_index": 7
+      "kind": {
+        "type": "sample",
+        "slot": 7
+      }
     },
     {
       "slot": 8,
       "name": "amen_S07",
-      "sample_index": 8
+      "kind": {
+        "type": "sample",
+        "slot": 8
+      }
     }
   ],
   "sample_refs": [
@@ -801,7 +881,6 @@
     {
       "muted": false,
       "name": "",
-      "channel_type": "Midi",
       "default_instrument": null,
       "volume": 1.0,
       "pan": 0.0,
@@ -827,8 +906,7 @@
           0.0,
           0.0
         ]
-      },
-      "midi_channel": 0
+      }
     }
   ],
   "send_buses": [

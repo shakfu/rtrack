@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rtrack_core::TrackerCore;
+use rtrack_core::{Instrument, TrackerCore};
 
 use crate::grid::{self, GridAction, GridParams};
 use crate::history::EditHistory;
@@ -16,6 +16,8 @@ pub struct RtrackApp {
     pub cursor_row: usize,
     pub cursor_channel: usize,
     pub cursor_sub: SubColumn,
+    /// Partial effect command name typed at the cursor.
+    pub fx_typing: rtrack_core::tracker::FxTyping,
     pub current_octave: u8,
     pub edit_step: usize,
     pub edit_order: usize,
@@ -51,6 +53,10 @@ pub struct RtrackApp {
     // Instrument dialogs
     pub show_instrument_list: bool,
     pub selected_instrument: Option<usize>,
+    /// Table effect text being typed, by (table, row), while its field has focus.
+    pub table_fx_text: std::collections::HashMap<(usize, usize), String>,
+    /// Groove text being typed in the settings dialog.
+    pub groove_text: Option<String>,
     pub slice_count: usize,
     pub slice_sensitivity: f32,
 
@@ -86,6 +92,7 @@ impl RtrackApp {
             cursor_row: 0,
             cursor_channel: 0,
             cursor_sub: SubColumn::Note,
+            fx_typing: Default::default(),
             current_octave: 4,
             edit_step: 1,
             edit_order: 0,
@@ -106,6 +113,8 @@ impl RtrackApp {
             midi_input_port_list: Vec::new(),
             show_instrument_list: false,
             selected_instrument: None,
+            table_fx_text: Default::default(),
+            groove_text: None,
             slice_count: 8,
             slice_sensitivity: 0.5,
             show_pattern_matrix: false,
@@ -253,7 +262,7 @@ impl RtrackApp {
                 let slot = if self.show_instrument_list {
                     self.selected_instrument
                         .and_then(|idx| self.core.instruments.get(idx))
-                        .and_then(|inst| inst.sample_index)
+                        .and_then(Instrument::sample_slot)
                         .unwrap_or_else(|| {
                             self.selected_instrument.unwrap_or_else(|| {
                                 (0..self.core.sample_bank.samples.len())
@@ -443,7 +452,7 @@ impl eframe::App for RtrackApp {
                     .core
                     .instruments
                     .iter()
-                    .position(|i| i.sample_index == Some(action.slot))
+                    .position(|i| i.sample_slot() == Some(action.slot))
                     .unwrap_or(action.slot);
                 match action.mode {
                     SliceMode::Equal => {
@@ -484,10 +493,23 @@ impl eframe::App for RtrackApp {
                 let Some(pattern) = self.core.song.pattern_at(order_pos) else {
                     return;
                 };
+                let pattern_idx = self.core.song.order[order_pos];
 
                 let muted: Vec<bool> = self.core.channels.iter().map(|c| c.muted).collect();
-                let names: Vec<String> =
-                    self.core.channels.iter().map(|c| c.name.clone()).collect();
+                // An aliased column names its source pattern.
+                let names: Vec<String> = self
+                    .core
+                    .channels
+                    .iter()
+                    .enumerate()
+                    .map(|(ch, c)| match pattern.alias(ch) {
+                        Some(a) if a.transpose != 0 => {
+                            format!("{} ={:02X}{:+}", c.name, a.source, a.transpose)
+                        }
+                        Some(a) => format!("{} ={:02X}", c.name, a.source),
+                        None => c.name.clone(),
+                    })
+                    .collect();
 
                 // Compute how many channels fit in the available width
                 let visible_count =
@@ -524,9 +546,15 @@ impl eframe::App for RtrackApp {
                     block_start: self.block_start,
                     block_end: self.block_end,
                     colors: self.grid_colors,
+                    fx_pending: self.cursor_sub.fx_slot().and_then(|slot| {
+                        let pos = (self.edit_order, self.cursor_row, self.cursor_channel, slot);
+                        self.fx_typing
+                            .pending_at(pos)
+                            .map(|p| (self.cursor_row, self.cursor_channel, slot, p.to_string()))
+                    }),
                 };
 
-                let actions = grid::draw_grid(ui, pattern, &params);
+                let actions = grid::draw_grid(ui, &self.core.song, pattern_idx, &params);
                 for action in actions {
                     match action {
                         GridAction::SetCursor { row, channel, sub } => {
