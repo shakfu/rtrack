@@ -607,7 +607,8 @@ impl App {
                     self.status_message = Some(format!("All {MAX_TABLES} tables are in use"));
                     return;
                 }
-                self.push_undo();
+                // The instrument's table link changes with the song.
+                self.push_undo_with_samples();
                 self.core.song.tables.push(Table::default());
                 let t = self.core.song.tables.len() - 1;
                 self.core.instruments[slot].table = Some(t as u8);
@@ -666,9 +667,15 @@ impl App {
     pub fn on_file_selected(&mut self, path: PathBuf) {
         match self.dialogs.file_browser.action {
             FileBrowserAction::LoadSample(slot) => {
+                // The bank, the instrument and the channel's default all
+                // change; the channel default is outside undo.
+                self.push_undo_with_samples();
                 self.status_message = Some(match self.core.load_sample_into_slot(slot, &path) {
                     Ok(()) => format!("Loaded sample into slot {:02X}", slot),
-                    Err(e) => format!("Failed to load: {}", e),
+                    Err(e) => {
+                        self.cancel_pending_undo();
+                        format!("Failed to load: {}", e)
+                    }
                 });
             }
             FileBrowserAction::OpenSong => {
@@ -953,6 +960,27 @@ impl App {
             Edit::Bank(Box::new(rtrack_core::editor::BankEdit { before, after })),
         );
         self.core.dirty = true;
+    }
+
+    /// Record a change to instrument `slot`, which was `before`, as an undo
+    /// step. Successive changes to the same part of the same instrument --
+    /// a held arrow key, a typed name -- merge into one step.
+    pub fn record_instrument_edit(&mut self, slot: usize, before: Instrument) {
+        let after = &self.core.instruments[slot];
+        if *after == before {
+            return;
+        }
+        // An edit that snapshotted the instruments with the song covers it.
+        if self
+            .pending_undo
+            .as_ref()
+            .is_some_and(|p| p.samples.is_some())
+        {
+            return;
+        }
+        let source = rtrack_core::editor::EditSource::new(after.changed_part(&before), slot);
+        let snapshot = self.core.snapshot_before_instrument_edit(slot, before);
+        self.record_sample_field_edit(source, snapshot);
     }
 
     /// End a run of coalescing, so the next edit to the same control starts a
@@ -3880,6 +3908,81 @@ pub(crate) mod tests {
                 period: 24
             }
         );
+    }
+
+    // -- Instrument undo --
+
+    fn open_instrument_list(app: &mut App) {
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_an_instrument_type_change_is_undoable() {
+        let mut app = make_app();
+        open_instrument_list(&mut app);
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.core.instruments[0].kind,
+            InstrumentKind::Synth { .. }
+        ));
+        app.undo();
+        assert!(matches!(
+            app.core.instruments[0].kind,
+            InstrumentKind::Preset
+        ));
+        app.redo();
+        assert!(matches!(
+            app.core.instruments[0].kind,
+            InstrumentKind::Synth { .. }
+        ));
+    }
+
+    #[test]
+    fn test_held_adjustments_and_typed_names_undo_as_one_step_each() {
+        let mut app = make_app();
+        open_instrument_list(&mut app);
+        for c in "kick".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // cutoff
+        for _ in 0..5 {
+            app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        assert!(app.core.instruments[0].fx.filter_cutoff < 8000.0);
+
+        app.undo();
+        assert_eq!(
+            app.core.instruments[0].fx.filter_cutoff, 8000.0,
+            "five presses, one step"
+        );
+        assert_eq!(app.core.instruments[0].name, "kick");
+        app.undo();
+        assert_eq!(app.core.instruments[0].name, "", "four letters, one step");
+    }
+
+    #[test]
+    fn test_edits_to_different_instruments_are_separate_steps() {
+        let mut app = make_app();
+        open_instrument_list(&mut app);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        app.undo();
+        assert!(app.core.instruments[0].fixed_pitch);
+        assert!(!app.core.instruments[1].fixed_pitch);
+    }
+
+    #[test]
+    fn test_creating_a_table_undoes_the_table_and_the_link_together() {
+        let mut app = make_app();
+        open_instrument_list(&mut app);
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        assert_eq!(app.core.instruments[0].table, Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.undo();
+        assert!(app.core.song.tables.is_empty());
+        assert_eq!(app.core.instruments[0].table, None);
     }
 
     #[test]

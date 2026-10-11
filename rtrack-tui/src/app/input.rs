@@ -1515,6 +1515,28 @@ impl App {
     }
 
     fn dispatch_key(&mut self, key: KeyEvent) {
+        // Instruments are stored outside the song, so the song snapshot does
+        // not cover them: compare the one an instrument editor works on.
+        let edited = self.edited_instrument_slot();
+        let before = edited.map(|slot| self.core.instruments[slot].clone());
+        self.dispatch_mode_key(key);
+        if let (Some(slot), Some(before)) = (edited, before) {
+            self.record_instrument_edit(slot, before);
+        }
+    }
+
+    /// The instrument the current mode edits, if it is an instrument editor.
+    fn edited_instrument_slot(&self) -> Option<usize> {
+        match self.mode {
+            Mode::InstrumentList | Mode::InstrumentFx | Mode::Modulation => {
+                Some(self.dialogs.instrument_cursor)
+            }
+            Mode::SynthEditor => Some(self.dialogs.synth_editor_slot),
+            _ => None,
+        }
+    }
+
+    fn dispatch_mode_key(&mut self, key: KeyEvent) {
         match self.mode {
             Mode::Normal => self.handle_normal_key(key),
             Mode::Insert => self.handle_insert_key(key),

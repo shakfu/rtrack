@@ -42,6 +42,8 @@ All notable changes to rtrack will be documented in this file.
 
 ### Fixed
 
+- **Instrument edits can be undone.** Undo snapshots the song, and instruments are stored outside it, so changing an instrument's type, name, parameters, filter and drive, modulation, table link or fixed pitch could not be undone in either frontend. Each change is now a step holding the instrument table, through the path sample edits already used (`Edit::Bank`). Successive changes to one part of one instrument merge, so a held arrow key or a slider drag is one step (`Instrument::changed_part`). Loading a sample is also a step now. It had to be: undoing an earlier instrument step restores the whole table and bank, and would have reverted an unrecorded load silently. Creating a table from the TUI instrument list undoes the table and the instrument's link to it together.
+
 - **External MIDI clock plays at the sender's tempo.** An engine tick is one MIDI clock (24 per beat), and clock output sends at that rate, but clock input advanced one tick every `24 / speed` pulses: at speed 6, a row took a beat instead of a quarter, so a slaved song ran four times slow. Each incoming pulse is now one tick, and `PlaybackTiming::ext_clock_count` is removed.
 
 - **Looping samples interpolate across the loop seam.** Near `loop_end` the interpolator read the frames after it, and just after wrapping it read the frame before `loop_start`; neither plays next. At any rate other than 1.0 this bent the waveform once per pass. Measured on a seamless 8-period loop surrounded by constant audio, the output deviated from the ideal sine by up to 0.94; it now stays under 0.001. The frame before `loop_start` is still read before the first wrap, when it is the audio that just played.

@@ -77,13 +77,7 @@ impl RtrackApp {
                     if ui.button("Load Sample Dir...").clicked() {
                         ui.close();
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            self.status_message =
-                                Some(match self.core.load_sample_directory(&dir) {
-                                    Ok(count) => {
-                                        format!("Loaded {} sample(s) from {}", count, dir.display())
-                                    }
-                                    Err(e) => format!("Sample directory failed: {}", e),
-                                });
+                            self.load_sample_directory_undoable(&dir);
                         }
                     }
 

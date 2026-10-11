@@ -49,20 +49,28 @@ impl RtrackApp {
         ui.horizontal(|ui| {
             if ui.button("+ Synth").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
+                    let (before, bank) = (
+                        self.core.instruments[slot].clone(),
+                        Arc::clone(&self.core.sample_bank),
+                    );
                     self.core.instruments[slot].name = format!("Synth {:02X}", slot);
                     self.core.instruments[slot].kind = InstrumentKind::Synth {
                         params: SynthParams::from_patch(0),
                     };
+                    self.record_instrument_edit(slot, before, &bank);
                     self.selected_instrument = Some(slot);
-                    self.core.dirty = true;
                 }
             }
             if ui.button("+ Sample").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
+                    let (before, bank) = (
+                        self.core.instruments[slot].clone(),
+                        Arc::clone(&self.core.sample_bank),
+                    );
                     self.core.instruments[slot].name = format!("Sample {:02X}", slot);
                     self.core.instruments[slot].kind = InstrumentKind::Sample { slot };
+                    self.record_instrument_edit(slot, before, &bank);
                     self.selected_instrument = Some(slot);
-                    self.core.dirty = true;
                 }
             }
         });
@@ -121,7 +129,12 @@ impl RtrackApp {
                 .clicked()
             {
                 if let Some(idx) = self.selected_instrument {
+                    let (before, bank) = (
+                        self.core.instruments[idx].clone(),
+                        Arc::clone(&self.core.sample_bank),
+                    );
                     self.core.instruments[idx] = Instrument::default();
+                    self.record_instrument_edit(idx, before, &bank);
                     self.core.dirty = true;
                 }
             }
@@ -148,6 +161,56 @@ impl RtrackApp {
 
     /// Right panel: common header + type selector + type-specific editor.
     fn draw_instrument_panel(&mut self, ui: &mut egui::Ui, idx: usize) {
+        // Instruments are stored outside the song, so the song snapshot does
+        // not cover them: compare this one across the frame.
+        let before = self.core.instruments[idx].clone();
+        let bank = Arc::clone(&self.core.sample_bank);
+        self.draw_instrument_panel_body(ui, idx);
+        self.record_instrument_edit(idx, before, &bank);
+    }
+
+    /// Load a directory of samples as one undo step.
+    pub(crate) fn load_sample_directory_undoable(&mut self, dir: &std::path::Path) {
+        let before = self.core.snapshot_samples();
+        self.status_message = Some(match self.core.load_sample_directory(dir) {
+            Ok(count) => {
+                self.history.push_bank(before, self.core.snapshot_samples());
+                self.core.dirty = true;
+                format!("Loaded {} sample(s) from {}", count, dir.display())
+            }
+            Err(e) => format!("Sample directory failed: {}", e),
+        });
+    }
+
+    /// Record a change to instrument `slot`, which was `before`, as an undo
+    /// step. Successive changes to one part of one instrument -- a slider
+    /// drag, a typed name -- merge into one step.
+    ///
+    /// A frame that also replaced the sample bank recorded its own step,
+    /// which covers the instruments too, so nothing is added.
+    pub(crate) fn record_instrument_edit(
+        &mut self,
+        slot: usize,
+        before: Instrument,
+        bank: &Arc<rtrack_core::sample::SampleBank>,
+    ) {
+        let after = &self.core.instruments[slot];
+        if *after == before || !Arc::ptr_eq(bank, &self.core.sample_bank) {
+            return;
+        }
+        let source = rtrack_core::editor::EditSource::new(after.changed_part(&before), slot);
+        let snapshot = self.core.snapshot_before_instrument_edit(slot, before);
+        self.history.push_from(
+            source,
+            rtrack_core::editor::Edit::Bank(Box::new(rtrack_core::editor::BankEdit {
+                before: snapshot,
+                after: self.core.snapshot_samples(),
+            })),
+        );
+        self.core.dirty = true;
+    }
+
+    fn draw_instrument_panel_body(&mut self, ui: &mut egui::Ui, idx: usize) {
         let itype = InstType::from_instrument(&self.core.instruments[idx]);
 
         // Header: name + type selector
@@ -743,6 +806,7 @@ impl RtrackApp {
                 {
                     let slot = self.core.instruments[idx].sample_slot().unwrap_or(idx);
 
+                    let before = self.core.snapshot_samples();
                     let mut bank = (*self.core.sample_bank).clone();
                     match bank.load(slot, &path) {
                         Ok(()) => {
@@ -751,6 +815,7 @@ impl RtrackApp {
                             if let Some(ref mut audio) = self.core.audio {
                                 audio.set_sample_bank(self.core.sample_bank.clone());
                             }
+                            self.history.push_bank(before, self.core.snapshot_samples());
                             self.core.dirty = true;
                             self.status_message =
                                 Some(format!("Loaded sample into slot {:02X}", slot));
@@ -763,10 +828,7 @@ impl RtrackApp {
             }
             if ui.button("Load Directory...").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    self.status_message = Some(match self.core.load_sample_directory(&dir) {
-                        Ok(count) => format!("Loaded {} sample(s) from {}", count, dir.display()),
-                        Err(e) => format!("Sample directory failed: {}", e),
-                    });
+                    self.load_sample_directory_undoable(&dir);
                 }
             }
         });
@@ -1226,6 +1288,43 @@ fn downsample_peaks(data: &[[f32; 2]], num_bins: usize) -> Vec<f32> {
 mod tests {
     use super::*;
     use crate::app::RtrackApp;
+
+    /// Apply `f` to instrument `slot` the way one frame of the panel does.
+    fn frame(app: &mut RtrackApp, slot: usize, f: impl FnOnce(&mut Instrument)) {
+        let before = app.core.instruments[slot].clone();
+        let bank = Arc::clone(&app.core.sample_bank);
+        f(&mut app.core.instruments[slot]);
+        app.record_instrument_edit(slot, before, &bank);
+    }
+
+    #[test]
+    fn instrument_edits_are_undoable_and_a_drag_is_one_step() {
+        let mut app = RtrackApp::headless(4, 16);
+        frame(&mut app, 3, |i| i.fx.filter_enabled = true);
+        for cutoff in [4000.0, 2000.0, 1000.0] {
+            frame(&mut app, 3, |i| i.fx.filter_cutoff = cutoff);
+        }
+        frame(&mut app, 3, |i| i.name = "bass".into());
+        let depth = app.history.undo_depth();
+
+        app.apply_undo();
+        assert_eq!(app.core.instruments[3].name, "");
+        assert_eq!(app.core.instruments[3].fx.filter_cutoff, 1000.0);
+        app.apply_undo();
+        assert_eq!(
+            app.core.instruments[3].fx.filter_cutoff, 8000.0,
+            "the enable and the drag are one part of one instrument"
+        );
+        assert!(!app.core.instruments[3].fx.filter_enabled);
+        assert_eq!(depth, 2);
+    }
+
+    #[test]
+    fn an_unchanged_frame_records_nothing() {
+        let mut app = RtrackApp::headless(4, 16);
+        frame(&mut app, 0, |_| {});
+        assert_eq!(app.history.undo_depth(), 0);
+    }
 
     fn app_with_amen() -> (RtrackApp, tempfile::TempDir) {
         // A private directory per test: these run in parallel, and a shared

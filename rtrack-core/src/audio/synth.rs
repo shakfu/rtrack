@@ -21,7 +21,7 @@ pub enum FilterType {
 }
 
 /// User-configurable synth parameters (stored per-instrument in .rtrk files)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SynthParams {
     pub waveform: u8,
     pub attack: f32,

@@ -1492,6 +1492,24 @@ impl TrackerCore {
         }
     }
 
+    /// [`TrackerCore::snapshot_samples`] as it stood before an edit that
+    /// changed only instrument `slot`, which was `before`.
+    ///
+    /// Lets an editor keep a copy of the one instrument it is about to change
+    /// rather than the whole table, and build the undo record only when
+    /// something changed.
+    pub fn snapshot_before_instrument_edit(
+        &self,
+        slot: usize,
+        before: Instrument,
+    ) -> SampleSnapshot {
+        let mut snapshot = self.snapshot_samples();
+        if let Some(inst) = snapshot.instruments.get_mut(slot) {
+            *inst = before;
+        }
+        snapshot
+    }
+
     /// Put back a snapshot taken by [`TrackerCore::snapshot_samples`].
     pub fn restore_samples(&mut self, snapshot: SampleSnapshot) {
         self.sample_bank = snapshot.bank;

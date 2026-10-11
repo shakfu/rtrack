@@ -275,7 +275,7 @@ pub struct MidiOut {
 }
 
 /// What an instrument sounds through.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InstrumentKind {
     /// The built-in synth's preset patch numbered by the instrument's slot.
@@ -328,7 +328,7 @@ impl InstrumentKind {
 }
 
 /// An instrument slot: a name, a sound source, and its MIDI pitch-bend range.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Instrument {
     /// Display name shown in the instrument list.
     pub name: String,
@@ -371,6 +371,29 @@ impl Instrument {
         match self.kind {
             InstrumentKind::Midi(out) => Some(out),
             _ => None,
+        }
+    }
+
+    /// The part of the instrument that differs from `before`, as an undo
+    /// control name, so successive edits to one part merge into one step and
+    /// an edit to another part starts a new one.
+    pub fn changed_part(&self, before: &Instrument) -> &'static str {
+        if self.name != before.name {
+            "instrument.name"
+        } else if std::mem::discriminant(&self.kind) != std::mem::discriminant(&before.kind) {
+            "instrument.type"
+        } else if self.kind != before.kind {
+            "instrument.params"
+        } else if self.fx != before.fx {
+            "instrument.fx"
+        } else if self.mods != before.mods {
+            "instrument.mods"
+        } else if self.table != before.table {
+            "instrument.table"
+        } else if self.fixed_pitch != before.fixed_pitch {
+            "instrument.fixed_pitch"
+        } else {
+            "instrument.pitch_bend_range"
         }
     }
 

@@ -276,6 +276,7 @@ impl RtrackApp {
                         .unwrap_or(0)
                 };
 
+                let before = self.core.snapshot_samples();
                 let mut bank = (*self.core.sample_bank).clone();
                 match bank.load(slot, path) {
                     Ok(()) => {
@@ -283,6 +284,7 @@ impl RtrackApp {
                         if let Some(ref mut audio) = self.core.audio {
                             audio.set_sample_bank(self.core.sample_bank.clone());
                         }
+                        self.history.push_bank(before, self.core.snapshot_samples());
                         self.core.dirty = true;
                         loaded += 1;
                     }
