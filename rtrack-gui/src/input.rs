@@ -1638,6 +1638,24 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_slider_drag_is_one_step_and_mute_alone_is_none() {
+        let mut app = app();
+        for volume in [0.9, 0.7, 0.5] {
+            let before = app.core.channels[1].clone();
+            app.core.channels[1].volume = volume;
+            app.record_channel_edit(1, before);
+        }
+        let before = app.core.channels[1].clone();
+        app.core.channels[1].muted = true;
+        app.record_channel_edit(1, before);
+        assert_eq!(app.history.undo_depth(), 1);
+
+        app.apply_undo();
+        assert_eq!(app.core.channels[1].volume, 1.0);
+        assert!(app.core.channels[1].muted);
+    }
+
+    #[test]
     fn closing_the_dialog_ends_the_run() {
         let mut app = app();
         let before = app.core.song.clone();

@@ -736,6 +736,28 @@ mod tests {
         assert_eq!(interpolate_fx(&a, &b, 1, 0.5), None);
     }
 
+    #[test]
+    fn channel_steps_merge_only_for_the_same_channel() {
+        let cfg = |volume| crate::types::ChannelConfig {
+            volume,
+            ..Default::default()
+        };
+        let step = |index, before, after| {
+            Edit::Channel(Box::new(ChannelEdit {
+                index,
+                before: cfg(before),
+                after: cfg(after),
+            }))
+        };
+        let mut first = step(0, 1.0, 0.8);
+        assert!(amend(&mut first, step(0, 0.8, 0.5)).is_ok());
+        let Edit::Channel(c) = &first else {
+            unreachable!()
+        };
+        assert_eq!((c.before.volume, c.after.volume), (1.0, 0.5));
+        assert!(amend(&mut first, step(1, 1.0, 0.2)).is_err());
+    }
+
     // -- History --
 
     #[test]

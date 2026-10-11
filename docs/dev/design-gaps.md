@@ -345,7 +345,7 @@ After steps 1-7, and the external MIDI clock fix.
 
 ### Limits the changes introduced
 
-- Channel settings are not undoable: name, default instrument, volume, pan and effects live outside the song, as instruments did. Instrument edits are now undoable (CHANGELOG, Fixed).
+- MIDI-learn mappings are not undoable, and neither are mute and solo; the latter by choice, as performance actions. Instrument and channel-setting edits are undoable (CHANGELOG, Fixed).
 - Arpeggio, table and modulation pitch reach a MIDI instrument as pitch bend, limited by the device's bend range. At the default 2 semitones an octave step fails.
 - MIDI output needs a MIDI instrument. Songs that drove gear from plain channels send nothing until they have one.
 - Inserting or deleting a row shifts the pattern's own columns only. An aliased column keeps reading its source, so the two can fall out of step.
@@ -360,6 +360,5 @@ After steps 1-7, and the external MIDI clock fix.
 
 ### Next
 
-1. `CHD`.
-2. A hands-on pass of both frontends' new editors.
-3. Undo for channel settings, by the same snapshot route as instruments.
+1. A hands-on pass of both frontends' new editors.
+2. `CHD`, after settling its semantics: intervals or chord shapes, snapping to the scale, and multi-note voice tracking in the synth, sampler and MIDI paths, each of which assumes one note per channel.

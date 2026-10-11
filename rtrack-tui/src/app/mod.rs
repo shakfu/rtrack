@@ -1791,6 +1791,42 @@ pub(crate) mod tests {
     /// A held arrow key is one edit, not one per repeat, and undo returns to
     /// where the field stood before the run began.
     #[test]
+    fn a_run_of_channel_effect_edits_is_one_undo_step_and_keeps_mute() {
+        let mut app = make_app();
+        run_command(&mut app, "fx");
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // cutoff
+        }
+        let start = app.core.channels[0].effects_params.filter_cutoff;
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)); // filter on/off
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.core.channels[0].muted = true;
+
+        app.undo();
+        assert_eq!(app.core.channels[0].effects_params.filter_cutoff, start);
+        assert!(!app.core.channels[0].effects_params.filter_enabled);
+        assert!(app.core.channels[0].muted, "undo leaves mute alone");
+        app.redo();
+        assert!(app.core.channels[0].effects_params.filter_cutoff > start);
+    }
+
+    #[test]
+    fn a_default_instrument_change_is_undoable() {
+        let mut app = make_app();
+        run_command(&mut app, "fx");
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // instrument
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.core.channels[0].default_instrument, Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.undo();
+        assert_eq!(app.core.channels[0].default_instrument, None);
+    }
+
+    #[test]
     fn a_run_of_sample_field_edits_is_one_undo_step() {
         let (mut app, _dir) = app_with_amen();
         app.mode = Mode::SampleEditor;
@@ -5069,6 +5105,12 @@ pub(crate) mod tests {
         // Loading a sample should auto-set default_instrument so preview routes correctly
         assert_eq!(app.core.channels[5].default_instrument, Some(5));
         assert_ne!(app.mode, Mode::FileBrowser);
+
+        // One undo takes back the sample, the instrument and the default.
+        app.undo();
+        assert!(app.core.sample_bank.get(5).is_none());
+        assert_eq!(app.core.instruments[5].sample_slot(), None);
+        assert_eq!(app.core.channels[5].default_instrument, None);
     }
 
     #[test]
