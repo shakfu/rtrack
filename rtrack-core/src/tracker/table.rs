@@ -97,6 +97,7 @@ pub fn allowed_in_table(cmd: FxCmd) -> bool {
             | FxCmd::Offset
             | FxCmd::Portamento
             | FxCmd::Table
+            | FxCmd::Chord
     )
 }
 

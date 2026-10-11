@@ -9,6 +9,7 @@ use crate::audio::channel_effects::{
     ChannelEffects, ChannelEffectsParams, InsertFx, MAX_EFFECT_CHANNELS,
 };
 use crate::audio::effects::{self, EffectsChain};
+use crate::audio::soft_clip;
 use crate::audio::synth::BuiltinSynth;
 use crate::engine::{ChannelInfo, TrackerEngine, TrackerEvent};
 use crate::tracker::Song;
@@ -58,8 +59,10 @@ fn write_block<W: std::io::Write + std::io::Seek>(
     right: &[f32],
 ) -> Result<()> {
     for i in 0..left.len() {
-        let l = left[i].clamp(-1.0, 1.0);
-        let r = right[i].clamp(-1.0, 1.0);
+        // The live output's saturation, not a hard clip, so a render
+        // matches what was heard.
+        let l = soft_clip(left[i]);
+        let r = soft_clip(right[i]);
         writer
             .write_sample(l.to_sample::<i16>())
             .context("Failed to write WAV sample")?;
@@ -278,13 +281,12 @@ fn render_song_streaming(setup: &RenderSetup, sink: &mut BlockSink<'_>) -> Resul
                     velocity,
                     instrument,
                     sample_offset,
+                    chord,
                 } => {
                     let midi_ch = (*channel & 0x0F) as u8;
-                    // Turn off previous note on this channel
-                    if let Some(prev) = active_notes.get(*channel).copied().flatten() {
-                        synth.note_off(midi_ch, prev);
-                        sample_engine.note_off(midi_ch, prev);
-                    }
+                    // Turn off previous notes on this channel, chord tones too
+                    synth.note_off_all_channel(midi_ch);
+                    sample_engine.note_off_channel(midi_ch);
                     while active_notes.len() <= *channel {
                         active_notes.push(None);
                     }
@@ -297,26 +299,41 @@ fn render_song_streaming(setup: &RenderSetup, sink: &mut BlockSink<'_>) -> Resul
                                 .map_or_else(Default::default, |i| i.fx);
                         }
                     }
-                    match voice {
-                        Voice::Sample(slot) => {
-                            if let Some(sample) = bank.get(slot) {
-                                sample_engine.note_on_with_offset(
-                                    slot,
-                                    *midi_note,
-                                    *velocity,
-                                    midi_ch,
-                                    sample,
-                                    sr,
-                                    NewNoteAction::Cut,
-                                    *sample_offset,
-                                );
+                    // As live: each note of a chord at its share of the level.
+                    let tones: Vec<u8> = chord.iter().flatten().copied().collect();
+                    let velocity = crate::engine::chord_velocity(*velocity, 1 + tones.len());
+                    for (i, note) in std::iter::once(*midi_note).chain(tones).enumerate() {
+                        let chord_tone = i > 0;
+                        match &voice {
+                            Voice::Sample(slot) => {
+                                if let Some(sample) = bank.get(*slot) {
+                                    let action = if chord_tone {
+                                        NewNoteAction::Continue
+                                    } else {
+                                        NewNoteAction::Cut
+                                    };
+                                    sample_engine.note_on_with_offset(
+                                        *slot,
+                                        note,
+                                        velocity,
+                                        midi_ch,
+                                        sample,
+                                        sr,
+                                        action,
+                                        *sample_offset,
+                                    );
+                                }
                             }
+                            Voice::Synth(params) if chord_tone => {
+                                synth.add_note_with_params(midi_ch, note, velocity, params)
+                            }
+                            Voice::Synth(params) => {
+                                synth.note_on_with_params(midi_ch, note, velocity, params)
+                            }
+                            Voice::Default if chord_tone => synth.add_note(midi_ch, note, velocity),
+                            Voice::Default => synth.note_on(midi_ch, note, velocity),
+                            Voice::Midi(_) => {}
                         }
-                        Voice::Synth(params) => {
-                            synth.note_on_with_params(midi_ch, *midi_note, *velocity, &params)
-                        }
-                        Voice::Default => synth.note_on(midi_ch, *midi_note, *velocity),
-                        Voice::Midi(_) => {}
                     }
                     active_notes[*channel] = Some(*midi_note);
                     if let Some(slot) = active_instruments.get_mut(*channel) {
@@ -325,10 +342,9 @@ fn render_song_streaming(setup: &RenderSetup, sink: &mut BlockSink<'_>) -> Resul
                 }
                 TrackerEvent::NoteOff { channel } => {
                     let midi_ch = (*channel & 0x0F) as u8;
-                    if let Some(prev) = active_notes.get(*channel).copied().flatten() {
-                        synth.note_off(midi_ch, prev);
-                        sample_engine.note_off(midi_ch, prev);
-                    }
+                    // The whole channel, as live playback releases it.
+                    synth.note_off_all_channel(midi_ch);
+                    sample_engine.note_off_channel(midi_ch);
                     if *channel < active_notes.len() {
                         active_notes[*channel] = None;
                     }
@@ -425,8 +441,8 @@ fn render_song(setup: &RenderSetup) -> Result<(Vec<f32>, Vec<f32>)> {
 fn to_interleaved_i16(left: &[f32], right: &[f32]) -> Vec<i16> {
     let mut samples = Vec::with_capacity(left.len() * 2);
     for i in 0..left.len() {
-        let l = left[i].clamp(-1.0, 1.0);
-        let r = right[i].clamp(-1.0, 1.0);
+        let l = soft_clip(left[i]);
+        let r = soft_clip(right[i]);
         samples.push(l.to_sample::<i16>());
         samples.push(r.to_sample::<i16>());
     }
@@ -877,6 +893,47 @@ mod tests {
             diff_count > 0,
             "Volume slide should produce different output than static volume"
         );
+    }
+
+    #[test]
+    fn a_chord_renders_at_about_the_level_of_one_note() {
+        let render = |chord: Option<u8>| -> Vec<f32> {
+            let mut song = Song::new(1, 8);
+            song.speed = 6;
+            song.set_cell(
+                0,
+                0,
+                0,
+                Cell {
+                    note: Some(Note::On {
+                        value: NoteValue::C,
+                        octave: 4,
+                    }),
+                    volume: Some(100),
+                    fx: match chord {
+                        Some(p) => Fx::only(FxCmd::Chord, p),
+                        None => [None; FX_COLUMNS],
+                    },
+                    ..Cell::default()
+                },
+            );
+            let bank = SampleBank::new();
+            render_song(&setup(&song, &bank, &instruments(false)))
+                .unwrap()
+                .0
+        };
+        let rms = |x: &[f32]| (x[2000..20000].iter().map(|v| v * v).sum::<f32>() / 18000.0).sqrt();
+        let (one, three) = (rms(&render(None)), rms(&render(Some(0x47))));
+        let ratio = three / one;
+        assert!((0.7..1.4).contains(&ratio), "chord/single RMS {ratio}");
+    }
+
+    #[test]
+    fn exports_saturate_like_live_output_instead_of_clipping_hard() {
+        let samples = to_interleaved_i16(&[0.5, 0.9, 4.0], &[0.5, 0.9, 4.0]);
+        assert_eq!(samples[0], (0.5f32).to_sample::<i16>(), "linear below 0.8");
+        assert!(samples[2] < (0.9f32).to_sample::<i16>(), "0.9 is softened");
+        assert!(samples[4] > 32000, "far over full scale stays near it");
     }
 
     #[test]

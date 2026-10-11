@@ -326,11 +326,10 @@ Steps 1-7 of the suggested order are implemented. Step 8 is not: it applies only
 
 ## Remaining
 
-After steps 1-7, and the external MIDI clock fix.
+After steps 1-7, the external MIDI clock fix, `KIL`, and G12 option 2 (`CHD`, on every instrument type, with chords on rtrack's own audio played at velocity / sqrt(notes)).
 
 ### Not built
 
-- G12 option 2: a chord command (`CHD`). G8 was its only dependency, so it is the one open recommendation.
 - G11: live launch. Option 2, queueing the next order position at the pattern end, if live use becomes a goal.
 - G3 option 1: a play position per channel. Only if per-track launch becomes a goal. Aliases that loop and tables already give polymeter within a pattern.
 
@@ -360,5 +359,4 @@ After steps 1-7, and the external MIDI clock fix.
 
 ### Next
 
-1. A hands-on pass of both frontends' new editors.
-2. `CHD`, after settling its semantics: intervals or chord shapes, snapping to the scale, and multi-note voice tracking in the synth, sampler and MIDI paths, each of which assumes one note per channel.
+1. A master limiter (M8 mixer): the general answer to many busy channels summing past full scale. `CHD` scales its own notes, and output soft-clips, but neither limits the mix.

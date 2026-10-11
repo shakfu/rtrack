@@ -781,8 +781,16 @@ impl TrackerCore {
                     velocity,
                     instrument,
                     sample_offset,
+                    chord,
                 } => {
-                    self.route_note_on(channel, midi_note, velocity, instrument, sample_offset);
+                    self.route_note_on(
+                        channel,
+                        midi_note,
+                        velocity,
+                        instrument,
+                        sample_offset,
+                        chord,
+                    );
                 }
                 TrackerEvent::NoteOff { channel } => {
                     self.send_channel_note_off(channel);
@@ -906,7 +914,7 @@ impl TrackerCore {
     /// Send a note-on with no instrument: the default synth, or the
     /// SoundFont when one is loaded.
     pub fn send_note_on(&mut self, ch: usize, note: u8, velocity: u8) {
-        self.route_note_on(ch, note, velocity, None, 0);
+        self.route_note_on(ch, note, velocity, None, 0, [None; 2]);
     }
 
     /// Send a note-on through an instrument's sound source.
@@ -917,7 +925,7 @@ impl TrackerCore {
         velocity: u8,
         instrument: Option<u8>,
     ) {
-        self.route_note_on(ch, note, velocity, instrument, 0);
+        self.route_note_on(ch, note, velocity, instrument, 0, [None; 2]);
     }
 
     /// [`Self::send_note_on_with_instrument`], starting a sample
@@ -925,6 +933,10 @@ impl TrackerCore {
     ///
     /// Audio goes to the tracker channel's voices and effects. Only a MIDI
     /// instrument sends MIDI.
+    ///
+    /// `chord` holds the notes `CHD` adds. On rtrack's own audio each note
+    /// of the chord plays at [`crate::engine::chord_velocity`]; a MIDI
+    /// instrument plays them at full velocity.
     fn route_note_on(
         &mut self,
         ch: usize,
@@ -932,8 +944,14 @@ impl TrackerCore {
         velocity: u8,
         instrument: Option<u8>,
         sample_offset: u8,
+        chord: [Option<u8>; 2],
     ) {
         let voice = resolve_voice(&self.instruments, instrument);
+        let tones = chord.into_iter().flatten();
+        let velocity = match voice {
+            Voice::Midi(_) => velocity,
+            _ => crate::engine::chord_velocity(velocity, 1 + tones.clone().count()),
+        };
         // A note takes the channel over, so a MIDI note still held from a
         // MIDI instrument stops when anything else plays here.
         let previous_midi = self.midi_route.get(ch).copied().flatten();
@@ -965,9 +983,10 @@ impl TrackerCore {
                 }
             }
         }
-        match voice {
-            Voice::Midi(out) => self.midi_note_on(out, note, velocity),
+        match &voice {
+            Voice::Midi(out) => self.midi_note_on(*out, note, velocity),
             Voice::Sample(slot) => {
+                let slot = *slot;
                 if self.sample_bank.get(slot).is_none() {
                     return;
                 }
@@ -1001,9 +1020,9 @@ impl TrackerCore {
                 if let Some(ref mut audio) = self.audio {
                     match at {
                         Some(frame) => {
-                            audio.note_on_with_params_at(frame, audio_ch, note, velocity, &params)
+                            audio.note_on_with_params_at(frame, audio_ch, note, velocity, params)
                         }
-                        None => audio.note_on_with_params(audio_ch, note, velocity, &params),
+                        None => audio.note_on_with_params(audio_ch, note, velocity, params),
                     }
                 }
             }
@@ -1012,6 +1031,55 @@ impl TrackerCore {
                     match at {
                         Some(frame) => audio.note_on_at(frame, audio_ch, note, velocity),
                         None => audio.note_on(audio_ch, note, velocity),
+                    }
+                }
+            }
+        }
+
+        // Chord tones start beside the root, not in place of it.
+        for tone in tones {
+            match &voice {
+                Voice::Midi(out) => {
+                    let _ = self.midi.add_note(out.channel & 0x0F, tone, velocity);
+                }
+                Voice::Sample(slot) => {
+                    if let Some(ref mut audio) = self.audio {
+                        let (slot, action) = (*slot, NewNoteAction::Continue);
+                        match at {
+                            Some(frame) => audio.sample_note_on_at(
+                                frame,
+                                slot,
+                                tone,
+                                velocity,
+                                audio_ch,
+                                action,
+                                sample_offset,
+                            ),
+                            None => audio.sample_note_on(
+                                slot,
+                                tone,
+                                velocity,
+                                audio_ch,
+                                action,
+                                sample_offset,
+                            ),
+                        }
+                    }
+                }
+                Voice::Synth(params) => {
+                    if let Some(ref mut audio) = self.audio {
+                        audio.chord_note_on_at(
+                            at.unwrap_or(0),
+                            audio_ch,
+                            tone,
+                            velocity,
+                            Some(params),
+                        );
+                    }
+                }
+                Voice::Default => {
+                    if let Some(ref mut audio) = self.audio {
+                        audio.chord_note_on_at(at.unwrap_or(0), audio_ch, tone, velocity, None);
                     }
                 }
             }
@@ -2468,6 +2536,39 @@ mod tests {
         core.send_cc(0, 74, 10);
         core.send_channel_note_off(0);
         assert_eq!(core.midi.sent, vec![vec![0xB9, 74, 10], vec![0x89, 60, 0]]);
+    }
+
+    #[test]
+    fn a_midi_instrument_plays_a_chord_at_full_velocity_and_releases_it_whole() {
+        let mut core = midi_core();
+        core.route_note_on(0, 60, 100, Some(1), 0, [Some(63), Some(67)]);
+        assert_eq!(
+            core.midi.sent,
+            vec![
+                vec![0xC9, 33],
+                vec![0x99, 60, 100],
+                vec![0x99, 63, 100],
+                vec![0x99, 67, 100]
+            ]
+        );
+        core.midi.sent.clear();
+        core.send_channel_note_off(0);
+        assert_eq!(
+            core.midi.sent,
+            vec![vec![0x89, 60, 0], vec![0x89, 63, 0], vec![0x89, 67, 0]]
+        );
+    }
+
+    #[test]
+    fn a_new_midi_note_releases_the_previous_chord() {
+        let mut core = midi_core();
+        core.route_note_on(0, 60, 100, Some(1), 0, [Some(64), None]);
+        core.midi.sent.clear();
+        core.route_note_on(0, 62, 100, Some(1), 0, [None; 2]);
+        assert_eq!(
+            core.midi.sent,
+            vec![vec![0x89, 60, 0], vec![0x89, 64, 0], vec![0x99, 62, 100]]
+        );
     }
 
     #[test]

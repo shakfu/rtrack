@@ -53,16 +53,20 @@ pub enum FxCmd {
     /// `KILxx`: end the channel's note xx ticks after the row starts. The
     /// count carries into later rows, so `KIL0C` at speed 6 holds two rows.
     Kill,
+    /// `CHDxy`: play the row's note with notes x and y semitones above it.
+    /// A 0 digit adds nothing, so `CHD07` is a fifth.
+    Chord,
 }
 
 impl FxCmd {
     /// Every command, in display order.
-    pub const ALL: [FxCmd; 19] = [
+    pub const ALL: [FxCmd; 20] = [
         FxCmd::Arp,
         FxCmd::Break,
         FxCmd::CcNumber,
         FxCmd::CcValue,
         FxCmd::Chance,
+        FxCmd::Chord,
         FxCmd::Delay,
         FxCmd::Jump,
         FxCmd::Kill,
@@ -101,6 +105,7 @@ impl FxCmd {
             FxCmd::Tempo => "TPO",
             FxCmd::Table => "TBL",
             FxCmd::Kill => "KIL",
+            FxCmd::Chord => "CHD",
         }
     }
 
@@ -126,6 +131,7 @@ impl FxCmd {
             FxCmd::Tempo => "tempo in BPM",
             FxCmd::Table => "run table xx with the note",
             FxCmd::Kill => "end the note after xx ticks",
+            FxCmd::Chord => "chord: add notes x and y semitones up",
         }
     }
 

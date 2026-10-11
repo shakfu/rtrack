@@ -109,6 +109,9 @@ pub enum TrackerEvent {
         /// `9xx`: start a sample `xx`/256 of the way into its played span.
         /// 0 for every other note, and ignored by synths and MIDI.
         sample_offset: u8,
+        /// `CHD`: further notes to start with this one, already snapped to
+        /// the song's scale. They end with it.
+        chord: [Option<u8>; 2],
     },
     /// Note off on a channel.
     NoteOff { channel: usize },
@@ -166,6 +169,17 @@ impl Default for ChannelInfo {
             default_instrument: None,
         }
     }
+}
+
+/// The velocity for each note of an `n`-note chord sounded by rtrack's own
+/// audio: `velocity / sqrt(n)`, so the chord is about as loud as one note
+/// and several chords do not drive the mix into clipping. MIDI devices mix
+/// their own voices and get the full velocity.
+pub fn chord_velocity(velocity: u8, notes: usize) -> u8 {
+    if notes <= 1 {
+        return velocity;
+    }
+    ((velocity as f64 / (notes as f64).sqrt()).round() as u8).max(1)
 }
 
 /// Per-instrument settings that change how the engine plays a note.
@@ -625,12 +639,14 @@ impl TrackerEngine {
                                 channel: ch,
                                 semitone_offset: self.table_transpose(ch, song, Some(midi_note)),
                             });
+                            let chord = self.chord_tones(ch, song, midi_note, find(FxCmd::Chord));
                             self.emit(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
                                 velocity: scaled_vel,
                                 instrument,
                                 sample_offset: find(FxCmd::Offset).unwrap_or(0),
+                                chord,
                             });
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].active_instrument = instrument;
@@ -789,6 +805,15 @@ impl TrackerEngine {
                                 channel: ch,
                                 semitone_offset: self.table_transpose(ch, song, Some(midi_note)),
                             });
+                            let chord = self.chord_tones(
+                                ch,
+                                song,
+                                midi_note,
+                                fx.iter()
+                                    .flatten()
+                                    .find(|f| f.cmd == FxCmd::Chord)
+                                    .map(|f| f.param),
+                            );
                             self.events.push(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
@@ -799,6 +824,7 @@ impl TrackerEngine {
                                     .flatten()
                                     .find(|f| f.cmd == FxCmd::Offset)
                                     .map_or(0, |f| f.param),
+                                chord,
                             });
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].volume = vel;
@@ -985,6 +1011,25 @@ impl TrackerEngine {
         (state.volume as f64 * table + state.mods.volume)
             .round()
             .clamp(0.0, MIDI_MAX_VALUE as f64) as u8
+    }
+
+    // -- Chords --
+
+    /// The notes `CHDxy` adds to `root`: x and y semitones up, each snapped
+    /// to the song's scale. A 0 digit, or a note past the MIDI range, adds
+    /// nothing.
+    fn chord_tones(&self, ch: usize, song: &Song, root: u8, param: Option<u8>) -> [Option<u8>; 2] {
+        let Some(p) = param else {
+            return [None; 2];
+        };
+        [p >> 4, p & 0x0F].map(|interval| {
+            if interval == 0 {
+                return None;
+            }
+            let up = self.quantize(ch, song, Some(root), interval as f64);
+            let note = (root as f64 + up).round();
+            (note <= MIDI_MAX_NOTE as f64).then_some(note as u8)
+        })
     }
 
     // -- Note cut --
@@ -2464,5 +2509,49 @@ mod tests {
         song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Kill, 0x0C), None));
         song.set_cell(0, 1, 0, c4([None; FX_COLUMNS], None));
         assert_eq!(note_off_ticks(&song, 24), Vec::<usize>::new());
+    }
+
+    // -- Chords --
+
+    fn chord_of(song: &Song) -> [Option<u8>; 2] {
+        let mut engine = TrackerEngine::new(song, false);
+        engine
+            .process_tick(song)
+            .iter()
+            .find_map(|e| match e {
+                TrackerEvent::NoteOn { chord, .. } => Some(*chord),
+                _ => None,
+            })
+            .expect("a note played")
+    }
+
+    #[test]
+    fn chd_adds_notes_above_the_root() {
+        let mut song = Song::new(1, 1);
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Chord, 0x37), None));
+        assert_eq!(chord_of(&song), [Some(51), Some(55)], "C minor on C-4");
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Chord, 0x07), None));
+        assert_eq!(chord_of(&song), [None, Some(55)], "a 0 digit adds nothing");
+        song.set_cell(0, 0, 0, c4([None; FX_COLUMNS], None));
+        assert_eq!(chord_of(&song), [None, None]);
+    }
+
+    #[test]
+    fn chord_tones_snap_to_the_scale() {
+        let mut song = Song::new(1, 1);
+        song.scale = Some(crate::theory::ScaleSetting::new(
+            NoteValue::C,
+            crate::theory::Scale::Major,
+        ));
+        // +3 is E-flat, off C major: it snaps down to D.
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Chord, 0x37), None));
+        assert_eq!(chord_of(&song), [Some(50), Some(55)]);
+    }
+
+    #[test]
+    fn a_chord_shares_out_the_level_of_one_note() {
+        assert_eq!(chord_velocity(100, 1), 100);
+        assert_eq!(chord_velocity(100, 3), 58);
+        assert_eq!(chord_velocity(1, 3), 1, "never silent");
     }
 }

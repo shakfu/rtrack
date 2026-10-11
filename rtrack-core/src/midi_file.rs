@@ -132,7 +132,8 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     let mut engine = TrackerEngine::new(song, false);
     let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
     let mut tempo_events: Vec<(u32, f64)> = Vec::new();
-    let mut active_notes: Vec<Option<u8>> = vec![None; song.channels];
+    // Every note sounding per channel: the row's note and any `CHD` tones.
+    let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); song.channels];
     let mut abs_tick: u32 = 0;
 
     while !engine.finished {
@@ -145,6 +146,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     channel,
                     midi_note,
                     velocity,
+                    chord,
                     ..
                 } => {
                     if *channel >= song.channels {
@@ -152,7 +154,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     }
                     let midi_ch = (*channel & 0x0F) as u8;
                     // Note off previous
-                    if let Some(prev) = active_notes[*channel].take() {
+                    for prev in std::mem::take(&mut active_notes[*channel]) {
                         channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
                     }
                     // Reset pitch bend
@@ -165,19 +167,25 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                             ((center >> 7) & 0x7F) as u8,
                         ],
                     ));
-                    // Note on
+                    // Note on, with any chord tones at full velocity, as a
+                    // MIDI instrument plays them
                     let vel = (*velocity).min(0x7F);
-                    channel_events[*channel]
-                        .push((abs_tick, vec![0x90 | midi_ch, *midi_note, vel]));
-                    active_notes[*channel] = Some(*midi_note);
+                    for note in std::iter::once(*midi_note).chain(chord.iter().flatten().copied()) {
+                        channel_events[*channel].push((abs_tick, vec![0x90 | midi_ch, note, vel]));
+                        active_notes[*channel].push(note);
+                    }
                 }
                 TrackerEvent::NoteOff { channel } => {
                     if *channel >= song.channels {
                         continue;
                     }
                     let midi_ch = (*channel & 0x0F) as u8;
-                    if let Some(prev) = active_notes[*channel].take() {
-                        channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+                    let held = std::mem::take(&mut active_notes[*channel]);
+                    for prev in &held {
+                        channel_events[*channel]
+                            .push((abs_tick, vec![0x80 | midi_ch, *prev, 0x00]));
+                    }
+                    if !held.is_empty() {
                         let center = PITCH_BEND_CENTER;
                         channel_events[*channel].push((
                             abs_tick,
@@ -249,9 +257,12 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
 
     // Final note-offs
     for ch in 0..song.channels {
-        if let Some(prev) = active_notes[ch].take() {
-            let midi_ch = (ch & 0x0F) as u8;
-            channel_events[ch].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+        let held = std::mem::take(&mut active_notes[ch]);
+        let midi_ch = (ch & 0x0F) as u8;
+        for prev in &held {
+            channel_events[ch].push((abs_tick, vec![0x80 | midi_ch, *prev, 0x00]));
+        }
+        if !held.is_empty() {
             let center = PITCH_BEND_CENTER;
             channel_events[ch].push((
                 abs_tick,
@@ -1056,6 +1067,47 @@ mod tests {
         let has_pitch_bend = data.windows(1).any(|w| w[0] & 0xF0 == 0xE0);
         assert!(has_pitch_bend, "Vibrato should produce pitch bend events");
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn chords_export_as_notes_that_end_together() {
+        let mut song = Song::new(1, 2);
+        song.speed = 6;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                fx: crate::tracker::Fx::only(crate::tracker::FxCmd::Chord, 0x47),
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                note: Some(Note::Off),
+                ..Cell::default()
+            },
+        );
+        let path = std::env::temp_dir().join("rtrack_chord_export.mid");
+        export_midi(&song, &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let ons = [48u8, 52, 55]
+            .iter()
+            .filter(|n| bytes.windows(2).any(|w| w == [0x90, **n]))
+            .count();
+        let offs = [48u8, 52, 55]
+            .iter()
+            .filter(|n| bytes.windows(2).any(|w| w == [0x80, **n]))
+            .count();
+        assert_eq!((ons, offs), (3, 3));
     }
 
     #[test]

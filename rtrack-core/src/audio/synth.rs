@@ -1243,7 +1243,11 @@ impl BuiltinSynth {
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         // Kill existing voice on this channel (tracker: one note per channel)
         self.note_off_all_channel(channel);
+        self.add_note(channel, note, velocity);
+    }
 
+    /// Start a voice beside those already on `channel`: a chord tone.
+    pub fn add_note(&mut self, channel: u8, note: u8, velocity: u8) {
         let patch = Patch::from_program(self.programs[(channel & 0x0F) as usize]);
         let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         let voice = Voice::new(channel, note, vel, patch, self.sample_rate);
@@ -1260,7 +1264,17 @@ impl BuiltinSynth {
         params: &SynthParams,
     ) {
         self.note_off_all_channel(channel);
+        self.add_note_with_params(channel, note, velocity, params);
+    }
 
+    /// [`Self::add_note`] with user-configured synth parameters.
+    pub fn add_note_with_params(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: &SynthParams,
+    ) {
         let patch = Patch::from_program(params.waveform);
         let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         let custom_params = PatchParams {

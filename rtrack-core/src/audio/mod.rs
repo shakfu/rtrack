@@ -27,7 +27,7 @@ use synth::{BuiltinSynth, SynthParams};
 /// Soft clamp audio sample to [-1, 1] using tanh-style saturation.
 /// Passes near-unity signals through cleanly, gently compresses values above ~0.8.
 #[inline]
-fn soft_clip(x: f32) -> f32 {
+pub(crate) fn soft_clip(x: f32) -> f32 {
     if x.abs() <= 0.8 {
         x
     } else {
@@ -112,6 +112,14 @@ enum AudioCommand {
         note: u8,
         velocity: u8,
         params: Box<SynthParams>,
+    },
+    /// A note started beside the channel's others, not in place of them: a
+    /// chord tone. `None` params: the default synth, or the SoundFont.
+    AddNote {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: Option<Box<SynthParams>>,
     },
     NoteOff {
         channel: u8,
@@ -829,6 +837,27 @@ impl AudioEngine {
         );
     }
 
+    /// Schedule a chord tone at `frame` (0: now): a note beside the
+    /// channel's others. `None` params plays the default synth or SoundFont.
+    pub fn chord_note_on_at(
+        &mut self,
+        frame: u64,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: Option<&SynthParams>,
+    ) {
+        self.send_at(
+            frame,
+            AudioCommand::AddNote {
+                channel,
+                note,
+                velocity,
+                params: params.map(|p| Box::new(p.clone())),
+            },
+        );
+    }
+
     /// Schedule a note-on with explicit synth parameters at a specific frame.
     pub fn note_on_with_params_at(
         &mut self,
@@ -1236,6 +1265,25 @@ fn process_command(
             builtin_synth.note_on_with_params(channel, note, velocity, &params);
             hand_back(Reclaimed::SynthParams(params));
         }
+        AudioCommand::AddNote {
+            channel,
+            note,
+            velocity,
+            params,
+        } => match params {
+            Some(params) => {
+                builtin_synth.add_note_with_params(channel, note, velocity, &params);
+                hand_back(Reclaimed::SynthParams(params));
+            }
+            None => {
+                if let Some(ref mut sf2) = sf2_synth {
+                    sf2.note_on(channel as i32, note as i32, velocity as i32);
+                }
+                if !has_sf2 {
+                    builtin_synth.add_note(channel, note, velocity);
+                }
+            }
+        },
         AudioCommand::NoteOff { channel, note } => {
             if let Some(ref mut sf2) = sf2_synth {
                 sf2.note_off(channel as i32, note as i32);
@@ -1566,6 +1614,56 @@ mod scheduler_tests {
         }
         state.render_segment(pos..frames);
         state.scratch_left[..frames].to_vec()
+    }
+
+    #[test]
+    fn a_chord_tone_sounds_beside_the_root_and_a_new_note_replaces_both() {
+        let mut state = RenderState::for_test(SR);
+        let params = SynthParams::from_patch(0);
+        apply(
+            &mut state,
+            AudioCommand::NoteOnWithParams {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+                params: Box::new(params.clone()),
+            },
+        );
+        apply(
+            &mut state,
+            AudioCommand::AddNote {
+                channel: 0,
+                note: 64,
+                velocity: 100,
+                params: Some(Box::new(params.clone())),
+            },
+        );
+        apply(
+            &mut state,
+            AudioCommand::AddNote {
+                channel: 0,
+                note: 67,
+                velocity: 100,
+                params: None,
+            },
+        );
+        assert_eq!(state.builtin_synth.active_voice_count(), 3);
+
+        // A new note releases the chord: its voices fade rather than stop.
+        apply(
+            &mut state,
+            AudioCommand::NoteOnWithParams {
+                channel: 0,
+                note: 62,
+                velocity: 100,
+                params: Box::new(params),
+            },
+        );
+        // Long enough for patch 0's 0.15 s release to finish.
+        for _ in 0..4 {
+            render_whole(&mut state, 4096);
+        }
+        assert_eq!(state.builtin_synth.active_voice_count(), 1);
     }
 
     /// The scheduler splits every callback at each command's sample offset.

@@ -23,6 +23,8 @@ pub struct MidiEngine {
     connection: Option<MidiOutputConnection>,
     /// Track which notes are currently sounding per channel so we can send note-off
     active_notes: [Option<u8>; 16],
+    /// Chord tones held beside each channel's active note. Released with it.
+    chord_notes: [Vec<u8>; 16],
     /// Name of the currently connected port
     pub port_name: Option<String>,
     /// Whether to send MIDI clock messages
@@ -41,6 +43,7 @@ impl MidiEngine {
         Self {
             connection: None,
             active_notes: [None; 16],
+            chord_notes: Default::default(),
             port_name: None,
             clock_enabled: false,
             send_error_count: 0,
@@ -150,8 +153,25 @@ impl MidiEngine {
         if let Some(prev_note) = self.active_notes[ch as usize] {
             self.send(&[MIDI_NOTE_OFF | ch, prev_note, 0])?;
         }
+        self.release_chord(ch)?;
         self.active_notes[ch as usize] = Some(note);
         self.send(&[MIDI_NOTE_ON | ch, note, velocity])
+    }
+
+    /// Start a chord tone beside the channel's active note, without ending
+    /// it. A note-on, channel note-off or all-notes-off releases it.
+    pub fn add_note(&mut self, channel: u8, note: u8, velocity: u8) -> Result<()> {
+        let ch = channel & 0x0F;
+        self.chord_notes[ch as usize].push(note);
+        self.send(&[MIDI_NOTE_ON | ch, note, velocity])
+    }
+
+    /// Note-off for the chord tones held on `ch`.
+    fn release_chord(&mut self, ch: u8) -> Result<()> {
+        for note in std::mem::take(&mut self.chord_notes[ch as usize]) {
+            self.send(&[MIDI_NOTE_OFF | ch, note, 0])?;
+        }
+        Ok(())
     }
 
     /// Send a MIDI note-off message
@@ -169,7 +189,7 @@ impl MidiEngine {
             self.active_notes[ch] = None;
             self.send(&[MIDI_NOTE_OFF | channel & 0x0F, note, 0])?;
         }
-        Ok(())
+        self.release_chord(ch as u8)
     }
 
     /// Send a MIDI Control Change message
@@ -226,6 +246,7 @@ impl MidiEngine {
                 self.send(&[MIDI_NOTE_OFF | ch, note, 0])?;
                 self.active_notes[ch as usize] = None;
             }
+            self.release_chord(ch)?;
         }
         Ok(())
     }

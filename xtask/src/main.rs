@@ -60,6 +60,7 @@ const EXAMPLES: &[Example] = &[
     ("sliced-amen.rtrk", build_sliced_amen),
     ("sample-offset.rtrk", build_sample_offset),
     ("new-features.rtrk", build_new_features),
+    ("chords.rtrk", build_chords),
 ];
 
 fn regen_examples(check_only: bool) -> Result<()> {
@@ -574,6 +575,97 @@ fn build_new_features(root: &Path, target: &Path) -> Result<String> {
     );
 
     for (ch, name) in ["drums", "bass", "lead/pad", "midi"].iter().enumerate() {
+        core.channels[ch].name = name.to_string();
+    }
+
+    core.build_song_file(target)
+        .to_json()
+        .context("failed to serialize the generated song")
+}
+
+/// Build `chords.rtrk`: `CHD` over a I-vi-IV-V progression in C major.
+///
+/// Pattern 00 is the C bar. Patterns 01-03 alias it -3, +5 and +7. The
+/// scale snaps each aliased note and each `CHD47` chord tone, so the one
+/// major-triad shape plays C major, A minor, F major and G major.
+///
+/// - Channel 0: a pad holding the chord for the bar.
+/// - Channel 1: off-beat stabs, `CHD47` with `KIL03` for short chords.
+/// - Channel 2: the bass root.
+/// - Channel 3: a MIDI instrument doubling the pad at full velocity. Silent
+///   in an offline render; live, it plays on MIDI channel 1.
+fn build_chords(_root: &Path, target: &Path) -> Result<String> {
+    use rtrack_core::audio::synth::SynthParams;
+    use rtrack_core::theory::{Scale, ScaleSetting};
+    use rtrack_core::tracker::{ColumnAlias, Pattern};
+    use rtrack_core::{InstrumentKind, MidiOut};
+    use FxCmd::*;
+    use NoteValue::*;
+
+    const PAD: u8 = 0x01;
+    const STAB: u8 = 0x02;
+    const BASS: u8 = 0x03;
+    const KEYS: u8 = 0x04;
+
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(4, 16)
+        .headless()
+        .build();
+    for (slot, name, patch) in [(PAD, "pad", 11u8), (STAB, "stab", 10), (BASS, "bass", 9)] {
+        let inst = &mut core.instruments[slot as usize];
+        inst.name = name.into();
+        inst.kind = InstrumentKind::Synth {
+            params: SynthParams::from_patch(patch),
+        };
+    }
+    let keys = &mut core.instruments[KEYS as usize];
+    keys.name = "ext keys".into();
+    keys.kind = InstrumentKind::Midi(MidiOut {
+        channel: 0,
+        program: Some(0),
+    });
+
+    let song = &mut core.song;
+    song.title = "Chords".to_string();
+    song.bpm = 110;
+    song.speed = 6;
+    song.scale = Some(ScaleSetting::new(C, Scale::Major));
+
+    let none = [None; FX_COLUMNS];
+    let triad = fx1(Chord, 0x47);
+    let mut put = |r: usize, ch: usize, note: (NoteValue, u8), inst: u8, vol: u8, fx| {
+        song.edit_cell(0, r, ch, |c| {
+            *c = cell(Some(note), Some(inst), Some(vol), fx)
+        });
+    };
+    put(0, 0, (C, 4), PAD, 0x60, triad);
+    for r in [2, 6, 10, 14] {
+        put(r, 1, (C, 5), STAB, 0x50, fx2((Chord, 0x47), (Kill, 3)));
+    }
+    put(0, 2, (C, 2), BASS, 0x70, none);
+    put(8, 2, (C, 3), BASS, 0x50, none);
+    put(0, 3, (C, 4), KEYS, 0x60, triad);
+
+    // vi, IV, V: the same bar, moved and snapped into C major.
+    for transpose in [-3, 5, 7] {
+        let p = song.patterns.len();
+        song.patterns.push(Pattern::new(16, 4));
+        for ch in 0..4 {
+            song.set_alias(
+                p,
+                ch,
+                ColumnAlias {
+                    source: 0,
+                    transpose,
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("alias failed: {e}"))?;
+        }
+    }
+    song.order = vec![0, 1, 2, 3];
+    song.sync_order_repeats();
+
+    for (ch, name) in ["pad", "stabs", "bass", "midi keys"].iter().enumerate() {
         core.channels[ch].name = name.to_string();
     }
 
