@@ -1510,6 +1510,24 @@ impl TrackerCore {
         snapshot
     }
 
+    /// Put back one channel's settings, as undo does. The channel keeps its
+    /// current mute, which undo does not cover, and the audio engine and
+    /// sequencer pick up the restored effects, volume and default instrument.
+    pub fn restore_channel(&mut self, index: usize, cfg: ChannelConfig) {
+        let Some(slot) = self.channels.get_mut(index) else {
+            return;
+        };
+        *slot = ChannelConfig {
+            muted: slot.muted,
+            ..cfg
+        };
+        if let Some(ref mut audio) = self.audio {
+            audio.set_channel_effects(index as u8, &slot.effects_params);
+        }
+        self.sync_engine_channel_info();
+        self.dirty = true;
+    }
+
     /// Put back a snapshot taken by [`TrackerCore::snapshot_samples`].
     pub fn restore_samples(&mut self, snapshot: SampleSnapshot) {
         self.sample_bank = snapshot.bank;

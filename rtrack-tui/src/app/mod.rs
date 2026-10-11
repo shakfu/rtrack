@@ -104,6 +104,8 @@ impl DialogState {
 struct PendingUndo {
     song: Song,
     samples: Option<rtrack_core::core::SampleSnapshot>,
+    /// A channel's settings before the edit, for edits that change one.
+    channel: Option<(usize, ChannelConfig)>,
 }
 
 /// Block-selection state: where the selection was anchored, if one is active.
@@ -668,8 +670,8 @@ impl App {
         match self.dialogs.file_browser.action {
             FileBrowserAction::LoadSample(slot) => {
                 // The bank, the instrument and the channel's default all
-                // change; the channel default is outside undo.
-                self.push_undo_with_samples();
+                // change, and come back together.
+                self.push_undo_with_samples_and_channel(slot);
                 self.status_message = Some(match self.core.load_sample_into_slot(slot, &path) {
                     Ok(()) => format!("Loaded sample into slot {:02X}", slot),
                     Err(e) => {
@@ -918,6 +920,7 @@ impl App {
             self.pending_undo = Some(PendingUndo {
                 song: self.core.song.clone(),
                 samples: None,
+                channel: None,
             });
             // The edit has begun, so the branch that was undone is already
             // unreachable -- even though the step recording this one will not
@@ -959,6 +962,38 @@ impl App {
             source,
             Edit::Bank(Box::new(rtrack_core::editor::BankEdit { before, after })),
         );
+        self.core.dirty = true;
+    }
+
+    /// As [`App::push_undo_with_samples`], for an edit that also changes
+    /// channel `ch`'s settings.
+    pub fn push_undo_with_samples_and_channel(&mut self, ch: usize) {
+        self.push_undo_with_samples();
+        let cfg = self.core.channels.get(ch).cloned();
+        if let (Some(pending), Some(cfg)) = (self.pending_undo.as_mut(), cfg) {
+            if pending.channel.is_none() {
+                pending.channel = Some((ch, cfg));
+            }
+        }
+    }
+
+    /// Record a change to channel `ch`'s settings, which were `before`, as
+    /// an undo step. Successive changes to one part merge into one step.
+    pub fn record_channel_edit(&mut self, ch: usize, before: ChannelConfig) {
+        let Some(after) = self.core.channels.get(ch) else {
+            return;
+        };
+        if !after.differs_for_undo(&before) {
+            return;
+        }
+        let source = rtrack_core::editor::EditSource::new(after.changed_part(&before), ch);
+        let edit = Edit::Channel(Box::new(rtrack_core::editor::ChannelEdit {
+            index: ch,
+            before,
+            after: after.clone(),
+        }));
+        self.commit_undo();
+        self.history.push_from(source, edit);
         self.core.dirty = true;
     }
 
@@ -1006,6 +1041,20 @@ impl App {
             before: pending.song,
             after: self.core.song.clone(),
         }));
+        let channel = pending.channel.and_then(|(index, before)| {
+            let after = self.core.channels.get(index)?.clone();
+            after.differs_for_undo(&before).then(|| {
+                Edit::Channel(Box::new(rtrack_core::editor::ChannelEdit {
+                    index,
+                    before,
+                    after,
+                }))
+            })
+        });
+        let structure = match channel {
+            Some(channel) => Edit::Group(vec![structure, channel]),
+            None => structure,
+        };
         match pending.samples {
             // Both changed together, so they have to come back together:
             // slicing rewrites the bank and renames instruments, and undoing
@@ -1026,6 +1075,7 @@ impl App {
         match edit {
             Edit::Structure(s) => self.restore_song(s.before),
             Edit::Bank(bank) => self.core.restore_samples(bank.before),
+            Edit::Channel(c) => self.core.restore_channel(c.index, c.before),
             // In reverse: an aliased column can store two edits in one cell.
             Edit::Cells(edits) => {
                 for e in edits.iter().rev() {
@@ -1045,6 +1095,7 @@ impl App {
         match edit {
             Edit::Structure(s) => self.restore_song(s.after),
             Edit::Bank(bank) => self.core.restore_samples(bank.after),
+            Edit::Channel(c) => self.core.restore_channel(c.index, c.after),
             Edit::Cells(edits) => {
                 for e in &edits {
                     self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.new_cell);

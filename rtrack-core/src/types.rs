@@ -215,7 +215,7 @@ pub enum ClockMode {
 /// Serialized into the .rtrk file so that mixer state survives a save/load
 /// cycle. Every field carries a serde default so that files written by
 /// earlier versions, which stored no channel data at all, still load.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelConfig {
     #[serde(default)]
     pub muted: bool,
@@ -255,6 +255,31 @@ impl Default for ChannelConfig {
 }
 
 impl ChannelConfig {
+    /// Whether anything undo covers differs from `before`. Mute is a
+    /// performance action and is left out.
+    pub fn differs_for_undo(&self, before: &ChannelConfig) -> bool {
+        ChannelConfig {
+            muted: before.muted,
+            ..self.clone()
+        } != *before
+    }
+
+    /// The part that differs from `before`, as an undo control name, so
+    /// successive edits to one part merge into one step.
+    pub fn changed_part(&self, before: &ChannelConfig) -> &'static str {
+        if self.name != before.name {
+            "channel.name"
+        } else if self.default_instrument != before.default_instrument {
+            "channel.default_instrument"
+        } else if self.volume != before.volume {
+            "channel.volume"
+        } else if self.pan != before.pan {
+            "channel.pan"
+        } else {
+            "channel.effects"
+        }
+    }
+
     /// Apply format version 1 semantics: a `"Midi"` channel never filled its
     /// default instrument, so drop it rather than start playing it.
     pub(crate) fn migrate_legacy(&mut self) {

@@ -844,6 +844,7 @@ impl RtrackApp {
                 }
             }
             Edit::Bank(bank) => self.core.restore_samples(bank.before),
+            Edit::Channel(c) => self.core.restore_channel(c.index, c.before),
             Edit::Structure(s) => self.restore_song(s.before),
             // Undone in reverse, so the parts come apart the way they were
             // put together.
@@ -873,6 +874,7 @@ impl RtrackApp {
                 }
             }
             Edit::Bank(bank) => self.core.restore_samples(bank.after),
+            Edit::Channel(c) => self.core.restore_channel(c.index, c.after),
             Edit::Structure(s) => self.restore_song(s.after),
             Edit::Group(parts) => {
                 for part in parts {

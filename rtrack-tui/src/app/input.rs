@@ -1519,9 +1519,15 @@ impl App {
         // not cover them: compare the one an instrument editor works on.
         let edited = self.edited_instrument_slot();
         let before = edited.map(|slot| self.core.instruments[slot].clone());
+        // Channel settings likewise, in the track config dialog.
+        let channel = (self.mode == Mode::TrackConfig).then_some(self.cursor_channel);
+        let channel_before = channel.and_then(|ch| self.core.channels.get(ch).cloned());
         self.dispatch_mode_key(key);
         if let (Some(slot), Some(before)) = (edited, before) {
             self.record_instrument_edit(slot, before);
+        }
+        if let (Some(ch), Some(before)) = (channel, channel_before) {
+            self.record_channel_edit(ch, before);
         }
     }
 
@@ -2046,6 +2052,7 @@ impl App {
                 self.pending_undo = Some(super::PendingUndo {
                     song: before,
                     samples: None,
+                    channel: None,
                 });
                 self.history.clear_redo();
                 self.status_message = Some(format!(

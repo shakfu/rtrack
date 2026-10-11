@@ -328,7 +328,39 @@ impl RtrackApp {
         }
     }
 
+    /// The channel dialog, with its edits recorded for undo: channel
+    /// settings are stored outside the song, so the song snapshot does not
+    /// cover them.
     fn draw_track_config(&mut self, ctx: &egui::Context) {
+        let channel = self.show_track_config;
+        let before = channel.and_then(|ch| self.core.channels.get(ch).cloned());
+        self.draw_track_config_body(ctx);
+        if let (Some(ch), Some(before)) = (channel, before) {
+            self.record_channel_edit(ch, before);
+        }
+    }
+
+    /// Record a change to channel `ch`'s settings, which were `before`, as an
+    /// undo step. Successive changes to one part merge, so a slider drag is
+    /// one step. Mute is a performance action and is not recorded.
+    pub(crate) fn record_channel_edit(&mut self, ch: usize, before: rtrack_core::ChannelConfig) {
+        let Some(after) = self.core.channels.get(ch) else {
+            return;
+        };
+        if !after.differs_for_undo(&before) {
+            return;
+        }
+        let source = rtrack_core::editor::EditSource::new(after.changed_part(&before), ch);
+        let edit = rtrack_core::editor::Edit::Channel(Box::new(rtrack_core::editor::ChannelEdit {
+            index: ch,
+            before,
+            after: after.clone(),
+        }));
+        self.history.push_from(source, edit);
+        self.core.dirty = true;
+    }
+
+    fn draw_track_config_body(&mut self, ctx: &egui::Context) {
         let ch_idx = match self.show_track_config {
             Some(idx) => idx,
             None => return,

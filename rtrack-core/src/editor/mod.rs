@@ -199,6 +199,11 @@ pub enum Edit {
     /// Describing that as a diff costs more than copying the song, and they
     /// happen orders of magnitude less often than a keystroke.
     Structure(Box<StructureEdit>),
+    /// One channel's settings: name, default instrument, volume, pan and
+    /// effects. One channel rather than all of them, so undo does not revert
+    /// live changes on other channels -- MIDI-learned CC and aftertouch move
+    /// filter cutoffs without recording a step.
+    Channel(Box<ChannelEdit>),
     /// Several changes that one action made together, undone and redone as
     /// one step.
     ///
@@ -207,6 +212,14 @@ pub enum Edit {
     /// come back together or undo puts the editor in a state the user never
     /// created. Applied in order to redo and in reverse to undo.
     Group(Vec<Edit>),
+}
+
+/// One channel's settings either side of an edit. See [`Edit::Channel`].
+#[derive(Clone)]
+pub struct ChannelEdit {
+    pub index: usize,
+    pub before: crate::types::ChannelConfig,
+    pub after: crate::types::ChannelConfig,
 }
 
 /// A whole-song before/after pair. See [`Edit::Structure`].
@@ -223,6 +236,7 @@ impl Edit {
             Self::Cells(_) => "cells",
             Self::Bank(_) => "samples",
             Self::Structure(_) => "song structure",
+            Self::Channel(_) => "channel settings",
             Self::Group(_) => "several changes",
         }
     }
@@ -253,6 +267,12 @@ impl Edit {
                 std::mem::size_of::<Self>()
                     + s.before.approx_heap_bytes()
                     + s.after.approx_heap_bytes()
+            }
+            Self::Channel(c) => {
+                std::mem::size_of::<Self>()
+                    + std::mem::size_of::<ChannelEdit>()
+                    + c.before.name.capacity()
+                    + c.after.name.capacity()
             }
             Self::Group(edits) => {
                 std::mem::size_of::<Self>() + edits.iter().map(|e| e.approx_bytes()).sum::<usize>()
@@ -320,6 +340,10 @@ fn amend(existing: &mut Edit, next: Edit) -> Result<(), Edit> {
             Ok(())
         }
         (Edit::Bank(old), Edit::Bank(new)) => {
+            old.after = new.after;
+            Ok(())
+        }
+        (Edit::Channel(old), Edit::Channel(new)) if old.index == new.index => {
             old.after = new.after;
             Ok(())
         }

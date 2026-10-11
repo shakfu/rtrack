@@ -8,7 +8,7 @@ use super::effects::MAX_SEND_BUSES;
 pub const MAX_EFFECT_CHANNELS: usize = 16;
 
 /// Parameters for a channel's effects chain, settable from UI/commands.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelEffectsParams {
     pub filter_enabled: bool,
     /// Cutoff frequency in Hz (20..20000)
