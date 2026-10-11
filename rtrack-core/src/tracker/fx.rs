@@ -50,11 +50,14 @@ pub enum FxCmd {
     Tempo,
     /// `TBLxx`: run table xx with the channel's note, from its first row.
     Table,
+    /// `KILxx`: end the channel's note xx ticks after the row starts. The
+    /// count carries into later rows, so `KIL0C` at speed 6 holds two rows.
+    Kill,
 }
 
 impl FxCmd {
     /// Every command, in display order.
-    pub const ALL: [FxCmd; 18] = [
+    pub const ALL: [FxCmd; 19] = [
         FxCmd::Arp,
         FxCmd::Break,
         FxCmd::CcNumber,
@@ -62,6 +65,7 @@ impl FxCmd {
         FxCmd::Chance,
         FxCmd::Delay,
         FxCmd::Jump,
+        FxCmd::Kill,
         FxCmd::Offset,
         FxCmd::Portamento,
         FxCmd::Program,
@@ -96,6 +100,7 @@ impl FxCmd {
             FxCmd::Speed => "SPD",
             FxCmd::Tempo => "TPO",
             FxCmd::Table => "TBL",
+            FxCmd::Kill => "KIL",
         }
     }
 
@@ -120,6 +125,7 @@ impl FxCmd {
             FxCmd::Speed => "ticks per row",
             FxCmd::Tempo => "tempo in BPM",
             FxCmd::Table => "run table xx with the note",
+            FxCmd::Kill => "end the note after xx ticks",
         }
     }
 
@@ -405,6 +411,13 @@ mod tests {
         t.key(&mut slot, 'd');
         assert_eq!(t.key(&mut slot, 'x'), FxKey::Rejected);
         assert_eq!(slot, Some(Fx::new(FxCmd::Delay, 0)));
+    }
+
+    #[test]
+    fn k_alone_names_kil() {
+        let mut slot = None;
+        FxTyping::default().key(&mut slot, 'k');
+        assert_eq!(slot, Some(Fx::new(FxCmd::Kill, 0)));
     }
 
     #[test]

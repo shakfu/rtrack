@@ -42,6 +42,8 @@ pub struct ChannelState {
     pub mod_tick: u32,
     /// The modulation offsets last sent.
     pub mods: ModOffsets,
+    /// Ticks left before `KIL` ends the note.
+    pub cut_in: Option<u8>,
 }
 
 /// A table running on a channel.
@@ -80,6 +82,7 @@ impl Default for ChannelState {
             fx_bend: 0.0,
             mod_tick: 0,
             mods: ModOffsets::default(),
+            cut_in: None,
         }
     }
 }
@@ -358,6 +361,7 @@ impl TrackerEngine {
             self.process_effects(song);
         }
         if !self.finished {
+            self.step_cuts();
             self.step_tables(song);
             self.step_mods(song);
         }
@@ -659,6 +663,16 @@ impl TrackerEngine {
 
             // Store effect state
             self.channel_states[ch].fx = fx;
+
+            // KIL counts from this row; a new note or note-off cancels an
+            // earlier one's count.
+            if let Some(ticks) = find(FxCmd::Kill) {
+                self.channel_states[ch].cut_in = Some(ticks);
+            } else if matches!(note, Some(Note::Off))
+                || (matches!(note, Some(Note::On { .. })) && !is_tone_porta)
+            {
+                self.channel_states[ch].cut_in = None;
+            }
 
             // TBL with no new note restarts the table on the sounding note.
             let no_new_note = !matches!(note, Some(Note::On { .. })) || is_tone_porta;
@@ -973,6 +987,37 @@ impl TrackerEngine {
             .clamp(0.0, MIDI_MAX_VALUE as f64) as u8
     }
 
+    // -- Note cut --
+
+    /// Count down each channel's `KIL`, and end its note when it runs out.
+    fn step_cuts(&mut self) {
+        for ch in 0..self.channel_states.len() {
+            match self.channel_states[ch].cut_in {
+                Some(0) => {
+                    self.channel_states[ch].cut_in = None;
+                    if self.channel_states[ch].note.is_none() {
+                        continue;
+                    }
+                    self.channel_states[ch].note = None;
+                    self.channel_states[ch].pitch_offset = 0.0;
+                    self.channel_states[ch].fx_bend = 0.0;
+                    self.stop_table(ch);
+                    self.stop_mods(ch);
+                    if self.channel_audible(ch) {
+                        // As a written note-off does.
+                        self.events.push(TrackerEvent::NoteOff { channel: ch });
+                        self.events.push(TrackerEvent::PitchBend {
+                            channel: ch,
+                            semitone_offset: 0.0,
+                        });
+                    }
+                }
+                Some(n) => self.channel_states[ch].cut_in = Some(n - 1),
+                None => {}
+            }
+        }
+    }
+
     // -- Modulation --
 
     /// End the channel's modulation, putting back what it changed.
@@ -1065,6 +1110,7 @@ impl TrackerEngine {
         if let Some(f) = row.fx.filter(|f| allowed_in_table(f.cmd)) {
             match f.cmd {
                 FxCmd::CcNumber => state.cc_number = f.param,
+                FxCmd::Kill => state.cut_in = Some(f.param),
                 FxCmd::CcValue if audible => {
                     self.events.push(TrackerEvent::MidiCC {
                         channel: ch,
@@ -2360,5 +2406,63 @@ mod tests {
             }),
             "note-off puts the filter back: {events:?}"
         );
+    }
+
+    // -- Note cut --
+
+    /// The tick of each NoteOff in the first `ticks` ticks.
+    fn note_off_ticks(song: &Song, ticks: usize) -> Vec<usize> {
+        let mut engine = TrackerEngine::new(song, false);
+        (0..ticks)
+            .filter(|_| {
+                engine
+                    .process_tick(song)
+                    .iter()
+                    .any(|e| matches!(e, TrackerEvent::NoteOff { .. }))
+            })
+            .collect()
+    }
+
+    fn cut_song(rows: usize) -> Song {
+        let mut song = Song::new(1, rows);
+        song.speed = 6;
+        song
+    }
+
+    #[test]
+    fn kil_ends_the_note_after_its_ticks() {
+        let mut song = cut_song(4);
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Kill, 3), None));
+        assert_eq!(note_off_ticks(&song, 24), vec![3]);
+    }
+
+    #[test]
+    fn kil_counts_on_into_later_rows() {
+        let mut song = cut_song(4);
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Kill, 0x0C), None));
+        assert_eq!(note_off_ticks(&song, 24), vec![12], "two rows at speed 6");
+    }
+
+    #[test]
+    fn kil00_cuts_on_the_notes_own_tick() {
+        let mut song = cut_song(4);
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Kill, 0), None));
+        let mut engine = TrackerEngine::new(&song, false);
+        let events = engine.process_tick(&song).to_vec();
+        let on = events
+            .iter()
+            .position(|e| matches!(e, TrackerEvent::NoteOn { .. }));
+        let off = events
+            .iter()
+            .position(|e| matches!(e, TrackerEvent::NoteOff { .. }));
+        assert!(on < off && off.is_some(), "{events:?}");
+    }
+
+    #[test]
+    fn a_new_note_cancels_a_pending_cut() {
+        let mut song = cut_song(4);
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Kill, 0x0C), None));
+        song.set_cell(0, 1, 0, c4([None; FX_COLUMNS], None));
+        assert_eq!(note_off_ticks(&song, 24), Vec::<usize>::new());
     }
 }

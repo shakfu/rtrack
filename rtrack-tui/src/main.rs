@@ -154,6 +154,7 @@ fn setup_app(
     file: Option<PathBuf>,
 ) -> Result<(App, Option<String>)> {
     let mut app = App::new();
+    app.field_hints = rtrack_core::config::load_config().field_hints;
 
     let audio_problem =
         match rtrack_core::audio::AudioEngine::new_with_sf2_fallback(sf2_path.as_deref()) {

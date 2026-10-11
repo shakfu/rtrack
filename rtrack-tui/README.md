@@ -79,6 +79,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Ctrl+S | Save |
 | Ctrl+O | Open song (file browser) |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
+| u | Undo (Normal mode; in Insert mode `u` is a note) |
 | Ctrl+C / X / V | Copy / cut / paste row (or block if selected) |
 | Ctrl+Left / Right | Previous / next order position |
 | Ctrl+E | Export MIDI |

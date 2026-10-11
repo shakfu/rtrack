@@ -9,12 +9,31 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 /// User configuration.
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct Config {
     /// Default SoundFont file path (overridden by `--sf2`).
     pub sf2: Option<PathBuf>,
     /// Default sample directory (overridden by `--sample-dir`).
     pub sample_dir: Option<PathBuf>,
+    /// Name the pattern field under the cursor in the status bar, e.g.
+    /// `1 Instrument`. On by default, for new users; `field_hints = false`
+    /// turns it off.
+    #[serde(default = "yes")]
+    pub field_hints: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            sf2: None,
+            sample_dir: None,
+            field_hints: true,
+        }
+    }
 }
 
 /// Load configuration from the standard path, returning defaults on any error.
@@ -153,6 +172,18 @@ pub fn push_recent_file(recent: &mut Vec<PathBuf>, path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_hints_default_on_and_can_be_turned_off() {
+        assert!(Config::default().field_hints);
+        let empty: Config = toml::from_str("").unwrap();
+        assert!(
+            empty.field_hints,
+            "a config file without the key keeps hints"
+        );
+        let off: Config = toml::from_str("field_hints = false").unwrap();
+        assert!(!off.field_hints);
+    }
 
     #[test]
     fn test_parse_full_config() {

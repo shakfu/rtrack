@@ -359,6 +359,27 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ));
     }
 
+    // What the field under the cursor is, right-aligned, if there is room.
+    if app.field_hints && matches!(app.mode, Mode::Normal | Mode::Insert) {
+        let order = app.current_order_position();
+        if let Some(&pattern) = app.core.song.order.get(order) {
+            let cell = app
+                .core
+                .song
+                .cell(pattern, app.cursor_row, app.cursor_channel);
+            let hint = format!(
+                " {} ",
+                rtrack_core::editor::field_hint(app.cursor_channel, app.cursor_sub, &cell)
+            );
+            let used: usize = spans.iter().map(|s| s.width()).sum();
+            let width = area.width as usize;
+            if used + hint.len() <= width {
+                spans.push(Span::raw(" ".repeat(width - used - hint.len())));
+                spans.push(Span::styled(hint, Style::default().fg(theme.status_text)));
+            }
+        }
+    }
+
     let status = Paragraph::new(Line::from(spans));
     f.render_widget(status, area);
 }
@@ -433,6 +454,10 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled("  Ctrl+Z / Y   ", key_style),
             Span::styled("Undo / Redo", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  u            ", key_style),
+            Span::styled("Undo (Normal mode)", text_style),
         ]),
         Line::from(vec![
             Span::styled("  Ctrl+C/X/V   ", key_style),
@@ -1617,6 +1642,36 @@ mod tests {
             }
         }
         lines.join("\n")
+    }
+
+    /// The status bar's text, as one line.
+    fn status_line(app: &App, width: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_status_bar(f, app, f.area(), &Theme::dark()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn the_status_bar_names_the_field_under_the_cursor() {
+        let mut app = make_app();
+        app.cursor_sub = crate::app::SubColumn::Instrument;
+        assert!(status_line(&app, 160).trim_end().ends_with("1 Instrument"));
+        app.cursor_channel = 2;
+        app.cursor_sub = crate::app::SubColumn::Volume;
+        assert!(status_line(&app, 160).trim_end().ends_with("3 Volume"));
+
+        app.field_hints = false;
+        assert!(!status_line(&app, 160).contains("3 Volume"));
+    }
+
+    #[test]
+    fn a_narrow_status_bar_drops_the_hint_rather_than_cutting_it() {
+        let app = make_app();
+        assert!(!status_line(&app, 60).contains("Note"));
     }
 
     #[test]

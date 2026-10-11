@@ -1875,6 +1875,9 @@ impl App {
             }
             KeyCode::Esc => self.mode = Mode::Insert,
 
+            // Undo, as in vi. Normal mode only: in Insert mode `u` is a note.
+            KeyCode::Char('u') => self.undo(),
+
             // BPM
             KeyCode::Char(']') => self.change_bpm(1),
             KeyCode::Char('[') => self.change_bpm(-1),

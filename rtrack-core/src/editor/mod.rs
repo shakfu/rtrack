@@ -88,6 +88,17 @@ impl SubColumn {
         ]
     }
 
+    /// The field's name, for the status bar.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Instrument => "Instrument",
+            Self::Volume => "Volume",
+            Self::Fx1 => "Effect 1",
+            Self::Fx2 => "Effect 2",
+        }
+    }
+
     /// The effect slot this field edits, if it is one.
     pub fn fx_slot(self) -> Option<usize> {
         match self {
@@ -95,6 +106,19 @@ impl SubColumn {
             Self::Fx2 => Some(1),
             _ => None,
         }
+    }
+}
+
+/// What the status bar says about the field under the cursor: the channel,
+/// counted from 1, and the field's name. On an effect slot holding a
+/// command, also what that command does, since the names are terse.
+///
+/// `1 Note`, `2 Effect 1: VIB vibrato: speed x, depth y`.
+pub fn field_hint(channel: usize, sub: SubColumn, cell: &Cell) -> String {
+    let base = format!("{} {}", channel + 1, sub.label());
+    match sub.fx_slot().and_then(|slot| cell.fx[slot]) {
+        Some(fx) => format!("{base}: {} {}", fx.cmd.name(), fx.cmd.summary()),
+        None => base,
     }
 }
 
@@ -681,6 +705,24 @@ mod tests {
             assert_eq!(sub.next().prev(), sub, "{sub:?}");
             assert_eq!(sub.prev().next(), sub, "{sub:?}");
         }
+    }
+
+    #[test]
+    fn the_field_hint_names_the_channel_and_field() {
+        use crate::tracker::FxCmd;
+        let empty = Cell::default();
+        assert_eq!(field_hint(0, SubColumn::Note, &empty), "1 Note");
+        assert_eq!(field_hint(0, SubColumn::Instrument, &empty), "1 Instrument");
+        assert_eq!(field_hint(2, SubColumn::Volume, &empty), "3 Volume");
+        assert_eq!(field_hint(0, SubColumn::Fx2, &empty), "1 Effect 2");
+        let vib = Cell {
+            fx: Fx::only(FxCmd::Vibrato, 0x44),
+            ..Cell::default()
+        };
+        assert_eq!(
+            field_hint(1, SubColumn::Fx1, &vib),
+            "2 Effect 1: VIB vibrato: speed x, depth y"
+        );
     }
 
     #[test]

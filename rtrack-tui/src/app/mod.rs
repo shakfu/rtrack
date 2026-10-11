@@ -429,6 +429,8 @@ pub struct App {
     pub cursor_sub: SubColumn,
     /// Partial effect command name typed at the cursor.
     pub fx_typing: rtrack_core::tracker::FxTyping,
+    /// Name the field under the cursor in the status bar (config `field_hints`).
+    pub field_hints: bool,
     pub current_octave: u8,
     /// Which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
     pub track_page: usize,
@@ -500,6 +502,7 @@ impl App {
             cursor_channel: 0,
             cursor_sub: SubColumn::Note,
             fx_typing: Default::default(),
+            field_hints: true,
             current_octave: 4,
             edit_step: 1,
             status_message: None,
@@ -1330,6 +1333,7 @@ pub(crate) mod tests {
             cursor_channel: 0,
             cursor_sub: SubColumn::Note,
             fx_typing: Default::default(),
+            field_hints: true,
             current_octave: 4,
             edit_step: 1,
             status_message: None,
@@ -1812,6 +1816,28 @@ pub(crate) mod tests {
         assert!(app.core.channels[0].muted, "undo leaves mute alone");
         app.redo();
         assert!(app.core.channels[0].effects_params.filter_cutoff > start);
+    }
+
+    #[test]
+    fn u_in_normal_mode_undoes_notes_entered_in_insert_mode() {
+        let mut app = make_app();
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        app.mode = Mode::Insert;
+        app.handle_key(key('z'));
+        app.handle_key(key('x'));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Normal);
+        let order = app.current_order_position();
+        assert!(app.core.song.cell_at(order, 1, 0).note.is_some());
+
+        app.handle_key(key('u'));
+        assert!(app.core.song.cell_at(order, 1, 0).note.is_none());
+        assert!(app.core.song.cell_at(order, 0, 0).note.is_some());
+        app.handle_key(key('u'));
+        assert!(app.core.song.cell_at(order, 0, 0).note.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert!(app.core.song.cell_at(order, 0, 0).note.is_some());
     }
 
     #[test]

@@ -181,6 +181,8 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 | `PRGxx` | Program change | Select SoundFont program or send MIDI program change |
 | `SPDxx` | Speed | Ticks per row |
 | `TPOxx` | Tempo | BPM |
+| `TBLxx` | Table | Run table xx with the row's note |
+| `KILxx` | Note cut | End the note xx ticks after the row starts; the count carries into later rows, so `KIL0C` at speed 6 holds two rows |
 
 Pitch effects in both slots combine: `SLU10 VIB44` slides and wobbles at once. Version 1 songs, which stored one hex effect per cell (`0xy`..`Fxx`), load with each effect renamed; `Cxx` becomes `CCN` (from the instrument column) and `CCV`.
 
@@ -381,7 +383,10 @@ rtrack reads optional settings from `~/.config/rtrack/config.toml` (or `$XDG_CON
 ```toml
 sf2 = "/path/to/soundfont.sf2"
 sample_dir = "/path/to/samples"
+field_hints = false   # hide the status-bar name of the field under the cursor
 ```
+
+The status bar names the pattern field under the cursor, such as `1 Instrument` or `2 Effect 1: VIB vibrato: speed x, depth y`. It is on by default; `field_hints = false` turns it off.
 
 CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed config files are silently ignored.
 

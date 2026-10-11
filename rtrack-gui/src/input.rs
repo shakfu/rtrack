@@ -1656,6 +1656,16 @@ mod tests {
     }
 
     #[test]
+    fn the_field_hint_follows_the_cursor_and_can_be_off() {
+        let mut a = app();
+        a.cursor_channel = 1;
+        a.cursor_sub = SubColumn::Fx2;
+        assert_eq!(a.field_hint().as_deref(), Some("2 Effect 2"));
+        a.field_hints = false;
+        assert_eq!(a.field_hint(), None);
+    }
+
+    #[test]
     fn closing_the_dialog_ends_the_run() {
         let mut app = app();
         let before = app.core.song.clone();

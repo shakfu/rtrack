@@ -29,6 +29,8 @@ pub struct RtrackApp {
 
     // Status
     pub status_message: Option<String>,
+    /// Name the field under the cursor in the status bar (config `field_hints`).
+    pub field_hints: bool,
 
     // Undo/Redo
     pub history: EditHistory,
@@ -100,6 +102,7 @@ impl RtrackApp {
             first_visible_channel: 0,
             mode: Mode::Normal,
             status_message: None,
+            field_hints: true,
             history: EditHistory::new(),
             clipboard: rtrack_core::editor::Clipboard::default(),
             block_start: None,
@@ -173,8 +176,26 @@ impl RtrackApp {
         )
     }
 
+    /// The status bar's name for the field under the cursor, if hints are on.
+    pub(crate) fn field_hint(&self) -> Option<String> {
+        if !self.field_hints || self.show_instrument_list || self.show_pattern_matrix {
+            return None;
+        }
+        let pattern = *self.core.song.order.get(self.edit_order)?;
+        let cell = self
+            .core
+            .song
+            .cell(pattern, self.cursor_row, self.cursor_channel);
+        Some(rtrack_core::editor::field_hint(
+            self.cursor_channel,
+            self.cursor_sub,
+            &cell,
+        ))
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (config, mut startup_notes) = rtrack_core::config::load_config_verbose();
+        let field_hints = config.field_hints;
         let mut core = TrackerCore::with_song_size(8, 64);
 
         // Try to start audio engine with SF2 from config
@@ -203,6 +224,7 @@ impl RtrackApp {
 
         let mut app = Self::with_core(core);
         app.status_message = startup_notes.last().cloned();
+        app.field_hints = field_hints;
         app
     }
 
@@ -417,6 +439,11 @@ impl eframe::App for RtrackApp {
                         Mode::Insert => "Esc:Normal  Piano:z-m/q-u  =:NoteOff  Del:Clear  Shift+Up/Dn:Transpose",
                     };
                     ui.label(egui::RichText::new(hint).color(egui::Color32::from_rgb(120, 120, 140)));
+                }
+                if let Some(hint) = self.field_hint() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(hint);
+                    });
                 }
             });
         });
