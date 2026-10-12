@@ -7,7 +7,6 @@ use std::time::Instant;
 use rtrack_core::constants::*;
 use rtrack_core::editor::Edit;
 use rtrack_core::midi::MidiEngine;
-use rtrack_core::tracker::Song;
 
 pub use rtrack_core::{
     autosave_path_for, default_channel_configs, make_relative, resolve_relative, ChannelConfig,
@@ -69,25 +68,6 @@ impl DialogState {
             recent_cursor: 0,
         }
     }
-}
-
-/// A snapshot taken before an edit, waiting for the edit to finish so the
-/// before/after pair can be recorded.
-///
-/// The TUI's editing code calls `push_undo()` *before* it mutates -- the
-/// natural shape for "snapshot, then change things", but not for the pairs
-/// the shared history stores. Rather than convert thirty-three call sites,
-/// each one a chance to get undo subtly wrong, the snapshot is held here and
-/// the pair is completed once, at the end of the input event that asked for
-/// it. A single keypress is one undo step either way, which is what it always
-/// was.
-///
-/// `samples` is present only for edits that touched the sample bank --
-/// slicing rewrites a run of slots and cannot otherwise be taken back -- so
-/// ordinary pattern edits stay as cheap as they were.
-struct PendingUndo {
-    song: Song,
-    samples: Option<rtrack_core::core::SampleSnapshot>,
 }
 
 /// Block-selection state: where the selection was anchored, if one is active.
@@ -414,14 +394,10 @@ pub struct App {
     // -----------------------------------------------------------------------
     // Editor State
     // -----------------------------------------------------------------------
-    /// Undo/redo and clipboard state
-    pub history: rtrack_core::editor::EditHistory,
     /// Copied cells. Shared with the GUI so the two cannot drift.
     pub clipboard: rtrack_core::editor::Clipboard,
     /// Where a block selection was anchored, if one is active.
     pub block_anchor: BlockAnchor,
-    /// A before-snapshot awaiting the end of the edit that asked for it.
-    pending_undo: Option<PendingUndo>,
     /// Channel rename edit buffer
     pub rename_buf: String,
     /// Channel effects editor: currently focused field index
@@ -477,10 +453,8 @@ impl App {
             edit_step: 1,
             status_message: None,
             last_autosave: Instant::now(),
-            history: rtrack_core::editor::EditHistory::new(),
             clipboard: rtrack_core::editor::Clipboard::default(),
             block_anchor: None,
-            pending_undo: None,
             edit_order: 0,
             prev_mode: Mode::Normal,
             theme_index: 0,
@@ -636,7 +610,7 @@ impl App {
         let sensitivity = self.dialogs.sample_slice_sensitivity;
         // Recorded before the write, so Ctrl+Z puts back whatever the
         // slices landed on.
-        self.push_undo_with_samples();
+        self.core.begin_edit_with_samples();
         // Slicing overwrites consecutive slots, so the first attempt refuses
         // when anything unrelated is in the way; the arming flag is what a
         // second Enter sets.
@@ -652,13 +626,13 @@ impl App {
             matches!(result, Err(rtrack_core::error::Error::SlotsOccupied { .. }));
         if result.is_err() {
             // Nothing was written, so there is nothing to undo.
-            self.cancel_pending_undo();
+            self.core.cancel_edit();
         } else {
             // Slicing is one step on its own. Committing here rather than
             // leaving it to the entry point keeps a later edit from being
             // folded into it, which would make an unrelated undo revert the
             // whole slicing.
-            self.commit_undo();
+            self.core.commit_edit();
         }
         result
     }
@@ -752,7 +726,7 @@ impl App {
     }
 
     pub fn add_new_pattern_to_order(&mut self) {
-        self.push_undo();
+        self.core.begin_edit();
         let idx = self.core.song.add_pattern();
         self.core.song.order.push(idx);
         self.core.song.order_repeats.push(1);
@@ -765,7 +739,7 @@ impl App {
     }
 
     pub fn clone_current_pattern(&mut self) {
-        self.push_undo();
+        self.core.begin_edit();
         let src_idx = self.core.song.order[self.edit_order];
         let cloned = self.core.song.patterns[src_idx].clone();
         let new_idx = self.core.song.patterns.len();
@@ -821,8 +795,6 @@ impl App {
                 self.cursor_sub = SubColumn::Note;
                 self.edit_order = 0;
                 self.track_page = 0;
-                self.history.clear();
-                self.cancel_pending_undo();
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(Self::describe_load("Loaded", &report));
@@ -834,36 +806,6 @@ impl App {
     }
 
     // -- Undo/Redo --
-
-    /// Take a snapshot before an edit, if one is not already pending.
-    ///
-    /// Called before mutating. The matching [`App::commit_undo`] at the end of
-    /// the input event turns it into a step, so several calls within one
-    /// keypress collapse into the single step that keypress deserves.
-    pub fn push_undo(&mut self) {
-        if self.pending_undo.is_none() {
-            self.pending_undo = Some(PendingUndo {
-                song: self.core.song.clone(),
-                samples: None,
-            });
-            // The edit has begun, so the branch that was undone is already
-            // unreachable -- even though the step recording this one will not
-            // be finished until `commit_undo`.
-            self.history.clear_redo();
-        }
-        self.core.dirty = true;
-    }
-
-    /// As [`App::push_undo`], for an edit that also changes the sample bank,
-    /// so undo can put the overwritten slots back.
-    pub fn push_undo_with_samples(&mut self) {
-        self.push_undo();
-        if let Some(pending) = self.pending_undo.as_mut() {
-            if pending.samples.is_none() {
-                pending.samples = Some(self.core.snapshot_samples());
-            }
-        }
-    }
 
     /// Record a sample-bank change attributed to one control, folding it into
     /// the previous step if that came from the same one.
@@ -880,9 +822,9 @@ impl App {
     ) {
         // A field edit is its own step, so anything the current event had
         // pending is committed first rather than being swallowed by it.
-        self.commit_undo();
+        self.core.commit_edit();
         let after = self.core.snapshot_samples();
-        self.history.push_from(
+        self.core.history.push_from(
             source,
             Edit::Bank(Box::new(rtrack_core::editor::BankEdit { before, after })),
         );
@@ -892,85 +834,7 @@ impl App {
     /// End a run of coalescing, so the next edit to the same control starts a
     /// new step. Called when the field or the dialog changes.
     pub fn break_edit_coalescing(&mut self) {
-        self.history.break_coalescing();
-    }
-
-    /// Abandon the pending snapshot: the edit it was taken for did not happen.
-    pub fn cancel_pending_undo(&mut self) {
-        self.pending_undo = None;
-    }
-
-    /// Turn the pending snapshot into a history step, if there is one.
-    ///
-    /// Called once per input event, after whatever it did. Nothing to commit
-    /// is the common case -- most keys do not edit -- and costs nothing.
-    pub fn commit_undo(&mut self) {
-        let Some(pending) = self.pending_undo.take() else {
-            return;
-        };
-        let structure = Edit::Structure(Box::new(rtrack_core::editor::StructureEdit {
-            before: pending.song,
-            after: self.core.song.clone(),
-        }));
-        match pending.samples {
-            // Both changed together, so they have to come back together:
-            // slicing rewrites the bank and renames instruments, and undoing
-            // one without the other leaves a state the user never made.
-            Some(before) => {
-                let after = self.core.snapshot_samples();
-                self.history.push_edit(Edit::Group(vec![
-                    structure,
-                    Edit::Bank(Box::new(rtrack_core::editor::BankEdit { before, after })),
-                ]));
-            }
-            None => self.history.push_edit(structure),
-        }
-    }
-
-    /// Apply the "before" side of a step.
-    fn apply_edit_backward(&mut self, edit: Edit) {
-        match edit {
-            Edit::Structure(s) => self.restore_song(s.before),
-            Edit::Bank(bank) => self.core.restore_samples(bank.before),
-            Edit::Cells(edits) => {
-                for e in &edits {
-                    self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.old_cell);
-                }
-            }
-            Edit::Group(parts) => {
-                for part in parts.into_iter().rev() {
-                    self.apply_edit_backward(part);
-                }
-            }
-        }
-    }
-
-    /// Apply the "after" side of a step.
-    fn apply_edit_forward(&mut self, edit: Edit) {
-        match edit {
-            Edit::Structure(s) => self.restore_song(s.after),
-            Edit::Bank(bank) => self.core.restore_samples(bank.after),
-            Edit::Cells(edits) => {
-                for e in &edits {
-                    self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.new_cell);
-                }
-            }
-            Edit::Group(parts) => {
-                for part in parts {
-                    self.apply_edit_forward(part);
-                }
-            }
-        }
-    }
-
-    /// Put back a whole song, bringing the cursor inside it.
-    ///
-    /// The restored song may be smaller than the one on screen -- undoing
-    /// "add pattern" or a channel-count increase is exactly that -- and a
-    /// cursor left past the end would index out of range on the next draw.
-    fn restore_song(&mut self, song: Song) {
-        self.core.song = song;
-        self.clamp_cursor_to_song();
+        self.core.history.break_coalescing();
     }
 
     /// Bring the cursor and the visible track page inside the song.
@@ -998,40 +862,16 @@ impl App {
         }
     }
 
-    /// Write a cell recorded in the history, skipping entries that no longer
-    /// resolve -- a song can be loaded while the stacks still hold edits.
-    fn write_recorded_cell(
-        &mut self,
-        pattern_idx: usize,
-        row: usize,
-        channel: usize,
-        cell: rtrack_core::tracker::Cell,
-    ) {
-        if let Some(pattern) = self.core.song.patterns.get_mut(pattern_idx) {
-            if row < pattern.rows && channel < pattern.channels {
-                pattern.data[row][channel] = cell;
-            }
-        }
-    }
-
     pub fn undo(&mut self) {
-        // An edit that snapshotted but never reached a commit point is still
-        // an edit, and it is the one being undone. Committing here rather
-        // than relying on the entry points means a caller that adds a
-        // `push_undo` on some new path cannot silently lose a step.
-        self.commit_undo();
-        if let Some(edit) = self.history.undo() {
-            self.apply_edit_backward(edit);
-            self.core.dirty = true;
+        if self.core.undo() {
+            self.clamp_cursor_to_song();
             self.status_message = Some("Undo".to_string());
         }
     }
 
     pub fn redo(&mut self) {
-        self.commit_undo();
-        if let Some(edit) = self.history.redo() {
-            self.apply_edit_forward(edit);
-            self.core.dirty = true;
+        if self.core.redo() {
+            self.clamp_cursor_to_song();
             self.status_message = Some("Redo".to_string());
         }
     }
@@ -1050,7 +890,7 @@ impl App {
 
     pub fn paste_row(&mut self) {
         if let Some(row) = self.clipboard.run().map(|r| r.to_vec()) {
-            self.push_undo();
+            self.core.begin_edit();
             let pattern_idx = self.core.song.order[self.current_order_position()];
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for (ch, cell) in row.iter().enumerate() {
@@ -1064,7 +904,7 @@ impl App {
 
     pub fn cut_row(&mut self) {
         self.copy_row();
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
         let pattern = &mut self.core.song.patterns[pattern_idx];
         for ch in 0..pattern.channels {
@@ -1123,7 +963,7 @@ impl App {
     }
 
     pub fn import_midi_file(&mut self, path: PathBuf) {
-        self.push_undo();
+        self.core.begin_edit();
         match self.core.import_midi_file(&path) {
             Ok(report) => {
                 self.cursor_row = 0;
@@ -1150,7 +990,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rtrack_core::tracker::Note;
+    use rtrack_core::tracker::{Note, Song};
     use std::sync::Arc;
 
     /// Point rtrack's config directory at a scratch path for this process.
@@ -1185,10 +1025,8 @@ pub(crate) mod tests {
             edit_step: 1,
             status_message: None,
             last_autosave: Instant::now(),
-            history: rtrack_core::editor::EditHistory::new(),
             clipboard: rtrack_core::editor::Clipboard::default(),
             block_anchor: None,
-            pending_undo: None,
             edit_order: 0,
             prev_mode: Mode::Normal,
             theme_index: 0,
@@ -1597,7 +1435,7 @@ pub(crate) mod tests {
         let mut app = make_app();
         let original_title = app.core.song.title.clone();
 
-        app.push_undo();
+        app.core.begin_edit();
         app.core.song.title = "Modified".to_string();
 
         app.undo();
@@ -1640,12 +1478,12 @@ pub(crate) mod tests {
         app.dialogs.sample_editor_field = SampleField::BaseNote;
         let original = app.core.sample_bank.get(0).expect("a sample").base_note;
 
-        let before_depth = app.history.undo_depth();
+        let before_depth = app.core.history.undo_depth();
         for _ in 0..10 {
             app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         }
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             before_depth + 1,
             "ten presses should be one step"
         );
@@ -1671,13 +1509,13 @@ pub(crate) mod tests {
         app.dialogs.sample_editor_field = SampleField::BaseNote;
 
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        let after_first = app.history.undo_depth();
+        let after_first = app.core.history.undo_depth();
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             after_first + 1,
             "a different field is a different step"
         );
@@ -1692,13 +1530,13 @@ pub(crate) mod tests {
         app.dialogs.sample_editor_field = SampleField::TrimStart;
 
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        let after_one = app.history.approx_bytes();
+        let after_one = app.core.history.approx_bytes();
         for _ in 0..200 {
             app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         }
 
         assert_eq!(
-            app.history.approx_bytes(),
+            app.core.history.approx_bytes(),
             after_one,
             "200 presses should weigh the same as one step"
         );
@@ -1713,10 +1551,10 @@ pub(crate) mod tests {
         let mut app = make_app();
         app.mode = Mode::Insert;
 
-        let before = app.history.undo_depth();
+        let before = app.core.history.undo_depth();
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             before + 1,
             "one key should leave exactly one step"
         );
@@ -1725,10 +1563,10 @@ pub(crate) mod tests {
     #[test]
     fn a_key_that_edits_nothing_leaves_no_step() {
         let mut app = make_app();
-        let before = app.history.undo_depth();
+        let before = app.core.history.undo_depth();
         // Plain cursor movement in Normal mode.
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.history.undo_depth(), before);
+        assert_eq!(app.core.history.undo_depth(), before);
     }
 
     /// Slicing rewrites the bank and the instrument names together, so its
@@ -1739,12 +1577,12 @@ pub(crate) mod tests {
         let (mut app, _dir) = app_with_amen();
         app.dialogs.sample_slice_count = 4;
         app.slice_sample(false).expect("slice");
-        let after_slicing = app.history.undo_depth();
+        let after_slicing = app.core.history.undo_depth();
 
         app.mode = Mode::Insert;
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             after_slicing + 1,
             "the note should be its own step, not merged into the slicing"
         );
@@ -1768,13 +1606,13 @@ pub(crate) mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         }
         assert!(
-            app.history.approx_bytes() <= rtrack_core::constants::MAX_UNDO_BYTES,
+            app.core.history.approx_bytes() <= rtrack_core::constants::MAX_UNDO_BYTES,
             "history holds {} bytes, budget is {}",
-            app.history.approx_bytes(),
+            app.core.history.approx_bytes(),
             rtrack_core::constants::MAX_UNDO_BYTES
         );
         assert!(
-            app.history.can_undo(),
+            app.core.history.can_undo(),
             "the most recent edit is still there"
         );
     }
@@ -1802,15 +1640,15 @@ pub(crate) mod tests {
     #[test]
     fn test_undo_clears_redo_on_new_edit() {
         let mut app = make_app();
-        app.push_undo();
+        app.core.begin_edit();
         app.core.song.title = "Edit 1".to_string();
 
         app.undo();
-        assert!(app.history.can_redo());
+        assert!(app.core.history.can_redo());
 
         // New edit should clear redo
-        app.push_undo();
-        assert!(!app.history.can_redo());
+        app.core.begin_edit();
+        assert!(!app.core.history.can_redo());
     }
 
     #[test]
@@ -1949,7 +1787,7 @@ pub(crate) mod tests {
     #[test]
     fn test_ctrl_z_undoes() {
         let mut app = make_app();
-        app.push_undo();
+        app.core.begin_edit();
         app.core.song.title = "Changed".to_string();
 
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
@@ -2897,11 +2735,11 @@ pub(crate) mod tests {
     fn test_a_refused_slice_leaves_no_undo_step() {
         let (mut app, _dir) = app_with_amen();
         app.core.instruments[3].name = "Bass".to_string();
-        let before = app.history.undo_depth();
+        let before = app.core.history.undo_depth();
 
         assert!(app.slice_sample(false).is_err());
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             before,
             "a slice that wrote nothing should not be undoable"
         );
@@ -2918,7 +2756,7 @@ pub(crate) mod tests {
             .map(|s| app.core.sample_bank.get(s).map(|x| (x.trim_start, x.end())))
             .collect();
 
-        app.push_undo();
+        app.core.begin_edit();
         app.core
             .song
             .set_cell(0, 0, 0, rtrack_core::tracker::Cell::default());

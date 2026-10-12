@@ -48,7 +48,7 @@ impl App {
     /// point like `handle_key` and needs the same commit.
     pub fn poll_midi_input(&mut self) {
         self.poll_midi_input_inner();
-        self.commit_undo();
+        self.core.commit_edit();
     }
 
     fn poll_midi_input_inner(&mut self) {
@@ -78,7 +78,7 @@ impl App {
 
                 // Step recording: Insert mode + stopped
                 if self.mode == Mode::Insert && !self.core.playing {
-                    self.push_undo();
+                    self.core.begin_edit();
                     let order = self.current_order_position();
                     let row = self.cursor_row;
                     self.core

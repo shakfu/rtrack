@@ -55,14 +55,14 @@ impl App {
         match self.dialogs.settings_field {
             SettingsField::Title => {
                 if !self.dialogs.settings_edit_buf.is_empty() {
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.title = self.dialogs.settings_edit_buf.clone();
                 }
             }
             SettingsField::Bpm => {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u16>() {
                     let v = v.clamp(32, 300);
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.bpm = v;
                     if self.core.link.is_enabled() {
                         self.core.link.set_tempo(v as f64);
@@ -72,7 +72,7 @@ impl App {
             SettingsField::Speed => {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u8>() {
                     let v = v.clamp(1, 31);
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.speed = v;
                 }
             }
@@ -80,7 +80,7 @@ impl App {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, MAX_CHANNELS);
                     if v != self.core.song.channels {
-                        self.push_undo();
+                        self.core.begin_edit();
                         self.core.song.channels = v;
                         // Resize all patterns
                         for pat in &mut self.core.song.patterns {
@@ -107,7 +107,7 @@ impl App {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, 256);
                     if v != self.core.song.rows_per_pattern {
-                        self.push_undo();
+                        self.core.begin_edit();
                         self.core.song.rows_per_pattern = v;
                     }
                 }
@@ -115,27 +115,27 @@ impl App {
             SettingsField::HighlightBeat => {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, 64);
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.highlight_beat = v;
                 }
             }
             SettingsField::HighlightBar => {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, 256);
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.highlight_bar = v;
                 }
             }
             SettingsField::Swing => {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u8>() {
                     let v = v.clamp(0, 100);
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.swing = v;
                 }
             }
             SettingsField::Scale => match ScaleSetting::parse(&self.dialogs.settings_edit_buf) {
                 Ok(parsed) if parsed != self.core.song.scale => {
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.scale = parsed;
                 }
                 Ok(_) => {}
@@ -920,7 +920,7 @@ impl App {
             match key.code {
                 KeyCode::Char('n') => {
                     // New empty pattern, insert after cursor
-                    self.push_undo();
+                    self.core.begin_edit();
                     let idx = self.core.song.add_pattern();
                     self.core.song.order.insert(self.matrix_cursor + 1, idx);
                     self.core
@@ -934,7 +934,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     // Clone current pattern, insert after cursor
-                    self.push_undo();
+                    self.core.begin_edit();
                     let src_idx = self.core.song.order[self.matrix_cursor];
                     let cloned = self.core.song.patterns[src_idx].clone();
                     let new_idx = self.core.song.patterns.len();
@@ -993,7 +993,7 @@ impl App {
             }
             // Insert duplicate order entry after cursor
             KeyCode::Insert => {
-                self.push_undo();
+                self.core.begin_edit();
                 let pat = self.core.song.order[self.matrix_cursor];
                 self.core.song.order.insert(self.matrix_cursor + 1, pat);
                 self.core
@@ -1006,7 +1006,7 @@ impl App {
             // Delete order entry at cursor
             KeyCode::Delete | KeyCode::Backspace => {
                 if self.core.song.order.len() > 1 {
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.order.remove(self.matrix_cursor);
                     self.core.song.order_repeats.remove(self.matrix_cursor);
                     if self.matrix_cursor >= self.core.song.order.len() {
@@ -1020,7 +1020,7 @@ impl App {
             }
             // Increase repeat count
             KeyCode::Char(']') => {
-                self.push_undo();
+                self.core.begin_edit();
                 self.core.song.sync_order_repeats();
                 let cur = self.core.song.order_repeats[self.matrix_cursor];
                 if cur < 99 {
@@ -1030,7 +1030,7 @@ impl App {
             }
             // Decrease repeat count
             KeyCode::Char('[') => {
-                self.push_undo();
+                self.core.begin_edit();
                 self.core.song.sync_order_repeats();
                 let cur = self.core.song.order_repeats[self.matrix_cursor];
                 if cur > 0 {
@@ -1043,7 +1043,7 @@ impl App {
                 let max_pat = self.core.song.patterns.len() - 1;
                 let cur = self.core.song.order[self.matrix_cursor];
                 if cur < max_pat {
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.order[self.matrix_cursor] = cur + 1;
                     self.core.dirty = true;
                 }
@@ -1051,7 +1051,7 @@ impl App {
             KeyCode::Left | KeyCode::Char('-') => {
                 let cur = self.core.song.order[self.matrix_cursor];
                 if cur > 0 {
-                    self.push_undo();
+                    self.core.begin_edit();
                     self.core.song.order[self.matrix_cursor] = cur - 1;
                     self.core.dirty = true;
                 }
@@ -1272,7 +1272,7 @@ impl App {
     fn transpose_notes(&mut self, steps: i8) {
         // Copied out before the pattern is borrowed mutably.
         let scale = self.core.song.scale;
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
 
         if let Some((anchor_row, anchor_ch)) = self.block_anchor {
@@ -1382,7 +1382,7 @@ impl App {
         // One keypress is one undo step. Whatever the handlers snapshotted is
         // paired with the song as it now stands; a key that edited nothing
         // leaves nothing pending and this costs nothing.
-        self.commit_undo();
+        self.core.commit_edit();
     }
 
     fn dispatch_key(&mut self, key: KeyEvent) {
@@ -1832,7 +1832,7 @@ impl App {
         };
         let note = self.core.song.snap_entry(Note::On { value, octave });
 
-        self.push_undo();
+        self.core.begin_edit();
 
         let order = self.current_order_position();
         let ch = self.cursor_channel;
@@ -1871,7 +1871,7 @@ impl App {
             _ => return,
         };
 
-        self.push_undo();
+        self.core.begin_edit();
 
         let pattern_idx = self.core.song.order[self.current_order_position()];
         let cell =
@@ -1902,7 +1902,7 @@ impl App {
     }
 
     fn enter_note_off(&mut self) {
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
         let cell =
             self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
@@ -1911,7 +1911,7 @@ impl App {
     }
 
     fn delete_at_cursor(&mut self) {
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
         let cell =
             self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
@@ -1962,14 +1962,14 @@ impl App {
     }
 
     pub(crate) fn insert_row_at_cursor(&mut self) {
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
         self.core.song.patterns[pattern_idx].insert_row(self.cursor_row);
         self.status_message = Some(format!("Inserted row at {:02X}", self.cursor_row));
     }
 
     pub(crate) fn delete_row_at_cursor(&mut self) {
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
         self.core.song.patterns[pattern_idx].delete_row(self.cursor_row);
         self.status_message = Some(format!("Deleted row at {:02X}", self.cursor_row));
@@ -2059,7 +2059,7 @@ impl App {
     fn cut_block(&mut self) {
         self.copy_block();
         if let Some((r0, r1, c0, c1)) = self.block_bounds() {
-            self.push_undo();
+            self.core.begin_edit();
             let pattern_idx = self.core.song.order[self.current_order_position()];
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for r in r0..=r1 {
@@ -2088,7 +2088,7 @@ impl App {
             return;
         }
 
-        self.push_undo();
+        self.core.begin_edit();
         let pattern_idx = self.core.song.order[self.current_order_position()];
         let pattern = &mut self.core.song.patterns[pattern_idx];
         let steps = (r1 - r0) as f64;
@@ -2125,7 +2125,7 @@ impl App {
     /// Paste block clipboard at cursor position
     fn paste_block(&mut self) {
         if let Some(block) = self.clipboard.block().cloned() {
-            self.push_undo();
+            self.core.begin_edit();
             let pattern_idx = self.core.song.order[self.current_order_position()];
             let pattern = &mut self.core.song.patterns[pattern_idx];
             for (ri, row) in block.iter().enumerate() {

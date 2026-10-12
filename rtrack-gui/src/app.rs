@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use rtrack_core::TrackerCore;
 
 use crate::grid::{self, GridAction, GridParams};
-use crate::history::EditHistory;
 use crate::state::{GridColors, Mode, SubColumn, Theme};
 use crate::visualization::VisualizationState;
 
@@ -27,9 +26,6 @@ pub struct RtrackApp {
 
     // Status
     pub status_message: Option<String>,
-
-    // Undo/Redo
-    pub history: EditHistory,
 
     // Clipboard
     /// Copied cells. Shared with the TUI so the two cannot drift.
@@ -93,7 +89,6 @@ impl RtrackApp {
             first_visible_channel: 0,
             mode: Mode::Normal,
             status_message: None,
-            history: EditHistory::new(),
             clipboard: rtrack_core::editor::Clipboard::default(),
             block_start: None,
             block_end: None,
@@ -234,7 +229,6 @@ impl RtrackApp {
                         self.cursor_channel = 0;
                         self.edit_order = 0;
                         self.first_visible_channel = 0;
-                        self.history = EditHistory::new();
                         rtrack_core::config::push_recent_file(&mut self.recent_files, path);
                         rtrack_core::config::save_recent_files(&self.recent_files);
                         self.status_message = Some(Self::describe_load(&report));

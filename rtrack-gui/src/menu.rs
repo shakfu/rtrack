@@ -22,7 +22,6 @@ impl RtrackApp {
                             }
                         }
                         self.reset_cursor_state();
-                        self.history.clear();
                         self.clipboard.clear();
                         self.status_message = Some("New song created".to_string());
                         ui.close();
@@ -37,7 +36,6 @@ impl RtrackApp {
                             match self.core.load_file(&path) {
                                 Ok(report) => {
                                     self.reset_cursor_state();
-                                    self.history.clear();
                                     self.clipboard.clear();
                                     rtrack_core::config::push_recent_file(
                                         &mut self.recent_files,
@@ -98,7 +96,6 @@ impl RtrackApp {
                                     match self.core.load_file(path) {
                                         Ok(report) => {
                                             self.reset_cursor_state();
-                                            self.history.clear();
                                             self.clipboard.clear();
                                             self.status_message =
                                                 Some(Self::describe_load(&report));
@@ -152,7 +149,10 @@ impl RtrackApp {
 
                 ui.menu_button("Edit", |ui| {
                     if ui
-                        .add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)"))
+                        .add_enabled(
+                            self.core.history.can_undo(),
+                            egui::Button::new("Undo  (Ctrl+Z)"),
+                        )
                         .clicked()
                     {
                         self.apply_undo();
@@ -160,7 +160,7 @@ impl RtrackApp {
                     }
                     if ui
                         .add_enabled(
-                            self.history.can_redo(),
+                            self.core.history.can_redo(),
                             egui::Button::new("Redo  (Ctrl+Shift+Z)"),
                         )
                         .clicked()

@@ -472,7 +472,7 @@ impl RtrackApp {
                     let rows = block.len();
                     let chs = block.first().map_or(0, |r| r.len());
                     self.clipboard.set_block(block);
-                    self.history.push(edits);
+                    self.core.history.push(edits);
                     self.core.dirty = true;
                     self.block_start = None;
                     self.block_end = None;
@@ -530,7 +530,7 @@ impl RtrackApp {
                             });
                         }
                     }
-                    self.history.push(edits);
+                    self.core.history.push(edits);
                     self.core.dirty = true;
                     self.status_message = Some("Block pasted".to_string());
                 } else if let Some(clip) = self.clipboard.cell() {
@@ -876,7 +876,7 @@ impl RtrackApp {
                     if edits.is_empty() {
                         self.status_message = Some("Nothing to interpolate".to_string());
                     } else {
-                        self.history.push(edits);
+                        self.core.history.push(edits);
                         self.core.dirty = true;
                         self.status_message = Some("Interpolated".to_string());
                     }
@@ -890,57 +890,17 @@ impl RtrackApp {
     /// Roll one edit group back. Shared by the Edit menu and Ctrl+Z so the
     /// two entry points cannot drift apart.
     pub(crate) fn apply_undo(&mut self) {
-        if let Some(edit) = self.history.undo() {
-            self.apply_edit_backward(edit);
-            self.core.dirty = true;
+        if self.core.undo() {
+            self.clamp_cursor_to_song();
             self.status_message = Some("Undo".to_string());
-        }
-    }
-
-    /// Put back the "before" side of one step.
-    fn apply_edit_backward(&mut self, edit: Edit) {
-        match edit {
-            Edit::Cells(edits) => {
-                for e in &edits {
-                    self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.old_cell);
-                }
-            }
-            Edit::Bank(bank) => self.core.restore_samples(bank.before),
-            Edit::Structure(s) => self.restore_song(s.before),
-            // Undone in reverse, so the parts come apart the way they were
-            // put together.
-            Edit::Group(parts) => {
-                for part in parts.into_iter().rev() {
-                    self.apply_edit_backward(part);
-                }
-            }
         }
     }
 
     /// Re-apply one edit group. Counterpart to [`RtrackApp::apply_undo`].
     pub(crate) fn apply_redo(&mut self) {
-        if let Some(edit) = self.history.redo() {
-            self.apply_edit_forward(edit);
-            self.core.dirty = true;
+        if self.core.redo() {
+            self.clamp_cursor_to_song();
             self.status_message = Some("Redo".to_string());
-        }
-    }
-
-    /// Re-apply the "after" side of one step.
-    fn apply_edit_forward(&mut self, edit: Edit) {
-        match edit {
-            Edit::Cells(edits) => {
-                for e in &edits {
-                    self.write_recorded_cell(e.pattern_idx, e.row, e.channel, e.new_cell);
-                }
-            }
-            Edit::Bank(bank) => self.core.restore_samples(bank.after),
-            Edit::Structure(s) => self.restore_song(s.after),
-            Edit::Group(parts) => {
-                for part in parts {
-                    self.apply_edit_forward(part);
-                }
-            }
         }
     }
 
@@ -957,7 +917,7 @@ impl RtrackApp {
         control: &'static str,
         before: rtrack_core::tracker::Song,
     ) {
-        self.history.push_from(
+        self.core.history.push_from(
             rtrack_core::editor::EditSource::new(control, 0),
             Edit::Structure(Box::new(rtrack_core::editor::StructureEdit {
                 before,
@@ -970,7 +930,7 @@ impl RtrackApp {
     /// End a run of coalescing, so the next edit to the same control starts a
     /// new step. Called when a dialog closes.
     pub(crate) fn break_edit_coalescing(&mut self) {
-        self.history.break_coalescing();
+        self.core.history.break_coalescing();
     }
 
     /// Take the song as it stands, to pair with [`RtrackApp::end_structural_edit`].
@@ -986,19 +946,10 @@ impl RtrackApp {
     /// Record a structural change against the song `begin_structural_edit`
     /// returned.
     pub(crate) fn end_structural_edit(&mut self, before: rtrack_core::tracker::Song) {
-        self.history.push_structure(before, self.core.song.clone());
+        self.core
+            .history
+            .push_structure(before, self.core.song.clone());
         self.core.dirty = true;
-    }
-
-    /// Put back a whole song recorded by a structural edit.
-    ///
-    /// The cursor has to be brought back inside it: the song being restored
-    /// may have fewer patterns, channels, or rows than the one on screen --
-    /// undoing "add pattern" is exactly that case -- and a cursor left past
-    /// the end would index out of range on the next draw.
-    fn restore_song(&mut self, song: rtrack_core::tracker::Song) {
-        self.core.song = song;
-        self.clamp_cursor_to_song();
     }
 
     /// Bring the cursor and the visible channel window inside the song.
@@ -1026,17 +977,6 @@ impl RtrackApp {
         }
     }
 
-    /// Write a cell recorded in the history. History entries can outlive the
-    /// pattern they name (a song can be loaded while the stacks still hold
-    /// edits), so an entry that no longer resolves is skipped, not indexed.
-    fn write_recorded_cell(&mut self, pattern_idx: usize, row: usize, channel: usize, cell: Cell) {
-        if let Some(pattern) = self.core.song.patterns.get_mut(pattern_idx) {
-            if row < pattern.rows && channel < pattern.channels {
-                pattern.data[row][channel] = cell;
-            }
-        }
-    }
-
     pub(crate) fn record_cell_edit(
         &mut self,
         pattern_idx: usize,
@@ -1045,7 +985,7 @@ impl RtrackApp {
         old: Cell,
         new: Cell,
     ) {
-        self.history.push(vec![CellEdit {
+        self.core.history.push(vec![CellEdit {
             pattern_idx,
             row,
             channel,
@@ -1713,7 +1653,7 @@ mod tests {
     fn a_dragged_setting_is_one_undo_step() {
         let mut app = app();
         let original = app.core.song.bpm;
-        let depth = app.history.undo_depth();
+        let depth = app.core.history.undo_depth();
 
         for bpm in [121, 130, 145, 160] {
             let before = app.core.song.clone();
@@ -1721,7 +1661,7 @@ mod tests {
             app.record_settings_edit("song.bpm", before);
         }
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             depth + 1,
             "a drag should leave one step"
         );
@@ -1736,7 +1676,7 @@ mod tests {
     #[test]
     fn two_different_settings_are_two_steps() {
         let mut app = app();
-        let depth = app.history.undo_depth();
+        let depth = app.core.history.undo_depth();
 
         let before = app.core.song.clone();
         app.core.song.bpm = 160;
@@ -1746,7 +1686,7 @@ mod tests {
         app.core.song.swing = 60;
         app.record_settings_edit("song.swing", before);
 
-        assert_eq!(app.history.undo_depth(), depth + 2);
+        assert_eq!(app.core.history.undo_depth(), depth + 2);
     }
 
     #[test]
@@ -1755,14 +1695,14 @@ mod tests {
         let before = app.core.song.clone();
         app.core.song.bpm = 160;
         app.record_settings_edit("song.bpm", before);
-        let depth = app.history.undo_depth();
+        let depth = app.core.history.undo_depth();
 
         app.break_edit_coalescing();
 
         let before = app.core.song.clone();
         app.core.song.bpm = 170;
         app.record_settings_edit("song.bpm", before);
-        assert_eq!(app.history.undo_depth(), depth + 1);
+        assert_eq!(app.core.history.undo_depth(), depth + 1);
     }
 
     /// Shrinking the channel count truncates every pattern, so undo has to

@@ -44,6 +44,8 @@ All notable changes to rtrack will be documented in this file.
 
 ### Changed
 
+- **Undo history moved into `TrackerCore`.** `TrackerCore` now owns the `EditHistory`, the pending-edit snapshot (`begin_edit`, `begin_edit_with_samples`, `commit_edit`, `cancel_edit`) and `undo`/`redo`. Both frontends had their own copies of the undo-apply logic, and each core mutation needed a snapshot call in each frontend; the sample loads had none. Frontends now only clamp their cursor after `undo`/`redo`. `load_file` clears the history itself.
+
 - `Note::from_midi` replaces the MIDI-to-note arithmetic that `Note::transposed` carried inline, and `NoteValue` gained `name`, `from_name`, and one `PITCH_NAMES` table behind both `name` and `display_name`. The GUI instrument editor and TUI sample editor each held their own copy of a note-naming array and function; both now call `tracker::midi_note_name`. Displayed names are unchanged.
 
 - **rtrack-tui: ratatui 0.29 -> 0.30, crossterm 0.28 -> 0.29.** Clears RUSTSEC-2026-0002 and RUSTSEC-2026-0253, two soundness advisories against the `lru` 0.12 that ratatui 0.29 pinned. crossterm moves with it because ratatui 0.30's default backend is built on 0.29; keeping 0.28 would link two copies of crossterm with separate terminal state.

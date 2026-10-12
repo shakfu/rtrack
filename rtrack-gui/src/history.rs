@@ -6,11 +6,12 @@
 //! deleting an order entry was not undoable in the GUI at all -- see
 //! [`rtrack_core::editor`] for why the shared model has a third case.
 
-pub use rtrack_core::editor::{CellEdit, Edit, EditHistory};
+pub use rtrack_core::editor::{CellEdit, Edit};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtrack_core::editor::EditHistory;
     use rtrack_core::tracker::Cell;
 
     /// The cell edits of a step, for tests that only deal in cell edits.

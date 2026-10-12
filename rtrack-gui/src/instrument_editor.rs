@@ -826,7 +826,9 @@ impl RtrackApp {
         }
         if edit.finished {
             if let Some((before, true)) = self.boundary_drag.take() {
-                self.history.push_bank(before, self.core.snapshot_samples());
+                self.core
+                    .history
+                    .push_bank(before, self.core.snapshot_samples());
             }
         }
     }
@@ -850,7 +852,9 @@ impl RtrackApp {
         if let Some(ref mut audio) = self.core.audio {
             audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
         }
-        self.history.push_bank(before, self.core.snapshot_samples());
+        self.core
+            .history
+            .push_bank(before, self.core.snapshot_samples());
         self.core.dirty = true;
         self.status_message = Some(format!("Loop snapped to zero crossings: {start}..{end}"));
     }
@@ -918,7 +922,7 @@ impl RtrackApp {
                 self.core.dirty = true;
                 self.vis.slice_blocked = None;
                 let after = self.core.snapshot_samples();
-                self.history.push_bank(before, after);
+                self.core.history.push_bank(before, after);
                 let what = match range {
                     SliceRange::Source => "sample",
                     SliceRange::Span => "slice",
@@ -1029,7 +1033,7 @@ mod tests {
         use rtrack_core::sample::Boundary;
         let (mut app, _dir) = app_with_amen();
         app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
-        let depth = app.history.undo_depth();
+        let depth = app.core.history.undo_depth();
         let (edge, next_end) = (span(&app, 2).1, span(&app, 3).1);
 
         let steps = drag(2, Boundary::TrimEnd, &[edge, edge + 500, edge + 1000]);
@@ -1040,7 +1044,7 @@ mod tests {
         assert_eq!(span(&app, 2).1, edge + 1000);
         assert_eq!(span(&app, 3), (edge + 1000, next_end));
         assert_eq!(
-            app.history.undo_depth(),
+            app.core.history.undo_depth(),
             depth + 1,
             "the gesture is not one step"
         );
@@ -1069,12 +1073,12 @@ mod tests {
         use rtrack_core::sample::Boundary;
         let (mut app, _dir) = app_with_amen();
         app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Allow);
-        let depth = app.history.undo_depth();
+        let depth = app.core.history.undo_depth();
         let edge = span(&app, 2).1;
         for step in drag(2, Boundary::TrimEnd, &[edge, edge]) {
             app.apply_boundary_edit(step);
         }
-        assert_eq!(app.history.undo_depth(), depth);
+        assert_eq!(app.core.history.undo_depth(), depth);
     }
 
     #[test]
@@ -1135,7 +1139,7 @@ mod tests {
 
         app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Refuse);
         assert!(
-            !app.history.can_undo(),
+            !app.core.history.can_undo(),
             "a slice that wrote nothing should not be undoable"
         );
         assert!(app.vis.slice_blocked.is_some(), "no warning was raised");

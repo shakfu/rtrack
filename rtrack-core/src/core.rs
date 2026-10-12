@@ -13,9 +13,11 @@ use crate::midi::{MidiEngine, MidiInputEngine};
 use crate::sample::playback::NewNoteAction;
 use crate::sample::{Sample, SampleBank};
 use crate::tracker::{
-    InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song, SongFile,
+    Cell, InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song,
+    SongFile,
 };
 
+use crate::editor::{BankEdit, CellEdit, Edit, StructureEdit};
 use crate::error::{Error, Result};
 use crate::types::{
     autosave_path_for, autosave_path_for_unsaved, default_channel_configs, make_relative,
@@ -136,6 +138,25 @@ pub struct TrackerCore {
     /// live MIDI input), which is applied as soon as the audio thread
     /// sees it.
     scheduled_frame: Option<u64>,
+
+    // -- Undo --
+    pub history: crate::editor::EditHistory,
+    /// A before-snapshot awaiting the end of the edit that asked for it.
+    pending_edit: Option<PendingEdit>,
+}
+
+/// The state before an edit that is still in progress. See
+/// [`TrackerCore::begin_edit`].
+///
+/// Editing code snapshots before it mutates, but the history stores
+/// before/after pairs. The pair is completed once, at the end of the input
+/// event, so one keypress is one undo step however many calls it makes.
+///
+/// `samples` is present only for edits that touched the sample bank, so
+/// ordinary pattern edits stay as cheap as they were.
+struct PendingEdit {
+    song: Song,
+    samples: Option<SampleSnapshot>,
 }
 
 impl TrackerCore {
@@ -185,6 +206,8 @@ impl TrackerCore {
             preview_note: None,
             autosave_written: None,
             scheduled_frame: None,
+            history: crate::editor::EditHistory::new(),
+            pending_edit: None,
         }
     }
 }
@@ -314,6 +337,8 @@ impl TrackerCoreBuilder {
             preview_note: None,
             autosave_written: None,
             scheduled_frame: None,
+            history: crate::editor::EditHistory::new(),
+            pending_edit: None,
         }
     }
 }
@@ -1453,6 +1478,145 @@ impl TrackerCore {
         self.dirty = true;
     }
 
+    // -----------------------------------------------------------------------
+    // Undo
+    // -----------------------------------------------------------------------
+
+    /// Take a snapshot before an edit, if one is not already pending.
+    ///
+    /// Called before mutating. The matching [`TrackerCore::commit_edit`]
+    /// turns it into a step, so several calls within one input event
+    /// collapse into the single step that event deserves.
+    pub fn begin_edit(&mut self) {
+        if self.pending_edit.is_none() {
+            self.pending_edit = Some(PendingEdit {
+                song: self.song.clone(),
+                samples: None,
+            });
+            // The edit has begun, so the branch that was undone is already
+            // unreachable, even though its step is not finished yet.
+            self.history.clear_redo();
+        }
+        self.dirty = true;
+    }
+
+    /// As [`TrackerCore::begin_edit`], for an edit that also changes the
+    /// sample bank, so undo can put the overwritten slots back.
+    pub fn begin_edit_with_samples(&mut self) {
+        self.begin_edit();
+        if let Some(pending) = self.pending_edit.as_mut() {
+            if pending.samples.is_none() {
+                pending.samples = Some(SampleSnapshot {
+                    bank: Arc::clone(&self.sample_bank),
+                    instruments: self.instruments.clone(),
+                });
+            }
+        }
+    }
+
+    /// Abandon the pending snapshot: the edit it was taken for did not happen.
+    pub fn cancel_edit(&mut self) {
+        self.pending_edit = None;
+    }
+
+    /// Turn the pending snapshot into a history step, if there is one.
+    pub fn commit_edit(&mut self) {
+        let Some(pending) = self.pending_edit.take() else {
+            return;
+        };
+        let structure = Edit::Structure(Box::new(StructureEdit {
+            before: pending.song,
+            after: self.song.clone(),
+        }));
+        match pending.samples {
+            // Both changed together, so they have to come back together:
+            // slicing rewrites the bank and renames instruments.
+            Some(before) => {
+                let after = self.snapshot_samples();
+                self.history.push_edit(Edit::Group(vec![
+                    structure,
+                    Edit::Bank(Box::new(BankEdit { before, after })),
+                ]));
+            }
+            None => self.history.push_edit(structure),
+        }
+    }
+
+    /// Undo one step. Returns whether there was one.
+    ///
+    /// A pending edit is committed first: it is the edit being undone.
+    /// The restored song may be smaller than the one on screen, so the
+    /// caller must bring its cursor back inside it.
+    pub fn undo(&mut self) -> bool {
+        self.commit_edit();
+        let Some(edit) = self.history.undo() else {
+            return false;
+        };
+        self.apply_edit_backward(edit);
+        self.dirty = true;
+        true
+    }
+
+    /// Redo one step. Returns whether there was one. As for
+    /// [`TrackerCore::undo`], the caller must clamp its cursor.
+    pub fn redo(&mut self) -> bool {
+        self.commit_edit();
+        let Some(edit) = self.history.redo() else {
+            return false;
+        };
+        self.apply_edit_forward(edit);
+        self.dirty = true;
+        true
+    }
+
+    /// Put back the "before" side of one step.
+    fn apply_edit_backward(&mut self, edit: Edit) {
+        match edit {
+            Edit::Cells(edits) => {
+                for e in &edits {
+                    self.write_recorded_cell(e, e.old_cell);
+                }
+            }
+            Edit::Bank(bank) => self.restore_samples(bank.before),
+            Edit::Structure(s) => self.song = s.before,
+            // Undone in reverse, so the parts come apart the way they were
+            // put together.
+            Edit::Group(parts) => {
+                for part in parts.into_iter().rev() {
+                    self.apply_edit_backward(part);
+                }
+            }
+        }
+    }
+
+    /// Re-apply the "after" side of one step.
+    fn apply_edit_forward(&mut self, edit: Edit) {
+        match edit {
+            Edit::Cells(edits) => {
+                for e in &edits {
+                    self.write_recorded_cell(e, e.new_cell);
+                }
+            }
+            Edit::Bank(bank) => self.restore_samples(bank.after),
+            Edit::Structure(s) => self.song = s.after,
+            Edit::Group(parts) => {
+                for part in parts {
+                    self.apply_edit_forward(part);
+                }
+            }
+        }
+    }
+
+    /// Write a cell recorded in the history. An entry whose pattern no longer
+    /// resolves is skipped, not indexed.
+    fn write_recorded_cell(&mut self, e: &CellEdit, cell: Cell) {
+        if let Some(pattern) = self.song.patterns.get_mut(e.pattern_idx) {
+            if e.row < pattern.rows && e.channel < pattern.channels {
+                pattern.data[e.row][e.channel] = cell;
+            }
+        }
+    }
+
     /// Slots in `slot..end` holding something this slicing did not produce.
     ///
     /// Re-slicing its own output is the operation working, not destruction:
@@ -1843,10 +2007,12 @@ impl TrackerCore {
     }
 
     /// Load a song file. Restores core state (song, instruments, samples).
-    /// The caller is responsible for resetting UI state (cursor, history, etc.).
+    /// Clears the undo history; the caller resets its cursor.
     pub fn load_file(&mut self, path: &std::path::Path) -> Result<LoadReport> {
         match SongFile::load(path) {
             Ok(song_file) => {
+                self.history.clear();
+                self.pending_edit = None;
                 let from_newer = song_file.is_from_newer_version();
                 let mut song = song_file.song;
                 let repairs = song.repair();
