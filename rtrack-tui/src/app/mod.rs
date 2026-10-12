@@ -10,8 +10,8 @@ use rtrack_core::midi::MidiEngine;
 
 pub use rtrack_core::{
     autosave_path_for, default_channel_configs, make_relative, resolve_relative, ChannelConfig,
-    ChannelState, ChannelType, ClockMode, Instrument, LearnableParam, MidiCcMapping,
-    PlaybackTiming, AUTOSAVE_INTERVAL_SECS,
+    ChannelState, ClockMode, Instrument, LearnableParam, MidiCcMapping, PlaybackTiming,
+    AUTOSAVE_INTERVAL_SECS,
 };
 
 // -- Constants (module-private; TUI-specific) --
@@ -24,6 +24,11 @@ pub struct DialogState {
     /// The first character typed then replaces it instead of appending.
     pub settings_buf_untouched: bool,
     pub instrument_cursor: usize,
+    pub phrase_cursor: usize,
+    /// The table open in the table editor, its cursor row and field.
+    pub table_number: u8,
+    pub table_row: usize,
+    pub table_field: TableField,
     pub sample_editor_slot: usize,
     pub sample_editor_field: SampleField,
     pub sample_slice_count: usize,
@@ -52,6 +57,10 @@ impl DialogState {
             settings_edit_buf: String::new(),
             settings_buf_untouched: true,
             instrument_cursor: 0,
+            phrase_cursor: 0,
+            table_number: 0,
+            table_row: 0,
+            table_field: TableField::Transpose,
             sample_editor_slot: 0,
             sample_editor_field: SampleField::BaseNote,
             sample_slice_count: 8,
@@ -94,6 +103,17 @@ pub enum Mode {
     Command,
     FileBrowser,
     RecentFiles,
+    PhraseList,
+    TableEditor,
+}
+
+/// The table editor's field under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableField {
+    #[default]
+    Transpose,
+    Volume,
+    Effect,
 }
 
 /// What action to perform when a file is selected in the file browser.
@@ -204,7 +224,7 @@ pub enum SettingsField {
     Rows,
     HighlightBeat,
     HighlightBar,
-    Swing,
+    Groove,
     Scale,
 }
 
@@ -217,8 +237,8 @@ impl SettingsField {
             Self::Channels => Self::Rows,
             Self::Rows => Self::HighlightBeat,
             Self::HighlightBeat => Self::HighlightBar,
-            Self::HighlightBar => Self::Swing,
-            Self::Swing => Self::Scale,
+            Self::HighlightBar => Self::Groove,
+            Self::Groove => Self::Scale,
             Self::Scale => Self::Title,
         }
     }
@@ -232,8 +252,8 @@ impl SettingsField {
             Self::Rows => Self::Channels,
             Self::HighlightBeat => Self::Rows,
             Self::HighlightBar => Self::HighlightBeat,
-            Self::Swing => Self::HighlightBar,
-            Self::Scale => Self::Swing,
+            Self::Groove => Self::HighlightBar,
+            Self::Scale => Self::Groove,
         }
     }
 }
@@ -246,6 +266,10 @@ pub enum SampleField {
     LoopEnabled,
     LoopStart,
     LoopEnd,
+    Drive,
+    Filter,
+    Cutoff,
+    Resonance,
     SliceCount,
     SliceSensitivity,
     SliceRange,
@@ -266,6 +290,10 @@ impl SampleField {
             Self::LoopEnabled => "sample.loop_enabled",
             Self::LoopStart => "sample.loop_start",
             Self::LoopEnd => "sample.loop_end",
+            Self::Drive => "instrument.drive",
+            Self::Filter => "instrument.filter",
+            Self::Cutoff => "instrument.cutoff",
+            Self::Resonance => "instrument.resonance",
             Self::SliceCount => "sample.slice_count",
             Self::SliceSensitivity => "sample.slice_sensitivity",
             Self::SliceRange => "sample.slice_range",
@@ -281,7 +309,11 @@ impl SampleField {
             Self::TrimEnd => Self::LoopEnabled,
             Self::LoopEnabled => Self::LoopStart,
             Self::LoopStart => Self::LoopEnd,
-            Self::LoopEnd => Self::SliceCount,
+            Self::LoopEnd => Self::Drive,
+            Self::Drive => Self::Filter,
+            Self::Filter => Self::Cutoff,
+            Self::Cutoff => Self::Resonance,
+            Self::Resonance => Self::SliceCount,
             Self::SliceCount => Self::SliceSensitivity,
             Self::SliceSensitivity => Self::SliceRange,
             Self::SliceRange => Self::SliceEqual,
@@ -298,7 +330,11 @@ impl SampleField {
             Self::LoopEnabled => Self::TrimEnd,
             Self::LoopStart => Self::LoopEnabled,
             Self::LoopEnd => Self::LoopStart,
-            Self::SliceCount => Self::LoopEnd,
+            Self::Drive => Self::LoopEnd,
+            Self::Filter => Self::Drive,
+            Self::Cutoff => Self::Filter,
+            Self::Resonance => Self::Cutoff,
+            Self::SliceCount => Self::Resonance,
             Self::SliceSensitivity => Self::SliceCount,
             Self::SliceRange => Self::SliceSensitivity,
             Self::SliceEqual => Self::SliceRange,
@@ -314,6 +350,7 @@ pub enum SynthField {
     Decay,
     Sustain,
     Release,
+    Drive,
     FilterType,
     FilterCutoff,
     FilterResonance,
@@ -332,7 +369,8 @@ impl SynthField {
             Self::Attack => Self::Decay,
             Self::Decay => Self::Sustain,
             Self::Sustain => Self::Release,
-            Self::Release => Self::FilterType,
+            Self::Release => Self::Drive,
+            Self::Drive => Self::FilterType,
             Self::FilterType => Self::FilterCutoff,
             Self::FilterCutoff => Self::FilterResonance,
             Self::FilterResonance => Self::FilterEnv,
@@ -352,7 +390,8 @@ impl SynthField {
             Self::Decay => Self::Attack,
             Self::Sustain => Self::Decay,
             Self::Release => Self::Sustain,
-            Self::FilterType => Self::Release,
+            Self::Drive => Self::Release,
+            Self::FilterType => Self::Drive,
             Self::FilterCutoff => Self::FilterType,
             Self::FilterResonance => Self::FilterCutoff,
             Self::FilterEnv => Self::FilterResonance,
@@ -390,6 +429,8 @@ pub struct App {
     pub follow_playback: bool,
     /// How many rows to advance after entering a note
     pub edit_step: usize,
+    /// Show the second effect column even where the pattern does not use it.
+    pub show_second_fx: bool,
 
     // -----------------------------------------------------------------------
     // Editor State
@@ -451,6 +492,7 @@ impl App {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             edit_step: 1,
+            show_second_fx: false,
             status_message: None,
             last_autosave: Instant::now(),
             clipboard: rtrack_core::editor::Clipboard::default(),
@@ -520,13 +562,25 @@ impl App {
 
     pub fn open_synth_editor(&mut self) {
         let slot = self.dialogs.instrument_cursor;
+        // A MIDI instrument becomes a synth starting from its preset. A
+        // sample instrument is left alone: an instrument plays one source.
+        let inst = &mut self.core.instruments[slot];
+        match inst.kind {
+            rtrack_core::InstrumentKind::Synth(_) => {}
+            rtrack_core::InstrumentKind::Midi { program, .. } => {
+                inst.kind = rtrack_core::InstrumentKind::Synth(
+                    rtrack_core::audio::synth::SynthParams::from_patch(program),
+                );
+            }
+            rtrack_core::InstrumentKind::Sample { .. } => {
+                self.status_message = Some(format!(
+                    "Instrument {slot:02X} plays a sample; clear it to make it a synth"
+                ));
+                return;
+            }
+        }
         self.dialogs.synth_editor_slot = slot;
         self.dialogs.synth_editor_field = SynthField::Waveform;
-        if self.core.instruments[slot].synth_params.is_none() {
-            let program = self.core.instruments[slot].midi_program.unwrap_or(0);
-            self.core.instruments[slot].synth_params =
-                Some(rtrack_core::audio::synth::SynthParams::from_patch(program));
-        }
         self.prev_mode = self.mode;
         self.mode = Mode::SynthEditor;
     }
@@ -642,7 +696,7 @@ impl App {
     pub fn open_port_selector(&mut self) {
         let mut ports = Vec::new();
         #[cfg(unix)]
-        ports.push("RTRACK_MIDI (virtual)".to_string());
+        ports.push(rtrack_core::midi::VIRTUAL_PORT_NAME.to_string());
 
         if let Ok(hw_ports) = MidiEngine::list_ports() {
             ports.extend(hw_ports);
@@ -663,24 +717,11 @@ impl App {
             return;
         }
 
-        let _selected = &self.dialogs.midi_port_list[self.dialogs.midi_port_cursor];
-
-        #[cfg(unix)]
-        {
-            if self.dialogs.midi_port_cursor == 0 {
-                let _ = self.core.midi.create_virtual_port();
-                self.close_port_selector();
-                return;
-            }
-            let hw_index = self.dialogs.midi_port_cursor - 1;
-            let _ = self.core.midi.connect(hw_index);
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = self.core.midi.connect(self.dialogs.midi_port_cursor);
-        }
-
+        let name = self.dialogs.midi_port_list[self.dialogs.midi_port_cursor].clone();
+        self.status_message = Some(match self.core.select_midi_port(&name) {
+            Ok(()) => format!("MIDI out: {name}"),
+            Err(e) => e.to_string(),
+        });
         self.close_port_selector();
     }
 
@@ -693,6 +734,20 @@ impl App {
             if let Some(err) = audio.take_stream_error() {
                 self.status_message = Some(format!("Audio error: {}", err));
             }
+        }
+        if let Some(notice) = self.core.take_notice() {
+            self.status_message = Some(notice);
+        }
+    }
+
+    /// Effect columns shown: two when toggled on with `:fx2`, or when the
+    /// pattern on screen uses the second, so its data is never hidden.
+    pub fn fx_columns(&self) -> usize {
+        let used = self.core.song.uses_second_fx(self.current_order_position());
+        if self.show_second_fx || used {
+            2
+        } else {
+            1
         }
     }
 
@@ -879,10 +934,11 @@ impl App {
     // -- Clipboard --
 
     pub fn copy_row(&mut self) {
-        let pattern_idx = self.core.song.order[self.current_order_position()];
-        let pattern = &self.core.song.patterns[pattern_idx];
-        let row: Vec<rtrack_core::tracker::Cell> = (0..pattern.channels)
-            .map(|ch| *pattern.get(self.cursor_row, ch))
+        let pos = self.current_order_position();
+        let song = &self.core.song;
+        let channels = song.pattern_at(pos).map_or(0, |p| p.channels);
+        let row: Vec<rtrack_core::tracker::Cell> = (0..channels)
+            .map(|ch| *song.cell_at(pos, self.cursor_row, ch))
             .collect();
         self.clipboard.set_run(row);
         self.status_message = Some(format!("Copied row {:02X}", self.cursor_row));
@@ -891,12 +947,9 @@ impl App {
     pub fn paste_row(&mut self) {
         if let Some(row) = self.clipboard.run().map(|r| r.to_vec()) {
             self.core.begin_edit();
-            let pattern_idx = self.core.song.order[self.current_order_position()];
-            let pattern = &mut self.core.song.patterns[pattern_idx];
+            let pos = self.current_order_position();
             for (ch, cell) in row.iter().enumerate() {
-                if ch < pattern.channels {
-                    pattern.set_cell(self.cursor_row, ch, *cell);
-                }
+                self.core.song.set_cell(pos, self.cursor_row, ch, *cell);
             }
             self.status_message = Some(format!("Pasted at row {:02X}", self.cursor_row));
         }
@@ -905,10 +958,15 @@ impl App {
     pub fn cut_row(&mut self) {
         self.copy_row();
         self.core.begin_edit();
-        let pattern_idx = self.core.song.order[self.current_order_position()];
-        let pattern = &mut self.core.song.patterns[pattern_idx];
-        for ch in 0..pattern.channels {
-            pattern.set_cell(self.cursor_row, ch, rtrack_core::tracker::Cell::default());
+        let pos = self.current_order_position();
+        let channels = self.core.song.pattern_at(pos).map_or(0, |p| p.channels);
+        for ch in 0..channels {
+            self.core.song.set_cell(
+                pos,
+                self.cursor_row,
+                ch,
+                rtrack_core::tracker::Cell::default(),
+            );
         }
     }
 
@@ -990,7 +1048,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rtrack_core::tracker::{Note, Song};
+    use rtrack_core::tracker::{Fx, FxCmd, Note, Song};
     use std::sync::Arc;
 
     /// Point rtrack's config directory at a scratch path for this process.
@@ -1023,6 +1081,7 @@ pub(crate) mod tests {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             edit_step: 1,
+            show_second_fx: false,
             status_message: None,
             last_autosave: Instant::now(),
             clipboard: rtrack_core::editor::Clipboard::default(),
@@ -1038,6 +1097,10 @@ pub(crate) mod tests {
                 settings_edit_buf: String::new(),
                 settings_buf_untouched: true,
                 instrument_cursor: 0,
+                phrase_cursor: 0,
+                table_number: 0,
+                table_row: 0,
+                table_field: TableField::Transpose,
                 sample_editor_slot: 0,
                 sample_editor_field: SampleField::BaseNote,
                 sample_slice_count: 8,
@@ -1952,8 +2015,7 @@ pub(crate) mod tests {
         // Set pattern break (D08) at row 0 of pattern 0
         let pat_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_PATTERN_BREAK);
-        cell.effect_value = Some(8);
+        cell.fx[0] = Some(Fx::new(FxCmd::Break, 8));
 
         app.play();
         // Tick 0: advance row -> pattern break fires
@@ -1972,8 +2034,7 @@ pub(crate) mod tests {
 
         let pat_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_POSITION_JUMP);
-        cell.effect_value = Some(2);
+        cell.fx[0] = Some(Fx::new(FxCmd::Jump, 2));
 
         app.play();
         app.core.process_tick();
@@ -1992,13 +2053,11 @@ pub(crate) mod tests {
         let pat_idx = app.core.song.order[0];
         {
             let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-            cell.effect = Some(EFFECT_POSITION_JUMP);
-            cell.effect_value = Some(2);
+            cell.fx[0] = Some(Fx::new(FxCmd::Jump, 2));
         }
         {
             let cell = app.core.song.patterns[pat_idx].get_mut(0, 1);
-            cell.effect = Some(EFFECT_PATTERN_BREAK);
-            cell.effect_value = Some(4);
+            cell.fx[0] = Some(Fx::new(FxCmd::Break, 4));
         }
 
         app.play();
@@ -2012,8 +2071,7 @@ pub(crate) mod tests {
         let mut app = make_app();
         let pat_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_PATTERN_BREAK);
-        cell.effect_value = Some(0);
+        cell.fx[0] = Some(Fx::new(FxCmd::Break, 0));
 
         app.play();
         app.core.process_tick();
@@ -2027,8 +2085,7 @@ pub(crate) mod tests {
         let mut app = make_app();
         let pat_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_POSITION_JUMP);
-        cell.effect_value = Some(99);
+        cell.fx[0] = Some(Fx::new(FxCmd::Jump, 99));
 
         app.play();
         app.core.process_tick();
@@ -2139,9 +2196,7 @@ pub(crate) mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_MIDI_CC);
-        cell.instrument = Some(1);
-        cell.effect_value = Some(0x40);
+        cell.fx[0] = Some(Fx::new(FxCmd::Cc(1), 0x40));
 
         app.play();
         // process_tick dispatches MidiCC event to MIDI output
@@ -2154,8 +2209,7 @@ pub(crate) mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_PROGRAM_CHANGE);
-        cell.effect_value = Some(5);
+        cell.fx[0] = Some(Fx::new(FxCmd::Program, 5));
 
         app.play();
         app.core.process_tick();
@@ -2172,8 +2226,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_ARPEGGIO);
-        cell.effect_value = Some(0x37);
+        cell.fx[0] = Some(Fx::new(FxCmd::Arp, 0x37));
 
         app.play();
         // Tick 0: triggers note
@@ -2195,8 +2248,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_PORTA_UP);
-        cell.effect_value = Some(0x10);
+        cell.fx[0] = Some(Fx::new(FxCmd::PitchUp, 0x10));
 
         app.play();
         // Tick 0: note on
@@ -2219,8 +2271,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_PORTA_DOWN);
-        cell.effect_value = Some(0x10);
+        cell.fx[0] = Some(Fx::new(FxCmd::PitchDown, 0x10));
 
         app.play();
         app.core.process_tick(); // tick 0: note on
@@ -2249,8 +2300,7 @@ pub(crate) mod tests {
                 value: rtrack_core::tracker::NoteValue::E,
                 octave: 4,
             });
-            cell.effect = Some(EFFECT_TONE_PORTA);
-            cell.effect_value = Some(0x10);
+            cell.fx[0] = Some(Fx::new(FxCmd::PitchSlide, 0x10));
         }
 
         app.play();
@@ -2284,13 +2334,12 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_VIBRATO);
-        cell.effect_value = Some(0x42);
+        cell.fx[0] = Some(Fx::new(FxCmd::Vibrato, 0x42));
 
         app.play();
         app.core.process_tick(); // tick 0: note on
         app.core.process_tick(); // tick 1: vibrato
-        assert!(app.core.engine.channel_states[0].vibrato_phase > 0.0);
+        assert!(app.core.engine.channel_states[0].vibrato_phase[0] > 0.0);
     }
 
     #[test]
@@ -2304,8 +2353,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_VOLUME_SLIDE);
-        cell.effect_value = Some(0x02);
+        cell.fx[0] = Some(Fx::new(FxCmd::VolSlide, 0x02));
 
         app.play();
         app.core.process_tick(); // tick 0
@@ -2326,8 +2374,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_VOLUME_SLIDE);
-        cell.effect_value = Some(0x30);
+        cell.fx[0] = Some(Fx::new(FxCmd::VolSlide, 0x30));
 
         app.play();
         app.core.process_tick(); // tick 0
@@ -2346,8 +2393,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(5);
-        cell.effect = Some(EFFECT_VOLUME_SLIDE);
-        cell.effect_value = Some(0x0F);
+        cell.fx[0] = Some(Fx::new(FxCmd::VolSlide, 0x0F));
 
         app.play();
         app.core.process_tick(); // tick 0
@@ -2361,8 +2407,7 @@ pub(crate) mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_SET_SPEED);
-        cell.effect_value = Some(3);
+        cell.fx[0] = Some(Fx::new(FxCmd::Ticks, 3));
 
         app.play();
         app.core.process_tick();
@@ -2375,8 +2420,7 @@ pub(crate) mod tests {
         let pat_idx = app.core.song.order[0];
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_SET_SPEED);
-        cell.effect_value = Some(0x80);
+        cell.fx[0] = Some(Fx::new(FxCmd::Tempo, 0x80));
 
         app.play();
         app.core.process_tick();
@@ -2414,8 +2458,7 @@ pub(crate) mod tests {
             octave: 4,
         });
         cell.volume = Some(100);
-        cell.effect = Some(EFFECT_NOTE_DELAY);
-        cell.effect_value = Some(3);
+        cell.fx[0] = Some(Fx::new(FxCmd::Delay, 3));
 
         app.play();
 
@@ -2455,8 +2498,7 @@ pub(crate) mod tests {
         {
             let cell = app.core.song.patterns[pat_idx].get_mut(1, 0);
             cell.note = Some(Note::Off);
-            cell.effect = Some(EFFECT_NOTE_DELAY);
-            cell.effect_value = Some(2);
+            cell.fx[0] = Some(Fx::new(FxCmd::Delay, 2));
         }
 
         app.play();
@@ -2952,7 +2994,6 @@ pub(crate) mod tests {
         use rtrack_core::midi::MidiInputEvent;
 
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         app.core.channels[0].default_instrument = Some(7);
         app.mode = Mode::Insert;
         app.core.playing = true;
@@ -2977,7 +3018,6 @@ pub(crate) mod tests {
         use rtrack_core::midi::MidiInputEvent;
 
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Sample;
         app.core.channels[0].default_instrument = Some(3);
         app.mode = Mode::Insert;
         app.core.playing = false;
@@ -3079,7 +3119,6 @@ pub(crate) mod tests {
         use rtrack_core::midi::MidiInputEvent;
 
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         app.core.channels[0].effects_params.filter_enabled = true;
 
         // Arm learn for filter cutoff on channel 0
@@ -3182,16 +3221,14 @@ pub(crate) mod tests {
     #[test]
     fn test_midi_learn_from_track_config() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         app.core.channels[0].effects_params.filter_enabled = true;
 
-        // Open track config, navigate to filter cutoff (fx_off=3, cutoff is field 4 = fx_off+1)
+        // Open track config, navigate to filter cutoff (Name=0, Inst=1, Filter=2, Cutoff=3)
         run_command(&mut app, "fx");
-        // Tab to field 4 (Name=0, Type=1, Inst=2, Filter=3, Cutoff=4)
-        for _ in 0..4 {
+        for _ in 0..3 {
             app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
-        assert_eq!(app.ch_fx_field, 4);
+        assert_eq!(app.ch_fx_field, 3);
 
         // Press 'l' to arm learn
         app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
@@ -3204,7 +3241,6 @@ pub(crate) mod tests {
     #[test]
     fn test_midi_unlearn_from_track_config() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
 
         // Add a mapping
         app.core.midi_cc_mappings.push(MidiCcMapping {
@@ -3216,7 +3252,7 @@ pub(crate) mod tests {
 
         // Open track config, navigate to cutoff field
         run_command(&mut app, "fx");
-        for _ in 0..4 {
+        for _ in 0..3 {
             app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
 
@@ -3285,8 +3321,7 @@ pub(crate) mod tests {
         // Pattern break to row 99 (beyond bounds of pattern 2)
         let pat_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
-        cell.effect = Some(EFFECT_PATTERN_BREAK);
-        cell.effect_value = Some(99);
+        cell.fx[0] = Some(Fx::new(FxCmd::Break, 99));
 
         app.play();
         app.core.process_tick();
@@ -3497,6 +3532,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_click_lands_on_the_field_drawn_under_it() {
+        use crate::tui::pattern_editor::{CHANNEL_WIDTH, ROW_NUM_WIDTH, SEPARATOR_WIDTH};
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = make_app();
+        let click = |app: &mut App, column: u16| {
+            app.handle_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                },
+                0,
+                0,
+            );
+        };
+        let channel_start =
+            |ch: u16| ROW_NUM_WIDTH + SEPARATOR_WIDTH + ch * (CHANNEL_WIDTH + SEPARATOR_WIDTH);
+
+        // The last character of the fourth channel's effect field.
+        click(&mut app, channel_start(3) + CHANNEL_WIDTH - 1);
+        assert_eq!((app.cursor_channel, app.cursor_sub), (3, SubColumn::Effect));
+
+        // The first character of the fourth channel's note.
+        click(&mut app, channel_start(3));
+        assert_eq!((app.cursor_channel, app.cursor_sub), (3, SubColumn::Note));
+    }
+
+    #[test]
     fn test_mouse_scroll() {
         use crossterm::event::{MouseEvent, MouseEventKind};
 
@@ -3552,17 +3617,13 @@ pub(crate) mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::SynthEditor);
         // Should have initialized synth params
-        assert!(app.core.instruments[0].synth_params.is_some());
+        assert!(app.core.instruments[0].synth_params().is_some());
         // Navigate fields
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.dialogs.synth_editor_field, SynthField::Attack);
         // Adjust value
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        let attack = app.core.instruments[0]
-            .synth_params
-            .as_ref()
-            .unwrap()
-            .attack;
+        let attack = app.core.instruments[0].synth_params().unwrap().attack;
         assert!(attack > 0.005); // Saw default is 0.005, +0.001
                                  // Esc closes
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -3574,10 +3635,94 @@ pub(crate) mod tests {
         let mut app = make_app();
         app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert!(app.core.instruments[0].synth_params.is_some());
+        assert!(app.core.instruments[0].synth_params().is_some());
         // Delete clears params
         app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
-        assert!(app.core.instruments[0].synth_params.is_none());
+        assert!(app.core.instruments[0].is_default(0));
+    }
+
+    #[test]
+    fn the_instrument_list_sets_midi_output_program_and_channel() {
+        use rtrack_core::{InstrumentKind, MidiOutput};
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
+        let ctrl = |code| KeyEvent::new(code, KeyModifiers::CONTROL);
+        app.handle_key(ctrl(KeyCode::Char('o')));
+        app.handle_key(ctrl(KeyCode::Right));
+        app.handle_key(ctrl(KeyCode::Up));
+        assert_eq!(
+            app.core.instruments[0].kind,
+            InstrumentKind::Midi {
+                program: 1,
+                channel: Some(0),
+                output: MidiOutput::External { port: None },
+            }
+        );
+        assert!(
+            app.core.instruments[0].name.is_empty(),
+            "a binding typed into the name"
+        );
+
+        app.undo();
+        app.undo();
+        app.undo();
+        assert!(app.core.instruments[0].is_default(0));
+    }
+
+    #[test]
+    fn the_sample_editor_sets_the_instruments_filter_and_drive() {
+        use rtrack_core::audio::synth::FilterType;
+        use rtrack_core::{InstrumentKind, SampleFx};
+        let mut app = make_app();
+        app.core.instruments[0].kind = InstrumentKind::sample(0);
+        app.open_sample_editor();
+        let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        let fx = |app: &App| match app.core.instruments[0].kind {
+            InstrumentKind::Sample { fx, .. } => fx,
+            _ => panic!("not a sample"),
+        };
+
+        app.dialogs.sample_editor_field = SampleField::Cutoff;
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.status_message.as_deref(), Some("Filter is off"));
+
+        app.dialogs.sample_editor_field = SampleField::Filter;
+        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Up);
+        assert_eq!(fx(&app).filter.unwrap().kind, FilterType::HighPass);
+        app.dialogs.sample_editor_field = SampleField::Cutoff;
+        key(&mut app, KeyCode::Right);
+        let cutoff = fx(&app).filter.unwrap().cutoff_hz;
+        assert!(
+            (cutoff - 8000.0 * 2f32.powf(10.0 / 12.0)).abs() < 1.0,
+            "{cutoff}"
+        );
+        app.dialogs.sample_editor_field = SampleField::Drive;
+        key(&mut app, KeyCode::Right);
+        assert!((fx(&app).drive - 2.0).abs() < 1e-6);
+
+        app.undo();
+        app.undo();
+        app.undo();
+        assert_eq!(fx(&app), SampleFx::default(), "each field is one undo step");
+
+        app.core.instruments[1].kind = InstrumentKind::default_for(1);
+        app.dialogs.sample_editor_slot = 1;
+        key(&mut app, KeyCode::Up);
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("does not play a sample")));
+    }
+
+    #[test]
+    fn the_synth_editor_leaves_a_sample_instrument_alone() {
+        let mut app = make_app();
+        app.core.instruments[0].kind = rtrack_core::InstrumentKind::sample(0);
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_ne!(app.mode, Mode::SynthEditor);
+        assert_eq!(app.core.instruments[0].sample_index(), Some(0));
     }
 
     #[test]
@@ -3942,6 +4087,254 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_track_is_linked_edited_shared_and_unlinked() {
+        use rtrack_core::tracker::PhraseTiming;
+        let mut app = make_app();
+        let pos = app.current_order_position();
+        let link = |app: &App, ch| app.core.song.pattern_at(pos).unwrap().link(ch);
+
+        run_command(&mut app, "phrase");
+        assert_eq!(link(&app, 0).map(|l| l.phrase), Some(0));
+        assert_eq!(app.core.song.phrases.len(), 1);
+
+        // Typing into the linked track writes the phrase.
+        app.mode = Mode::Insert;
+        app.cursor_sub = SubColumn::Volume;
+        app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE));
+        assert_eq!(app.core.song.phrases[0].rows[0].volume, Some(7));
+
+        // A second track picks the phrase from the list.
+        app.mode = Mode::Normal;
+        app.cursor_channel = 1;
+        run_command(&mut app, "phrases");
+        assert_eq!(app.mode, Mode::PhraseList);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(link(&app, 1).map(|l| l.phrase), Some(0));
+        assert_eq!(app.core.song.cell_at(pos, 0, 1).volume, Some(7));
+
+        run_command(&mut app, "run");
+        assert_eq!(link(&app, 1).map(|l| l.timing), Some(PhraseTiming::Running));
+
+        run_command(&mut app, "unlink");
+        assert_eq!(link(&app, 1), None);
+        assert_eq!(
+            app.core.song.cell_at(pos, 0, 1).volume,
+            Some(7),
+            "unlinking keeps the rows"
+        );
+
+        app.undo();
+        assert!(link(&app, 1).is_some(), "unlink is undoable");
+    }
+
+    #[test]
+    fn tr_sets_a_linked_tracks_transpose() {
+        let mut app = make_app();
+        let pos = app.current_order_position();
+        run_command(&mut app, "tr 3");
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("not linked")));
+        run_command(&mut app, "phrase");
+        run_command(&mut app, "tr -5");
+        let link = app.core.song.pattern_at(pos).unwrap().link(0).unwrap();
+        assert_eq!(link.transpose, -5);
+        run_command(&mut app, "tr +2");
+        let link = app.core.song.pattern_at(pos).unwrap().link(0).unwrap();
+        assert_eq!(link.transpose, 2);
+        app.undo();
+        let link = app.core.song.pattern_at(pos).unwrap().link(0).unwrap();
+        assert_eq!(link.transpose, -5);
+    }
+
+    #[test]
+    fn the_table_editor_builds_a_table() {
+        use rtrack_core::tracker::{FxCmd, Table};
+        let mut app = make_app();
+        let key = |app: &mut App, code: KeyCode, mods: KeyModifiers| {
+            app.handle_key(KeyEvent::new(code, mods));
+        };
+        let none = KeyModifiers::NONE;
+        let table = |app: &App| app.core.song.tables.get(&5).cloned();
+
+        run_command(&mut app, "table 05");
+        assert_eq!(app.mode, Mode::TableEditor);
+        assert!(table(&app).is_none(), "opening creates nothing");
+
+        // Three rows: 0, +4, +7, looping from row 0, 2 ticks a row.
+        key(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('l'), none);
+        key(&mut app, KeyCode::Char(']'), none);
+        key(&mut app, KeyCode::Down, none);
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Char('+'), none);
+        }
+        key(&mut app, KeyCode::Down, none);
+        for _ in 0..7 {
+            key(&mut app, KeyCode::Char('+'), none);
+        }
+        // Row 2: volume 30, effect PVB44.
+        key(&mut app, KeyCode::Right, none);
+        key(&mut app, KeyCode::Char('3'), none);
+        key(&mut app, KeyCode::Char('0'), none);
+        key(&mut app, KeyCode::Right, none);
+        for c in ['4', '4', '4'] {
+            key(&mut app, KeyCode::Char(c), none);
+        }
+        let t = table(&app).unwrap();
+        let transposes: Vec<i8> = t.rows.iter().map(|r| r.transpose).collect();
+        assert_eq!(transposes, vec![0, 4, 7]);
+        assert_eq!((t.ticks_per_row, t.loop_from), (2, Some(0)));
+        assert_eq!(t.rows[2].volume, Some(0x30));
+        assert_eq!(t.rows[2].fx.unwrap().cmd, FxCmd::Vibrato);
+
+        // A song command is refused, by digit and by name.
+        key(&mut app, KeyCode::Delete, none);
+        key(&mut app, KeyCode::Char('b'), none);
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("JMP")));
+        assert_eq!(table(&app).unwrap().rows[2].fx, None);
+        key(&mut app, KeyCode::Char('='), none);
+        app.command_buf = "tfx JMP00".to_string();
+        key(&mut app, KeyCode::Enter, none);
+        assert_eq!(app.mode, Mode::TableEditor);
+        assert_eq!(table(&app).unwrap().rows[2].fx, None);
+        key(&mut app, KeyCode::Char('='), none);
+        app.command_buf = "tfx C4AA0".to_string();
+        key(&mut app, KeyCode::Enter, none);
+        assert_eq!(
+            table(&app).unwrap().rows[2].fx.unwrap().cmd,
+            FxCmd::Cc(0x4A)
+        );
+
+        key(&mut app, KeyCode::Char(':'), none);
+        app.command_buf = "tname arp".to_string();
+        key(&mut app, KeyCode::Enter, none);
+        assert_eq!(table(&app).unwrap().name, "arp");
+
+        app.undo();
+        assert_eq!(table(&app).unwrap().name, "");
+        assert!(Table::allows(table(&app).unwrap().rows[2].fx.unwrap().cmd));
+
+        run_command(&mut app, "tdel");
+        assert!(table(&app).is_none());
+    }
+
+    #[test]
+    fn table_opens_the_cursor_instruments_table() {
+        let mut app = make_app();
+        app.core.channels[0].default_instrument = Some(0x0C);
+        run_command(&mut app, "table");
+        assert_eq!(app.dialogs.table_number, 0x0C);
+    }
+
+    #[test]
+    fn the_phrase_list_renames_and_resizes() {
+        let mut app = make_app();
+        run_command(&mut app, "phrase");
+        run_command(&mut app, "phrases");
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(app.core.song.phrases[0].name.ends_with('x'));
+        let len = app.core.song.phrases[0].rows.len();
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(app.core.song.phrases[0].rows.len(), len - 1);
+    }
+
+    #[test]
+    fn linking_to_a_missing_phrase_changes_nothing() {
+        let mut app = make_app();
+        let depth = app.core.history.undo_depth();
+        run_command(&mut app, "phrase 5");
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("No such")));
+        assert_eq!(app.core.history.undo_depth(), depth);
+        assert!(app.core.song.phrases.is_empty());
+    }
+
+    #[test]
+    fn the_second_effect_column_is_reached_once_shown() {
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.cursor_sub = SubColumn::Effect;
+        app.move_cursor_right();
+        assert_eq!((app.cursor_channel, app.cursor_sub), (1, SubColumn::Note));
+
+        app.mode = Mode::Normal;
+        run_command(&mut app, "fx2");
+        app.mode = Mode::Insert;
+        app.cursor_channel = 0;
+        app.cursor_sub = SubColumn::Effect;
+        app.move_cursor_right();
+        assert_eq!(app.cursor_sub, SubColumn::Effect2);
+        for c in ['4', '4', '2'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let order = app.current_order_position();
+        assert_eq!(
+            app.core.song.cell_at(order, 0, 0).fx[1],
+            Some(Fx::new(FxCmd::Vibrato, 0x42))
+        );
+    }
+
+    #[test]
+    fn a_pattern_using_the_second_column_shows_it() {
+        let mut app = make_app();
+        assert_eq!(app.fx_columns(), 1);
+        let order = app.current_order_position();
+        app.core.song.set_cell(
+            order,
+            3,
+            2,
+            rtrack_core::tracker::Cell {
+                fx: [None, Some(Fx::new(FxCmd::Arp, 0x37))],
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.fx_columns(), 2);
+    }
+
+    #[test]
+    fn effects_are_edited_by_name_through_the_prompt() {
+        let mut app = make_app();
+        app.mode = Mode::Insert;
+        app.cursor_sub = SubColumn::Effect;
+        app.handle_key(KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.command_buf, "e ");
+        for c in "c0740".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Insert);
+        let order = app.current_order_position();
+        assert_eq!(
+            app.core.song.cell_at(order, 0, 0).fx[0],
+            Some(Fx::new(FxCmd::Cc(7), 0x40))
+        );
+
+        // The prompt opens on the current text; bad text leaves it alone.
+        app.handle_key(KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE));
+        assert_eq!(app.command_buf, "e C0740");
+        app.command_buf = "e XYZ00".to_string();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.status_message.is_some());
+        assert_eq!(
+            app.core.song.cell_at(order, 0, 0).fx[0],
+            Some(Fx::new(FxCmd::Cc(7), 0x40))
+        );
+
+        app.undo();
+        assert_eq!(app.core.song.cell_at(order, 0, 0).fx[0], None);
+    }
+
+    #[test]
     fn test_interpolate_effect_value() {
         let mut app = make_app();
         let pattern_idx = app.core.song.order[0];
@@ -3950,8 +4343,7 @@ pub(crate) mod tests {
             0,
             0,
             rtrack_core::tracker::Cell {
-                effect: Some(5),
-                effect_value: Some(0),
+                fx: [Some(Fx::new(FxCmd::VolSlide, 0)), None],
                 ..Default::default()
             },
         );
@@ -3959,8 +4351,7 @@ pub(crate) mod tests {
             2,
             0,
             rtrack_core::tracker::Cell {
-                effect: Some(5),
-                effect_value: Some(80),
+                fx: [Some(Fx::new(FxCmd::VolSlide, 80)), None],
                 ..Default::default()
             },
         );
@@ -3969,12 +4360,8 @@ pub(crate) mod tests {
         app.cursor_channel = 0;
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
         assert_eq!(
-            app.core.song.patterns[pattern_idx].get(1, 0).effect,
-            Some(5)
-        );
-        assert_eq!(
-            app.core.song.patterns[pattern_idx].get(1, 0).effect_value,
-            Some(40)
+            app.core.song.patterns[pattern_idx].get(1, 0).fx[0],
+            Some(Fx::new(FxCmd::VolSlide, 40))
         );
     }
 
@@ -4235,13 +4622,11 @@ pub(crate) mod tests {
     #[test]
     fn test_track_config_toggle_filter() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
-        // Navigate to filter enabled (field 3 for Synth: Name, Type, Inst, Filter)
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Instrument
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 3=Filter
-        assert_eq!(app.ch_fx_field, 3);
+        // Navigate to filter enabled (field 2: Name, Inst, Filter)
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Instrument
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Filter
+        assert_eq!(app.ch_fx_field, 2);
         assert!(!app.core.channels[0].effects_params.filter_enabled);
         // Toggle with Right arrow
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -4254,13 +4639,12 @@ pub(crate) mod tests {
     #[test]
     fn test_track_config_adjust_cutoff() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
-        // Navigate to cutoff (field 4 for Synth: Name, Type, Inst, Filter, Cutoff)
-        for _ in 0..4 {
+        // Navigate to cutoff (field 3: Name, Inst, Filter, Cutoff)
+        for _ in 0..3 {
             app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
-        assert_eq!(app.ch_fx_field, 4);
+        assert_eq!(app.ch_fx_field, 3);
         let initial = app.core.channels[0].effects_params.filter_cutoff;
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.core.channels[0].effects_params.filter_cutoff > initial);
@@ -4271,10 +4655,9 @@ pub(crate) mod tests {
     #[test]
     fn test_track_config_navigate_all_fields() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
-        // 20 fields total (name, type, instrument, filter x3, distortion x2, chorus x4, delay x4, reverb x4)
-        for i in 0..20 {
+        // 19 fields total (name, instrument, filter x3, distortion x2, chorus x4, delay x4, reverb x4)
+        for i in 0..19 {
             assert_eq!(app.ch_fx_field, i);
             app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
@@ -4282,29 +4665,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_track_config_type_cycle() {
+    fn test_track_config_instrument_steps_back_to_none() {
         let mut app = make_app();
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        // Navigate to Type (field 1)
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.ch_fx_field, 1);
-        assert_eq!(app.core.channels[0].channel_type, ChannelType::Midi);
-        // Right arrow cycles type
+        run_command(&mut app, "fx");
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Instrument
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.core.channels[0].channel_type, ChannelType::Synth);
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.core.channels[0].channel_type, ChannelType::Sample);
+        assert_eq!(app.core.channels[0].default_instrument, Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.core.channels[0].default_instrument, None);
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.core.channels[0].default_instrument, None);
     }
 
     #[test]
     fn test_track_config_instrument_select() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         run_command(&mut app, "fx");
-        // Navigate to Instrument field (field 2)
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Instrument
-        assert_eq!(app.ch_fx_field, 2);
+        // Navigate to Instrument field (field 1)
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Instrument
+        assert_eq!(app.ch_fx_field, 1);
         assert_eq!(app.core.channels[0].default_instrument, None);
         // Right sets to 00
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -4317,7 +4696,6 @@ pub(crate) mod tests {
     #[test]
     fn test_synth_track_auto_fills_instrument() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Synth;
         app.core.channels[0].default_instrument = Some(5);
         app.mode = Mode::Insert;
         // Enter a note (z = C in current octave)
@@ -4331,11 +4709,10 @@ pub(crate) mod tests {
     #[test]
     fn test_note_entry_inherits_sample_instrument_from_column_above() {
         // The sliced-sample case: each slice is its own instrument and the
-        // track is Midi-typed, as any song saved before channel state was
-        // persisted loads. A note typed on an empty row used to fall through
+        // track has no default instrument. A note typed on an empty row used to fall through
         // to the built-in synth instead of playing the slice.
         let mut app = make_app();
-        app.core.instruments[3].sample_index = Some(3);
+        app.core.instruments[3].kind = rtrack_core::InstrumentKind::sample(3);
         let order = app.current_order_position();
         app.core.song.set_cell(
             order,
@@ -4367,7 +4744,6 @@ pub(crate) mod tests {
     #[test]
     fn test_sample_track_auto_fills_instrument() {
         let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Sample;
         app.core.channels[0].default_instrument = Some(3);
         app.mode = Mode::Insert;
         // Enter a note (z = C in current octave)
@@ -4375,7 +4751,6 @@ pub(crate) mod tests {
         let pattern_idx = app.core.song.order[0];
         let cell = app.core.song.patterns[pattern_idx].get(0, 0);
         assert!(cell.note.is_some());
-        // Sample tracks should auto-fill instrument just like Synth tracks
         assert_eq!(cell.instrument, Some(3));
     }
 
@@ -4558,7 +4933,7 @@ pub(crate) mod tests {
         // Should have loaded the sample
         assert!(app.core.sample_bank.get(5).is_some());
         assert_eq!(app.core.sample_bank.get(5).unwrap().name, "kick");
-        assert_eq!(app.core.instruments[5].sample_index, Some(5));
+        assert_eq!(app.core.instruments[5].sample_index(), Some(5));
         // Loading a sample should auto-set default_instrument so preview routes correctly
         assert_eq!(app.core.channels[5].default_instrument, Some(5));
         assert_ne!(app.mode, Mode::FileBrowser);
@@ -4636,8 +5011,8 @@ pub(crate) mod tests {
         assert_eq!(last.name, "kick_S03");
 
         // Check instruments are set up
-        assert_eq!(app.core.instruments[0].sample_index, Some(0));
-        assert_eq!(app.core.instruments[3].sample_index, Some(3));
+        assert_eq!(app.core.instruments[0].sample_index(), Some(0));
+        assert_eq!(app.core.instruments[3].sample_index(), Some(3));
     }
 
     #[test]
@@ -4764,46 +5139,53 @@ pub(crate) mod tests {
         assert_eq!(app.core.song.highlight_bar, 12);
     }
 
-    // -- Swing tests --
+    // -- Groove tests --
 
     #[test]
-    fn test_swing_default() {
+    fn a_new_song_is_straight() {
         let song = Song::new(4, 64);
-        assert_eq!(song.swing, 50);
+        assert!(song.groove.is_empty());
+        assert_eq!(song.groove_factor(0), 1.0);
+        assert_eq!(song.groove_factor(1), 1.0);
     }
 
     #[test]
-    fn test_swing_seconds_per_tick() {
+    fn a_groove_cycle_lasts_as_long_as_straight_rows() {
         let mut song = Song::new(4, 64);
-        let base = song.seconds_per_tick();
-
-        // No swing: even and odd rows should be equal
-        assert!((song.swing_seconds_per_tick(0) - base).abs() < 1e-12);
-        assert!((song.swing_seconds_per_tick(1) - base).abs() < 1e-12);
-
-        // 67% swing: even rows longer, odd rows shorter
-        song.swing = 67;
-        let even = song.swing_seconds_per_tick(0);
-        let odd = song.swing_seconds_per_tick(1);
-        assert!(even > base, "Even row should be longer with swing > 50");
-        assert!(odd < base, "Odd row should be shorter with swing > 50");
-        // Total of a pair should equal 2 * base
-        assert!(((even + odd) - 2.0 * base).abs() < 1e-12);
+        song.groove = vec![55, 45, 52, 48];
+        let cycle: f64 = (0..4).map(|r| song.groove_factor(r)).sum();
+        assert!((cycle - 4.0).abs() < 1e-12);
+        assert!(song.groove_factor(0) > 1.0 && song.groove_factor(1) < 1.0);
+        assert_eq!(song.groove_factor(4), song.groove_factor(0), "it repeats");
     }
 
     #[test]
-    fn test_swing_settings() {
+    fn test_groove_settings() {
         let mut app = make_app();
         app.open_song_settings();
-        app.dialogs.settings_field = SettingsField::Swing;
-        app.dialogs.settings_edit_buf = "67".to_string();
-        app.settings_apply_field();
-        assert_eq!(app.core.song.swing, 67);
-
-        // Clamp to 100
-        app.dialogs.settings_edit_buf = "150".to_string();
-        app.settings_apply_field();
-        assert_eq!(app.core.song.swing, 100);
+        app.dialogs.settings_field = SettingsField::Groove;
+        let set = |app: &mut App, text: &str| {
+            app.dialogs.settings_edit_buf = text.to_string();
+            app.settings_apply_field();
+        };
+        set(&mut app, "67");
+        assert_eq!(app.core.song.groove, vec![67, 33], "one number is swing");
+        set(&mut app, "55 45 52 48");
+        assert_eq!(app.core.song.groove, vec![55, 45, 52, 48]);
+        set(&mut app, "150");
+        assert_eq!(app.core.song.groove, vec![99, 1], "swing keeps both rows");
+        set(&mut app, "3 0");
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("weight")));
+        assert_eq!(
+            app.core.song.groove,
+            vec![99, 1],
+            "a bad groove changes nothing"
+        );
+        set(&mut app, "off");
+        assert!(app.core.song.groove.is_empty());
     }
 
     // -- Tempo automation tests --
@@ -4874,13 +5256,11 @@ pub(crate) mod tests {
         let song_file = SongFile {
             instruments: vec![InstrumentEntry {
                 slot: 0,
-                def: InstrumentDef {
+                def: InstrumentDef::from_instrument(&rtrack_core::Instrument {
                     name: "Test".to_string(),
-                    midi_program: None,
-                    sample_index: None,
-                    synth_params: None,
                     pitch_bend_range: Some(7.0),
-                },
+                    ..rtrack_core::Instrument::for_slot(0)
+                }),
             }],
             ..SongFile::from_song(song)
         };
@@ -4918,7 +5298,7 @@ pub(crate) mod tests {
         let song: Song = serde_json::from_str(json).unwrap();
         assert_eq!(song.highlight_beat, 4);
         assert_eq!(song.highlight_bar, 16);
-        assert_eq!(song.swing, 50);
+        assert!(song.groove.is_empty());
         assert!(song.tempo_map.is_empty());
     }
 
@@ -4931,72 +5311,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_track_config_sample_select_cycles_loaded() {
+    fn test_track_config_enter_on_instrument_opens_the_file_browser() {
         let mut app = make_app();
-        // Load two samples into the bank
-        let mut bank = (*app.core.sample_bank).clone();
-        bank.samples[2] = Some(Arc::new(rtrack_core::sample::Sample {
-            name: "kick".to_string(),
-            data: vec![[0.0; 2]; 100].into(),
-            sample_rate: 44100.0,
-            base_note: 60,
-            trim_start: 0,
-            trim_end: 0,
-            loop_enabled: false,
-            loop_start: 0,
-            loop_end: 0,
-            source_path: None,
-        }));
-        bank.samples[5] = Some(Arc::new(rtrack_core::sample::Sample {
-            name: "snare".to_string(),
-            data: vec![[0.0; 2]; 100].into(),
-            sample_rate: 44100.0,
-            base_note: 60,
-            trim_start: 0,
-            trim_end: 0,
-            loop_enabled: false,
-            loop_start: 0,
-            loop_end: 0,
-            source_path: None,
-        }));
-        app.core.sample_bank = std::sync::Arc::new(bank);
-        app.core.channels[0].channel_type = ChannelType::Sample;
-
-        // Open track config and navigate to sample field
         run_command(&mut app, "fx");
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Type
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 2=Sample
-        assert_eq!(app.ch_fx_field, 2);
-
-        // Right arrow selects first loaded sample (slot 2)
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.core.channels[0].default_instrument, Some(2));
-
-        // Right again cycles to slot 5
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.core.channels[0].default_instrument, Some(5));
-
-        // Right again wraps to slot 2
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.core.channels[0].default_instrument, Some(2));
-
-        // Left goes back to slot 5
-        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(app.core.channels[0].default_instrument, Some(5));
-    }
-
-    #[test]
-    fn test_track_config_sample_select_no_samples_opens_browser() {
-        let mut app = make_app();
-        app.core.channels[0].channel_type = ChannelType::Sample;
-
-        // Open track config and navigate to sample field
-        run_command(&mut app, "fx");
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        // Right arrow with no samples loaded should open file browser
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // 1=Instrument
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::FileBrowser);
     }
 

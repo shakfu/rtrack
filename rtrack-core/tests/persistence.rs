@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use rtrack_core::audio::effects::SendBusType;
 use rtrack_core::core::{TrackerCore, TrackerCoreBuilder};
-use rtrack_core::tracker::{Cell, Note, NoteValue, SongFile};
-use rtrack_core::types::{ChannelType, LearnableParam, MidiCcMapping};
+use rtrack_core::tracker::{Cell, Fx, FxCmd, Note, NoteValue, SongFile};
+use rtrack_core::types::{LearnableParam, MidiCcMapping};
 
 fn headless(channels: usize, rows: usize) -> TrackerCore {
     TrackerCoreBuilder::new()
@@ -100,7 +100,6 @@ fn channel_configuration_survives_a_round_trip() {
     let mut core = headless(4, 16);
 
     core.channels[0].name = "kick".to_string();
-    core.channels[0].channel_type = ChannelType::Sample;
     core.channels[0].muted = true;
     core.channels[0].volume = 0.42;
     core.channels[0].pan = -0.75;
@@ -109,7 +108,6 @@ fn channel_configuration_survives_a_round_trip() {
     core.channels[0].effects_params.filter_enabled = true;
     core.channels[0].effects_params.filter_cutoff = 880.0;
     core.channels[0].effects_params.reverb_enabled = true;
-    core.channels[1].channel_type = ChannelType::Synth;
     core.channels[1].name = "lead".to_string();
 
     core.send_bus_params[0].enabled = true;
@@ -130,7 +128,6 @@ fn channel_configuration_survives_a_round_trip() {
     reloaded.load_file(&path).unwrap();
 
     assert_eq!(reloaded.channels[0].name, "kick");
-    assert_eq!(reloaded.channels[0].channel_type, ChannelType::Sample);
     assert!(reloaded.channels[0].muted);
     assert_eq!(reloaded.channels[0].volume, 0.42);
     assert_eq!(reloaded.channels[0].pan, -0.75);
@@ -139,7 +136,6 @@ fn channel_configuration_survives_a_round_trip() {
     assert!(reloaded.channels[0].effects_params.filter_enabled);
     assert_eq!(reloaded.channels[0].effects_params.filter_cutoff, 880.0);
     assert!(reloaded.channels[0].effects_params.reverb_enabled);
-    assert_eq!(reloaded.channels[1].channel_type, ChannelType::Synth);
     assert_eq!(reloaded.channels[1].name, "lead");
 
     assert!(reloaded.send_bus_params[0].enabled);
@@ -185,7 +181,7 @@ fn files_without_channel_state_still_load() {
     assert_eq!(core.song.title, "Legacy");
     assert_eq!(core.song.bpm, 140);
     assert_eq!(core.channels.len(), 2);
-    assert_eq!(core.channels[0].channel_type, ChannelType::Midi);
+    assert_eq!(core.channels[0].default_instrument, None);
     assert_eq!(core.channels[1].midi_channel, 1);
 
     let _ = std::fs::remove_file(&path);
@@ -305,8 +301,7 @@ fn empty_cells_cost_far_less_than_full_ones() {
                     }),
                     instrument: Some(1),
                     volume: Some(64),
-                    effect: Some(1),
-                    effect_value: Some(32),
+                    fx: [Some(Fx::new(FxCmd::PitchUp, 32)), None],
                 },
             );
         }
@@ -337,8 +332,7 @@ fn a_sparse_song_round_trips_exactly() {
         3,
         Cell {
             volume: Some(0x40),
-            effect: Some(4),
-            effect_value: Some(0x82),
+            fx: [Some(Fx::new(FxCmd::Vibrato, 0x82)), None],
             ..Cell::default()
         },
     );
@@ -356,8 +350,7 @@ fn a_sparse_song_round_trips_exactly() {
     );
     let cell = reloaded.song.cell_at(0, 17, 3);
     assert_eq!(cell.volume, Some(0x40));
-    assert_eq!(cell.effect, Some(4));
-    assert_eq!(cell.effect_value, Some(0x82));
+    assert_eq!(cell.fx[0], Some(Fx::new(FxCmd::Vibrato, 0x82)));
     assert!(reloaded.song.cell_at(0, 1, 0).is_empty());
     // Geometry survives even though most cells wrote nothing.
     assert_eq!(reloaded.song.patterns[0].rows, 64);
@@ -439,8 +432,11 @@ fn omitted_cell_fields_deserialize_as_empty() {
     assert!(core.song.cell_at(0, 0, 0).note.is_some());
     assert!(core.song.cell_at(0, 0, 1).is_empty());
     assert_eq!(core.song.cell_at(0, 1, 0).volume, Some(64));
-    assert_eq!(core.song.cell_at(0, 1, 1).effect, Some(1));
-    assert_eq!(core.song.cell_at(0, 1, 1).effect_value, Some(32));
+    // Version 1 single-digit effects convert on load.
+    assert_eq!(
+        core.song.cell_at(0, 1, 1).fx[0],
+        Some(Fx::new(FxCmd::PitchUp, 32))
+    );
 
     let _ = std::fs::remove_file(&path);
 }

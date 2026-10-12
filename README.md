@@ -76,9 +76,9 @@ A tracker arranges music in **patterns** -- grids where each row is a point in t
 Each cell has four fields:
 
 ```text
-C-4 01 80 000
+C-4 01 80 PVB44
  |   |  |  |
- |   |  |  +-- Effect command + parameter
+ |   |  |  +-- Effect: three-character command + hex parameter
  |   |  +----- Volume (00-FF, maps to velocity)
  |   +-------- Instrument number (00-FF)
  +------------ Note (C-4, F#5, etc.) or === (note off)
@@ -93,7 +93,7 @@ rtrack supports three ways to produce sound, and they can be combined:
 | Mode | How to activate | What it does |
 |------|----------------|--------------|
 | **Built-in synth** | Default (always on) | 30 waveform patches with ADSR envelopes, SVF filters, sub-oscillator, and FM synthesis. |
-| **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Replaces built-in synth for note playback. |
+| **SoundFont** | `--sf2 path/to/file.sf2` | General MIDI playback via [rustysynth](https://github.com/sinshu/rustysynth). Plays MIDI instruments in place of the built-in presets, live and in `--render`. Synth and sample instruments are unaffected. |
 | **Samples** | `--sample 0:kick.wav` or `--sample-dir path/` | Load WAV/AIFF files into instrument slots. Pitch-shifted playback with loop points. |
 
 All modes output through [cpal](https://crates.io/crates/cpal) with per-channel effects and a master stereo delay. MIDI output runs in parallel regardless of audio mode.
@@ -109,7 +109,7 @@ rtrack --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
 
 ### Built-in Synth Patches
 
-30 patches selectable via `Exx` program change or per-instrument synth configuration:
+30 patches selectable via `PRG` program change or per-instrument synth configuration:
 
 | # | Name | Oscillator | Character |
 |---|------|-----------|-----------|
@@ -146,7 +146,7 @@ rtrack --sf2 gm.sf2 --sample 0:kick.wav song.rtrk  # all together
 
 ### Per-Channel Effects
 
-Each Synth/Sample channel can have its own effects chain. All continuous parameters support MIDI learn:
+Each Synth/Sample channel can have its own effects chain, applied to everything the track plays. For drive or a filter that stays with one sound on any track, use the instrument's own (Instruments & Samples). SoundFont output is mixed before this chain and does not pass through it. All continuous parameters support MIDI learn:
 
 | Effect | Parameters |
 |--------|-----------|
@@ -158,29 +158,67 @@ Each Synth/Sample channel can have its own effects chain. All continuous paramet
 
 ### Pattern Effects
 
-| Cmd | Name | Description |
-|-----|------|-------------|
-| `0xy` | Arpeggio | Cycle note, note+x, note+y semitones each tick |
-| `1xx` | Portamento up | Slide pitch up by xx per tick |
-| `2xx` | Portamento down | Slide pitch down by xx per tick |
-| `3xx` | Tone portamento | Glide toward target note at speed xx |
-| `4xy` | Vibrato | Pitch vibrato (speed x, depth y) |
-| `5xy` | Volume slide | Slide volume up by x, down by y per tick |
-| `6xx` | Note delay | Delay note trigger by xx ticks |
-| `7xx` | Probability | Play the note with probability xx/255 (00 never, FF always) |
-| `8xx` | Randomize | Re-run this channel's last continuous effect, parameter varied by +/-xx |
-| `9xx` | Sample offset | Start the row's sample note xx/256 into its played span (00 start, 80 halfway) |
-| `Bxx` | Position jump | Jump to order position xx |
-| `Cxx` | MIDI CC | Send CC (controller from instrument col, value xx) |
-| `Dxx` | Pattern break | Break to row xx of next pattern |
-| `Exx` | Program change | Select synth patch or send MIDI program change |
-| `Fxx` | Set speed/tempo | xx < 20: ticks per row; xx >= 20: set BPM |
+Type the key in an empty effect field to enter the command, then two hex digits for its parameter. Or press `=` on the field and type the command by name, e.g. `PVB44` or `C0740`; empty text clears it.
+
+Each cell has two effect columns, and both play. The second is shown where the pattern uses it, or always after `:fx2` (TUI) or View > Second effect column (GUI). Slides from both columns move one pitch offset, arpeggio and vibrato add to it, and volume slides add. Where both set the same flow command, the right-hand one wins.
+
+| Command | Key | Name | Description |
+|---------|-----|------|-------------|
+| `ARPxy` | `0` | Arpeggio | Cycle note, note+x, note+y semitones each tick |
+| `PUPxx` | `1` | Portamento up | Slide pitch up by xx per tick |
+| `PDNxx` | `2` | Portamento down | Slide pitch down by xx per tick |
+| `PSLxx` | `3` | Tone portamento | Glide toward target note at speed xx |
+| `PVBxy` | `4` | Vibrato | Pitch vibrato (speed x, depth y) |
+| `VSLxy` | `5` | Volume slide | Slide volume up by x, down by y per tick |
+| `DELxx` | `6` | Note delay | Delay note trigger by xx ticks |
+| `CHAxx` | `7` | Probability | Play the note with probability xx/255 (00 never, FF always) |
+| `RNDxx` | `8` | Randomize | Re-run this channel's last continuous effect, parameter varied by +/-xx |
+| `OFSxx` | `9` | Sample offset | Start the row's sample note xx/256 into its played span (00 start, 80 halfway) |
+| `JMPxx` | `B` | Position jump | Jump to order position xx |
+| `Cnnxx` | `C` | MIDI CC | Send value xx to controller nn. The key takes nn from the instrument field |
+| `BRKxx` | `D` | Pattern break | Break to row xx of next pattern |
+| `PRGxx` | `E` | Program change | Select synth patch or send MIDI program change |
+| `TICxx` | `F` | Ticks per row | Set speed; the key gives `TIC` below 20 |
+| `TPOxx` | `F` | Tempo | Set BPM; the key gives `TPO` from 20 |
+| `TBLxx` | -- | Table | Play table xx for the row's note; with no note, restart it on the sounding note |
+
+Songs saved before format version 2 stored the key digit; they convert on load.
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 
-`9xx` needs a note on the same row and affects samples only. The offset is a fraction of the slice's trimmed span, not ProTracker's fixed 256-frame steps, so one value marks the same point in slices of any length. A looping sample started past its loop end wraps into the loop.
+`OFS` needs a note on the same row and affects samples only. The offset is a fraction of the slice's trimmed span, not ProTracker's fixed 256-frame steps, so one value marks the same point in slices of any length. A looping sample started past its loop end wraps into the loop.
 
-`7xx` and `8xx` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `8xx` varies only the continuous effects (`0xy`-`5xy`); it ignores structural ones, where a random parameter would scramble playback rather than colour it.
+`CHA` and `RND` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `RND` varies only `ARP`, `PUP`, `PDN`, `PVB` and `VSL`; it ignores structural ones, where a random parameter would scramble playback rather than colour it.
+
+### Phrases
+
+A phrase is a single-track run of 1-256 rows that any track of any pattern can play instead of its own cells. Editing a phrase changes every place it plays.
+
+- **Aligned** phrases restart with each pattern and loop inside it, so a 3-row phrase in a 16-row pattern repeats 5 times and starts once more.
+- **Running** phrases keep counting rows across patterns, repeats and jumps. A 3-row and a 4-row phrase then drift against each other and line up every 12 rows, whatever the pattern lengths.
+
+A link can transpose its phrase at playback: by scale degrees when the song has a scale, by semitones otherwise, as Shift+Up/Down moves notes. One riff can then play under several chords. The grid shows the phrase as stored.
+
+The grid shows a running phrase as it plays the first time playback reaches the pattern. A linked track's header shows `[Pnn]` (aligned) or `[Rnn]` (running).
+
+| TUI | GUI | |
+|-|-|-|
+| `:phrase` | View > Phrases > New phrase from track | Turn the track's cells into a new phrase and link to it |
+| `:phrase NN` | Phrases > Link track | Link the track to phrase `NN` |
+| `:run` | Phrases > Runs across patterns | Switch between aligned and running |
+| `:tr N` | Phrases > Transpose | Transpose the linked phrase at playback by N steps |
+| `:unlink` | Phrases > Unlink | Make the phrase rows the track's own cells again |
+| `:phrases` | Phrases window | Rename and resize phrases |
+
+Inserting or deleting a row changes the pattern's own cells, not a linked phrase.
+
+### Tables
+
+A table is a short sequence of 1-16 rows that runs under each note, one row every 1-16 ticks. A row can shift the pitch in semitones, set the volume, and carry one of `ARP`, `PUP`, `PDN`, `PVB`, `VSL`, `Cnn` or `PRG`. It restarts with each note, loops from a chosen row or holds its last, and stops at note-off. Instrument N plays table N; `TBLxx` plays table xx instead.
+
+`ARP37` is a table of three rows: 0, +3, +7. A table can also hold longer or uneven arpeggios, a volume decay, or a filter CC stepping with the note (CCs reach MIDI out and a SoundFont, not built-in instruments). Pitch moves by pitch bend, as `ARP` does, so an external MIDI synth needs a bend range wide enough for the largest step. Tables play during playback and render, not while previewing notes.
+
+TUI: `:table` opens the table of the instrument under the cursor, `:table NN` table NN. Up/Down and Left/Right move; `+`/`-` adjust; hex digits type a volume or effect; `=` names an effect; Ctrl+Left/Right change the row count; `[`/`]` the ticks per row; `l` loops from the current row. `:tname` renames, `:tdel` deletes. GUI: View > Tables.
 
 ### Instruments & Samples
 
@@ -193,6 +231,8 @@ Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6
 - Up to 32 simultaneous voices with ADSR envelopes. A voice that is stolen, or that reaches the end of a one-shot, fades over a few milliseconds rather than stopping dead -- a slice ends at an arbitrary frame, so cutting it leaves an audible step
 
 - Configurable pitch bend range per instrument (default +/-2 semitones)
+
+- Per-instrument drive and filter, applied to each voice before its envelope, so an instrument sounds the same on any track. Sample instruments have drive and a low-, high- or band-pass filter (TUI sample editor, GUI instrument editor); synth instruments add drive in front of their own filter. Both are off by default and work alongside the track's effects. Pattern commands cannot change them yet.
 
 ### Sample Directory
 
@@ -246,9 +286,9 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 ### Timing & Groove
 
-- **Swing**: configurable groove amount (0-100%, 50% = straight)
+- **Groove**: relative row lengths that repeat by pattern row, set in song settings: `67 33` swings, `55 45 52 48` pushes and pulls over four rows, `off` is straight, and one number `s` means `s 100-s`. A groove cycle lasts as long as the same rows played straight, so the tempo holds. Live playback, render and MIDI export all follow it
 
-- **Tempo automation**: BPM changes via `Fxx` effect or `tempo_map` in the song file
+- **Tempo automation**: BPM changes via `TPO` effect or `tempo_map` in the song file
 
 - **Configurable row highlighting**: beat and bar intervals supporting time signatures like 3/4, 6/8, 5/4
 
@@ -273,7 +313,7 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 ```json
 {
   "title": "My Song",
-  "bpm": 140, "speed": 6, "swing": 50,
+  "bpm": 140, "speed": 6, "groove": [67, 33],
   "channels": 4, "rows_per_pattern": 64,
   "highlight_beat": 4, "highlight_bar": 16,
   "patterns": [ ... ],
@@ -312,15 +352,17 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `c-major-scale.rtrk` | Basic note entry -- ascending C major scale on one channel |
 | `four-on-the-floor.rtrk` | Multi-channel beat -- kick, snare, hi-hat, bass with volume variation |
 | `chord-progression.rtrk` | Polyphony -- I-V-vi-IV chords voiced across 3 channels |
-| `arpeggio-demo.rtrk` | Effects -- `0xy` arpeggio, `4xy` vibrato, `Exx` program change |
-| `portamento-slide.rtrk` | Effects -- `1xx` porta up, `3xx` tone portamento, `5xy` volume slide |
-| `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `Bxx` position jump |
-| `all-patches.rtrk` | Built-in synth patches cycled with `Exx` program change |
+| `arpeggio-demo.rtrk` | Effects -- `ARP` arpeggio, `PVB` vibrato, `PRG` program change |
+| `portamento-slide.rtrk` | Effects -- `PUP` porta up, `PSL` tone portamento, `VSL` volume slide |
+| `multi-pattern.rtrk` | Song structure -- 3 patterns, order list, `JMP` position jump |
+| `all-patches.rtrk` | Built-in synth patches cycled with `PRG` program change |
 | `fundsp-pad.rtrk` | FundspPad patch (program 8) -- pad chord progression using fundsp synthesis |
-| `speed-tempo.rtrk` | `Fxx` effect -- speed changes (< 0x20) and tempo changes (>= 0x20) |
+| `speed-tempo.rtrk` | `TIC` speed changes and `TPO` tempo changes |
 | `sliced-amen.rtrk` | Sample slicing -- 8 equal slices of amen.wav played sequentially (170 BPM) |
 | `drumloops.rtrk` | Looping drum slices -- 8 amen.wav slices with loop points enabled (130 BPM) |
-| `sample-offset.rtrk` | `9xx` sample offset -- the whole break retriggered at 8 offsets, then reordered, then offsets within slices, with transposition and a no-note `9xx` row (175 BPM) |
+| `sample-offset.rtrk` | `OFS` sample offset -- the whole break retriggered at 8 offsets, then reordered, then offsets within slices, with transposition and a no-note `OFS` row (175 BPM) |
+| `polymeter.rtrk` | Phrases -- tracks linked to 4-, 3- and 5-row phrases; the 3 and 5 run across patterns and drift against the 4 |
+| `tables.rtrk` | Tables -- a looping major arpeggio per note, `TBL` switching rows to a minor one, and a volume decay |
 
 ```sh
 rtrack examples/chord-progression.rtrk
@@ -346,6 +388,8 @@ sample_dir = "/path/to/samples"
 ```
 
 CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed config files are silently ignored.
+
+The MIDI output port you select is remembered in `midi_out.json` in the same directory and reopened at startup. Until you select one, instruments routed to external MIDI play the built-in sound.
 
 ## Build
 

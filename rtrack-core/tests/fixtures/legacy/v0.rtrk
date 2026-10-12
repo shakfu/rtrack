@@ -1,0 +1,34 @@
+{
+  "title": "v0: before the version field",
+  "bpm": 120,
+  "speed": 6,
+  "patterns": [
+    {
+      "rows": 2,
+      "channels": 1,
+      "data": [
+        [
+          {
+            "note": {"On": {"value": "C#", "octave": 4}},
+            "instrument": 0,
+            "volume": null,
+            "effect": 4,
+            "effect_value": 68
+          }
+        ],
+        [
+          {
+            "note": null,
+            "instrument": null,
+            "volume": null,
+            "effect": 15,
+            "effect_value": 128
+          }
+        ]
+      ]
+    }
+  ],
+  "order": [0],
+  "channels": 1,
+  "rows_per_pattern": 2
+}

@@ -105,6 +105,28 @@ pub fn config_dir() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".config").join("rtrack"))
 }
 
+/// The MIDI output port the user selected, from `<config_dir>/midi_out.json`.
+///
+/// Kept apart from `config.toml`, which the user edits and rtrack must not
+/// rewrite.
+pub fn load_midi_out_port() -> Option<String> {
+    let path = config_dir()?.join("midi_out.json");
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+/// Record the selected MIDI output port. Errors are ignored: losing the
+/// choice costs one reselection.
+pub fn save_midi_out_port(name: &str) {
+    let Some(dir) = config_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(json) = serde_json::to_string(name) {
+        let _ = crate::fs::write_atomic(&dir.join("midi_out.json"), json.as_bytes());
+    }
+}
+
 /// Load recent file paths from `<config_dir>/recent.json`.
 pub fn load_recent_files() -> Vec<PathBuf> {
     let Some(dir) = config_dir() else {
@@ -153,6 +175,13 @@ pub fn push_recent_file(recent: &mut Vec<PathBuf>, path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_selected_midi_port_round_trips() {
+        set_config_dir_for_test(std::env::temp_dir().join("rtrack_config_test"));
+        save_midi_out_port("Synth A:0");
+        assert_eq!(load_midi_out_port().as_deref(), Some("Synth A:0"));
+    }
 
     #[test]
     fn test_parse_full_config() {

@@ -1,0 +1,337 @@
+{
+  "version": 2,
+  "title": "Tables",
+  "bpm": 100,
+  "speed": 6,
+  "patterns": [
+    {
+      "rows": 16,
+      "channels": 2,
+      "data": [
+        [
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 4
+              }
+            },
+            "instrument": 10,
+            "volume": 100
+          },
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 6
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "G",
+                "octave": 6
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "A",
+                "octave": 3
+              }
+            },
+            "instrument": 10,
+            "volume": 100,
+            "fx": [
+              "TBL20"
+            ]
+          },
+          {
+            "note": {
+              "On": {
+                "value": "A",
+                "octave": 5
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "E",
+                "octave": 6
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "F",
+                "octave": 3
+              }
+            },
+            "instrument": 10,
+            "volume": 100
+          },
+          {
+            "note": {
+              "On": {
+                "value": "F",
+                "octave": 5
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "C",
+                "octave": 6
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {
+            "note": {
+              "On": {
+                "value": "E",
+                "octave": 3
+              }
+            },
+            "instrument": 10,
+            "volume": 100,
+            "fx": [
+              "TBL20"
+            ]
+          },
+          {
+            "note": {
+              "On": {
+                "value": "E",
+                "octave": 5
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ],
+        [
+          {},
+          {
+            "note": {
+              "On": {
+                "value": "B",
+                "octave": 5
+              }
+            },
+            "instrument": 21,
+            "volume": 100
+          }
+        ],
+        [
+          {},
+          {}
+        ]
+      ]
+    }
+  ],
+  "order": [
+    0
+  ],
+  "order_repeats": [
+    1
+  ],
+  "channels": 2,
+  "rows_per_pattern": 16,
+  "highlight_beat": 4,
+  "highlight_bar": 16,
+  "tables": [
+    {
+      "slot": 10,
+      "name": "major",
+      "ticks_per_row": 1,
+      "loop_from": 0,
+      "rows": [
+        {},
+        {
+          "transpose": 4
+        },
+        {
+          "transpose": 7
+        }
+      ]
+    },
+    {
+      "slot": 21,
+      "name": "decay",
+      "ticks_per_row": 1,
+      "rows": [
+        {
+          "volume": 127
+        },
+        {
+          "volume": 88
+        },
+        {
+          "volume": 56
+        },
+        {
+          "volume": 32
+        }
+      ]
+    },
+    {
+      "slot": 32,
+      "name": "minor",
+      "ticks_per_row": 1,
+      "loop_from": 0,
+      "rows": [
+        {},
+        {
+          "transpose": 3
+        },
+        {
+          "transpose": 7
+        }
+      ]
+    }
+  ],
+  "channels_config": [
+    {
+      "muted": false,
+      "name": "",
+      "default_instrument": null,
+      "volume": 1.0,
+      "pan": 0.0,
+      "effects_params": {
+        "filter_enabled": false,
+        "filter_cutoff": 8000.0,
+        "filter_resonance": 0.0,
+        "distortion_enabled": false,
+        "distortion_drive": 1.0,
+        "chorus_enabled": false,
+        "chorus_rate": 1.5,
+        "chorus_depth": 3.0,
+        "chorus_mix": 0.3,
+        "delay_enabled": false,
+        "delay_time": 250.0,
+        "delay_feedback": 0.4,
+        "delay_mix": 0.3,
+        "reverb_enabled": false,
+        "reverb_size": 0.5,
+        "reverb_damp": 0.5,
+        "reverb_mix": 0.3,
+        "send_levels": [
+          0.0,
+          0.0
+        ]
+      },
+      "midi_channel": 0
+    },
+    {
+      "muted": false,
+      "name": "",
+      "default_instrument": null,
+      "volume": 1.0,
+      "pan": 0.0,
+      "effects_params": {
+        "filter_enabled": false,
+        "filter_cutoff": 8000.0,
+        "filter_resonance": 0.0,
+        "distortion_enabled": false,
+        "distortion_drive": 1.0,
+        "chorus_enabled": false,
+        "chorus_rate": 1.5,
+        "chorus_depth": 3.0,
+        "chorus_mix": 0.3,
+        "delay_enabled": false,
+        "delay_time": 250.0,
+        "delay_feedback": 0.4,
+        "delay_mix": 0.3,
+        "reverb_enabled": false,
+        "reverb_size": 0.5,
+        "reverb_damp": 0.5,
+        "reverb_mix": 0.3,
+        "send_levels": [
+          0.0,
+          0.0
+        ]
+      },
+      "midi_channel": 1
+    }
+  ],
+  "send_buses": [
+    {
+      "enabled": false,
+      "label": "",
+      "effect_type": "Delay",
+      "delay_time": 300.0,
+      "delay_feedback": 0.4,
+      "reverb_size": 0.6,
+      "reverb_damp": 0.5
+    },
+    {
+      "enabled": false,
+      "label": "",
+      "effect_type": "Delay",
+      "delay_time": 300.0,
+      "delay_feedback": 0.4,
+      "reverb_size": 0.6,
+      "reverb_damp": 0.5
+    }
+  ]
+}

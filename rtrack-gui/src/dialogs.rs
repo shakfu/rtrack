@@ -10,6 +10,367 @@ impl RtrackApp {
         self.draw_track_config(ctx);
         self.draw_help(ctx);
         self.draw_midi_ports(ctx);
+        self.draw_effect_prompt(ctx);
+        self.draw_phrases(ctx);
+        self.draw_tables(ctx);
+    }
+
+    /// The table editor: one table at a time, by number.
+    fn draw_tables(&mut self, ctx: &egui::Context) {
+        use rtrack_core::tracker::{MAX_TABLE_ROWS, MAX_TABLE_TICKS};
+        if !self.show_tables {
+            return;
+        }
+        let number = self.table_number;
+        let table = self.core.song.tables.get(&number).cloned();
+        let mut open = true;
+        let mut action: Option<TableAction> = None;
+        egui::Window::new("Tables")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(380.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let mut n = number as i32;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut n)
+                                .range(0..=255)
+                                .custom_formatter(|v, _| format!("{:02X}", v as i64))
+                                .custom_parser(|t| {
+                                    i64::from_str_radix(t.trim(), 16).ok().map(|v| v as f64)
+                                })
+                                .prefix("Table "),
+                        )
+                        .on_hover_text("Instrument N plays table N; TBLxx plays table xx")
+                        .changed()
+                    {
+                        action = Some(TableAction::Select(n as u8));
+                    }
+                    match &table {
+                        Some(_) => {
+                            if ui.button("Delete").clicked() {
+                                action = Some(TableAction::Delete);
+                            }
+                        }
+                        None => {
+                            if ui.button("Create").clicked() {
+                                action = Some(TableAction::Rows(1));
+                            }
+                        }
+                    }
+                });
+                let Some(table) = table else {
+                    ui.label("No table with this number.");
+                    return;
+                };
+                let mut name = table.name.clone();
+                if ui.text_edit_singleline(&mut name).changed() {
+                    action = Some(TableAction::Name(name));
+                }
+                ui.horizontal(|ui| {
+                    let mut ticks = table.ticks_per_row;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut ticks)
+                                .range(1..=MAX_TABLE_TICKS)
+                                .suffix(" ticks/row"),
+                        )
+                        .changed()
+                    {
+                        action = Some(TableAction::Ticks(ticks));
+                    }
+                    let mut looping = table.loop_from.is_some();
+                    if ui.checkbox(&mut looping, "Loop from row").changed() {
+                        action = Some(TableAction::Loop(looping.then_some(0)));
+                    }
+                    if let Some(from) = table.loop_from {
+                        let mut from = from as usize;
+                        if ui
+                            .add(egui::DragValue::new(&mut from).range(0..=table.rows.len() - 1))
+                            .changed()
+                        {
+                            action = Some(TableAction::Loop(Some(from as u8)));
+                        }
+                    }
+                });
+                ui.separator();
+                egui::Grid::new("table_grid").num_columns(4).show(ui, |ui| {
+                    ui.label("row");
+                    ui.label("pitch");
+                    ui.label("volume");
+                    ui.label("effect");
+                    ui.end_row();
+                    for (i, row) in table.rows.iter().enumerate() {
+                        ui.label(format!("{i:X}"));
+                        let mut tr = row.transpose as i32;
+                        if ui
+                            .add(egui::DragValue::new(&mut tr).range(-48..=48))
+                            .on_hover_text("Semitones above the note")
+                            .changed()
+                        {
+                            action = Some(TableAction::Transpose(i, tr as i8));
+                        }
+                        ui.horizontal(|ui| {
+                            let mut set = row.volume.is_some();
+                            let mut v = row.volume.unwrap_or(0x40) as i32;
+                            let toggled = ui.checkbox(&mut set, "").changed();
+                            let dragged = set
+                                && ui
+                                    .add(egui::DragValue::new(&mut v).range(0..=127))
+                                    .changed();
+                            if toggled || dragged {
+                                action = Some(TableAction::Volume(i, set.then_some(v as u8)));
+                            }
+                        });
+                        let editing = matches!(&self.table_fx_edit, Some((r, _)) if *r == i);
+                        let mut text = match &self.table_fx_edit {
+                            Some((r, t)) if *r == i => t.clone(),
+                            _ => row.fx.map(|fx| fx.to_string()).unwrap_or_default(),
+                        };
+                        let field =
+                            ui.add(egui::TextEdit::singleline(&mut text).desired_width(60.0));
+                        if field.changed() {
+                            self.table_fx_edit = Some((i, text.clone()));
+                        }
+                        if editing && field.lost_focus() {
+                            action = Some(TableAction::Effect(i, text));
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            table.rows.len() < MAX_TABLE_ROWS,
+                            egui::Button::new("Add row"),
+                        )
+                        .clicked()
+                    {
+                        action = Some(TableAction::Rows(table.rows.len() + 1));
+                    }
+                    if ui
+                        .add_enabled(table.rows.len() > 1, egui::Button::new("Remove row"))
+                        .clicked()
+                    {
+                        action = Some(TableAction::Rows(table.rows.len() - 1));
+                    }
+                });
+            });
+        self.show_tables = open;
+        if let Some(action) = action {
+            self.apply_table_action(action);
+        }
+    }
+
+    /// Apply one change from the table window. Each field folds its own
+    /// run of changes into one undo step.
+    pub(crate) fn apply_table_action(&mut self, action: TableAction) {
+        let n = self.table_number;
+        let before = self.begin_structural_edit();
+        let control = match action {
+            TableAction::Select(number) => {
+                self.table_number = number;
+                self.table_fx_edit = None;
+                return;
+            }
+            TableAction::Delete => {
+                self.core.song.tables.remove(&n);
+                return self.end_structural_edit(before);
+            }
+            TableAction::Rows(rows) => {
+                self.core.song.table_mut(n).resize(rows);
+                return self.end_structural_edit(before);
+            }
+            TableAction::Name(name) => {
+                self.core.song.table_mut(n).name = name;
+                "table name"
+            }
+            TableAction::Ticks(ticks) => {
+                self.core.song.table_mut(n).ticks_per_row = ticks;
+                "table ticks"
+            }
+            TableAction::Loop(from) => {
+                self.core.song.table_mut(n).loop_from = from;
+                "table loop"
+            }
+            TableAction::Transpose(row, tr) => {
+                self.core.song.table_mut(n).rows[row].transpose = tr;
+                "table pitch"
+            }
+            TableAction::Volume(row, v) => {
+                self.core.song.table_mut(n).rows[row].volume = v;
+                "table volume"
+            }
+            TableAction::Effect(row, text) => {
+                self.table_fx_edit = None;
+                if let Err(e) = self.core.song.table_mut(n).set_row_effect(row, &text) {
+                    self.status_message = Some(e);
+                    return;
+                }
+                return self.end_structural_edit(before);
+            }
+        };
+        self.record_settings_edit(control, before);
+    }
+
+    /// Phrase links for the cursor's track, and the phrase list.
+    fn draw_phrases(&mut self, ctx: &egui::Context) {
+        use rtrack_core::tracker::PhraseTiming;
+        if !self.show_phrases {
+            return;
+        }
+        let pos = self.edit_order;
+        let ch = self.cursor_channel;
+        let link = self.core.song.pattern_at(pos).and_then(|p| p.link(ch));
+        let mut open = true;
+        // One change per frame at most, applied after the window is drawn.
+        let mut action: Option<PhraseAction> = None;
+        egui::Window::new("Phrases")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                match link {
+                    Some(l) => {
+                        ui.label(format!("Track {} plays phrase {:02X}", ch + 1, l.phrase));
+                        let mut steps = l.transpose as i32;
+                        let max = rtrack_core::tracker::MAX_LINK_TRANSPOSE as i32;
+                        if ui
+                            .add(egui::DragValue::new(&mut steps).range(-max..=max).prefix("Transpose: "))
+                            .on_hover_text(
+                                "Applied at playback; the grid shows the phrase as stored. Scale degrees when the song has a scale, semitones otherwise.",
+                            )
+                            .changed()
+                        {
+                            action = Some(PhraseAction::Transpose(steps as i8));
+                        }
+                        ui.horizontal(|ui| {
+                            let mut running = l.timing == PhraseTiming::Running;
+                            if ui
+                                .checkbox(&mut running, "Runs across patterns")
+                                .on_hover_text(
+                                    "Off: restarts with each pattern. On: keeps its phase through patterns, repeats and jumps.",
+                                )
+                                .changed()
+                            {
+                                action = Some(PhraseAction::Timing(running));
+                            }
+                            if ui
+                                .button("Unlink")
+                                .on_hover_text("The phrase rows become the track's own cells")
+                                .clicked()
+                            {
+                                action = Some(PhraseAction::Unlink);
+                            }
+                        });
+                    }
+                    None => {
+                        ui.label(format!("Track {} plays its own cells", ch + 1));
+                        if ui.button("New phrase from track").clicked() {
+                            action = Some(PhraseAction::LinkNew);
+                        }
+                    }
+                }
+                ui.separator();
+                if self.core.song.phrases.is_empty() {
+                    ui.label("No phrases yet.");
+                }
+                egui::Grid::new("phrase_grid").num_columns(3).show(ui, |ui| {
+                    for i in 0..self.core.song.phrases.len() {
+                        let mut name = self.core.song.phrases[i].name.clone();
+                        if ui.text_edit_singleline(&mut name).changed() {
+                            action = Some(PhraseAction::Rename(i, name));
+                        }
+                        let mut len = self.core.song.phrases[i].rows.len();
+                        if ui
+                            .add(egui::DragValue::new(&mut len).range(1..=256).suffix(" rows"))
+                            .changed()
+                        {
+                            action = Some(PhraseAction::Resize(i, len));
+                        }
+                        if ui.button("Link track").clicked() {
+                            action = Some(PhraseAction::Link(i));
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        self.show_phrases = open;
+        if let Some(action) = action {
+            self.apply_phrase_action(action);
+        }
+    }
+
+    /// Apply one change from the phrase window, as one undo step. Typing a
+    /// name and dragging a length fold into one step each.
+    pub(crate) fn apply_phrase_action(&mut self, action: PhraseAction) {
+        use rtrack_core::tracker::PhraseTiming;
+        let pos = self.edit_order;
+        let ch = self.cursor_channel;
+        let before = self.begin_structural_edit();
+        let timing = self
+            .core
+            .song
+            .pattern_at(pos)
+            .and_then(|p| p.link(ch))
+            .map_or(PhraseTiming::Aligned, |l| l.timing);
+        match action {
+            PhraseAction::LinkNew => {
+                self.core.song.link_new_phrase(pos, ch, timing);
+            }
+            PhraseAction::Link(i) => {
+                self.core.song.link_column(pos, ch, i, timing);
+            }
+            PhraseAction::Unlink => {
+                self.core.song.unlink_column(pos, ch);
+            }
+            PhraseAction::Timing(running) => {
+                let timing = if running {
+                    PhraseTiming::Running
+                } else {
+                    PhraseTiming::Aligned
+                };
+                self.core.song.set_link_timing(pos, ch, timing);
+            }
+            PhraseAction::Rename(i, name) => {
+                self.core.song.phrases[i].name = name;
+                return self.record_settings_edit("phrase name", before);
+            }
+            PhraseAction::Transpose(steps) => {
+                self.core.song.set_link_transpose(pos, ch, steps);
+                return self.record_settings_edit("phrase transpose", before);
+            }
+            PhraseAction::Resize(i, len) => {
+                self.core.song.resize_phrase(i, len);
+                return self.record_settings_edit("phrase length", before);
+            }
+        }
+        self.end_structural_edit(before);
+    }
+
+    /// One-line editor for an effect's text form, e.g. PVB44 or C0740.
+    fn draw_effect_prompt(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.effect_prompt.as_mut() else {
+            return;
+        };
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new("Effect")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                let field = ui.text_edit_singleline(&mut prompt.text);
+                field.request_focus();
+                ui.label("Name and hex parameter, e.g. PVB44 or C0740. Empty clears.");
+                apply = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            });
+        if apply {
+            self.apply_effect_prompt();
+        } else if cancel {
+            self.effect_prompt = None;
+        }
     }
 
     fn draw_song_settings(&mut self, ctx: &egui::Context) {
@@ -84,14 +445,28 @@ impl RtrackApp {
                         }
                         ui.end_row();
 
-                        // Swing
-                        ui.label("Swing:");
-                        let mut swing = self.core.song.swing;
-                        ui.add(egui::DragValue::new(&mut swing).range(0..=100).suffix("%"));
-                        if swing != self.core.song.swing {
-                            let before = self.core.song.clone();
-                            self.core.song.swing = swing;
-                            self.record_settings_edit("song.swing", before);
+                        // Groove: relative row lengths; one number is swing
+                        ui.label("Groove:");
+                        let mut text = self
+                            .groove_edit
+                            .clone()
+                            .unwrap_or_else(|| self.core.song.groove_text());
+                        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0))
+                            .on_hover_text("Row lengths, repeating: 67 33 swings; 55 45 52 48 pushes and pulls; off is straight");
+                        if field.changed() {
+                            self.groove_edit = Some(text.clone());
+                        }
+                        if field.lost_focus() && self.groove_edit.is_some() {
+                            self.groove_edit = None;
+                            match rtrack_core::tracker::Song::parse_groove(&text) {
+                                Ok(groove) if groove != self.core.song.groove => {
+                                    let before = self.core.song.clone();
+                                    self.core.song.groove = groove;
+                                    self.record_settings_edit("song.groove", before);
+                                }
+                                Ok(_) => {}
+                                Err(e) => self.status_message = Some(e),
+                            }
                         }
                         ui.end_row();
 
@@ -288,20 +663,6 @@ impl RtrackApp {
                         ui.checkbox(&mut self.core.channels[ch_idx].muted, "");
                         ui.end_row();
 
-                        // Type
-                        ui.label("Type:");
-                        let current_type = self.core.channels[ch_idx].channel_type;
-                        ui.horizontal(|ui| {
-                            if ui.button("<").clicked() {
-                                self.core.channels[ch_idx].channel_type = current_type.prev();
-                            }
-                            ui.label(current_type.label());
-                            if ui.button(">").clicked() {
-                                self.core.channels[ch_idx].channel_type = current_type.next();
-                            }
-                        });
-                        ui.end_row();
-
                         // MIDI Channel
                         ui.label("MIDI Ch:");
                         let mut midi_ch = self.core.channels[ch_idx].midi_channel as i32;
@@ -313,16 +674,29 @@ impl RtrackApp {
                         }
                         ui.end_row();
 
-                        // Default Instrument
+                        // Default instrument, for notes entered or played without one.
+                        // -1 is none.
                         ui.label("Instrument:");
-                        let mut inst =
-                            self.core.channels[ch_idx].default_instrument.unwrap_or(0) as i32;
-                        if ui
-                            .add(egui::DragValue::new(&mut inst).range(0..=255))
-                            .changed()
-                        {
-                            self.core.channels[ch_idx].default_instrument = Some(inst as u8);
-                        }
+                        let mut inst = self.core.channels[ch_idx]
+                            .default_instrument
+                            .map_or(-1, |i| i as i32);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut inst)
+                                        .range(-1..=255)
+                                        .custom_formatter(|v, _| match v as i32 {
+                                            -1 => "none".to_string(),
+                                            i => format!("{i:02X}"),
+                                        }),
+                                )
+                                .changed()
+                            {
+                                self.core.channels[ch_idx].default_instrument =
+                                    (inst >= 0).then_some(inst as u8);
+                            }
+                            ui.label(self.core.track_label(ch_idx));
+                        });
                         ui.end_row();
 
                         // Volume
@@ -342,9 +716,8 @@ impl RtrackApp {
                         ui.end_row();
                     });
 
-                // Per-channel effects section (only for Synth/Sample types)
-                let ch_type = self.core.channels[ch_idx].channel_type;
-                if ch_type != rtrack_core::ChannelType::Midi {
+                // Per-channel effects section
+                {
                     ui.separator();
                     ui.heading("Effects");
                     ui.add_space(4.0);
@@ -692,7 +1065,7 @@ impl RtrackApp {
                     ui.label("No MIDI output ports found.");
                 } else {
                     let current = self.core.midi_port_display_name().to_string();
-                    for (i, port_name) in self.midi_port_list.iter().enumerate() {
+                    for port_name in self.midi_port_list.iter() {
                         let selected = *port_name == current;
                         let label = if selected {
                             format!("> {}", port_name)
@@ -700,7 +1073,7 @@ impl RtrackApp {
                             port_name.clone()
                         };
                         if ui.selectable_label(selected, &label).clicked() {
-                            match self.core.midi.connect(i) {
+                            match self.core.select_midi_port(port_name) {
                                 Ok(()) => {
                                     self.status_message =
                                         Some(format!("Output: connected to {}", port_name));
@@ -715,7 +1088,10 @@ impl RtrackApp {
                 }
                 ui.horizontal(|ui| {
                     if ui.small_button("Virtual Out").clicked() {
-                        match self.core.midi.create_virtual_port() {
+                        match self
+                            .core
+                            .select_midi_port(rtrack_core::midi::VIRTUAL_PORT_NAME)
+                        {
                             Ok(()) => {
                                 self.status_message =
                                     Some("Created virtual MIDI output port".to_string());
@@ -860,4 +1236,28 @@ fn help_grid(ui: &mut egui::Ui, id: &str, items: &[(&str, &str)], dim: egui::Col
                 ui.end_row();
             }
         });
+}
+
+/// A change made in the phrase window.
+pub(crate) enum PhraseAction {
+    LinkNew,
+    Link(usize),
+    Unlink,
+    Timing(bool),
+    Transpose(i8),
+    Rename(usize, String),
+    Resize(usize, usize),
+}
+
+/// A change made in the table window.
+pub(crate) enum TableAction {
+    Select(u8),
+    Delete,
+    Rows(usize),
+    Name(String),
+    Ticks(u8),
+    Loop(Option<u8>),
+    Transpose(usize, i8),
+    Volume(usize, Option<u8>),
+    Effect(usize, String),
 }

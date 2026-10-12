@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "title": "v1: every legacy effect shape",
+  "bpm": 120,
+  "speed": 6,
+  "patterns": [
+    {
+      "rows": 8,
+      "channels": 2,
+      "data": [
+        [{"note": {"On": {"value": "C", "octave": 4}}, "instrument": 0, "effect": 4, "effect_value": 68}, {}],
+        [{"effect": 15, "effect_value": 3}, {}],
+        [{"effect": 15, "effect_value": 128}, {}],
+        [{"note": {"On": {"value": "D", "octave": 4}}, "instrument": 7, "effect": 12, "effect_value": 64}, {}],
+        [{"effect": 10, "effect_value": 16}, {}],
+        [{"effect": 15, "effect_value": 0}, {}],
+        [{"effect": 12, "effect_value": 127}, {}],
+        [{"effect": 9}, {}]
+      ]
+    }
+  ],
+  "order": [0],
+  "channels": 2,
+  "rows_per_pattern": 8,
+  "instruments": [
+    {"slot": 0, "name": "both", "sample_index": 0, "synth_params": {"waveform":1,"attack":0.005,"decay":0.15,"sustain":0.6,"release":0.12,"filter_cutoff":3.0,"filter_resonance":0.4,"filter_env":1.5,"detune":5.0,"filter_type":"LowPass","sub_osc":0.0,"fm_ratio":0.0,"fm_index":0.0,"pulse_width":0.25}},
+    {"slot": 1, "name": "synth", "midi_program": 5, "synth_params": {"waveform":1,"attack":0.005,"decay":0.15,"sustain":0.6,"release":0.12,"filter_cutoff":3.0,"filter_resonance":0.4,"filter_env":1.5,"detune":5.0,"filter_type":"LowPass","sub_osc":0.0,"fm_ratio":0.0,"fm_index":0.0,"pulse_width":0.25}},
+    {"slot": 2, "name": "program", "midi_program": 40},
+    {"slot": 3, "name": "named"}
+  ],
+  "channels_config": [
+    {"channel_type": "Sample", "default_instrument": 0},
+    {"channel_type": "Midi", "default_instrument": 1}
+  ]
+}

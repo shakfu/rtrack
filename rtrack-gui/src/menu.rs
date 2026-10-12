@@ -173,9 +173,7 @@ impl RtrackApp {
                         .add_enabled(true, egui::Button::new("Copy  (Ctrl+C)"))
                         .clicked()
                     {
-                        let pattern_idx = self.core.song.order[self.edit_order];
-                        let cell = *self.core.song.patterns[pattern_idx]
-                            .get(self.cursor_row, self.cursor_channel);
+                        let cell = self.shown_cell(self.cursor_row, self.cursor_channel);
                         self.clipboard.set_cell(cell);
                         self.status_message = Some("Copied".to_string());
                         ui.close();
@@ -184,22 +182,9 @@ impl RtrackApp {
                         .add_enabled(true, egui::Button::new("Cut  (Ctrl+X)"))
                         .clicked()
                     {
-                        let pattern_idx = self.core.song.order[self.edit_order];
-                        let old_cell = *self.core.song.patterns[pattern_idx]
-                            .get(self.cursor_row, self.cursor_channel);
-                        self.clipboard.set_cell(old_cell);
-                        let cell = self.core.song.patterns[pattern_idx]
-                            .get_mut(self.cursor_row, self.cursor_channel);
-                        *cell = Cell::default();
-                        let new_cell = *cell;
-                        self.record_cell_edit(
-                            pattern_idx,
-                            self.cursor_row,
-                            self.cursor_channel,
-                            old_cell,
-                            new_cell,
-                        );
-                        self.core.dirty = true;
+                        if let Some(old_cell) = self.write_cursor_cell(Cell::default()) {
+                            self.clipboard.set_cell(old_cell);
+                        }
                         self.status_message = Some("Cut".to_string());
                         ui.close();
                     }
@@ -211,20 +196,7 @@ impl RtrackApp {
                         .clicked()
                     {
                         if let Some(clip) = self.clipboard.cell() {
-                            let pattern_idx = self.core.song.order[self.edit_order];
-                            let old_cell = *self.core.song.patterns[pattern_idx]
-                                .get(self.cursor_row, self.cursor_channel);
-                            let cell = self.core.song.patterns[pattern_idx]
-                                .get_mut(self.cursor_row, self.cursor_channel);
-                            *cell = clip;
-                            self.record_cell_edit(
-                                pattern_idx,
-                                self.cursor_row,
-                                self.cursor_channel,
-                                old_cell,
-                                clip,
-                            );
-                            self.core.dirty = true;
+                            self.write_cursor_cell(clip);
                             self.status_message = Some("Pasted".to_string());
                         }
                         ui.close();
@@ -237,6 +209,16 @@ impl RtrackApp {
                 });
 
                 ui.menu_button("View", |ui| {
+                    if ui.button("Tables").clicked() {
+                        self.show_tables = !self.show_tables;
+                        ui.close();
+                    }
+                    if ui.button("Phrases").clicked() {
+                        self.show_phrases = !self.show_phrases;
+                        ui.close();
+                    }
+                    ui.checkbox(&mut self.show_second_fx, "Second effect column")
+                        .on_hover_text("Shown anyway where the pattern uses it");
                     if ui.button("Instruments  (F7)").clicked() {
                         self.show_instrument_list = !self.show_instrument_list;
                         ui.close();

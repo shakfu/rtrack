@@ -5,12 +5,43 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{MAX_CHANNELS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
-use super::{Cell, Note, Pattern};
+use super::{Cell, Note, Pattern, Phrase, PhraseLink, PhraseTiming, Table};
 use crate::audio::effects::SendBusParams;
 use crate::audio::synth::SynthParams;
 use crate::fs::write_atomic;
 use crate::theory::ScaleSetting;
-use crate::types::{ChannelConfig, MidiCcMapping};
+use crate::types::{ChannelConfig, Instrument, InstrumentKind, MidiCcMapping};
+
+/// Where a cell is stored: in a pattern, or in a phrase a pattern column
+/// links to. Undo records edits by this, so an edit to a phrase undoes
+/// wherever it was made from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CellAddr {
+    Pattern {
+        pattern: usize,
+        row: usize,
+        channel: usize,
+    },
+    Phrase {
+        phrase: usize,
+        row: usize,
+    },
+}
+
+/// The furthest a phrase link transposes, in steps either way: four
+/// octaves of semitones, or more than six of scale degrees.
+pub const MAX_LINK_TRANSPOSE: i8 = 48;
+
+/// Most steps in a groove.
+pub const MAX_GROOVE_STEPS: usize = 16;
+
+/// What an unresolvable coordinate reads as.
+static EMPTY_CELL: Cell = Cell {
+    note: None,
+    instrument: None,
+    volume: None,
+    fx: [None, None],
+};
 
 /// A tempo change point in the song
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +52,10 @@ pub struct TempoPoint {
 }
 
 /// Serializable instrument definition (stored in .rtrk files)
+///
+/// Version 2 writes `kind`. Versions 0 and 1 wrote the untyped
+/// `midi_program`/`sample_index`/`synth_params`, which are read but no longer
+/// written.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstrumentDef {
     pub name: String,
@@ -28,13 +63,49 @@ pub struct InstrumentDef {
     // without it, serde treats an omitted field as an error, so a file we
     // wrote ourselves would fail to load back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<InstrumentKind>,
+    #[serde(default, skip_serializing)]
     pub midi_program: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub sample_index: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub synth_params: Option<SynthParams>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_bend_range: Option<f64>,
+}
+
+impl InstrumentDef {
+    pub fn from_instrument(inst: &Instrument) -> Self {
+        Self {
+            name: inst.name.clone(),
+            kind: Some(inst.kind.clone()),
+            midi_program: None,
+            sample_index: None,
+            synth_params: None,
+            pitch_bend_range: inst.pitch_bend_range,
+        }
+    }
+
+    /// The instrument this defines in `slot`, converting the untyped form of
+    /// versions 0 and 1. Returns a repair note for each setting the old
+    /// routing never used.
+    pub fn to_instrument(&self, slot: usize) -> (Instrument, Vec<String>) {
+        let (kind, repairs) = match &self.kind {
+            Some(kind) => (kind.clone(), Vec::new()),
+            None => InstrumentKind::from_legacy(
+                slot,
+                self.sample_index,
+                self.synth_params.clone(),
+                self.midi_program,
+            ),
+        };
+        let inst = Instrument {
+            name: self.name.clone(),
+            kind,
+            pitch_bend_range: self.pitch_bend_range,
+        };
+        (inst, repairs)
+    }
 }
 
 /// Serializable sample reference (metadata only, no audio data)
@@ -105,10 +176,10 @@ pub struct SampleRefEntry {
 
 /// Current .rtrk format version, written into every saved file.
 ///
-/// Files predating the field deserialize as version 0. Nothing branches on
-/// this yet; it exists so that a future format change has something to
-/// branch on, which is not something that can be added retroactively.
-pub const FORMAT_VERSION: u32 = 1;
+/// Files predating the field deserialize as version 0. Version 2 stores
+/// named effect columns (`Cell.fx`); the reader still accepts the
+/// single-digit effects of versions 0 and 1, so it does not branch on this.
+pub const FORMAT_VERSION: u32 = 2;
 
 impl SongFile {
     /// True if this file was written by a newer version of rtrack than this
@@ -174,8 +245,9 @@ impl SongFile {
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let song_file: SongFile =
+        let mut song_file: SongFile =
             serde_json::from_str(&data).context("Failed to parse song file")?;
+        song_file.song.adopt_legacy_swing();
         Ok(song_file)
     }
 }
@@ -199,15 +271,34 @@ pub struct Song {
     /// Row highlight interval for bars (default 16)
     #[serde(default = "default_highlight_bar")]
     pub highlight_bar: usize,
-    /// Swing amount: 50 = none, 0-100 (even rows get swing% of pair time, odd rows get rest)
-    #[serde(default = "default_swing")]
-    pub swing: u8,
+    /// Relative row lengths, repeating by pattern row: row `r` lasts
+    /// `len * groove[r % len] / sum` of a straight row. Empty is straight.
+    /// `[67, 33]` is the old swing 67 (`docs/dev/g9-groove.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groove: Vec<u8>,
+    /// The swing amount files before groove stored (50 = none), read only
+    /// to become a groove; see [`Song::adopt_legacy_swing`].
+    #[serde(default, rename = "swing", skip_serializing)]
+    pub(crate) legacy_swing: Option<u8>,
     /// Tempo automation points (order, row, bpm)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempo_map: Vec<TempoPoint>,
     /// Scale constraining keyboard note entry. `None` means chromatic entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<ScaleSetting>,
+    /// Single-channel row runs that pattern columns link to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phrases: Vec<Phrase>,
+    /// Tables by number. Instrument N plays table N, if there is one.
+    /// Saved as a list of `{"slot": N, ...}` entries: `Song` is flattened
+    /// into `SongFile`, and through a flatten serde cannot read a map's
+    /// string keys back as numbers.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        with = "super::table::by_slot"
+    )]
+    pub tables: std::collections::BTreeMap<u8, Table>,
 }
 
 fn default_highlight_beat() -> usize {
@@ -215,9 +306,6 @@ fn default_highlight_beat() -> usize {
 }
 fn default_highlight_bar() -> usize {
     16
-}
-fn default_swing() -> u8 {
-    50
 }
 
 impl Song {
@@ -234,9 +322,12 @@ impl Song {
             rows_per_pattern,
             highlight_beat: 4,
             highlight_bar: 16,
-            swing: 50,
+            groove: Vec::new(),
+            legacy_swing: None,
             tempo_map: Vec::new(),
             scale: None,
+            phrases: Vec::new(),
+            tables: Default::default(),
         }
     }
 
@@ -258,7 +349,24 @@ impl Song {
     /// counted because they are cheap to count, not because they matter.
     pub fn approx_heap_bytes(&self) -> usize {
         let patterns: usize = self.patterns.iter().map(|p| p.approx_heap_bytes()).sum();
+        let phrases: usize = self
+            .phrases
+            .iter()
+            .map(|p| p.rows.capacity() * std::mem::size_of::<Cell>() + p.name.capacity())
+            .sum();
+        let tables: usize = self
+            .tables
+            .values()
+            .map(|t| {
+                std::mem::size_of::<(u8, Table)>()
+                    + t.rows.capacity() * std::mem::size_of::<super::TableRow>()
+                    + t.name.capacity()
+            })
+            .sum();
         patterns
+            + phrases
+            + tables
+            + self.phrases.capacity() * std::mem::size_of::<Phrase>()
             + self.patterns.capacity() * std::mem::size_of::<Pattern>()
             + self.order.capacity() * std::mem::size_of::<usize>()
             + self.order_repeats.capacity()
@@ -344,7 +452,8 @@ impl Song {
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let song: Song = serde_json::from_str(&data).context("Failed to parse song file")?;
+        let mut song: Song = serde_json::from_str(&data).context("Failed to parse song file")?;
+        song.adopt_legacy_swing();
         Ok(song)
     }
 
@@ -360,17 +469,87 @@ impl Song {
         1.0 / ticks_per_second
     }
 
-    /// Seconds per tick with swing applied. Even rows get swing% of a pair, odd rows get the rest.
-    pub fn swing_seconds_per_tick(&self, row: usize) -> f64 {
-        let base = self.seconds_per_tick();
-        if self.swing == 50 {
-            return base;
+    /// How much longer than straight pattern row `row` lasts under the
+    /// groove: 1.0 when straight. A whole groove cycle lasts as long as the
+    /// same rows played straight.
+    pub fn groove_factor(&self, row: usize) -> f64 {
+        self.grooved(1.0, row)
+    }
+
+    /// `length` stretched by the groove for pattern row `row`.
+    ///
+    /// Computed as `length * weight / mean`, in that order: for a swing
+    /// groove `[s, 100 - s]` the mean is exactly 50, so this is the old
+    /// swing formula operation for operation, and old songs keep their
+    /// timing to the frame.
+    pub fn grooved(&self, length: f64, row: usize) -> f64 {
+        let sum: u32 = self.groove.iter().map(|&w| w as u32).sum();
+        if sum == 0 {
+            return length;
         }
-        let swing_f = self.swing as f64;
-        if row.is_multiple_of(2) {
-            base * swing_f / 50.0
+        let weight = self.groove[row % self.groove.len()] as f64;
+        let mean = sum as f64 / self.groove.len() as f64;
+        length * weight / mean
+    }
+
+    /// The groove of swing `amount`: even rows get `amount` percent of each
+    /// pair. 50, which was straight, is no groove.
+    pub fn swing_groove(amount: u8) -> Vec<u8> {
+        let amount = amount.clamp(1, 99);
+        if amount == 50 {
+            Vec::new()
         } else {
-            base * (100.0 - swing_f) / 50.0
+            vec![amount, 100 - amount]
+        }
+    }
+
+    /// The groove as text, for editing: `67 33`, or `off` when straight.
+    pub fn groove_text(&self) -> String {
+        if self.groove.is_empty() {
+            "off".to_string()
+        } else {
+            self.groove
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+
+    /// Parse a groove typed as text: weights separated by spaces, `off` for
+    /// straight, or one number `s` for swing `s` (`s 100-s`).
+    pub fn parse_groove(text: &str) -> Result<Vec<u8>, String> {
+        let text = text.trim();
+        if text.is_empty() || text.eq_ignore_ascii_case("off") {
+            return Ok(Vec::new());
+        }
+        let weights = text
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|w| !w.is_empty())
+            .map(|w| match w.parse::<u8>() {
+                Ok(0) => Err("a groove step needs a weight of 1 or more".to_string()),
+                Ok(v) => Ok(v),
+                Err(_) => Err(format!("not a groove weight: {w}")),
+            })
+            .collect::<Result<Vec<u8>, String>>()?;
+        match weights.as_slice() {
+            [swing] => Ok(Self::swing_groove(*swing)),
+            _ if weights.len() > MAX_GROOVE_STEPS => {
+                Err(format!("a groove has at most {MAX_GROOVE_STEPS} steps"))
+            }
+            _ => Ok(weights),
+        }
+    }
+
+    /// Turn a swing read from an older file into the equivalent groove,
+    /// unless the file also has a groove. Exact: swing stretched ticks by
+    /// `swing / 50` and `(100 - swing) / 50`, which `[swing, 100 - swing]`
+    /// reproduces.
+    pub fn adopt_legacy_swing(&mut self) {
+        if let Some(swing) = self.legacy_swing.take() {
+            if self.groove.is_empty() {
+                self.groove = Self::swing_groove(swing.min(100));
+            }
         }
     }
 
@@ -429,44 +608,302 @@ impl Song {
         order_idx.min(self.order.len().saturating_sub(1))
     }
 
+    /// Where the cell shown at an order position is stored, or `None` if
+    /// the coordinate does not resolve. Editors read and write through this
+    /// so that a linked column edits its phrase.
+    ///
+    /// A running link resolves by the first pass through the order list,
+    /// which is what the grid shows; playback follows the path it actually
+    /// took, through [`Song::playback_cell`].
+    pub fn address(&self, order_idx: usize, row: usize, channel: usize) -> Option<CellAddr> {
+        self.resolve(order_idx, row, channel, || {
+            self.first_pass_row(order_idx) + row as u64
+        })
+        .map(|(at, _)| at)
+    }
+
+    /// The cell playback plays at an order position, when `rows_played`
+    /// rows have been played since the song started. Only running links
+    /// read the count.
+    ///
+    /// A linked cell's note is transposed by the link, as the transpose keys
+    /// move notes: by scale degree when the song has a scale, by semitone
+    /// otherwise. The stored cell, which the grid shows, is unchanged.
+    pub fn playback_cell(
+        &self,
+        order_idx: usize,
+        row: usize,
+        channel: usize,
+        rows_played: u64,
+    ) -> Cell {
+        let Some((at, transpose)) = self.resolve(order_idx, row, channel, || rows_played) else {
+            return EMPTY_CELL;
+        };
+        let mut cell = self.cell(at).copied().unwrap_or(EMPTY_CELL);
+        if transpose != 0 {
+            cell.transpose_note(transpose, self.scale);
+        }
+        cell
+    }
+
+    /// Whether the pattern at an order position shows anything in the second
+    /// effect column, in its own cells or in a phrase it links to.
+    pub fn uses_second_fx(&self, order_idx: usize) -> bool {
+        let Some(p) = self.pattern_at(order_idx) else {
+            return false;
+        };
+        p.uses_second_fx()
+            || p.links.iter().flatten().any(|l| {
+                self.phrases
+                    .get(l.phrase)
+                    .is_some_and(|ph| ph.rows.iter().any(|c| c.fx[1].is_some()))
+            })
+    }
+
+    /// Rows played before order entry `order_idx` is first reached, counting
+    /// repeats and skipping entries repeated 0 times.
+    pub fn first_pass_row(&self, order_idx: usize) -> u64 {
+        (0..order_idx.min(self.order.len()))
+            .map(|i| {
+                let repeats = self.order_repeats.get(i).copied().unwrap_or(1);
+                self.rows_at(i) as u64 * repeats as u64
+            })
+            .sum()
+    }
+
+    /// Where a cell is stored, and the transpose of the link it is read
+    /// through (0 for none). `running_row` gives the row count a running
+    /// link plays by; it is asked for only when one is found.
+    fn resolve(
+        &self,
+        order_idx: usize,
+        row: usize,
+        channel: usize,
+        running_row: impl FnOnce() -> u64,
+    ) -> Option<(CellAddr, i8)> {
+        let pattern = *self.order.get(order_idx)?;
+        let p = self.patterns.get(pattern)?;
+        if row >= p.rows || channel >= p.channels {
+            return None;
+        }
+        // A link to a missing phrase, which `repair` removes on load, reads
+        // as no link rather than as nothing.
+        let linked = p
+            .link(channel)
+            .and_then(|link| Some((link, self.phrases.get(link.phrase)?.rows.len())))
+            .filter(|(_, len)| *len > 0);
+        Some(match linked {
+            Some((link, len)) => (
+                CellAddr::Phrase {
+                    phrase: link.phrase,
+                    row: match link.timing {
+                        PhraseTiming::Aligned => row % len,
+                        PhraseTiming::Running => (running_row() % len as u64) as usize,
+                    },
+                },
+                link.transpose,
+            ),
+            None => (
+                CellAddr::Pattern {
+                    pattern,
+                    row,
+                    channel,
+                },
+                0,
+            ),
+        })
+    }
+
+    /// The distinct addresses of a block of rows and channels at an order
+    /// position, in row-major order. A cell an operation transforms in place
+    /// must be visited once even when it shows at several places, as a
+    /// phrase linked twice, or looping inside its pattern, does.
+    pub fn addresses(
+        &self,
+        order_idx: usize,
+        rows: std::ops::RangeInclusive<usize>,
+        channels: std::ops::RangeInclusive<usize>,
+    ) -> Vec<CellAddr> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for row in rows {
+            for ch in channels.clone() {
+                if let Some(at) = self.address(order_idx, row, ch) {
+                    if seen.insert(at) {
+                        out.push(at);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The cell stored at `at`, if it exists.
+    pub fn cell(&self, at: CellAddr) -> Option<&Cell> {
+        match at {
+            CellAddr::Pattern {
+                pattern,
+                row,
+                channel,
+            } => self.patterns.get(pattern)?.data.get(row)?.get(channel),
+            CellAddr::Phrase { phrase, row } => self.phrases.get(phrase)?.rows.get(row),
+        }
+    }
+
+    /// Mutable counterpart to [`Song::cell`].
+    pub fn cell_mut(&mut self, at: CellAddr) -> Option<&mut Cell> {
+        match at {
+            CellAddr::Pattern {
+                pattern,
+                row,
+                channel,
+            } => self
+                .patterns
+                .get_mut(pattern)?
+                .data
+                .get_mut(row)?
+                .get_mut(channel),
+            CellAddr::Phrase { phrase, row } => self.phrases.get_mut(phrase)?.rows.get_mut(row),
+        }
+    }
+
     /// Read a cell by order position. Returns an empty cell for any
     /// out-of-range coordinate rather than panicking.
     pub fn cell_at(&self, order_idx: usize, row: usize, channel: usize) -> &Cell {
-        static EMPTY: Cell = Cell {
-            note: None,
-            instrument: None,
-            volume: None,
-            effect: None,
-            effect_value: None,
-        };
-        self.order
-            .get(order_idx)
-            .and_then(|&p| self.patterns.get(p))
-            .filter(|p| row < p.rows && channel < p.channels)
-            .map(|p| p.get(row, channel))
-            .unwrap_or(&EMPTY)
+        self.address(order_idx, row, channel)
+            .and_then(|at| self.cell(at))
+            .unwrap_or(&EMPTY_CELL)
     }
 
     /// Mutable cell access by order position. Returns None if the
-    /// coordinate does not resolve to a pattern cell.
+    /// coordinate does not resolve.
     pub fn cell_at_mut(
         &mut self,
         order_idx: usize,
         row: usize,
         channel: usize,
     ) -> Option<&mut Cell> {
-        let pattern_idx = *self.order.get(order_idx)?;
-        let pattern = self.patterns.get_mut(pattern_idx)?;
-        if row >= pattern.rows || channel >= pattern.channels {
-            return None;
-        }
-        Some(&mut pattern.data[row][channel])
+        let at = self.address(order_idx, row, channel)?;
+        self.cell_mut(at)
     }
 
     /// Write a cell by order position. Out-of-range coordinates are ignored.
     pub fn set_cell(&mut self, order_idx: usize, row: usize, channel: usize, cell: Cell) {
         if let Some(slot) = self.cell_at_mut(order_idx, row, channel) {
             *slot = cell;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Phrase links
+    // -------------------------------------------------------------------
+
+    /// Turn a column's cells into a new phrase, as long as the pattern, and
+    /// link the column to it. Returns the phrase index.
+    pub fn link_new_phrase(
+        &mut self,
+        order_idx: usize,
+        channel: usize,
+        timing: PhraseTiming,
+    ) -> Option<usize> {
+        let p = self
+            .pattern_at(order_idx)
+            .filter(|p| channel < p.channels)?;
+        let rows = (0..p.rows)
+            .map(|r| *self.cell_at(order_idx, r, channel))
+            .collect();
+        let index = self.phrases.len();
+        self.phrases.push(Phrase {
+            name: format!("Phrase {index:02X}"),
+            rows,
+        });
+        self.link_column(order_idx, channel, index, timing);
+        Some(index)
+    }
+
+    /// Link a column to an existing phrase. Returns whether it did.
+    pub fn link_column(
+        &mut self,
+        order_idx: usize,
+        channel: usize,
+        phrase: usize,
+        timing: PhraseTiming,
+    ) -> bool {
+        if phrase >= self.phrases.len() {
+            return false;
+        }
+        let Some(p) = self
+            .pattern_at_mut(order_idx)
+            .filter(|p| channel < p.channels)
+        else {
+            return false;
+        };
+        if p.links.len() <= channel {
+            p.links.resize(channel + 1, None);
+        }
+        p.links[channel] = Some(PhraseLink {
+            phrase,
+            transpose: 0,
+            timing,
+        });
+        true
+    }
+
+    /// Remove a column's link, keeping what the grid showed: the phrase
+    /// rows, as on the first pass, become the column's own cells.
+    pub fn unlink_column(&mut self, order_idx: usize, channel: usize) -> bool {
+        let Some(rows) = self.pattern_at(order_idx).map(|p| p.rows) else {
+            return false;
+        };
+        let shown: Vec<Cell> = (0..rows)
+            .map(|r| *self.cell_at(order_idx, r, channel))
+            .collect();
+        let Some(p) = self.pattern_at_mut(order_idx) else {
+            return false;
+        };
+        if p.link(channel).is_none() {
+            return false;
+        }
+        p.links[channel] = None;
+        for (r, cell) in shown.into_iter().enumerate() {
+            p.data[r][channel] = cell;
+        }
+        true
+    }
+
+    /// Set how a linked column lines up with the song.
+    pub fn set_link_timing(&mut self, order_idx: usize, channel: usize, timing: PhraseTiming) {
+        if let Some(Some(link)) = self
+            .pattern_at_mut(order_idx)
+            .and_then(|p| p.links.get_mut(channel))
+        {
+            link.timing = timing;
+        }
+    }
+
+    /// Set how far a linked column transposes its phrase at playback, within
+    /// `-MAX_LINK_TRANSPOSE..=MAX_LINK_TRANSPOSE` steps.
+    pub fn set_link_transpose(&mut self, order_idx: usize, channel: usize, steps: i8) {
+        if let Some(Some(link)) = self
+            .pattern_at_mut(order_idx)
+            .and_then(|p| p.links.get_mut(channel))
+        {
+            link.transpose = steps.clamp(-MAX_LINK_TRANSPOSE, MAX_LINK_TRANSPOSE);
+        }
+    }
+
+    /// Table `number` for editing, created as one empty row if there is none,
+    /// so that opening an editor on a table creates nothing until it is edited.
+    pub fn table_mut(&mut self, number: u8) -> &mut Table {
+        self.tables.entry(number).or_insert_with(|| Table::new(1))
+    }
+
+    /// Set a phrase's length, padding with empty rows or truncating, within
+    /// 1 to `MAX_ROWS_PER_PATTERN` rows.
+    pub fn resize_phrase(&mut self, phrase: usize, rows: usize) {
+        if let Some(ph) = self.phrases.get_mut(phrase) {
+            ph.rows
+                .resize(rows.clamp(1, MAX_ROWS_PER_PATTERN), Cell::default());
         }
     }
 
@@ -594,6 +1031,54 @@ impl Song {
             repairs.push("song had no patterns, added an empty one".to_string());
         }
 
+        // Phrases hold 1 to MAX_ROWS_PER_PATTERN rows: a running phrase plays
+        // row `n % len`, so an empty one cannot be played at all.
+        for (i, phrase) in self.phrases.iter_mut().enumerate() {
+            if phrase.rows.is_empty() {
+                phrase.rows.push(Cell::default());
+                repairs.push(format!("phrase {} had no rows, given one empty row", i));
+            }
+            if phrase.rows.len() > MAX_ROWS_PER_PATTERN {
+                repairs.push(format!(
+                    "phrase {} had {} rows, truncated to {}",
+                    i,
+                    phrase.rows.len(),
+                    MAX_ROWS_PER_PATTERN
+                ));
+                phrase.rows.truncate(MAX_ROWS_PER_PATTERN);
+            }
+        }
+        for (number, table) in self.tables.iter_mut() {
+            repairs.extend(table.repair(*number));
+        }
+
+        // Links must reference existing phrases.
+        let phrase_count = self.phrases.len();
+        for (i, pattern) in self.patterns.iter_mut().enumerate() {
+            for (ch, link) in pattern.links.iter_mut().enumerate() {
+                if link.is_some_and(|l| l.phrase >= phrase_count) {
+                    *link = None;
+                    repairs.push(format!(
+                        "pattern {} channel {} linked to a missing phrase, unlinked",
+                        i,
+                        ch + 1
+                    ));
+                }
+                if let Some(l) = link
+                    .as_mut()
+                    .filter(|l| !(-MAX_LINK_TRANSPOSE..=MAX_LINK_TRANSPOSE).contains(&l.transpose))
+                {
+                    l.transpose = l.transpose.clamp(-MAX_LINK_TRANSPOSE, MAX_LINK_TRANSPOSE);
+                    repairs.push(format!(
+                        "pattern {} channel {} transpose clamped to {}",
+                        i,
+                        ch + 1,
+                        l.transpose
+                    ));
+                }
+            }
+        }
+
         // Order entries must reference existing patterns.
         let pattern_count = self.patterns.len();
         let mut dropped = 0;
@@ -635,9 +1120,20 @@ impl Song {
         if self.highlight_bar == 0 {
             self.highlight_bar = default_highlight_bar();
         }
-        if self.swing > 100 {
-            self.swing = default_swing();
-            repairs.push("swing out of range, reset to 50".to_string());
+        self.adopt_legacy_swing();
+        if self.groove.len() > MAX_GROOVE_STEPS {
+            repairs.push(format!(
+                "groove had {} steps, truncated to {MAX_GROOVE_STEPS}",
+                self.groove.len()
+            ));
+            self.groove.truncate(MAX_GROOVE_STEPS);
+        }
+        if self.groove.contains(&0) {
+            self.groove
+                .iter_mut()
+                .filter(|w| **w == 0)
+                .for_each(|w| *w = 1);
+            repairs.push("groove step of weight 0 set to 1".to_string());
         }
 
         repairs
@@ -648,7 +1144,7 @@ impl Song {
 mod tests {
     use super::*;
     use crate::theory::ScaleSetting;
-    use crate::tracker::{Note, NoteValue};
+    use crate::tracker::{Fx, FxCmd, Note, NoteValue};
 
     #[test]
     fn a_song_without_a_scale_leaves_entry_alone() {
@@ -747,8 +1243,7 @@ mod tests {
                 }),
                 instrument: Some(0x0A),
                 volume: Some(0x60),
-                effect: Some(3),
-                effect_value: Some(0xFF),
+                fx: [Some(Fx::new(FxCmd::PitchSlide, 0xFF)), None],
             },
         );
 
@@ -772,10 +1267,366 @@ mod tests {
         );
         assert_eq!(cell.instrument, Some(0x0A));
         assert_eq!(cell.volume, Some(0x60));
-        assert_eq!(cell.effect, Some(3));
-        assert_eq!(cell.effect_value, Some(0xFF));
+        assert_eq!(cell.fx[0], Some(Fx::new(FxCmd::PitchSlide, 0xFF)));
 
         let _ = std::fs::remove_file(tmp);
+    }
+
+    fn phrase(rows: usize) -> crate::tracker::Phrase {
+        crate::tracker::Phrase {
+            name: "riff".to_string(),
+            rows: vec![Cell::default(); rows],
+        }
+    }
+
+    fn link(phrase: usize, timing: crate::tracker::PhraseTiming) -> crate::tracker::PhraseLink {
+        crate::tracker::PhraseLink {
+            phrase,
+            transpose: -3,
+            timing,
+        }
+    }
+
+    #[test]
+    fn addresses_cover_a_block_and_skip_what_does_not_resolve() {
+        let song = Song::new(2, 4);
+        let at = song.addresses(0, 2..=5, 1..=3);
+        // Rows 2-3 of channel 1; rows past 3 and channels past 1 do not exist.
+        assert_eq!(
+            at,
+            vec![
+                CellAddr::Pattern {
+                    pattern: 0,
+                    row: 2,
+                    channel: 1
+                },
+                CellAddr::Pattern {
+                    pattern: 0,
+                    row: 3,
+                    channel: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_phrase_address_reads_and_writes_the_phrase() {
+        let mut song = Song::new(1, 4);
+        song.phrases.push(phrase(3));
+        let at = CellAddr::Phrase { phrase: 0, row: 2 };
+        song.cell_mut(at).unwrap().volume = Some(9);
+        assert_eq!(song.phrases[0].rows[2].volume, Some(9));
+        assert_eq!(song.cell(at).unwrap().volume, Some(9));
+        assert!(song.cell(CellAddr::Phrase { phrase: 0, row: 3 }).is_none());
+        assert!(song.cell(CellAddr::Phrase { phrase: 1, row: 0 }).is_none());
+    }
+
+    fn link_channel(song: &mut Song, pattern: usize, ch: usize, l: crate::tracker::PhraseLink) {
+        let links = &mut song.patterns[pattern].links;
+        links.resize(ch + 1, None);
+        links[ch] = Some(l);
+    }
+
+    #[test]
+    fn an_aligned_link_loops_its_phrase_inside_the_pattern() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(2, 8);
+        song.phrases.push(phrase(3));
+        link_channel(&mut song, 0, 1, link(0, PhraseTiming::Aligned));
+        assert_eq!(
+            song.address(0, 4, 1),
+            Some(CellAddr::Phrase { phrase: 0, row: 1 })
+        );
+        // Writing through the grid edits the phrase, so it shows at every
+        // row that plays that phrase row.
+        song.set_cell(
+            0,
+            4,
+            1,
+            Cell {
+                volume: Some(7),
+                ..Cell::default()
+            },
+        );
+        assert_eq!(song.phrases[0].rows[1].volume, Some(7));
+        assert_eq!(song.cell_at(0, 1, 1).volume, Some(7));
+        assert_eq!(song.cell_at(0, 7, 1).volume, Some(7));
+        // The unlinked channel is untouched.
+        assert_eq!(
+            song.address(0, 4, 0)
+                .map(|a| matches!(a, CellAddr::Pattern { .. })),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_running_link_shows_its_first_pass() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(1, 4);
+        song.add_order_entry();
+        song.order_repeats = vec![2, 1];
+        song.phrases.push(phrase(3));
+        link_channel(&mut song, 1, 0, link(0, PhraseTiming::Running));
+        // Order entry 1 is first reached after 4 rows played twice.
+        assert_eq!(song.first_pass_row(1), 8);
+        assert_eq!(
+            song.address(1, 0, 0),
+            Some(CellAddr::Phrase { phrase: 0, row: 2 })
+        );
+        assert_eq!(
+            song.address(1, 1, 0),
+            Some(CellAddr::Phrase { phrase: 0, row: 0 })
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_missing_phrase_reads_the_pattern() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(1, 4);
+        link_channel(&mut song, 0, 0, link(5, PhraseTiming::Aligned));
+        assert!(matches!(
+            song.address(0, 0, 0),
+            Some(CellAddr::Pattern { .. })
+        ));
+    }
+
+    #[test]
+    fn linking_a_column_keeps_what_it_shows_and_unlinking_keeps_it_too() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(2, 4);
+        let vol = |v| Cell {
+            volume: Some(v),
+            ..Cell::default()
+        };
+        for r in 0..4 {
+            song.set_cell(0, r, 1, vol(r as u8 + 1));
+        }
+        let phrase = song.link_new_phrase(0, 1, PhraseTiming::Aligned).unwrap();
+        assert_eq!(song.phrases[phrase].rows.len(), 4);
+        assert_eq!(song.cell_at(0, 2, 1).volume, Some(3));
+
+        // Shorten the phrase: the column now loops two rows.
+        song.resize_phrase(phrase, 2);
+        assert_eq!(song.cell_at(0, 3, 1).volume, Some(2));
+
+        assert!(song.unlink_column(0, 1));
+        assert_eq!(song.patterns[0].link(1), None);
+        let shown: Vec<_> = (0..4).map(|r| song.cell_at(0, r, 1).volume).collect();
+        assert_eq!(shown, vec![Some(1), Some(2), Some(1), Some(2)]);
+        assert!(!song.unlink_column(0, 1), "nothing left to unlink");
+    }
+
+    #[test]
+    fn a_second_column_can_share_a_phrase() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(2, 4);
+        let phrase = song.link_new_phrase(0, 0, PhraseTiming::Aligned).unwrap();
+        assert!(song.link_column(0, 1, phrase, PhraseTiming::Running));
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                volume: Some(9),
+                ..Cell::default()
+            },
+        );
+        assert_eq!(
+            song.cell_at(0, 1, 1).volume,
+            Some(9),
+            "both columns show the edit"
+        );
+        assert!(
+            !song.link_column(0, 1, 7, PhraseTiming::Aligned),
+            "no phrase 7"
+        );
+        song.resize_phrase(phrase, 0);
+        assert_eq!(song.phrases[phrase].rows.len(), 1, "a phrase keeps one row");
+    }
+
+    #[test]
+    fn a_link_transposes_playback_but_not_the_grid() {
+        use crate::theory::{Scale, ScaleSetting};
+        use crate::tracker::{NoteValue, PhraseTiming};
+        let mut song = Song::new(1, 4);
+        song.phrases.push(phrase(1));
+        song.phrases[0].rows[0].note = Some(Note::On {
+            value: NoteValue::E,
+            octave: 4,
+        });
+        link_channel(&mut song, 0, 0, link(0, PhraseTiming::Aligned));
+        song.set_link_transpose(0, 0, 1);
+        let shown = song.cell_at(0, 0, 0).note;
+        let played = |song: &Song| song.playback_cell(0, 0, 0, 0).note;
+
+        // Semitones without a scale: E -> F.
+        assert_eq!(
+            played(&song),
+            Some(Note::On {
+                value: NoteValue::F,
+                octave: 4
+            })
+        );
+        assert_eq!(
+            song.cell_at(0, 0, 0).note,
+            shown,
+            "the grid shows the stored note"
+        );
+
+        // Scale degrees with one, as the transpose keys: E -> F in C major,
+        // but E -> F# in G major.
+        song.scale = Some(ScaleSetting::new(NoteValue::G, Scale::Major));
+        assert_eq!(
+            played(&song),
+            Some(Note::On {
+                value: NoteValue::Fs,
+                octave: 4
+            })
+        );
+
+        song.set_link_transpose(0, 0, 100);
+        assert_eq!(
+            song.patterns[0].link(0).unwrap().transpose,
+            MAX_LINK_TRANSPOSE
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_transpose_is_clamped_on_load() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(1, 4);
+        song.phrases.push(phrase(1));
+        link_channel(&mut song, 0, 0, link(0, PhraseTiming::Aligned));
+        song.patterns[0].links[0].as_mut().unwrap().transpose = i8::MIN;
+        assert_eq!(song.repair().len(), 1);
+        assert_eq!(
+            song.patterns[0].link(0).unwrap().transpose,
+            -MAX_LINK_TRANSPOSE
+        );
+    }
+
+    #[test]
+    fn an_old_swing_becomes_the_same_groove() {
+        let old = |swing: &str| {
+            let json = format!(
+                r#"{{"title":"t","bpm":120,"speed":6,"patterns":[],"order":[0],"channels":1,"rows_per_pattern":4{swing}}}"#
+            );
+            let mut song: Song = serde_json::from_str(&json).unwrap();
+            song.repair();
+            song
+        };
+        assert_eq!(old(r#","swing":67"#).groove, vec![67, 33]);
+        assert!(old(r#","swing":50"#).groove.is_empty(), "50 was straight");
+        assert!(old("").groove.is_empty());
+        let both = old(r#","swing":67,"groove":[2,1,1]"#);
+        assert_eq!(both.groove, vec![2, 1, 1], "a saved groove wins");
+        let json = serde_json::to_string(&old(r#","swing":67"#)).unwrap();
+        assert!(
+            !json.contains("swing"),
+            "swing is no longer written: {json}"
+        );
+    }
+
+    /// The groove times swung rows as swing did, to the sample: rendering
+    /// truncates each tick to whole frames, so equal-but-for-rounding would
+    /// still shift notes.
+    #[test]
+    fn a_swing_groove_times_ticks_as_swing_did() {
+        for swing in 1u8..=99 {
+            for bpm in [32u16, 90, 120, 128, 175, 300] {
+                let mut song = Song::new(1, 4);
+                song.bpm = bpm;
+                song.groove = Song::swing_groove(swing);
+                let base = song.seconds_per_tick();
+                for row in 0..2 {
+                    // The old engine left swing 50 unscaled.
+                    let old = if swing == 50 {
+                        base
+                    } else if row == 0 {
+                        base * swing as f64 / 50.0
+                    } else {
+                        base * (100.0 - swing as f64) / 50.0
+                    };
+                    let new = song.grooved(base, row);
+                    for sr in [44100.0, 48000.0] {
+                        assert_eq!(
+                            (old * sr) as usize,
+                            (new * sr) as usize,
+                            "swing {swing} bpm {bpm} row {row}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grooves_parse_from_text_and_reject_bad_weights() {
+        assert_eq!(Song::parse_groove("67").unwrap(), vec![67, 33]);
+        assert_eq!(Song::parse_groove("2, 1, 1").unwrap(), vec![2, 1, 1]);
+        assert!(Song::parse_groove("off").unwrap().is_empty());
+        assert!(Song::parse_groove("50").unwrap().is_empty());
+        assert!(Song::parse_groove("3 0").is_err());
+        assert!(Song::parse_groove("3 x").is_err());
+        assert!(Song::parse_groove(&"1 ".repeat(17)).is_err());
+    }
+
+    #[test]
+    fn phrases_and_links_round_trip() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(4, 16);
+        song.phrases.push(phrase(3));
+        song.phrases.push(phrase(4));
+        song.patterns[0].links = vec![
+            None,
+            Some(link(0, PhraseTiming::Aligned)),
+            None,
+            Some(link(1, PhraseTiming::Running)),
+        ];
+        let json = serde_json::to_string(&song).unwrap();
+        let back: Song = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.phrases, song.phrases);
+        assert_eq!(back.patterns[0].links, song.patterns[0].links);
+        assert_eq!(
+            back.patterns[0].link(3).unwrap().timing,
+            PhraseTiming::Running
+        );
+        assert_eq!(back.patterns[0].link(0), None);
+    }
+
+    #[test]
+    fn a_song_without_phrases_writes_no_phrase_fields() {
+        let json = serde_json::to_string(&Song::new(2, 4)).unwrap();
+        assert!(!json.contains("phrases"), "{json}");
+        assert!(!json.contains("links"), "{json}");
+    }
+
+    #[test]
+    fn bad_phrases_and_links_are_repaired() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(2, 16);
+        song.phrases.push(phrase(0));
+        song.phrases.push(phrase(MAX_ROWS_PER_PATTERN + 5));
+        song.patterns[0].links = vec![
+            Some(link(0, PhraseTiming::Running)),
+            Some(link(7, PhraseTiming::Aligned)),
+            Some(link(1, PhraseTiming::Aligned)),
+        ];
+        let repairs = song.repair();
+        assert_eq!(
+            song.phrases[0].rows.len(),
+            1,
+            "a running phrase cannot be empty"
+        );
+        assert_eq!(song.phrases[1].rows.len(), MAX_ROWS_PER_PATTERN);
+        assert!(song.patterns[0].link(0).is_some());
+        assert_eq!(song.patterns[0].link(1), None, "linked to a missing phrase");
+        assert_eq!(
+            song.patterns[0].links.len(),
+            2,
+            "a link past the last channel"
+        );
+        assert_eq!(repairs.len(), 3, "{repairs:?}");
     }
 
     #[test]
@@ -787,23 +1638,23 @@ mod tests {
             instruments: vec![
                 InstrumentEntry {
                     slot: 0,
-                    def: InstrumentDef {
+                    def: InstrumentDef::from_instrument(&Instrument {
                         name: "Kick".to_string(),
-                        midi_program: None,
-                        sample_index: Some(0),
-                        synth_params: None,
+                        kind: InstrumentKind::sample(0),
                         pitch_bend_range: None,
-                    },
+                    }),
                 },
                 InstrumentEntry {
                     slot: 5,
-                    def: InstrumentDef {
+                    def: InstrumentDef::from_instrument(&Instrument {
                         name: "Lead".to_string(),
-                        midi_program: Some(80),
-                        sample_index: None,
-                        synth_params: None,
+                        kind: InstrumentKind::Midi {
+                            program: 80,
+                            channel: None,
+                            output: crate::types::MidiOutput::Builtin,
+                        },
                         pitch_bend_range: None,
-                    },
+                    }),
                 },
             ],
             sample_refs: vec![SampleRefEntry {
@@ -830,9 +1681,12 @@ mod tests {
         assert_eq!(loaded.instruments.len(), 2);
         assert_eq!(loaded.instruments[0].slot, 0);
         assert_eq!(loaded.instruments[0].def.name, "Kick");
-        assert_eq!(loaded.instruments[0].def.sample_index, Some(0));
+        let (kick, _) = loaded.instruments[0].def.to_instrument(0);
+        assert_eq!(kick.sample_index(), Some(0));
         assert_eq!(loaded.instruments[1].slot, 5);
-        assert_eq!(loaded.instruments[1].def.midi_program, Some(80));
+        let (lead, repairs) = loaded.instruments[1].def.to_instrument(5);
+        assert_eq!(lead.program(), Some(80));
+        assert!(repairs.is_empty(), "a typed instrument needs no conversion");
         assert_eq!(loaded.sample_refs.len(), 1);
         assert_eq!(loaded.sample_refs[0].slot, 0);
         assert_eq!(loaded.sample_refs[0].sample_ref.base_note, 36);

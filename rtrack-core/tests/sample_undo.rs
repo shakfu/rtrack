@@ -91,7 +91,7 @@ fn an_instrument_load_targets_the_slot_it_plays() {
     let dir = workspace("instrument", &["kick.wav", "snare.wav"]);
     let mut core = core();
     core.load_sample(5, &dir.join("kick.wav")).unwrap();
-    core.instruments[0].sample_index = Some(5);
+    core.instruments[0].kind = rtrack_core::InstrumentKind::sample(5);
 
     assert_eq!(
         core.load_instrument_sample(0, &dir.join("snare.wav"))

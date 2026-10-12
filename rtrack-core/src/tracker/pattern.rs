@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{MIDI_MAX_NOTE, SEMITONES_PER_OCTAVE};
+use super::fx::{Fx, FxCmd};
+use crate::constants::{EFFECT_SET_SPEED, MIDI_MAX_NOTE, SEMITONES_PER_OCTAVE};
 use crate::theory::ScaleSetting;
 
 /// A musical note pitch (C, C#, D, ... B)
@@ -177,23 +178,86 @@ pub fn midi_note_name(midi: u8) -> String {
     format!("{}{}", value.name(), midi / SEMITONES_PER_OCTAVE)
 }
 
+/// Effect columns per cell.
+pub const FX_COLUMNS: usize = 2;
+
 /// A single cell in the tracker grid.
 ///
 /// Unset fields are omitted when serialized. Tracker patterns are mostly
 /// empty, and spelling out five nulls per cell dominated the file: a 4x16
 /// pattern with one note cost about 5.9 KB before this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(try_from = "CellRepr", into = "CellRepr")]
 pub struct Cell {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<Note>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instrument: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
+    pub fx: [Option<Fx>; FX_COLUMNS],
+}
+
+/// A cell as stored: the effect columns as a list trimmed of trailing empty
+/// ones, or the single-digit `effect`/`effect_value` of versions 0 and 1.
+#[derive(Serialize, Deserialize)]
+struct CellRepr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect: Option<u8>,
+    note: Option<Note>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_value: Option<u8>,
+    instrument: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volume: Option<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fx: Vec<Option<Fx>>,
+    #[serde(default, skip_serializing)]
+    effect: Option<u8>,
+    #[serde(default, skip_serializing)]
+    effect_value: Option<u8>,
+}
+
+impl TryFrom<CellRepr> for Cell {
+    type Error = String;
+
+    fn try_from(r: CellRepr) -> Result<Self, Self::Error> {
+        if r.fx.len() > FX_COLUMNS {
+            return Err(format!(
+                "a cell has {} effect columns; at most {FX_COLUMNS} are supported",
+                r.fx.len()
+            ));
+        }
+        let mut cell = Cell {
+            note: r.note,
+            instrument: r.instrument,
+            volume: r.volume,
+            fx: [None; FX_COLUMNS],
+        };
+        if r.fx.is_empty() {
+            let (fx, consumed) = Fx::from_legacy(r.effect, r.effect_value, r.instrument);
+            cell.fx[0] = fx;
+            if consumed {
+                cell.instrument = None;
+            }
+        } else {
+            cell.fx[..r.fx.len()].copy_from_slice(&r.fx);
+        }
+        Ok(cell)
+    }
+}
+
+impl From<Cell> for CellRepr {
+    fn from(cell: Cell) -> Self {
+        let used = cell
+            .fx
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        CellRepr {
+            note: cell.note,
+            instrument: cell.instrument,
+            volume: cell.volume,
+            fx: cell.fx[..used].to_vec(),
+            effect: None,
+            effect_value: None,
+        }
+    }
 }
 
 impl Cell {
@@ -217,10 +281,37 @@ impl Cell {
         self.note.is_none()
             && self.instrument.is_none()
             && self.volume.is_none()
-            && self.effect.is_none()
+            && self.fx.iter().all(Option::is_none)
     }
 
-    /// Format the cell for display: "C-4 01 80 000"
+    /// Type one hex digit into effect column `col`.
+    ///
+    /// An empty column takes the digit as an old single-digit command (`4`
+    /// is `PVB`); later digits shift into the parameter. `C` takes its
+    /// controller from the instrument column, as `Cxx` did. Shared by both
+    /// frontends so their entry cannot drift.
+    pub fn enter_effect_digit(&mut self, col: usize, digit: u8) {
+        match &mut self.fx[col] {
+            None => {
+                let Some(cmd) = FxCmd::from_digit(digit, 0, self.instrument) else {
+                    return;
+                };
+                if matches!(cmd, FxCmd::Cc(_)) {
+                    self.instrument = None;
+                }
+                self.fx[col] = Some(Fx::new(cmd, 0));
+            }
+            Some(fx) => {
+                fx.param = (fx.param << 4) | (digit & 0x0F);
+                // `F` meant speed below 0x20 and tempo from it.
+                if matches!(fx.cmd, FxCmd::Ticks | FxCmd::Tempo) {
+                    fx.cmd = FxCmd::from_digit(EFFECT_SET_SPEED, fx.param, None).unwrap_or(fx.cmd);
+                }
+            }
+        }
+    }
+
+    /// Format the cell for display: "C-4 01 80 PVB44"
     pub fn display_note(&self) -> String {
         match &self.note {
             Some(n) => n.display(),
@@ -242,16 +333,24 @@ impl Cell {
         }
     }
 
-    pub fn display_effect(&self) -> String {
-        let cmd = match self.effect {
-            Some(e) => format!("{:01X}", e & 0x0F),
-            None => "-".to_string(),
+    /// Effect column `col`, e.g. "PVB44".
+    pub fn display_effect(&self, col: usize) -> String {
+        match self.fx[col] {
+            Some(fx) => fx.to_string(),
+            None => "-----".to_string(),
+        }
+    }
+
+    /// Set effect column `col` from its text form, e.g. "PVB44" or "C0740".
+    /// Empty text clears it.
+    pub fn set_effect_text(&mut self, col: usize, text: &str) -> Result<(), String> {
+        let text = text.trim();
+        self.fx[col] = if text.is_empty() {
+            None
+        } else {
+            Some(text.parse()?)
         };
-        let val = match self.effect_value {
-            Some(v) => format!("{:02X}", v),
-            None => "--".to_string(),
-        };
-        format!("{}{}", cmd, val)
+        Ok(())
     }
 }
 
@@ -267,6 +366,14 @@ pub struct Pattern {
     pub rows: usize,
     pub channels: usize,
     pub data: Vec<Vec<Cell>>, // data[row][channel]
+    /// Per channel, the phrase that column plays instead of its own cells.
+    /// May be shorter than `channels`; a missing entry is no link.
+    #[serde(default, skip_serializing_if = "no_links")]
+    pub links: Vec<Option<super::PhraseLink>>,
+}
+
+fn no_links(links: &[Option<super::PhraseLink>]) -> bool {
+    links.iter().all(Option::is_none)
 }
 
 impl Pattern {
@@ -275,7 +382,13 @@ impl Pattern {
             rows,
             channels,
             data: vec![vec![Cell::default(); channels]; rows],
+            links: Vec::new(),
         }
+    }
+
+    /// The phrase link of `channel`, if it has one.
+    pub fn link(&self, channel: usize) -> Option<super::PhraseLink> {
+        self.links.get(channel).copied().flatten()
     }
 
     /// Roughly how much heap this pattern holds.
@@ -291,7 +404,14 @@ impl Pattern {
             .iter()
             .map(|row| row.capacity() * std::mem::size_of::<Cell>())
             .sum();
-        cells + self.data.capacity() * row_header
+        cells
+            + self.data.capacity() * row_header
+            + self.links.capacity() * std::mem::size_of::<Option<super::PhraseLink>>()
+    }
+
+    /// Whether any cell uses the second effect column.
+    pub fn uses_second_fx(&self) -> bool {
+        self.data.iter().flatten().any(|c| c.fx[1].is_some())
     }
 
     pub fn get(&self, row: usize, channel: usize) -> &Cell {
@@ -332,6 +452,7 @@ impl Pattern {
     pub fn conform(&mut self, rows: usize, channels: usize) {
         self.rows = rows;
         self.channels = channels;
+        self.links.truncate(channels);
         self.data.truncate(rows);
         for row in self.data.iter_mut() {
             row.truncate(channels);
@@ -425,7 +546,68 @@ mod tests {
         assert_eq!(cell.display_note(), "---");
         assert_eq!(cell.display_instrument(), "--");
         assert_eq!(cell.display_volume(), "--");
-        assert_eq!(cell.display_effect(), "---");
+        assert_eq!(cell.display_effect(0), "-----");
+    }
+
+    #[test]
+    fn effect_columns_save_trimmed_and_load_back() {
+        let mut cell = Cell::default();
+        assert_eq!(serde_json::to_string(&cell).unwrap(), "{}");
+
+        cell.fx[1] = Some(Fx::new(FxCmd::Arp, 0x37));
+        let json = serde_json::to_string(&cell).unwrap();
+        assert_eq!(json, r#"{"fx":[null,"ARP37"]}"#);
+        assert_eq!(serde_json::from_str::<Cell>(&json).unwrap(), cell);
+
+        cell.fx[1] = None;
+        cell.fx[0] = Some(Fx::new(FxCmd::Vibrato, 0x44));
+        assert_eq!(serde_json::to_string(&cell).unwrap(), r#"{"fx":["PVB44"]}"#);
+    }
+
+    #[test]
+    fn a_cell_with_too_many_effect_columns_is_refused() {
+        let err = serde_json::from_str::<Cell>(r#"{"fx":["ARP37",null,"PVB44"]}"#).unwrap_err();
+        assert!(err.to_string().contains("effect columns"), "{err}");
+    }
+
+    #[test]
+    fn new_effect_columns_win_over_legacy_fields() {
+        let cell: Cell =
+            serde_json::from_str(r#"{"fx":["ARP37"],"effect":4,"effect_value":68}"#).unwrap();
+        assert_eq!(cell.fx[0], Some(Fx::new(FxCmd::Arp, 0x37)));
+    }
+
+    #[test]
+    fn effect_digits_enter_as_before() {
+        let mut cell = Cell::default();
+        for d in [0x4, 0x4, 0x2] {
+            cell.enter_effect_digit(0, d);
+        }
+        assert_eq!(cell.display_effect(0), "PVB42");
+
+        // `F` picks speed or tempo from the parameter as it is typed.
+        let mut cell = Cell::default();
+        cell.enter_effect_digit(0, 0xF);
+        cell.enter_effect_digit(0, 0x1);
+        assert_eq!(cell.display_effect(0), "TIC01");
+        cell.enter_effect_digit(0, 0x8);
+        assert_eq!(cell.display_effect(0), "TIC18");
+        cell.enter_effect_digit(0, 0x0);
+        assert_eq!(cell.display_effect(0), "TPO80");
+
+        // `C` takes its controller from the instrument column.
+        let mut cell = Cell {
+            instrument: Some(7),
+            ..Cell::default()
+        };
+        cell.enter_effect_digit(0, 0xC);
+        assert_eq!(cell.display_effect(0), "C0700");
+        assert_eq!(cell.instrument, None);
+
+        // `A` was never a command.
+        let mut cell = Cell::default();
+        cell.enter_effect_digit(0, 0xA);
+        assert_eq!(cell.fx[0], None);
     }
 
     #[test]
@@ -578,8 +760,7 @@ mod tests {
             }),
             instrument: Some(1),
             volume: Some(0x40),
-            effect: None,
-            effect_value: None,
+            fx: [None, None],
         };
         pat.set_cell(10, 2, cell);
         let got = pat.get(10, 2);

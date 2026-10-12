@@ -10,23 +10,28 @@ use crate::app::App;
 pub use crate::app::SubColumn;
 
 // Layout constants
-const ROW_NUM_WIDTH: u16 = 3; // "00 "
+pub(crate) const ROW_NUM_WIDTH: u16 = 3; // "00 "
 const NOTE_WIDTH: u16 = 3; // "C-4"
 const INST_WIDTH: u16 = 2; // "01"
 const VOL_WIDTH: u16 = 2; // "80"
-const FX_WIDTH: u16 = 3; // "000"
+const FX_WIDTH: u16 = 5; // "PVB44"
 #[allow(dead_code)]
 const GAPS: u16 = 6; // spaces between sub-columns (2 per gap)
-#[allow(dead_code)]
-const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
-const SEPARATOR_WIDTH: u16 = 3; // " | "
+/// Width of a track showing one effect column.
+pub(crate) const CHANNEL_WIDTH: u16 = NOTE_WIDTH + INST_WIDTH + VOL_WIDTH + FX_WIDTH + GAPS;
+pub(crate) const SEPARATOR_WIDTH: u16 = 3; // " | "
 pub use rtrack_core::constants::MAX_CHANNEL_NAME;
 
+/// Width of a track showing `fx_columns` effect columns.
+pub(crate) fn channel_width(fx_columns: usize) -> u16 {
+    CHANNEL_WIDTH + (fx_columns.saturating_sub(1) as u16) * (2 + FX_WIDTH)
+}
+
 #[allow(dead_code)]
-pub fn channel_total_width(num_channels: usize) -> u16 {
+pub fn channel_total_width(num_channels: usize, fx_columns: usize) -> u16 {
     ROW_NUM_WIDTH
         + SEPARATOR_WIDTH
-        + (CHANNEL_WIDTH * num_channels as u16)
+        + (channel_width(fx_columns) * num_channels as u16)
         + (SEPARATOR_WIDTH * (num_channels.saturating_sub(1)) as u16)
 }
 
@@ -76,23 +81,34 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 .get(ch)
                 .map(|c| &c.name)
                 .filter(|n| !n.is_empty());
-            let ch_type = app
+            // A linked track shows its phrase: P for aligned, R for running.
+            let link = app
                 .core
-                .channels
-                .get(ch)
-                .map(|c| c.channel_type)
-                .unwrap_or(crate::app::ChannelType::Midi);
-            let type_label = ch_type.label();
+                .song
+                .pattern_at(app.current_order_position())
+                .and_then(|p| p.link(ch));
+            let link_label = link.map(|l| {
+                let kind = match l.timing {
+                    rtrack_core::tracker::PhraseTiming::Aligned => 'P',
+                    rtrack_core::tracker::PhraseTiming::Running => 'R',
+                };
+                format!("[{kind}{:02X}]", l.phrase.min(0xFF))
+            });
+            let type_label: &str = link_label
+                .as_deref()
+                .unwrap_or_else(|| app.core.track_label(ch));
             let type_style = Style::default()
-                .fg(match ch_type {
-                    crate::app::ChannelType::Midi => theme.header_bpm,
-                    crate::app::ChannelType::Synth => theme.header_octave,
-                    crate::app::ChannelType::Sample => theme.effect_set,
+                .fg(match type_label {
+                    _ if link.is_some() => theme.mode_insert,
+                    "[SMP]" => theme.effect_set,
+                    "[SYN]" => theme.header_octave,
+                    "[---]" => theme.muted_dim,
+                    _ => theme.header_bpm,
                 })
                 .add_modifier(Modifier::BOLD);
 
             // Layout: <name> <pad> [TYP] M   (right-justified type + indicator)
-            let w = CHANNEL_WIDTH as usize; // 16
+            let w = channel_width(app.fx_columns()) as usize;
             let name_str: String = if let Some(name) = ch_name {
                 name.chars().take(MAX_CHANNEL_NAME).collect()
             } else {
@@ -148,7 +164,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 );
             }
 
-            hx = col_start + CHANNEL_WIDTH;
+            hx = col_start + channel_width(app.fx_columns());
         }
     }
 
@@ -207,6 +223,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.separator),
         );
 
+        let fx_columns = app.fx_columns();
         let mut x = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
 
         let visible = app.visible_channels();
@@ -217,7 +234,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 x += SEPARATOR_WIDTH;
             }
 
-            let cell = pattern.get(row_idx, ch);
+            let cell = app
+                .core
+                .song
+                .cell_at(app.current_order_position(), row_idx, ch);
 
             // Check if this cell is inside a block selection
             let in_block = app.block_bounds().is_some_and(|(r0, r1, c0, c1)| {
@@ -256,12 +276,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             } else {
                 theme.volume_empty
             };
-            let fx_fg = if is_muted {
-                theme.muted_dim
-            } else if cell.effect.is_some() || cell.effect_value.is_some() {
-                theme.effect_set
-            } else {
-                theme.effect_empty
+            let fx_fg = |col: usize| {
+                if is_muted {
+                    theme.muted_dim
+                } else if cell.fx[col].is_some() {
+                    theme.effect_set
+                } else {
+                    theme.effect_empty
+                }
             };
 
             // Highlight the cursor sub-column
@@ -309,10 +331,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             write_str(buf, x, y, "  ", Style::default().bg(base_bg));
             x += 2;
 
-            // Effect
-            let fx_str = cell.display_effect();
-            write_str(buf, x, y, &fx_str, cursor_on(SubColumn::Effect).fg(fx_fg));
-            x += FX_WIDTH;
+            // Effects
+            for (col, sub) in [SubColumn::Effect, SubColumn::Effect2]
+                .into_iter()
+                .enumerate()
+                .take(fx_columns)
+            {
+                if col > 0 {
+                    write_str(buf, x, y, "  ", Style::default().bg(base_bg));
+                    x += 2;
+                }
+                let fx_str = cell.display_effect(col);
+                write_str(buf, x, y, &fx_str, cursor_on(sub).fg(fx_fg(col)));
+                x += FX_WIDTH;
+            }
         }
     }
 }
@@ -333,20 +365,22 @@ mod tests {
 
     #[test]
     fn test_sub_column_navigation() {
-        assert_eq!(SubColumn::Note.next(), SubColumn::Instrument);
-        assert_eq!(SubColumn::Instrument.next(), SubColumn::Volume);
-        assert_eq!(SubColumn::Volume.next(), SubColumn::Effect);
-        assert_eq!(SubColumn::Effect.next(), SubColumn::Note);
+        assert_eq!(SubColumn::Note.next(1), SubColumn::Instrument);
+        assert_eq!(SubColumn::Instrument.next(1), SubColumn::Volume);
+        assert_eq!(SubColumn::Volume.next(1), SubColumn::Effect);
+        assert_eq!(SubColumn::Effect.next(1), SubColumn::Note);
 
-        assert_eq!(SubColumn::Note.prev(), SubColumn::Effect);
-        assert_eq!(SubColumn::Effect.prev(), SubColumn::Volume);
+        assert_eq!(SubColumn::Note.prev(1), SubColumn::Effect);
+        assert_eq!(SubColumn::Effect.prev(1), SubColumn::Volume);
     }
 
     #[test]
     fn test_channel_total_width() {
-        // 1 channel: 3 (row) + 3 (sep) + 16 (channel) = 22
-        assert_eq!(channel_total_width(1), 22);
-        // 4 channels: 3 + 3 + 4*16 + 3*3 = 79
-        assert_eq!(channel_total_width(4), 79);
+        // 1 channel: 3 (row) + 3 (sep) + 18 (channel) = 24
+        assert_eq!(channel_total_width(1, 1), 24);
+        // 4 channels: 3 + 3 + 4*18 + 3*3 = 87
+        assert_eq!(channel_total_width(4, 1), 87);
+        // Two effect columns add a gap and a field: 18 + 7 = 25 per track
+        assert_eq!(channel_total_width(4, 2), 115);
     }
 }

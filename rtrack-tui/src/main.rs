@@ -208,8 +208,14 @@ fn run_render(
     sample_dir: Option<PathBuf>,
     output: PathBuf,
 ) -> Result<()> {
-    // Offline rendering does not use the audio device.
+    // Offline rendering does not use the audio device, but it plays the
+    // SoundFont as live playback would.
+    let sound_font = sf2_path
+        .as_deref()
+        .map(rtrack_core::audio::load_sound_font)
+        .transpose()?;
     let (app, _) = setup_app(sf2_path, samples, sample_dir, file)?;
+    let sound_font = sound_font.or_else(|| app.core.sound_font().cloned());
 
     let ext = output
         .extension()
@@ -228,9 +234,7 @@ fn run_render(
         output.display()
     );
 
-    let instruments = app.core.export_instruments();
     let sample_rate = app.core.export_sample_rate();
-    let channel_fx = app.core.channel_effects_params_slice();
 
     match ext.as_str() {
         "wav" => {
@@ -238,8 +242,9 @@ fn run_render(
                 &output,
                 &app.core.song,
                 &app.core.sample_bank,
-                &instruments,
-                &channel_fx,
+                &app.core.instruments,
+                sound_font.as_ref(),
+                &app.core.channels,
                 &app.core.send_bus_params,
                 sample_rate,
             )?;
@@ -249,8 +254,9 @@ fn run_render(
                 &output,
                 &app.core.song,
                 &app.core.sample_bank,
-                &instruments,
-                &channel_fx,
+                &app.core.instruments,
+                sound_font.as_ref(),
+                &app.core.channels,
                 &app.core.send_bus_params,
                 sample_rate,
             )?;

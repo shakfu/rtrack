@@ -4,7 +4,7 @@ use rtrack_core::audio::synth::{FilterType, Patch, SynthParams};
 use rtrack_core::constants::MAX_INSTRUMENTS;
 use rtrack_core::sample::{SliceOverwrite, SliceRange};
 use rtrack_core::tracker::midi_note_name;
-use rtrack_core::Instrument;
+use rtrack_core::{Instrument, InstrumentKind, MidiOutput, SampleFx, VoiceFilter};
 
 use crate::app::RtrackApp;
 
@@ -27,15 +27,12 @@ impl InstType {
         }
     }
 
-    fn from_instrument(inst: &Instrument) -> Self {
-        if inst.synth_params.is_some() {
-            InstType::Synth
-        } else if inst.sample_index.is_some() {
-            InstType::Sample
-        } else if inst.midi_program.is_some() {
-            InstType::Midi
-        } else {
-            InstType::Empty
+    fn from_instrument(inst: &Instrument, slot: usize) -> Self {
+        match inst.kind {
+            InstrumentKind::Synth(_) => InstType::Synth,
+            InstrumentKind::Sample { .. } => InstType::Sample,
+            InstrumentKind::Midi { .. } if inst.is_default(slot) => InstType::Empty,
+            InstrumentKind::Midi { .. } => InstType::Midi,
         }
     }
 }
@@ -62,7 +59,8 @@ impl RtrackApp {
             if ui.button("+ Synth").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
                     self.core.instruments[slot].name = format!("Synth {:02X}", slot);
-                    self.core.instruments[slot].synth_params = Some(SynthParams::from_patch(0));
+                    self.core.instruments[slot].kind =
+                        InstrumentKind::Synth(SynthParams::from_patch(0));
                     self.selected_instrument = Some(slot);
                     self.core.dirty = true;
                 }
@@ -70,7 +68,7 @@ impl RtrackApp {
             if ui.button("+ Sample").clicked() {
                 if let Some(slot) = self.find_empty_instrument_slot() {
                     self.core.instruments[slot].name = format!("Sample {:02X}", slot);
-                    self.core.instruments[slot].sample_index = Some(slot);
+                    self.core.instruments[slot].play_sample(slot);
                     self.selected_instrument = Some(slot);
                     self.core.dirty = true;
                 }
@@ -87,7 +85,7 @@ impl RtrackApp {
             .show(ui, |ui| {
                 for i in 0..num_instruments {
                     let inst = &self.core.instruments[i];
-                    let itype = InstType::from_instrument(inst);
+                    let itype = InstType::from_instrument(inst, i);
                     let is_empty = itype == InstType::Empty;
 
                     if is_empty && i >= 16 {
@@ -132,7 +130,7 @@ impl RtrackApp {
                 .clicked()
             {
                 if let Some(idx) = self.selected_instrument {
-                    self.core.instruments[idx] = Instrument::default();
+                    self.core.instruments[idx] = Instrument::for_slot(idx);
                     self.core.dirty = true;
                 }
             }
@@ -159,7 +157,7 @@ impl RtrackApp {
 
     /// Right panel: common header + type selector + type-specific editor.
     fn draw_instrument_panel(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let itype = InstType::from_instrument(&self.core.instruments[idx]);
+        let itype = InstType::from_instrument(&self.core.instruments[idx], idx);
 
         // Header: name + type selector
         ui.horizontal(|ui| {
@@ -221,6 +219,7 @@ impl RtrackApp {
                 }
                 InstType::Sample => {
                     self.draw_sample_params(ui, idx);
+                    self.draw_sample_fx(ui, idx);
                 }
                 InstType::Midi => {
                     self.draw_midi_params(ui, idx);
@@ -234,22 +233,16 @@ impl RtrackApp {
         let name = inst.name.clone();
         let pbr = inst.pitch_bend_range;
 
-        inst.synth_params = None;
-        inst.sample_index = None;
-        inst.midi_program = None;
-
-        match new_type {
-            InstType::Synth => {
-                inst.synth_params = Some(SynthParams::from_patch(0));
-            }
-            InstType::Sample => {
-                inst.sample_index = Some(idx);
-            }
-            InstType::Midi => {
-                inst.midi_program = Some(0);
-            }
-            InstType::Empty => {}
-        }
+        inst.kind = match new_type {
+            InstType::Synth => InstrumentKind::Synth(SynthParams::from_patch(0)),
+            InstType::Sample => InstrumentKind::sample(idx),
+            InstType::Midi => InstrumentKind::Midi {
+                program: 0,
+                channel: None,
+                output: MidiOutput::Builtin,
+            },
+            InstType::Empty => InstrumentKind::default_for(idx),
+        };
 
         inst.name = name;
         inst.pitch_bend_range = pbr;
@@ -261,7 +254,7 @@ impl RtrackApp {
     // ------------------------------------------------------------------
 
     fn draw_synth_params(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let params = match self.core.instruments[idx].synth_params.as_mut() {
+        let params = match self.core.instruments[idx].synth_params_mut() {
             Some(p) => p,
             None => return, // type was just changed away from Synth
         };
@@ -357,6 +350,20 @@ impl RtrackApp {
             });
 
         ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Drive:");
+            if ui
+                .add(egui::Slider::new(
+                    &mut params.drive,
+                    1.0..=SampleFx::MAX_DRIVE,
+                ))
+                .on_hover_text("tanh drive before the filter; 1.0 is off")
+                .changed()
+            {
+                changed = true;
+            }
+        });
 
         ui.heading("Filter");
         egui::Grid::new(format!("synth_filter_{}", idx))
@@ -520,7 +527,7 @@ impl RtrackApp {
 
         ui.separator();
 
-        let sample_slot = self.core.instruments[idx].sample_index;
+        let sample_slot = self.core.instruments[idx].sample_index();
         if let Some(slot) = sample_slot {
             // Extract sample data before entering closures to avoid borrow conflicts
             let waveform_peaks: Vec<f32> = self
@@ -758,13 +765,88 @@ impl RtrackApp {
         }
     }
 
+    /// Drive and filter of sample instrument `idx`, applied to each of its
+    /// voices. A slider drag is one undo step.
+    fn draw_sample_fx(&mut self, ui: &mut egui::Ui, idx: usize) {
+        let InstrumentKind::Sample { fx, .. } = &mut self.core.instruments[idx].kind else {
+            return;
+        };
+        let was = *fx;
+        ui.add_space(8.0);
+        ui.heading("Drive and Filter");
+        egui::Grid::new(format!("sample_fx_{}", idx))
+            .num_columns(4)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Drive:");
+                ui.add(egui::Slider::new(&mut fx.drive, 1.0..=SampleFx::MAX_DRIVE))
+                    .on_hover_text("tanh drive before the filter; 1.0 is off");
+                ui.label("Filter:");
+                let mut kind = fx.filter.map(|f| f.kind);
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut kind, None, "Off");
+                    ui.selectable_value(&mut kind, Some(FilterType::LowPass), "LP");
+                    ui.selectable_value(&mut kind, Some(FilterType::HighPass), "HP");
+                    ui.selectable_value(&mut kind, Some(FilterType::BandPass), "BP");
+                });
+                fx.filter = kind.map(|kind| VoiceFilter {
+                    kind,
+                    ..fx.filter.unwrap_or_default()
+                });
+                ui.end_row();
+
+                if let Some(filter) = &mut fx.filter {
+                    ui.label("Cutoff:");
+                    ui.add(
+                        egui::Slider::new(&mut filter.cutoff_hz, 20.0..=20000.0)
+                            .logarithmic(true)
+                            .suffix(" Hz"),
+                    );
+                    ui.label("Resonance:");
+                    ui.add(egui::Slider::new(&mut filter.resonance, 0.0..=0.95));
+                    ui.end_row();
+                }
+            });
+        let now = *fx;
+        if now != was {
+            // Snapshot only on a change: a snapshot clones every instrument.
+            self.set_sample_fx(idx, was);
+            let before = self.core.snapshot_samples();
+            self.set_sample_fx(idx, now);
+            self.core.history.push_from(
+                rtrack_core::editor::EditSource::new("instrument.sample_fx", idx),
+                rtrack_core::editor::Edit::Bank(Box::new(rtrack_core::editor::BankEdit {
+                    before,
+                    after: self.core.snapshot_samples(),
+                })),
+            );
+            self.core.dirty = true;
+        }
+    }
+
+    fn set_sample_fx(&mut self, idx: usize, value: SampleFx) {
+        if let InstrumentKind::Sample { fx, .. } = &mut self.core.instruments[idx].kind {
+            *fx = value;
+        }
+    }
+
     // ------------------------------------------------------------------
     // MIDI Program Editor Panel
     // ------------------------------------------------------------------
 
     fn draw_midi_params(&mut self, ui: &mut egui::Ui, idx: usize) {
         ui.heading("MIDI Program");
-        let mut prog = self.core.instruments[idx].midi_program.unwrap_or(0) as i32;
+        let InstrumentKind::Midi {
+            program,
+            channel,
+            output,
+        } = &mut self.core.instruments[idx].kind
+        else {
+            return;
+        };
+        let mut changed = false;
+
+        let mut prog = *program as i32;
         if ui
             .add(
                 egui::DragValue::new(&mut prog)
@@ -773,7 +855,39 @@ impl RtrackApp {
             )
             .changed()
         {
-            self.core.instruments[idx].midi_program = Some(prog as u8);
+            *program = prog as u8;
+            changed = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Output:");
+            changed |= ui
+                .radio_value(output, MidiOutput::Builtin, "Built in")
+                .changed();
+            changed |= ui
+                .radio_value(output, MidiOutput::External { port: None }, "MIDI port")
+                .on_hover_text("The port selected in MIDI Ports. Plays built in until one is.")
+                .changed();
+        });
+
+        // 0 is the track's own channel; 1-16 override it.
+        let mut ch = channel.map_or(0, |c| c as i32 + 1);
+        if ui
+            .add(
+                egui::DragValue::new(&mut ch)
+                    .range(0..=16)
+                    .custom_formatter(|v, _| match v as i32 {
+                        0 => "Channel: track's".to_string(),
+                        c => format!("Channel: {c}"),
+                    }),
+            )
+            .changed()
+        {
+            *channel = (ch > 0).then(|| (ch - 1) as u8);
+            changed = true;
+        }
+
+        if changed {
             self.core.dirty = true;
         }
     }
@@ -854,11 +968,7 @@ impl RtrackApp {
         let max = self.core.instruments.len().min(MAX_INSTRUMENTS);
         for i in 0..max {
             let inst = &self.core.instruments[i];
-            if inst.name.is_empty()
-                && inst.synth_params.is_none()
-                && inst.sample_index.is_none()
-                && inst.midi_program.is_none()
-            {
+            if inst.is_default(i) {
                 return Some(i);
             }
         }
@@ -978,6 +1088,27 @@ mod tests {
         let mut app = RtrackApp::headless(4, 16);
         app.core.load_sample(0, &wav).unwrap();
         (app, dir)
+    }
+
+    #[test]
+    fn drawing_the_drive_and_filter_panel_records_nothing() {
+        let mut app = RtrackApp::headless(4, 16);
+        app.core.instruments[2].kind = InstrumentKind::Sample {
+            slot: 2,
+            fx: SampleFx {
+                drive: 3.0,
+                filter: Some(VoiceFilter::default()),
+            },
+        };
+        let depth = app.core.history.undo_depth();
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.draw_sample_fx(ui, 2));
+            // No renderer here to take the font atlas upload.
+            out.textures_delta.clear();
+        }
+        assert_eq!(app.core.history.undo_depth(), depth);
+        assert!(!app.core.dirty);
     }
 
     fn span(app: &RtrackApp, slot: usize) -> (usize, usize) {

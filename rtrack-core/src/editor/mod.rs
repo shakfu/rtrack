@@ -32,9 +32,10 @@ use crate::tracker::{Cell, Song};
 
 /// Which field within a channel the edit cursor is on.
 ///
-/// A tracker cell is four fields, and which one has the cursor decides what a
+/// A tracker cell is five fields, and which one has the cursor decides what a
 /// keypress means: a letter is a note in the first and a hex digit in the
-/// others.
+/// others. `Effect2` is the second effect column, reachable only while it is
+/// shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SubColumn {
     #[default]
@@ -42,45 +43,63 @@ pub enum SubColumn {
     Instrument,
     Volume,
     Effect,
+    Effect2,
 }
 
 impl SubColumn {
     /// The next field to the right, wrapping back to the note column.
+    /// `fx_columns` is how many effect columns are shown, 1 or 2.
     ///
     /// Wrapping is what both frontends already did, and it is what makes Tab
     /// walk the cursor along a row rather than parking it on the effect
     /// column.
-    pub fn next(self) -> Self {
+    pub fn next(self, fx_columns: usize) -> Self {
         match self {
             Self::Note => Self::Instrument,
             Self::Instrument => Self::Volume,
             Self::Volume => Self::Effect,
-            Self::Effect => Self::Note,
+            Self::Effect if fx_columns > 1 => Self::Effect2,
+            Self::Effect | Self::Effect2 => Self::Note,
         }
     }
 
-    /// The next field to the left, wrapping round to the effect column.
-    pub fn prev(self) -> Self {
+    /// The next field to the left, wrapping round to the last effect column.
+    pub fn prev(self, fx_columns: usize) -> Self {
         match self {
+            Self::Note if fx_columns > 1 => Self::Effect2,
             Self::Note => Self::Effect,
             Self::Instrument => Self::Note,
             Self::Volume => Self::Instrument,
             Self::Effect => Self::Volume,
+            Self::Effect2 => Self::Effect,
         }
     }
 
     /// Every field, left to right.
-    pub fn all() -> [Self; 4] {
-        [Self::Note, Self::Instrument, Self::Volume, Self::Effect]
+    pub fn all() -> [Self; 5] {
+        [
+            Self::Note,
+            Self::Instrument,
+            Self::Volume,
+            Self::Effect,
+            Self::Effect2,
+        ]
+    }
+
+    /// The effect column this field edits, if it is one.
+    pub fn fx_column(self) -> Option<usize> {
+        match self {
+            Self::Effect => Some(0),
+            Self::Effect2 => Some(1),
+            _ => None,
+        }
     }
 }
 
 /// One cell's value either side of an edit.
 #[derive(Debug, Clone)]
 pub struct CellEdit {
-    pub pattern_idx: usize,
-    pub row: usize,
-    pub channel: usize,
+    pub at: crate::tracker::CellAddr,
     pub old_cell: Cell,
     pub new_cell: Cell,
 }
@@ -517,9 +536,11 @@ mod tests {
 
     fn cell_edit(row: usize, new: Option<Note>) -> CellEdit {
         CellEdit {
-            pattern_idx: 0,
-            row,
-            channel: 0,
+            at: crate::tracker::CellAddr::Pattern {
+                pattern: 0,
+                row,
+                channel: 0,
+            },
             old_cell: Cell::default(),
             new_cell: Cell {
                 note: new,
@@ -539,37 +560,36 @@ mod tests {
 
     #[test]
     fn sub_columns_walk_right_and_wrap() {
-        let mut at = SubColumn::Note;
-        for expected in [
-            SubColumn::Instrument,
-            SubColumn::Volume,
-            SubColumn::Effect,
-            SubColumn::Note,
-        ] {
-            at = at.next();
-            assert_eq!(at, expected);
+        for (fx_columns, last) in [(1, SubColumn::Effect), (2, SubColumn::Effect2)] {
+            let mut at = SubColumn::Note;
+            let mut walked = Vec::new();
+            loop {
+                at = at.next(fx_columns);
+                walked.push(at);
+                if at == SubColumn::Note {
+                    break;
+                }
+            }
+            assert_eq!(walked[walked.len() - 2], last, "{fx_columns} columns");
+            assert_eq!(walked.len(), 3 + fx_columns);
         }
     }
 
     #[test]
     fn sub_columns_walk_left_and_wrap() {
-        let mut at = SubColumn::Note;
-        for expected in [
-            SubColumn::Effect,
-            SubColumn::Volume,
-            SubColumn::Instrument,
-            SubColumn::Note,
-        ] {
-            at = at.prev();
-            assert_eq!(at, expected);
-        }
+        assert_eq!(SubColumn::Note.prev(1), SubColumn::Effect);
+        assert_eq!(SubColumn::Note.prev(2), SubColumn::Effect2);
+        assert_eq!(SubColumn::Effect2.prev(2), SubColumn::Effect);
     }
 
     #[test]
     fn next_and_prev_are_inverses_for_every_field() {
         for sub in SubColumn::all() {
-            assert_eq!(sub.next().prev(), sub, "{sub:?}");
-            assert_eq!(sub.prev().next(), sub, "{sub:?}");
+            assert_eq!(sub.next(2).prev(2), sub, "{sub:?}");
+            assert_eq!(sub.prev(2).next(2), sub, "{sub:?}");
+        }
+        for sub in &SubColumn::all()[..4] {
+            assert_eq!(sub.next(1).prev(1), *sub, "{sub:?}");
         }
     }
 
@@ -624,7 +644,14 @@ mod tests {
         // What is left is the three most recent, newest first.
         for expected_row in [4, 3, 2] {
             let step = cells_of(h.undo().expect("a step"));
-            assert_eq!(step[0].row, expected_row);
+            assert_eq!(
+                step[0].at,
+                crate::tracker::CellAddr::Pattern {
+                    pattern: 0,
+                    row: expected_row,
+                    channel: 0
+                }
+            );
         }
         assert!(!h.can_undo());
     }
@@ -829,7 +856,7 @@ mod tests {
         let mut h = EditHistory::with_budget(usize::MAX, 100);
         let song = bpm(120);
         h.push_from(EditSource::new("song.bpm", 0), structure(&song, &bpm(130)));
-        h.push_from(EditSource::new("song.swing", 0), structure(&song, &song));
+        h.push_from(EditSource::new("song.groove", 0), structure(&song, &song));
         assert_eq!(h.undo_depth(), 2);
     }
 

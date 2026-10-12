@@ -21,7 +21,7 @@ use crate::editor::{BankEdit, CellEdit, Edit, StructureEdit};
 use crate::error::{Error, Result};
 use crate::types::{
     autosave_path_for, autosave_path_for_unsaved, default_channel_configs, make_relative,
-    resolve_relative, ChannelConfig, ChannelType, ClockMode, Instrument, LearnableParam,
+    resolve_relative, ChannelConfig, ClockMode, Instrument, InstrumentKind, LearnableParam,
     MidiCcMapping, PlaybackTiming, ScheduledPosition, AUTOSAVE_INTERVAL_SECS,
 };
 
@@ -55,7 +55,7 @@ impl LoadReport {
 /// sequencer played it.
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewNote {
-    /// MIDI channel the note was sent on.
+    /// Track the note was played on.
     pub channel: u8,
     pub note: u8,
     pub started: Instant,
@@ -142,6 +142,20 @@ pub struct TrackerCore {
     /// sees it.
     scheduled_frame: Option<u64>,
 
+    // -- External MIDI --
+    /// The MIDI channel each track's last external note went out on, by the
+    /// track's own MIDI channel, when an instrument overrode it. Note-offs,
+    /// bends and CCs follow the note there.
+    external_channel: [Option<u8>; 16],
+    /// The program last sent on each MIDI channel, so an `External`
+    /// instrument sends a program change only when it differs.
+    sent_program: [Option<u8>; 16],
+    /// A message for the frontend to show, taken with [`TrackerCore::take_notice`].
+    notice: Option<String>,
+    /// Whether `notice` has reported the `External` fallback since the last
+    /// port selection, so it is shown once rather than on every note.
+    external_fallback_reported: bool,
+
     // -- Undo --
     pub history: crate::editor::EditHistory,
     /// A before-snapshot awaiting the end of the edit that asked for it.
@@ -171,9 +185,7 @@ impl TrackerCore {
     /// Create a new headless tracker core with the given number of channels and rows per pattern.
     pub fn with_song_size(channels: usize, rows: usize) -> Self {
         let mut midi = MidiEngine::new();
-        if midi.create_virtual_port().is_err() {
-            let _ = midi.connect_first_available();
-        }
+        midi.open_at_startup();
 
         let mut midi_input = MidiInputEngine::new();
         let _ = midi_input.create_virtual_port();
@@ -195,9 +207,7 @@ impl TrackerCore {
             timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
             channels: default_channel_configs(channels),
-            instruments: (0..MAX_INSTRUMENTS)
-                .map(|_| Instrument::default())
-                .collect(),
+            instruments: (0..MAX_INSTRUMENTS).map(Instrument::for_slot).collect(),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES)
                 .map(|_| crate::audio::effects::SendBusParams::default())
                 .collect(),
@@ -209,6 +219,10 @@ impl TrackerCore {
             preview_note: None,
             autosave_written: None,
             scheduled_frame: None,
+            external_channel: [None; 16],
+            sent_program: [None; 16],
+            notice: None,
+            external_fallback_reported: false,
             history: crate::editor::EditHistory::new(),
             pending_edit: None,
         }
@@ -284,9 +298,7 @@ impl TrackerCoreBuilder {
                 MidiEngine::default()
             } else {
                 let mut m = MidiEngine::new();
-                if m.create_virtual_port().is_err() {
-                    let _ = m.connect_first_available();
-                }
+                m.open_at_startup();
                 m
             }
         });
@@ -326,9 +338,7 @@ impl TrackerCoreBuilder {
             timing: PlaybackTiming::new(),
             clock_mode: ClockMode::Internal,
             channels: default_channel_configs(self.channels),
-            instruments: (0..MAX_INSTRUMENTS)
-                .map(|_| Instrument::default())
-                .collect(),
+            instruments: (0..MAX_INSTRUMENTS).map(Instrument::for_slot).collect(),
             send_bus_params: (0..crate::audio::effects::MAX_SEND_BUSES)
                 .map(|_| crate::audio::effects::SendBusParams::default())
                 .collect(),
@@ -340,6 +350,10 @@ impl TrackerCoreBuilder {
             preview_note: None,
             autosave_written: None,
             scheduled_frame: None,
+            external_channel: [None; 16],
+            sent_program: [None; 16],
+            notice: None,
+            external_fallback_reported: false,
             history: crate::editor::EditHistory::new(),
             pending_edit: None,
         }
@@ -441,16 +455,6 @@ impl TrackerCore {
         }
     }
 
-    /// Collect per-channel effects parameters for all channels (used by export).
-    pub fn channel_effects_params_slice(
-        &self,
-    ) -> Vec<crate::audio::channel_effects::ChannelEffectsParams> {
-        self.channels
-            .iter()
-            .map(|c| c.effects_params.clone())
-            .collect()
-    }
-
     /// Compute the pitch bend value per semitone for a channel, based on its active instrument's
     /// pitch bend range setting.
     pub fn channel_pitch_bend_per_semitone(&self, ch: usize) -> f64 {
@@ -470,7 +474,7 @@ impl TrackerCore {
     pub fn instrument_has_sample(&self, inst: usize) -> bool {
         self.instruments
             .get(inst)
-            .and_then(|i| i.sample_index)
+            .and_then(Instrument::sample_index)
             .and_then(|idx| self.sample_bank.get(idx))
             .is_some()
     }
@@ -527,8 +531,7 @@ impl TrackerCore {
         self.timing.scheduled_positions.clear();
         self.scheduled_frame = None;
         for ch in 0..self.engine.channel_states.len() {
-            let midi_ch = self.midi_channel_for(ch);
-            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+            self.send_pitch_bend(ch as u8, PITCH_BEND_CENTER);
         }
         self.send_all_notes_off();
         let _ = self.midi.send_stop();
@@ -563,7 +566,6 @@ impl TrackerCore {
                 audible: self.is_channel_audible(i),
                 volume_scale: ch.volume,
                 default_instrument: ch.default_instrument,
-                is_synth: ch.channel_type == ChannelType::Synth,
             })
             .collect();
         self.engine.set_channel_info(infos);
@@ -789,39 +791,50 @@ impl TrackerCore {
                     instrument,
                     sample_offset,
                 } => {
-                    let midi_ch = self.midi_channel_for(channel);
-                    self.route_note_on(midi_ch, midi_note, velocity, instrument, sample_offset);
+                    self.route_note_on(
+                        channel as u8,
+                        midi_note,
+                        velocity,
+                        instrument,
+                        sample_offset,
+                    );
                 }
                 TrackerEvent::NoteOff { channel } => {
-                    let midi_ch = self.midi_channel_for(channel);
-                    self.send_channel_note_off(midi_ch);
+                    self.send_channel_note_off(channel as u8);
                 }
                 TrackerEvent::PitchBend {
                     channel,
                     semitone_offset,
                 } => {
-                    let midi_ch = self.midi_channel_for(channel);
                     let pb_per_semi = self.channel_pitch_bend_per_semitone(channel);
                     let bend = (semitone_offset * pb_per_semi) as i32;
                     let value =
                         (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32) as u16;
-                    self.send_pitch_bend(midi_ch, value);
+                    self.send_pitch_bend(channel as u8, value);
+                    // The bend reaches the SF2 and MIDI out; the built-in
+                    // synth and samples take the offset itself, as render
+                    // applies it.
+                    let at = self.scheduled_frame;
+                    if let Some(ref mut audio) = self.audio {
+                        audio.channel_pitch(at, channel as u8, semitone_offset as f32);
+                    }
                 }
                 TrackerEvent::VolumeChange { channel, volume } => {
-                    let midi_ch = self.midi_channel_for(channel);
-                    self.send_cc(midi_ch, 7, volume);
+                    self.send_cc(channel as u8, 7, volume);
+                    let at = self.scheduled_frame;
+                    if let Some(ref mut audio) = self.audio {
+                        audio.channel_volume(at, channel as u8, volume);
+                    }
                 }
                 TrackerEvent::MidiCC {
                     channel,
                     controller,
                     value,
                 } => {
-                    let midi_ch = self.midi_channel_for(channel);
-                    self.send_cc(midi_ch, controller, value);
+                    self.send_cc(channel as u8, controller, value);
                 }
                 TrackerEvent::ProgramChange { channel, program } => {
-                    let midi_ch = self.midi_channel_for(channel);
-                    self.send_program_change(midi_ch, program);
+                    self.send_program_change(channel as u8, program);
                 }
                 TrackerEvent::SpeedChanged { speed } => {
                     self.song.speed = speed;
@@ -887,8 +900,7 @@ impl TrackerCore {
         }
         self.playing = false;
         for ch in 0..self.engine.channel_states.len() {
-            let midi_ch = self.midi_channel_for(ch);
-            self.send_pitch_bend(midi_ch, PITCH_BEND_CENTER);
+            self.send_pitch_bend(ch as u8, PITCH_BEND_CENTER);
         }
         self.send_all_notes_off();
     }
@@ -906,11 +918,69 @@ impl TrackerCore {
     // Sound output helpers (dispatch to MIDI + optional audio engine)
     // -----------------------------------------------------------------------
 
-    /// Send a note-on to both MIDI output and the audio engine.
-    pub fn send_note_on(&mut self, channel: u8, note: u8, velocity: u8) {
+    /// Open the MIDI output port listed as `name` and remember it as the
+    /// user's choice. `External` instruments send only to a chosen port.
+    pub fn select_midi_port(&mut self, name: &str) -> Result<()> {
+        self.midi
+            .connect_by_name(name)
+            .map_err(|source| Error::MidiPort {
+                name: name.to_string(),
+                source,
+            })?;
+        self.midi.user_selected = true;
+        crate::config::save_midi_out_port(name);
+        // A new port has heard no program changes.
+        self.sent_program = [None; 16];
+        self.external_fallback_reported = false;
+        Ok(())
+    }
+
+    /// A message for the frontend to show once, if there is one.
+    pub fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
+    }
+
+    /// The MIDI channel a track's MIDI messages go to: the channel its last
+    /// external note went out on, if an instrument overrode it.
+    fn midi_out_channel(&self, track: u8) -> u8 {
+        self.external_channel
+            .get(track as usize)
+            .copied()
+            .flatten()
+            .unwrap_or_else(|| self.midi_channel_for(track as usize))
+    }
+
+    /// Send an `External` instrument's note to the selected port: its
+    /// program first if the channel has another, then the note.
+    fn send_external_note(
+        &mut self,
+        channel: u8,
+        out: Option<u8>,
+        program: u8,
+        note: u8,
+        velocity: u8,
+    ) {
+        let base = self.midi_channel_for(channel as usize);
+        let out = out.unwrap_or(base) & 0x0F;
+        if let Some(slot) = self.external_channel.get_mut(channel as usize) {
+            *slot = (out != base).then_some(out);
+        }
+        let program = program & 0x7F;
+        if self.sent_program[out as usize] != Some(program) {
+            let _ = self.midi.program_change(out, program);
+            self.sent_program[out as usize] = Some(program);
+        }
+        let _ = self.midi.note_on(out, note, velocity);
+    }
+
+    /// Send a note-on to a track's current voice: the SF2 on its MIDI
+    /// channel if one is loaded, else the built-in synth with the track's
+    /// program.
+    pub fn send_note_on(&mut self, track: u8, note: u8, velocity: u8) {
         let at = self.scheduled_frame;
-        let _ = self.midi.note_on(channel, note, velocity);
+        let sf2_ch = self.midi_channel_for(track as usize);
         if let Some(ref mut audio) = self.audio {
+            let channel = if audio.has_sf2() { sf2_ch } else { track };
             match at {
                 Some(frame) => audio.note_on_at(frame, channel, note, velocity),
                 None => audio.note_on(channel, note, velocity),
@@ -918,8 +988,8 @@ impl TrackerCore {
         }
     }
 
-    /// Send a note-on routed through the instrument's sound source (sample, synth params,
-    /// preset patch, or default synth).
+    /// Send a note-on to wherever the instrument plays: see
+    /// [`crate::routing::route`].
     pub fn send_note_on_with_instrument(
         &mut self,
         channel: u8,
@@ -931,7 +1001,7 @@ impl TrackerCore {
     }
 
     /// [`Self::send_note_on_with_instrument`], starting a sample
-    /// `sample_offset`/256 of the way into its played span (`9xx`).
+    /// `sample_offset`/256 of the way into its played span (`OFS`).
     fn route_note_on(
         &mut self,
         channel: u8,
@@ -940,16 +1010,38 @@ impl TrackerCore {
         instrument: Option<u8>,
         sample_offset: u8,
     ) {
-        let inst_idx = instrument.unwrap_or(0) as usize;
-        let inst = self.instruments.get(inst_idx);
+        use crate::routing::{route, Route};
+
+        // Where this track's last external note went, read before `route`
+        // borrows the instrument table.
+        let prev_out = self.midi_out_channel(channel);
+        let inst = self.instruments.get(instrument.unwrap_or(0) as usize);
         // Sequencer-driven notes carry the frame they should sound at;
         // anything else (preview, live MIDI) sounds immediately.
         let at = self.scheduled_frame;
 
-        // Route 1: sample engine
-        if let Some(sid) = inst.and_then(|i| i.sample_index) {
-            if self.sample_bank.get(sid).is_some() {
-                let _ = self.midi.note_on(channel, note, velocity);
+        let routed = route(inst, instrument.is_some(), &self.sample_bank);
+        // Set only by a successful connect, and cleared by disconnecting.
+        let selected = self.midi.user_selected;
+        let next_out = match routed {
+            Route::External { channel: out, .. } if selected => {
+                Some(out.unwrap_or(self.midi_channel_for(channel as usize)) & 0x0F)
+            }
+            _ => None,
+        };
+        // A track plays one note: its last external note stops when the next
+        // one plays anywhere else.
+        if next_out != Some(prev_out) {
+            let _ = self.midi.channel_note_off(prev_out);
+        }
+        if next_out.is_none() {
+            if let Some(slot) = self.external_channel.get_mut(channel as usize) {
+                *slot = None;
+            }
+        }
+
+        let params = match routed {
+            Route::Sample(sid, fx) => {
                 if let Some(ref mut audio) = self.audio {
                     match at {
                         // A note from a pattern row takes the channel over,
@@ -962,6 +1054,7 @@ impl TrackerCore {
                             channel,
                             NewNoteAction::Cut,
                             sample_offset,
+                            fx,
                         ),
                         // Previews and live MIDI are not pattern rows, so
                         // they stack and a chord stays a chord.
@@ -972,71 +1065,83 @@ impl TrackerCore {
                             channel,
                             NewNoteAction::Continue,
                             sample_offset,
+                            fx,
                         ),
                     }
                 }
                 return;
             }
-        }
-
-        // Route 2: custom synth params
-        if let Some(params) = inst.and_then(|i| i.synth_params.as_ref()) {
-            let params = params.clone();
-            let _ = self.midi.note_on(channel, note, velocity);
-            if let Some(ref mut audio) = self.audio {
-                match at {
-                    Some(frame) => {
-                        audio.note_on_with_params_at(frame, channel, note, velocity, &params)
-                    }
-                    None => audio.note_on_with_params(channel, note, velocity, &params),
+            Route::Synth(params) => params.clone(),
+            Route::Preset(program) => {
+                let sf2_ch = self.midi_channel_for(channel as usize);
+                if let Some(audio) = self.audio.as_mut().filter(|a| a.has_sf2()) {
+                    audio.sf2_program_note_on(at, sf2_ch, program, note, velocity);
+                    return;
                 }
+                crate::audio::synth::SynthParams::from_patch(program)
             }
-            return;
-        }
-
-        // Route 3: instrument number maps to preset patch
-        if instrument.is_some() {
-            let params = crate::audio::synth::SynthParams::from_patch(inst_idx as u8);
-            let _ = self.midi.note_on(channel, note, velocity);
-            if let Some(ref mut audio) = self.audio {
-                match at {
-                    Some(frame) => {
-                        audio.note_on_with_params_at(frame, channel, note, velocity, &params)
-                    }
-                    None => audio.note_on_with_params(channel, note, velocity, &params),
+            Route::ChannelVoice => return self.send_note_on(channel, note, velocity),
+            Route::External {
+                program,
+                channel: out,
+            } => {
+                if selected {
+                    self.send_external_note(channel, out, program, note, velocity);
+                    return;
                 }
+                if !self.external_fallback_reported {
+                    self.external_fallback_reported = true;
+                    self.notice = Some(
+                        "No MIDI output port selected: external instruments play built in"
+                            .to_string(),
+                    );
+                }
+                let sf2_ch = self.midi_channel_for(channel as usize);
+                if let Some(audio) = self.audio.as_mut().filter(|a| a.has_sf2()) {
+                    audio.sf2_program_note_on(at, sf2_ch, program, note, velocity);
+                    return;
+                }
+                crate::audio::synth::SynthParams::from_patch(program)
             }
-            return;
-        }
-
-        // Route 4: default synth
-        self.send_note_on(channel, note, velocity);
-    }
-
-    /// Send note-off for all active notes on a MIDI channel.
-    pub fn send_channel_note_off(&mut self, channel: u8) {
-        let at = self.scheduled_frame;
-        let _ = self.midi.channel_note_off(channel);
+            Route::Silent => return,
+        };
         if let Some(ref mut audio) = self.audio {
             match at {
                 Some(frame) => {
-                    audio.note_off_all_channel_at(frame, channel);
-                    audio.sample_note_off_channel_at(frame, channel);
+                    audio.note_on_with_params_at(frame, channel, note, velocity, &params)
+                }
+                None => audio.note_on_with_params(channel, note, velocity, &params),
+            }
+        }
+    }
+
+    /// Stop a track's notes: built-in synth and samples by track, SF2 and
+    /// MIDI out by its MIDI channel.
+    pub fn send_channel_note_off(&mut self, track: u8) {
+        let at = self.scheduled_frame;
+        let _ = self.midi.channel_note_off(self.midi_out_channel(track));
+        let sf2_ch = self.midi_channel_for(track as usize);
+        if let Some(ref mut audio) = self.audio {
+            match at {
+                Some(frame) => {
+                    audio.note_off_all_channel_at(frame, track, sf2_ch);
+                    audio.sample_note_off_channel_at(frame, track);
                 }
                 None => {
-                    audio.note_off_all_channel(channel);
-                    audio.sample_note_off_channel(channel);
+                    audio.note_off_all_channel(track, sf2_ch);
+                    audio.sample_note_off_channel(track);
                 }
             }
         }
     }
 
-    /// Send note-off for a specific note on a MIDI channel.
-    pub fn send_note_off(&mut self, channel: u8, note: u8) {
-        let _ = self.midi.note_off(channel, note);
+    /// Stop one note on a track.
+    pub fn send_note_off(&mut self, track: u8, note: u8) {
+        let _ = self.midi.note_off(self.midi_out_channel(track), note);
+        let sf2_ch = self.midi_channel_for(track as usize);
         if let Some(ref mut audio) = self.audio {
-            audio.note_off(channel, note);
-            audio.sample_note_off(channel, note);
+            audio.note_off(track, sf2_ch, note);
+            audio.sample_note_off(track, note);
         }
     }
 
@@ -1102,27 +1207,38 @@ impl TrackerCore {
         }
     }
 
-    /// Send a MIDI Control Change message to both MIDI output and the audio engine.
-    pub fn send_cc(&mut self, channel: u8, controller: u8, value: u8) {
-        let _ = self.midi.send_cc(channel, controller, value);
+    /// Send a track's Control Change to MIDI out and the SF2, on its MIDI
+    /// channel.
+    pub fn send_cc(&mut self, track: u8, controller: u8, value: u8) {
+        let _ = self
+            .midi
+            .send_cc(self.midi_out_channel(track), controller, value);
+        let sf2_ch = self.midi_channel_for(track as usize);
         if let Some(ref mut audio) = self.audio {
-            audio.send_cc(channel, controller, value);
+            audio.send_cc(sf2_ch, controller, value);
         }
     }
 
-    /// Send a MIDI Program Change message to both MIDI output and the audio engine.
-    pub fn send_program_change(&mut self, channel: u8, program: u8) {
-        let _ = self.midi.program_change(channel, program);
+    /// Send a track's Program Change to MIDI out and the SF2 on its MIDI
+    /// channel, and to its built-in voice.
+    pub fn send_program_change(&mut self, track: u8, program: u8) {
+        let out = self.midi_out_channel(track);
+        let _ = self.midi.program_change(out, program);
+        self.sent_program[(out & 0x0F) as usize] = Some(program & 0x7F);
+        let sf2_ch = self.midi_channel_for(track as usize);
         if let Some(ref mut audio) = self.audio {
-            audio.program_change(channel, program);
+            audio.program_change(track, sf2_ch, program);
         }
     }
 
-    /// Send a MIDI Pitch Bend message to both MIDI output and the audio engine.
-    pub fn send_pitch_bend(&mut self, channel: u8, value: u16) {
-        let _ = self.midi.pitch_bend(channel, value);
+    /// Send a track's Pitch Bend to MIDI out and the SF2, on its MIDI
+    /// channel. The built-in synth and samples take the semitone offset
+    /// instead, through `AudioEngine::channel_pitch`.
+    pub fn send_pitch_bend(&mut self, track: u8, value: u16) {
+        let _ = self.midi.pitch_bend(self.midi_out_channel(track), value);
+        let sf2_ch = self.midi_channel_for(track as usize);
         if let Some(ref mut audio) = self.audio {
-            audio.pitch_bend(channel, value);
+            audio.pitch_bend(sf2_ch, value);
         }
     }
 
@@ -1131,7 +1247,7 @@ impl TrackerCore {
     // -----------------------------------------------------------------------
 
     /// Record a note into the pattern at the given position (punch-in recording).
-    /// Auto-fills instrument from the channel's default if the channel is Synth or Sample type.
+    /// Auto-fills instrument from the channel's default, if it has one.
     /// Returns true if the note was recorded.
     /// The instrument a note entered at this cell should sound with.
     ///
@@ -1142,8 +1258,8 @@ impl TrackerCore {
     /// you hear on playback.
     ///
     /// Resolution order:
-    /// 1. The track's default instrument, for Synth and Sample tracks --
-    ///    this is the "currently selected instrument" behaviour.
+    /// 1. The track's default instrument -- this is the "currently selected
+    ///    instrument" behaviour.
     /// 2. Whatever the cell already names, so re-entering a note over an
     ///    existing one keeps its sound.
     /// 3. The nearest instrument above it in the same channel column.
@@ -1171,7 +1287,7 @@ impl TrackerCore {
         let Some(sample_index) = self
             .instruments
             .get(idx as usize)
-            .and_then(|i| i.sample_index)
+            .and_then(Instrument::sample_index)
         else {
             return false;
         };
@@ -1181,12 +1297,23 @@ impl TrackerCore {
         }
     }
 
-    /// The track's default instrument, for tracks that auto-fill one.
+    /// The track's default instrument, if it has one.
     fn track_default_instrument(&self, channel: usize) -> Option<u8> {
-        let cfg = self.channels.get(channel)?;
-        match cfg.channel_type {
-            ChannelType::Synth | ChannelType::Sample => cfg.default_instrument,
-            ChannelType::Midi => None,
+        self.channels.get(channel)?.default_instrument
+    }
+
+    /// A five-character label for a track header, from the kind of its
+    /// default instrument: `[SMP]`, `[SYN]`, `[MID]`, `[EXT]`, or `[---]`.
+    pub fn track_label(&self, channel: usize) -> &'static str {
+        let inst = self
+            .track_default_instrument(channel)
+            .and_then(|i| self.instruments.get(i as usize));
+        match inst.map(|i| &i.kind) {
+            None => "[---]",
+            Some(InstrumentKind::Sample { .. }) => "[SMP]",
+            Some(InstrumentKind::Synth(_)) => "[SYN]",
+            Some(InstrumentKind::Midi { output, .. }) if output.is_builtin() => "[MID]",
+            Some(InstrumentKind::Midi { .. }) => "[EXT]",
         }
     }
 
@@ -1205,8 +1332,7 @@ impl TrackerCore {
         velocity: u8,
     ) {
         let instrument = self.resolve_edit_instrument(order, row, channel);
-        let midi_ch = self.midi_channel_for(channel);
-        self.preview_note_with_instrument(midi_ch, note, velocity, instrument);
+        self.preview_note_with_instrument(channel as u8, note, velocity, instrument);
     }
 
     pub fn record_note_at(
@@ -1257,12 +1383,7 @@ impl TrackerCore {
 
     /// Handle incoming MIDI CC: apply learned mappings or forward as thru.
     /// Returns Some(message) if a MIDI learn binding was made.
-    pub fn handle_midi_cc(
-        &mut self,
-        controller: u8,
-        value: u8,
-        thru_channel: u8,
-    ) -> Option<String> {
+    pub fn handle_midi_cc(&mut self, controller: u8, value: u8, thru_track: u8) -> Option<String> {
         // MIDI learn: if waiting for a CC, bind it
         if let Some((ch, param)) = self.midi_learn_pending.take() {
             self.midi_cc_mappings
@@ -1298,7 +1419,7 @@ impl TrackerCore {
         }
 
         if !applied {
-            self.send_cc(thru_channel, controller, value);
+            self.send_cc(thru_track, controller, value);
         }
         None
     }
@@ -1318,8 +1439,7 @@ impl TrackerCore {
         ch_cfg.muted = !ch_cfg.muted;
         let muted = ch_cfg.muted;
         if muted {
-            let midi_ch = self.midi_channel_for(channel);
-            self.send_channel_note_off(midi_ch);
+            self.send_channel_note_off(channel as u8);
         }
         Some(muted)
     }
@@ -1334,8 +1454,7 @@ impl TrackerCore {
         self.solo_channel = Some(channel);
         for ch in 0..self.channels.len() {
             if ch != channel {
-                let midi_ch = self.midi_channel_for(ch);
-                self.send_channel_note_off(midi_ch);
+                self.send_channel_note_off(ch as u8);
             }
         }
         Some(channel)
@@ -1388,7 +1507,7 @@ impl TrackerCore {
                     .to_string();
                 self.record_sample_edit(|core| {
                     if slot < core.instruments.len() {
-                        core.instruments[slot].sample_index = Some(slot);
+                        core.instruments[slot].play_sample(slot);
                         if core.instruments[slot].name.is_empty() {
                             core.instruments[slot].name = name.clone();
                         }
@@ -1404,12 +1523,12 @@ impl TrackerCore {
     /// Load a sample into the slot instrument `idx` plays, or slot `idx` if
     /// it plays none, as one undo step. Returns the slot.
     pub fn load_instrument_sample(&mut self, idx: usize, path: &std::path::Path) -> Result<usize> {
-        let slot = self.instruments[idx].sample_index.unwrap_or(idx);
+        let slot = self.instruments[idx].sample_index().unwrap_or(idx);
         let mut bank = (*self.sample_bank).clone();
         bank.load(slot, path)
             .map_err(|e| Error::Sample { slot, source: e })?;
         self.record_sample_edit(|core| {
-            core.instruments[idx].sample_index = Some(slot);
+            core.instruments[idx].play_sample(slot);
             core.set_sample_bank(bank);
         });
         Ok(slot)
@@ -1427,7 +1546,7 @@ impl TrackerCore {
                     if let Some(s) = sample {
                         loaded += 1;
                         if i < core.instruments.len() {
-                            core.instruments[i].sample_index = Some(i);
+                            core.instruments[i].play_sample(i);
                             if core.instruments[i].name.is_empty() {
                                 core.instruments[i].name = s.name.clone();
                             }
@@ -1455,7 +1574,7 @@ impl TrackerCore {
             Ok(()) => {
                 self.record_sample_edit(|core| {
                     if slot < core.instruments.len() {
-                        core.instruments[slot].sample_index = Some(slot);
+                        core.instruments[slot].play_sample(slot);
                         if core.instruments[slot].name.is_empty() {
                             core.instruments[slot].name = path
                                 .file_stem()
@@ -1613,8 +1732,10 @@ impl TrackerCore {
     /// Put back the "before" side of one step.
     fn apply_edit_backward(&mut self, edit: Edit) {
         match edit {
+            // In reverse: one step can write the same stored cell twice, and
+            // its first old value is the one to restore.
             Edit::Cells(edits) => {
-                for e in &edits {
+                for e in edits.iter().rev() {
                     self.write_recorded_cell(e, e.old_cell);
                 }
             }
@@ -1648,13 +1769,12 @@ impl TrackerCore {
         }
     }
 
-    /// Write a cell recorded in the history. An entry whose pattern no longer
-    /// resolves is skipped, not indexed.
+    /// Write a cell recorded in the history. An entry that no longer
+    /// resolves -- a song can be loaded while the stacks still hold edits --
+    /// is skipped, not indexed.
     fn write_recorded_cell(&mut self, e: &CellEdit, cell: Cell) {
-        if let Some(pattern) = self.song.patterns.get_mut(e.pattern_idx) {
-            if e.row < pattern.rows && e.channel < pattern.channels {
-                pattern.data[e.row][e.channel] = cell;
-            }
+        if let Some(slot) = self.song.cell_mut(e.at) {
+            *slot = cell;
         }
     }
 
@@ -1680,10 +1800,11 @@ impl TrackerCore {
                     return sample.source_path != source || source.is_none();
                 }
                 match self.instruments.get(i) {
+                    // A sample instrument whose slot is empty holds nothing.
                     Some(inst) => {
-                        inst.synth_params.is_some()
-                            || inst.midi_program.is_some()
-                            || !inst.name.is_empty()
+                        !inst.name.is_empty()
+                            || !(inst.is_default(i)
+                                || matches!(inst.kind, InstrumentKind::Sample { .. }))
                     }
                     None => false,
                 }
@@ -1773,7 +1894,7 @@ impl TrackerCore {
         for (i, name) in slice_names.iter().enumerate() {
             let inst_slot = slot + i;
             if inst_slot < self.instruments.len() {
-                self.instruments[inst_slot].sample_index = Some(inst_slot);
+                self.instruments[inst_slot].play_sample(inst_slot);
                 // Name every slot slicing writes into, rather than only the
                 // empty ones. Slicing replaces the audio in these slots, so
                 // a name describing what used to be there is wrong -- the
@@ -1784,7 +1905,7 @@ impl TrackerCore {
         }
         for (i, name) in cleared {
             if let Some(inst) = self.instruments.get_mut(i) {
-                inst.sample_index = None;
+                inst.kind = InstrumentKind::default_for(i);
                 // A name the user typed over the slice name is theirs to keep.
                 if inst.name == name {
                     inst.name.clear();
@@ -1799,16 +1920,9 @@ impl TrackerCore {
     // Export
     // -----------------------------------------------------------------------
 
-    /// Collect instrument definitions for the offline renderer.
-    pub fn export_instruments(&self) -> Vec<crate::sample::export::ExportInstrument> {
-        self.instruments
-            .iter()
-            .map(|i| crate::sample::export::ExportInstrument {
-                sample_index: i.sample_index,
-                midi_program: i.midi_program.unwrap_or(0),
-                synth_params: i.synth_params.clone(),
-            })
-            .collect()
+    /// The SoundFont the audio engine plays, for offline render to match.
+    pub fn sound_font(&self) -> Option<&Arc<rustysynth::SoundFont>> {
+        self.audio.as_ref().and_then(AudioEngine::sound_font)
     }
 
     /// Return the audio engine's sample rate, or 44100 if no audio engine is running.
@@ -1826,8 +1940,9 @@ impl TrackerCore {
             path,
             &self.song,
             &self.sample_bank,
-            &self.export_instruments(),
-            &self.channel_effects_params_slice(),
+            &self.instruments,
+            self.sound_font(),
+            &self.channels,
             &self.send_bus_params,
             self.export_sample_rate(),
         )
@@ -1844,14 +1959,14 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.wav", name))
             });
-        let instruments = self.export_instruments();
         let sample_rate = self.export_sample_rate();
         crate::sample::export::render_to_wav(
             &path,
             &self.song,
             &self.sample_bank,
-            &instruments,
-            &self.channel_effects_params_slice(),
+            &self.instruments,
+            self.sound_font(),
+            &self.channels,
             &self.send_bus_params,
             sample_rate,
         )
@@ -1869,14 +1984,14 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.flac", name))
             });
-        let instruments = self.export_instruments();
         let sample_rate = self.export_sample_rate();
         crate::sample::export::render_to_flac(
             &path,
             &self.song,
             &self.sample_bank,
-            &instruments,
-            &self.channel_effects_params_slice(),
+            &self.instruments,
+            self.sound_font(),
+            &self.channels,
             &self.send_bus_params,
             sample_rate,
         )
@@ -1910,21 +2025,10 @@ impl TrackerCore {
             .instruments
             .iter()
             .enumerate()
-            .filter(|(_, inst)| {
-                !inst.name.is_empty()
-                    || inst.sample_index.is_some()
-                    || inst.midi_program.is_some()
-                    || inst.synth_params.is_some()
-            })
+            .filter(|(slot, inst)| !inst.is_default(*slot))
             .map(|(slot, inst)| InstrumentEntry {
                 slot,
-                def: InstrumentDef {
-                    name: inst.name.clone(),
-                    midi_program: inst.midi_program,
-                    sample_index: inst.sample_index,
-                    synth_params: inst.synth_params.clone(),
-                    pitch_bend_range: inst.pitch_bend_range,
-                },
+                def: InstrumentDef::from_instrument(inst),
             })
             .collect();
 
@@ -2056,7 +2160,7 @@ impl TrackerCore {
                 self.pending_edit = None;
                 let from_newer = song_file.is_from_newer_version();
                 let mut song = song_file.song;
-                let repairs = song.repair();
+                let mut repairs = song.repair();
                 self.solo_channel = None;
                 self.song = song;
 
@@ -2064,8 +2168,9 @@ impl TrackerCore {
                 // persisted carry no entries, so fall back to defaults and
                 // pad any channels the file did not describe.
                 self.channels = default_channel_configs(self.song.channels);
-                for (i, cfg) in song_file.channels_config.into_iter().enumerate() {
+                for (i, mut cfg) in song_file.channels_config.into_iter().enumerate() {
                     if i < self.channels.len() {
+                        cfg.drop_legacy_type();
                         self.channels[i] = cfg;
                     }
                 }
@@ -2079,16 +2184,12 @@ impl TrackerCore {
                 self.push_all_send_bus_params();
 
                 // Restore instruments
-                self.instruments = (0..MAX_INSTRUMENTS)
-                    .map(|_| Instrument::default())
-                    .collect();
+                self.instruments = (0..MAX_INSTRUMENTS).map(Instrument::for_slot).collect();
                 for entry in &song_file.instruments {
                     if entry.slot < self.instruments.len() {
-                        self.instruments[entry.slot].name = entry.def.name.clone();
-                        self.instruments[entry.slot].midi_program = entry.def.midi_program;
-                        self.instruments[entry.slot].sample_index = entry.def.sample_index;
-                        self.instruments[entry.slot].synth_params = entry.def.synth_params.clone();
-                        self.instruments[entry.slot].pitch_bend_range = entry.def.pitch_bend_range;
+                        let (inst, notes) = entry.def.to_instrument(entry.slot);
+                        self.instruments[entry.slot] = inst;
+                        repairs.extend(notes);
                     }
                 }
 
@@ -2431,7 +2532,7 @@ mod tests {
             .build();
         // Eight slices of one sample, as `slice_sample` produces.
         for slot in 0..8 {
-            core.instruments[slot].sample_index = Some(slot);
+            core.instruments[slot].kind = InstrumentKind::sample(slot);
         }
         core
     }
@@ -2479,7 +2580,6 @@ mod tests {
     #[test]
     fn the_track_default_takes_priority_where_one_is_set() {
         let mut core = sample_core();
-        core.channels[0].channel_type = ChannelType::Sample;
         core.channels[0].default_instrument = Some(2);
         core.song.set_cell(0, 0, 0, note_cell(Some(7)));
         assert_eq!(
@@ -2487,14 +2587,6 @@ mod tests {
             Some(2),
             "an explicitly selected instrument is what the user is placing"
         );
-    }
-
-    #[test]
-    fn midi_tracks_do_not_pick_up_a_track_default() {
-        let mut core = sample_core();
-        core.channels[0].channel_type = ChannelType::Midi;
-        core.channels[0].default_instrument = Some(2);
-        assert_eq!(core.resolve_edit_instrument(0, 0, 0), None);
     }
 
     #[test]
@@ -2548,9 +2640,145 @@ mod tests {
     #[test]
     fn recorded_notes_still_honour_a_track_default() {
         let mut core = sample_core();
-        core.channels[0].channel_type = ChannelType::Synth;
         core.channels[0].default_instrument = Some(5);
         assert!(core.record_note_at(0, 0, 0, 60, 100));
         assert_eq!(core.song.cell_at(0, 0, 0).instrument, Some(5));
+    }
+
+    #[test]
+    fn only_an_external_instrument_sends_notes_to_midi() {
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.midi.user_selected = true;
+        core.instruments[1].kind =
+            InstrumentKind::Synth(crate::audio::synth::SynthParams::from_patch(1));
+        core.instruments[2].kind = InstrumentKind::sample(9);
+        core.instruments[3].kind = external(None);
+
+        for inst in [None, Some(0), Some(1), Some(2)] {
+            core.send_note_on_with_instrument(0, 60, 100, inst);
+        }
+        assert_eq!(sent(&core, 0x90), 0, "built-in sounds also went to MIDI");
+
+        core.send_note_on_with_instrument(0, 60, 100, Some(3));
+        assert_eq!(sent(&core, 0x90), 1);
+    }
+
+    fn external(channel: Option<u8>) -> InstrumentKind {
+        InstrumentKind::Midi {
+            program: 0x22,
+            channel,
+            output: crate::types::MidiOutput::External { port: None },
+        }
+    }
+
+    /// Messages sent with this status nibble, on any channel.
+    fn sent(core: &TrackerCore, status: u8) -> usize {
+        core.midi
+            .sent
+            .iter()
+            .filter(|m| m[0] & 0xF0 == status)
+            .count()
+    }
+
+    #[test]
+    fn external_falls_back_to_built_in_without_a_selected_port() {
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.instruments[3].kind = external(None);
+        core.send_note_on_with_instrument(0, 60, 100, Some(3));
+        core.send_note_on_with_instrument(0, 62, 100, Some(3));
+        assert_eq!(sent(&core, 0x90), 0);
+        assert!(
+            core.take_notice().is_some(),
+            "the fallback was not reported"
+        );
+        assert!(
+            core.take_notice().is_none(),
+            "the fallback is reported once"
+        );
+    }
+
+    #[test]
+    fn external_sends_its_program_once_then_on_change() {
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.midi.user_selected = true;
+        core.instruments[3].kind = external(None);
+        core.send_note_on_with_instrument(0, 60, 100, Some(3));
+        core.send_note_on_with_instrument(0, 62, 100, Some(3));
+        assert_eq!(sent(&core, 0xC0), 1);
+        assert!(core.midi.sent.contains(&vec![0xC0, 0x22]));
+    }
+
+    #[test]
+    fn an_overridden_channel_gets_the_note_off_and_bends() {
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.midi.user_selected = true;
+        core.instruments[3].kind = external(Some(9));
+        core.send_note_on_with_instrument(0, 60, 100, Some(3));
+        assert!(core.midi.sent.contains(&vec![0x99, 60, 100]));
+
+        core.send_pitch_bend(0, 0x2100);
+        assert!(
+            core.midi.sent.iter().any(|m| m[0] == 0xE9),
+            "bend went elsewhere"
+        );
+
+        core.send_channel_note_off(0);
+        assert!(core.midi.sent.contains(&vec![0x89, 60, 0]));
+    }
+
+    #[test]
+    fn a_tracks_midi_channel_addresses_midi_out() {
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.midi.user_selected = true;
+        core.channels[0].midi_channel = 5;
+        core.instruments[3].kind = external(None);
+        // Calls take the track; MIDI goes out on its channel.
+        core.send_note_on_with_instrument(0, 60, 100, Some(3));
+        assert!(core.midi.sent.contains(&vec![0x95, 60, 100]));
+        core.send_channel_note_off(0);
+        assert!(core.midi.sent.contains(&vec![0x85, 60, 0]));
+    }
+
+    #[test]
+    fn switching_away_from_an_external_instrument_stops_its_note() {
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        core.midi.user_selected = true;
+        core.instruments[3].kind = external(Some(9));
+        core.send_note_on_with_instrument(0, 60, 100, Some(3));
+        core.send_note_on_with_instrument(0, 62, 100, Some(1));
+        assert!(core.midi.sent.contains(&vec![0x89, 60, 0]));
+    }
+
+    #[test]
+    fn undoing_a_step_that_wrote_a_cell_twice_restores_the_first_value() {
+        use crate::editor::CellEdit;
+        use crate::tracker::CellAddr;
+        let mut core = TrackerCoreBuilder::new().headless().build();
+        let at = CellAddr::Pattern {
+            pattern: 0,
+            row: 0,
+            channel: 0,
+        };
+        let vol = |v| Cell {
+            volume: Some(v),
+            ..Cell::default()
+        };
+        *core.song.cell_mut(at).unwrap() = vol(3);
+        core.history.push(vec![
+            CellEdit {
+                at,
+                old_cell: Cell::default(),
+                new_cell: vol(2),
+            },
+            CellEdit {
+                at,
+                old_cell: vol(2),
+                new_cell: vol(3),
+            },
+        ]);
+        assert!(core.undo());
+        assert_eq!(*core.song.cell(at).unwrap(), Cell::default());
+        assert!(core.redo());
+        assert_eq!(*core.song.cell(at).unwrap(), vol(3));
     }
 }

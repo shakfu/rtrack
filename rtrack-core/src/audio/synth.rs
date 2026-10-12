@@ -21,7 +21,7 @@ pub enum FilterType {
 }
 
 /// User-configurable synth parameters (stored per-instrument in .rtrk files)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SynthParams {
     pub waveform: u8,
     pub attack: f32,
@@ -46,10 +46,21 @@ pub struct SynthParams {
     /// Pulse width (0.05..0.95, only used for Pulse patch)
     #[serde(default = "default_pulse_width")]
     pub pulse_width: f32,
+    /// `tanh` drive before the filter; 1.0 is off (`docs/dev/g5-instrument-fx.md`).
+    #[serde(default = "no_drive", skip_serializing_if = "is_no_drive")]
+    pub drive: f32,
 }
 
 fn default_pulse_width() -> f32 {
     0.25
+}
+
+fn no_drive() -> f32 {
+    1.0
+}
+
+fn is_no_drive(drive: &f32) -> bool {
+    *drive == 1.0
 }
 
 impl SynthParams {
@@ -72,6 +83,7 @@ impl SynthParams {
             fm_ratio: p.fm_ratio,
             fm_index: p.fm_index,
             pulse_width: p.pulse_width,
+            drive: no_drive(),
         }
     }
 }
@@ -900,6 +912,9 @@ struct Voice {
     // ADSR envelope (shared Envelope type)
     envelope: Envelope,
 
+    // Drive before the filter, from `SynthParams::drive`; 1.0 is off
+    drive: f32,
+
     // Filter
     filter: SvfState,
 
@@ -960,6 +975,7 @@ impl Voice {
                 params.env.release,
                 sample_rate,
             ),
+            drive: no_drive(),
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
             fundsp_unit: None,
@@ -1138,6 +1154,13 @@ impl Voice {
             osc
         };
 
+        // -- Drive -- (NaN is not > 1.0, so a non-number is off)
+        let osc = if self.drive > 1.0 {
+            (osc * self.drive.min(crate::types::SampleFx::MAX_DRIVE)).tanh()
+        } else {
+            osc
+        };
+
         // -- Filter --
         let env_mod = env_level * self.params.filter_env_amount;
         let cutoff = freq * self.params.filter_cutoff_mul * 2.0_f32.powf(env_mod);
@@ -1280,8 +1303,9 @@ impl BuiltinSynth {
             fm_index: params.fm_index,
             pulse_width: params.pulse_width,
         };
-        let voice =
+        let mut voice =
             Voice::new_with_params(channel, note, vel, patch, custom_params, self.sample_rate);
+        voice.drive = params.drive;
 
         self.push_voice(voice);
     }
@@ -1560,6 +1584,43 @@ mod tests {
     }
 
     #[test]
+    fn synth_drive_changes_the_sound_and_is_saved_only_when_set() {
+        // Drive comes before the envelope, on a full-scale oscillator, so
+        // it changes the shape, not the level: RMS / peak rises from a
+        // sine's 0.71 towards a square's 1.
+        let squareness = |drive: f32| {
+            let mut synth = BuiltinSynth::new(44100.0);
+            let params = SynthParams {
+                drive,
+                ..SynthParams::from_patch(2) // sine
+            };
+            synth.note_on_with_params(0, 60, 100, &params);
+            let out: Vec<f32> = (0..8820)
+                .map(|_| synth.render_sample().0)
+                .skip(4410)
+                .collect();
+            let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let rms = (out.iter().map(|v| v * v).sum::<f32>() / out.len() as f32).sqrt();
+            rms / peak
+        };
+        assert!(
+            squareness(10.0) > squareness(1.0) + 0.15,
+            "{} vs {}",
+            squareness(10.0),
+            squareness(1.0)
+        );
+
+        let json = serde_json::to_string(&SynthParams::from_patch(2)).unwrap();
+        assert!(!json.contains("drive"), "{json}");
+        let driven = SynthParams {
+            drive: 3.0,
+            ..SynthParams::from_patch(2)
+        };
+        let json = serde_json::to_string(&driven).unwrap();
+        assert_eq!(serde_json::from_str::<SynthParams>(&json).unwrap(), driven);
+    }
+
+    #[test]
     fn test_note_on_with_custom_params() {
         let sr = 44100.0;
         let mut synth = BuiltinSynth::new(sr);
@@ -1578,6 +1639,7 @@ mod tests {
             fm_ratio: 0.0,
             fm_index: 0.0,
             pulse_width: 0.25,
+            drive: 1.0,
         };
         synth.note_on_with_params(0, 60, 127, &params);
         assert_eq!(synth.active_voice_count(), 1);

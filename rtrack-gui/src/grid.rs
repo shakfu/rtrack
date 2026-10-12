@@ -1,5 +1,5 @@
 use egui::{FontId, Pos2, Rect, Ui};
-use rtrack_core::tracker::Pattern;
+use rtrack_core::tracker::Song;
 
 use crate::state::{GridColors, Mode, SubColumn};
 
@@ -28,19 +28,27 @@ const ROW_HEIGHT: f32 = 18.0;
 const NOTE_CHARS: usize = 3;
 const INST_CHARS: usize = 2;
 const VOL_CHARS: usize = 2;
-const FX_CHARS: usize = 3;
+const FX_CHARS: usize = 5;
 const GAP_CHARS: usize = 2;
 const ROW_NUM_CHARS: usize = 3;
 const SEPARATOR_CHARS: usize = 3;
 
-fn channel_width_chars() -> usize {
-    NOTE_CHARS + GAP_CHARS + INST_CHARS + GAP_CHARS + VOL_CHARS + GAP_CHARS + FX_CHARS
+/// Width of a channel showing `fx_columns` effect columns.
+fn channel_width_chars(fx_columns: usize) -> usize {
+    NOTE_CHARS
+        + GAP_CHARS
+        + INST_CHARS
+        + GAP_CHARS
+        + VOL_CHARS
+        + GAP_CHARS
+        + FX_CHARS
+        + fx_columns.saturating_sub(1) * (GAP_CHARS + FX_CHARS)
 }
 
 /// How many channels fit in the given pixel width.
-pub fn max_visible_channels(available_width: f32) -> usize {
+pub fn max_visible_channels(available_width: f32, fx_columns: usize) -> usize {
     let row_num_px = (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-    let ch_px = (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+    let ch_px = (channel_width_chars(fx_columns) + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
     let count = ((available_width - row_num_px) / ch_px).floor() as usize;
     count.max(1)
 }
@@ -64,6 +72,8 @@ pub struct GridParams {
     pub channel_names: Vec<String>,
     pub block_start: Option<(usize, usize)>,
     pub block_end: Option<(usize, usize)>,
+    /// Effect columns shown, 1 or 2.
+    pub fx_columns: usize,
     pub colors: GridColors,
 }
 
@@ -87,6 +97,8 @@ pub struct GridGeometry {
     /// First and one-past-last channel currently drawn.
     pub first_channel: usize,
     pub last_channel: usize,
+    /// Effect columns shown, 1 or 2.
+    pub fx_columns: usize,
 }
 
 /// Map a pointer position to the cell under it.
@@ -104,7 +116,8 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
     }
 
     let channels_start_x = geom.left + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
-    let channel_total_width = (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+    let channel_total_width =
+        (channel_width_chars(geom.fx_columns) + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
 
     let rel_x = pos.x - channels_start_x;
     if rel_x < 0.0 {
@@ -123,6 +136,7 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
     let vol_start = inst_start + (INST_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
     let vol_end = vol_start + VOL_CHARS as f32 * CHAR_WIDTH;
     let fx_start = vol_start + (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+    let fx2_start = fx_start + (FX_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
 
     // The gaps between fields, and the separator past the effect column,
     // resolve to the field on their left rather than to nothing: a click a
@@ -133,6 +147,8 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
         SubColumn::Instrument
     } else if within_ch >= vol_start && within_ch < vol_end {
         SubColumn::Volume
+    } else if within_ch >= fx2_start && geom.fx_columns > 1 {
+        SubColumn::Effect2
     } else if within_ch >= fx_start {
         SubColumn::Effect
     } else if within_ch < inst_start {
@@ -146,7 +162,12 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
     Some((row_idx, ch_idx, sub))
 }
 
-pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<GridAction> {
+/// Draw the pattern at `order` of `song`. Cells are read through
+/// [`Song::cell_at`], so a column linked to a phrase shows the phrase.
+pub fn draw_grid(ui: &mut Ui, song: &Song, order: usize, params: &GridParams) -> Vec<GridAction> {
+    let Some(pattern) = song.pattern_at(order) else {
+        return Vec::new();
+    };
     let font = FontId::monospace(13.0);
     let available = ui.available_size();
     let (response, painter) = ui.allocate_painter(available, egui::Sense::click_and_drag());
@@ -166,7 +187,9 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
         let ch_offset = ch_idx - first_ch;
         let x = rect.left()
             + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
-            + ch_offset as f32 * (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+            + ch_offset as f32
+                * (channel_width_chars(params.fx_columns) + SEPARATOR_CHARS) as f32
+                * CHAR_WIDTH;
 
         let default_name = format!("Ch{}", ch_idx + 1);
         let name = params
@@ -175,7 +198,11 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             .filter(|n| !n.is_empty())
             .map(|n| n.as_str())
             .unwrap_or(&default_name);
-        let header = format!("{:^width$}", name, width = channel_width_chars());
+        let header = format!(
+            "{:^width$}",
+            name,
+            width = channel_width_chars(params.fx_columns)
+        );
         painter.text(
             Pos2::new(x, rect.top() + 2.0),
             egui::Align2::LEFT_TOP,
@@ -269,14 +296,19 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             let ch_offset = ch_idx - first_ch;
             let base_x = rect.left()
                 + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
-                + ch_offset as f32 * (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+                + ch_offset as f32
+                    * (channel_width_chars(params.fx_columns) + SEPARATOR_CHARS) as f32
+                    * CHAR_WIDTH;
 
             // Block highlight overlay for this cell
             if let Some((min_r, max_r, min_c, max_c)) = block_range {
                 if row_idx >= min_r && row_idx <= max_r && ch_idx >= min_c && ch_idx <= max_c {
                     let block_rect = Rect::from_min_size(
                         Pos2::new(base_x, y),
-                        egui::vec2(channel_width_chars() as f32 * CHAR_WIDTH, ROW_HEIGHT),
+                        egui::vec2(
+                            channel_width_chars(params.fx_columns) as f32 * CHAR_WIDTH,
+                            ROW_HEIGHT,
+                        ),
                     );
                     painter.rect_filled(block_rect, 0.0, c.bg_block);
                 }
@@ -294,7 +326,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
                 );
             }
 
-            let cell = pattern.get(row_idx, ch_idx);
+            let cell = song.cell_at(order, row_idx, ch_idx);
             let is_muted = if let Some(solo) = params.solo_channel {
                 ch_idx != solo
             } else {
@@ -305,7 +337,6 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             let note_text = cell.display_note();
             let inst_text = cell.display_instrument();
             let vol_text = cell.display_volume();
-            let fx_text = cell.display_effect();
 
             let note_fg = if is_muted {
                 c.fg_muted
@@ -328,12 +359,14 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             } else {
                 c.fg_vol_empty
             };
-            let fx_fg = if is_muted {
-                c.fg_muted
-            } else if cell.effect.is_some() || cell.effect_value.is_some() {
-                c.fg_fx_set
-            } else {
-                c.fg_fx_empty
+            let fx_fg = |col: usize| {
+                if is_muted {
+                    c.fg_muted
+                } else if cell.fx[col].is_some() {
+                    c.fg_fx_set
+                } else {
+                    c.fg_fx_empty
+                }
             };
 
             // Positions
@@ -387,15 +420,24 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
             );
             x += (VOL_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
 
-            // Effect
-            draw_sub(x, FX_CHARS, SubColumn::Effect, &painter);
-            painter.text(
-                Pos2::new(x, y + 2.0),
-                egui::Align2::LEFT_TOP,
-                &fx_text,
-                font.clone(),
-                fx_fg,
-            );
+            // Effects
+            for (col, sub) in [SubColumn::Effect, SubColumn::Effect2]
+                .into_iter()
+                .enumerate()
+                .take(params.fx_columns)
+            {
+                if col > 0 {
+                    x += (FX_CHARS + GAP_CHARS) as f32 * CHAR_WIDTH;
+                }
+                draw_sub(x, FX_CHARS, sub, &painter);
+                painter.text(
+                    Pos2::new(x, y + 2.0),
+                    egui::Align2::LEFT_TOP,
+                    cell.display_effect(col),
+                    font.clone(),
+                    fx_fg(col),
+                );
+            }
         }
     }
 
@@ -419,6 +461,7 @@ pub fn draw_grid(ui: &mut Ui, pattern: &Pattern, params: &GridParams) -> Vec<Gri
         rows: pattern.rows,
         first_channel: first_ch,
         last_channel: last_ch,
+        fx_columns: params.fx_columns,
     };
     let hit_test = |pos: Pos2| hit_test(pos, &geom);
 
@@ -464,13 +507,14 @@ mod tests {
             rows: 64,
             first_channel: 0,
             last_channel: 4,
+            fx_columns: 1,
         }
     }
 
     /// Screen x of the start of `channel`'s note column.
     fn channel_x(channel: usize) -> f32 {
         (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
-            + channel as f32 * (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
+            + channel as f32 * (channel_width_chars(1) + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
     }
 
     fn row_y(row: usize) -> f32 {
@@ -606,12 +650,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_second_effect_column_is_hit_only_when_shown() {
+        let fx2_x = channel_x(0)
+            + ((NOTE_CHARS + INST_CHARS + VOL_CHARS + FX_CHARS + 4 * GAP_CHARS) as f32 + 0.5)
+                * CHAR_WIDTH;
+        let two = GridGeometry {
+            fx_columns: 2,
+            ..geom()
+        };
+        assert_eq!(
+            hit_test(Pos2::new(fx2_x, row_y(0)), &two),
+            Some((0, 0, SubColumn::Effect2))
+        );
+        // With one column the same x is past the track, in the next one.
+        assert_ne!(
+            hit_test(Pos2::new(fx2_x, row_y(0)), &geom()).map(|(_, _, s)| s),
+            Some(SubColumn::Effect2)
+        );
+    }
+
     /// `max_visible_channels` is the other half of the same geometry: what it
     /// returns has to be a width `hit_test` agrees is inside the grid.
     #[test]
     fn the_visible_channel_count_agrees_with_the_hit_test() {
         for width in [400.0f32, 800.0, 1200.0, 1920.0] {
-            let count = max_visible_channels(width);
+            let count = max_visible_channels(width, 1);
             let g = GridGeometry {
                 first_channel: 0,
                 last_channel: count,
@@ -625,7 +689,7 @@ mod tests {
             );
             // ...and its right edge must be within the width offered.
             let used = channel_x(count - 1)
-                + (channel_width_chars() + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
+                + (channel_width_chars(1) + SEPARATOR_CHARS) as f32 * CHAR_WIDTH;
             assert!(
                 used <= width || count == 1,
                 "{count} channels need {used}px but only {width}px was offered"
@@ -637,7 +701,7 @@ mod tests {
     fn a_degenerate_width_still_reports_one_channel() {
         // Narrower than the gutter: the count is clamped rather than zero or
         // a wrapped subtraction.
-        assert_eq!(max_visible_channels(0.0), 1);
-        assert_eq!(max_visible_channels(-100.0), 1);
+        assert_eq!(max_visible_channels(0.0, 1), 1);
+        assert_eq!(max_visible_channels(-100.0, 1), 1);
     }
 }

@@ -19,6 +19,9 @@ const MIDI_CLOCK: u8 = 0xF8;
 const MIDI_START: u8 = 0xFA;
 const MIDI_STOP: u8 = 0xFC;
 
+/// The name rtrack's own virtual output port is listed under.
+pub const VIRTUAL_PORT_NAME: &str = "RTRACK_MIDI (virtual)";
+
 pub struct MidiEngine {
     connection: Option<MidiOutputConnection>,
     /// Track which notes are currently sounding per channel so we can send note-off
@@ -31,6 +34,12 @@ pub struct MidiEngine {
     pub send_error_count: u32,
     /// Last error message
     pub last_error: Option<String>,
+    /// Whether the user chose the open port, rather than rtrack opening one
+    /// at startup. `External` instruments send only to a chosen port.
+    pub user_selected: bool,
+    /// Every message sent, connected or not, for tests to inspect.
+    #[cfg(test)]
+    pub(crate) sent: Vec<Vec<u8>>,
 }
 
 impl MidiEngine {
@@ -42,6 +51,9 @@ impl MidiEngine {
             clock_enabled: false,
             send_error_count: 0,
             last_error: None,
+            user_selected: false,
+            #[cfg(test)]
+            sent: Vec::new(),
         }
     }
 }
@@ -57,6 +69,34 @@ impl MidiEngine {
         let _ = self.all_notes_off();
         self.connection = None;
         self.port_name = None;
+        self.user_selected = false;
+    }
+
+    /// Open the port the user last selected, or else rtrack's virtual port,
+    /// or else the first port. Only the first counts as selected.
+    pub fn open_at_startup(&mut self) {
+        if let Some(name) = crate::config::load_midi_out_port() {
+            if self.connect_by_name(&name).is_ok() {
+                self.user_selected = true;
+                return;
+            }
+        }
+        if self.create_virtual_port().is_err() {
+            let _ = self.connect_first_available();
+        }
+    }
+
+    /// Connect to the output port listed as `name`, or create the virtual
+    /// port for [`VIRTUAL_PORT_NAME`].
+    pub fn connect_by_name(&mut self, name: &str) -> Result<()> {
+        if name == VIRTUAL_PORT_NAME {
+            return self.create_virtual_port();
+        }
+        let index = Self::list_ports()?
+            .iter()
+            .position(|p| p == name)
+            .with_context(|| format!("MIDI port '{name}' is not present"))?;
+        self.connect(index)
     }
 
     /// List available MIDI output ports
@@ -104,7 +144,7 @@ impl MidiEngine {
         let conn = output
             .create_virtual("RTRACK_MIDI")
             .map_err(|e| anyhow::anyhow!("Failed to create virtual MIDI port: {}", e))?;
-        self.port_name = Some("RTRACK_MIDI (virtual)".to_string());
+        self.port_name = Some(VIRTUAL_PORT_NAME.to_string());
         self.connection = Some(conn);
         Ok(())
     }
@@ -226,6 +266,8 @@ impl MidiEngine {
     }
 
     fn send(&mut self, message: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        self.sent.push(message.to_vec());
         if let Some(conn) = &mut self.connection {
             match conn.send(message) {
                 Ok(()) => {

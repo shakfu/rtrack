@@ -96,8 +96,8 @@ impl App {
                     .preview_note_for_cell(order, self.cursor_row, ch, note, velocity);
             }
             MidiInputEvent::NoteOff { channel: _, note } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                self.core.send_note_off(midi_ch, note);
+                let track = self.cursor_channel as u8;
+                self.core.send_note_off(track, note);
 
                 // Punch-in: record note-off at engine position
                 if self.core.playing && self.core.recording && self.mode == Mode::Insert {
@@ -113,21 +113,21 @@ impl App {
                 controller,
                 value,
             } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                if let Some(msg) = self.core.handle_midi_cc(controller, value, midi_ch) {
+                let track = self.cursor_channel as u8;
+                if let Some(msg) = self.core.handle_midi_cc(controller, value, track) {
                     self.status_message = Some(msg);
                 }
             }
             MidiInputEvent::PitchBend { channel: _, value } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                self.core.send_pitch_bend(midi_ch, value);
+                let track = self.cursor_channel as u8;
+                self.core.send_pitch_bend(track, value);
             }
             MidiInputEvent::ProgramChange {
                 channel: _,
                 program,
             } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                self.core.send_program_change(midi_ch, program);
+                let track = self.cursor_channel as u8;
+                self.core.send_program_change(track, program);
             }
             MidiInputEvent::ChannelPressure {
                 channel: _,

@@ -93,6 +93,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help(f, app, &theme),
         Mode::SongSettings => draw_song_settings(f, app, &theme),
         Mode::InstrumentList => draw_instrument_list(f, app, &theme),
+        Mode::PhraseList => draw_phrase_list(f, app, &theme),
+        Mode::TableEditor => draw_table_editor(f, app, &theme),
         Mode::SampleEditor => sample_editor::draw_sample_editor(f, app),
         Mode::SynthEditor => synth_editor::draw_synth_editor(f, app),
         Mode::QuitConfirm => draw_quit_confirm(f, app, &theme),
@@ -250,6 +252,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ),
         Mode::InstrumentList => Span::styled(
             " INSTRUMENTS ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::TableEditor => Span::styled(
+            " TABLE ",
+            Style::default()
+                .fg(theme.mode_port_select)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Mode::PhraseList => Span::styled(
+            " PHRASES ",
             Style::default()
                 .fg(theme.mode_port_select)
                 .add_modifier(Modifier::BOLD),
@@ -488,6 +502,18 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("Instrument list", text_style),
         ]),
         Line::from(vec![
+            Span::styled("    Ctrl+O     ", key_style),
+            Span::styled("MIDI instrument: built in / selected MIDI port", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("    Ctrl+<- -> ", key_style),
+            Span::styled("MIDI instrument: program", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("    Ctrl+Up/Dn ", key_style),
+            Span::styled("MIDI instrument: channel (track's, 1-16)", text_style),
+        ]),
+        Line::from(vec![
             Span::styled("  F8           ", key_style),
             Span::styled("Cycle color theme", text_style),
         ]),
@@ -580,6 +606,45 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("Song settings", text_style),
         ]),
         Line::from(vec![
+            Span::styled("  :phrase [NN] ", key_style),
+            Span::styled("Link the track to a new phrase, or phrase NN", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :tr N        ", key_style),
+            Span::styled(
+                "Transpose the linked phrase at playback, e.g. :tr -5",
+                text_style,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  :unlink      ", key_style),
+            Span::styled("Unlink the track, keeping the phrase rows", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :run         ", key_style),
+            Span::styled("Linked phrase: restart per pattern / run on", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :table [NN]  ", key_style),
+            Span::styled("Table editor: the cursor's instrument, or NN", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :tname :tdel ", key_style),
+            Span::styled("Rename / delete the open table", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :phrases     ", key_style),
+            Span::styled("Phrase list: rename, resize, link", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  :fx2         ", key_style),
+            Span::styled("Show the second effect column", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  = on effect  ", key_style),
+            Span::styled("Edit the effect by name, e.g. PVB44 or C0740", text_style),
+        ]),
+        Line::from(vec![
             Span::styled("  :inst        ", key_style),
             Span::styled("Instrument list", text_style),
         ]),
@@ -667,7 +732,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
         (SettingsField::Rows, "Rows"),
         (SettingsField::HighlightBeat, "Beat Hilight"),
         (SettingsField::HighlightBar, "Bar Hilight"),
-        (SettingsField::Swing, "Swing"),
+        (SettingsField::Groove, "Groove"),
         (SettingsField::Scale, "Scale"),
     ];
 
@@ -686,7 +751,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
                     SettingsField::Rows => app.core.song.rows_per_pattern.to_string(),
                     SettingsField::HighlightBeat => app.core.song.highlight_beat.to_string(),
                     SettingsField::HighlightBar => app.core.song.highlight_bar.to_string(),
-                    SettingsField::Swing => format!("{}%", app.core.song.swing),
+                    SettingsField::Groove => app.core.song.groove_text(),
                     SettingsField::Scale => match app.core.song.scale {
                         Some(sc) => sc.display(),
                         None => "off".to_string(),
@@ -738,22 +803,30 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
             };
             // Show indicators for what's configured
             let mut tags = String::new();
-            if let Some(ref sp) = inst.synth_params {
-                use rtrack_core::audio::synth::Patch;
-                let patch_name = Patch::from_program(sp.waveform).name();
-                tags.push_str(&format!(" [{}]", patch_name));
-            }
-            if inst.sample_index.is_some() {
-                tags.push_str(" [SMP]");
-            }
-            if let Some(prg) = inst.midi_program {
-                tags.push_str(&format!(" [PRG:{:02X}]", prg));
+            let has_data = !inst.is_default(i);
+            match &inst.kind {
+                rtrack_core::InstrumentKind::Synth(sp) => {
+                    use rtrack_core::audio::synth::Patch;
+                    let patch_name = Patch::from_program(sp.waveform).name();
+                    tags.push_str(&format!(" [{}]", patch_name));
+                }
+                rtrack_core::InstrumentKind::Sample { .. } => tags.push_str(" [SMP]"),
+                rtrack_core::InstrumentKind::Midi {
+                    program,
+                    channel,
+                    output,
+                } if has_data => {
+                    if !output.is_builtin() {
+                        tags.push_str(" [EXT]");
+                    }
+                    tags.push_str(&format!(" [PRG:{:02X}]", program));
+                    if let Some(c) = channel {
+                        tags.push_str(&format!(" [CH:{}]", c + 1));
+                    }
+                }
+                rtrack_core::InstrumentKind::Midi { .. } => {}
             }
             let text = format!(" {:02X} {}{}", i, name, tags);
-            let has_data = inst.synth_params.is_some()
-                || inst.sample_index.is_some()
-                || inst.midi_program.is_some()
-                || !inst.name.is_empty();
             let style = if i == app.dialogs.instrument_cursor {
                 Style::default()
                     .fg(theme.popup_highlight_fg)
@@ -776,6 +849,142 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
             .border_style(Style::default().fg(theme.popup_border)),
     );
     f.render_widget(list, popup_area);
+}
+
+fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
+    let area = f.area();
+    let popup_width = 50.min(area.width.saturating_sub(4));
+    let popup_area = centered_rect(popup_width, 20, area);
+    f.render_widget(Clear, popup_area);
+
+    let phrases = &app.core.song.phrases;
+    let visible = (popup_area.height.saturating_sub(2)) as usize;
+    let start = app.dialogs.phrase_cursor.saturating_sub(visible / 2);
+    let uses = |i: usize| {
+        app.core
+            .song
+            .patterns
+            .iter()
+            .flat_map(|p| p.links.iter().flatten())
+            .filter(|l| l.phrase == i)
+            .count()
+    };
+    let items: Vec<ListItem> = if phrases.is_empty() {
+        vec![
+            ListItem::new(" No phrases yet: :phrase links the cursor's track to a new one")
+                .style(Style::default().fg(theme.status_hint)),
+        ]
+    } else {
+        (start..phrases.len().min(start + visible))
+            .map(|i| {
+                let ph = &phrases[i];
+                let text = format!(
+                    " {:02X} {}  {} rows, {} uses",
+                    i,
+                    ph.name,
+                    ph.rows.len(),
+                    uses(i)
+                );
+                let style = if i == app.dialogs.phrase_cursor {
+                    Style::default()
+                        .fg(theme.popup_highlight_fg)
+                        .bg(theme.popup_highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.popup_text)
+                };
+                ListItem::new(text).style(style)
+            })
+            .collect()
+    };
+    let list = List::new(items).block(
+        Block::default()
+            .title(" Phrases ")
+            .title_bottom(" Esc:close Type:name ^<>:length Enter:link track ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.popup_border)),
+    );
+    f.render_widget(list, popup_area);
+}
+
+fn draw_table_editor(f: &mut Frame, app: &App, theme: &Theme) {
+    use crate::app::TableField;
+    let area = f.area();
+    let popup_area = centered_rect(44.min(area.width.saturating_sub(4)), 24, area);
+    f.render_widget(Clear, popup_area);
+
+    let number = app.dialogs.table_number;
+    let blank = rtrack_core::tracker::Table::new(1);
+    let stored = app.core.song.tables.get(&number);
+    let table = stored.unwrap_or(&blank);
+    let text = Style::default().fg(theme.popup_text);
+    let dim = Style::default().fg(theme.status_hint);
+    let active = Style::default()
+        .fg(theme.popup_highlight_fg)
+        .bg(theme.popup_highlight_bg)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            match stored {
+                Some(_) => format!(
+                    "  {} ticks/row   {}",
+                    table.ticks_per_row,
+                    match table.loop_from {
+                        Some(r) => format!("loops from row {r:X}"),
+                        None => "stops at the end".to_string(),
+                    }
+                ),
+                None => "  Not created yet: editing creates it".to_string(),
+            },
+            dim,
+        )),
+        Line::from(Span::styled("      pitch  vol  effect", dim)),
+    ];
+    for (i, row) in table.rows.iter().enumerate() {
+        let here = i == app.dialogs.table_row;
+        let field = |f: TableField, s: String| {
+            let style = if here && app.dialogs.table_field == f {
+                active
+            } else {
+                text
+            };
+            Span::styled(s, style)
+        };
+        let marker = if table.loop_from == Some(i as u8) {
+            ">"
+        } else {
+            " "
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {marker}{i:X}  "), dim),
+            field(TableField::Transpose, format!("{:+4}", row.transpose)),
+            Span::raw("   "),
+            field(
+                TableField::Volume,
+                row.volume.map_or("--".to_string(), |v| format!("{v:02X}")),
+            ),
+            Span::raw("   "),
+            field(
+                TableField::Effect,
+                row.fx.map_or("-----".to_string(), |fx| fx.to_string()),
+            ),
+        ]));
+    }
+
+    let title = if table.name.is_empty() {
+        format!(" Table {number:02X} ")
+    } else {
+        format!(" Table {number:02X} {} ", table.name)
+    };
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .title(title)
+            .title_bottom(" +/-:adjust ^<>:rows []:ticks l:loop =:fx Esc ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.popup_border)),
+    );
+    f.render_widget(widget, popup_area);
 }
 
 fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
@@ -804,25 +1013,33 @@ fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
     f.render_widget(widget, popup_area);
 }
 
+/// The track's default instrument, as the track dialog shows it.
+fn track_instrument_label(app: &App, ch: usize) -> String {
+    use rtrack_core::audio::synth::Patch;
+    use rtrack_core::InstrumentKind;
+    let Some(i) = app.core.channels.get(ch).and_then(|c| c.default_instrument) else {
+        return "-- (none)".to_string();
+    };
+    let inst = &app.core.instruments[i as usize];
+    let label = match &inst.kind {
+        _ if !inst.name.is_empty() => inst.name.clone(),
+        InstrumentKind::Sample { slot, .. } => match app.core.sample_bank.get(*slot) {
+            Some(s) => format!("{} ({:.1}s)", s.name, s.duration()),
+            None => "(no sample)".to_string(),
+        },
+        InstrumentKind::Synth(sp) => Patch::from_program(sp.waveform).name().to_string(),
+        InstrumentKind::Midi {
+            program, output, ..
+        } if output.is_builtin() => Patch::from_program(*program).name().to_string(),
+        InstrumentKind::Midi { program, .. } => format!("MIDI port, program {program}"),
+    };
+    format!("{i:02X} {label}")
+}
+
 fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
     let ch = app.cursor_channel;
-    let ch_type = app
-        .core
-        .channels
-        .get(ch)
-        .map(|c| c.channel_type)
-        .unwrap_or(crate::app::ChannelType::Midi);
-    let is_synth = ch_type == crate::app::ChannelType::Synth;
-    let has_fx = ch_type != crate::app::ChannelType::Midi;
-
-    let is_sample = ch_type == crate::app::ChannelType::Sample;
-    let popup_h = match ch_type {
-        crate::app::ChannelType::Midi => 5,
-        crate::app::ChannelType::Synth => 28,
-        crate::app::ChannelType::Sample => 28,
-    };
-    let popup_area = centered_rect(60, popup_h, area);
+    let popup_area = centered_rect(60, 27, area);
     f.render_widget(Clear, popup_area);
 
     let params = app
@@ -832,8 +1049,8 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         .map(|c| c.effects_params.clone())
         .unwrap_or_default();
     let field = app.ch_fx_field;
-    // Effects fields start at offset 3 for Synth and Sample, 2 for Midi
-    let fx_off: usize = if is_synth || is_sample { 3 } else { 2 };
+    // Effects fields start after Name and Instrument
+    let fx_off: usize = 2;
 
     let active = Style::default()
         .fg(theme.settings_active)
@@ -888,66 +1105,13 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
             Span::styled(name_display, style_for(0)),
         ]),
         Line::from(vec![
-            Span::styled("  Type: ", style_for(1)),
-            Span::styled(ch_type.label().to_string(), style_for(1)),
-            Span::styled("  (Left/Right)", dim),
+            Span::styled("  Inst: ", style_for(1)),
+            Span::styled(track_instrument_label(app, ch), style_for(1)),
+            Span::styled("  (L/R:select  Enter:load sample)", dim),
         ]),
     ];
 
-    if is_synth {
-        let inst_val = app.core.channels.get(ch).and_then(|c| c.default_instrument);
-        let inst_display = match inst_val {
-            Some(i) => {
-                let inst = &app.core.instruments[i as usize];
-                let label = if !inst.name.is_empty() {
-                    inst.name.clone()
-                } else if let Some(ref sp) = inst.synth_params {
-                    rtrack_core::audio::synth::Patch::from_program(sp.waveform)
-                        .name()
-                        .to_string()
-                } else {
-                    // No synth_params configured yet -- show default patch name
-                    rtrack_core::audio::synth::Patch::from_program(i)
-                        .name()
-                        .to_string()
-                };
-                format!("{:02X} {}", i, label)
-            }
-            None => "-- (none)".to_string(),
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  Inst: ", style_for(2)),
-            Span::styled(inst_display, style_for(2)),
-        ]));
-    }
-
-    if is_sample {
-        let selected_slot = app.core.channels.get(ch).and_then(|c| c.default_instrument);
-        let sample_display = selected_slot
-            .and_then(|s| app.core.sample_bank.get(s as usize))
-            .map(|s| {
-                format!(
-                    "{:02X} {} ({:.1}s)",
-                    selected_slot.unwrap(),
-                    s.name,
-                    s.duration()
-                )
-            })
-            .unwrap_or_else(|| "(none)".to_string());
-        let loaded = app.core.sample_bank.loaded_slots();
-        let hint_text = if loaded.is_empty() {
-            "  (Enter:browse)"
-        } else {
-            "  (L/R:select  Enter:browse)"
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  Smpl: ", style_for(2)),
-            Span::styled(sample_display, style_for(2)),
-            Span::styled(hint_text, dim),
-        ]));
-    }
-
-    if has_fx {
+    {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("  -- Effects --", dim)));
 
@@ -1064,11 +1228,7 @@ fn draw_track_config(f: &mut Frame, app: &App, theme: &Theme) {
         ]));
     }
 
-    let hint = if has_fx {
-        " Tab:next  L/R:adjust  L:learn  U:unlearn  Esc:close "
-    } else {
-        " Tab:next  Left/Right:cycle  Enter/Esc:close "
-    };
+    let hint = " Tab:next  L/R:adjust  L:learn  U:unlearn  Esc:close ";
 
     let widget = Paragraph::new(lines).block(
         Block::default()
@@ -1489,6 +1649,31 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_editor_shows_every_row_down_to_its_key_help() {
+        let mut app = make_app();
+        let mut bank = rtrack_core::sample::SampleBank::new();
+        bank.samples[0] = Some(std::sync::Arc::new(rtrack_core::sample::Sample {
+            name: "s".into(),
+            data: vec![[0.0, 0.0]; 1000].into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        }));
+        app.core.sample_bank = std::sync::Arc::new(bank);
+        app.core.instruments[0].kind = rtrack_core::InstrumentKind::sample(0);
+        app.open_sample_editor();
+        let shot = popup_snapshot(&app);
+        for row in ["Resonance", "[Transient]", "Tab: next field"] {
+            assert!(shot.contains(row), "{row} missing:\n{shot}");
+        }
+    }
+
+    #[test]
     fn the_song_settings_dialog_renders_every_field() {
         let mut app = make_app();
         app.open_song_settings();
@@ -1502,7 +1687,7 @@ mod tests {
 │  Rows          64                      │
 │  Beat Hilight  4                       │
 │  Bar Hilight   16                      │
-│  Swing         50%                     │
+│  Groove        off                     │
 │  Scale         off                     │
 │                                        │
 │                                        │

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::effects::MAX_SEND_BUSES;
+use super::svf::{Svf, SvfCoeffs};
 
 /// Maximum tracker channels supported for per-channel effects.
 pub const MAX_EFFECT_CHANNELS: usize = 16;
@@ -112,10 +113,8 @@ pub struct ChannelEffects {
     sample_rate: f64,
 
     // SVF filter state (2-pole state variable filter, one per stereo channel)
-    svf_ic1eq_l: f32,
-    svf_ic2eq_l: f32,
-    svf_ic1eq_r: f32,
-    svf_ic2eq_r: f32,
+    svf_l: Svf,
+    svf_r: Svf,
 
     // Chorus delay line (circular buffer, max ~50ms at 48kHz = 2400 samples)
     chorus_buffer_l: Vec<f32>,
@@ -162,10 +161,8 @@ impl ChannelEffects {
         Self {
             params: ChannelEffectsParams::default(),
             sample_rate,
-            svf_ic1eq_l: 0.0,
-            svf_ic2eq_l: 0.0,
-            svf_ic1eq_r: 0.0,
-            svf_ic2eq_r: 0.0,
+            svf_l: Svf::default(),
+            svf_r: Svf::default(),
             chorus_buffer_l: vec![0.0; chorus_buf_size],
             chorus_buffer_r: vec![0.0; chorus_buf_size],
             chorus_write_pos: 0,
@@ -255,28 +252,8 @@ impl ChannelEffects {
     fn svf_tick(&mut self, l: f32, r: f32) -> (f32, f32) {
         let cutoff = self.params.filter_cutoff.clamp(20.0, 20000.0);
         let res = self.params.filter_resonance.clamp(0.0, 1.0);
-
-        let g = (std::f32::consts::PI * cutoff / self.sample_rate as f32).tan();
-        let k = 2.0 - 2.0 * res;
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let a2 = g * a1;
-        let a3 = g * a2;
-
-        // Left channel
-        let v3_l = l - self.svf_ic2eq_l;
-        let v1_l = a1 * self.svf_ic1eq_l + a2 * v3_l;
-        let v2_l = self.svf_ic2eq_l + a2 * self.svf_ic1eq_l + a3 * v3_l;
-        self.svf_ic1eq_l = 2.0 * v1_l - self.svf_ic1eq_l;
-        self.svf_ic2eq_l = 2.0 * v2_l - self.svf_ic2eq_l;
-
-        // Right channel
-        let v3_r = r - self.svf_ic2eq_r;
-        let v1_r = a1 * self.svf_ic1eq_r + a2 * v3_r;
-        let v2_r = self.svf_ic2eq_r + a2 * self.svf_ic1eq_r + a3 * v3_r;
-        self.svf_ic1eq_r = 2.0 * v1_r - self.svf_ic1eq_r;
-        self.svf_ic2eq_r = 2.0 * v2_r - self.svf_ic2eq_r;
-
-        (v2_l, v2_r)
+        let c = SvfCoeffs::new(cutoff, res, self.sample_rate as f32);
+        (self.svf_l.tick(&c, l).0, self.svf_r.tick(&c, r).0)
     }
 
     /// Chorus tick: LFO-modulated delay with wet/dry mix.
@@ -406,10 +383,8 @@ impl ChannelEffects {
     /// Reset all internal DSP state (e.g., on song start).
     #[cfg(test)]
     fn reset(&mut self) {
-        self.svf_ic1eq_l = 0.0;
-        self.svf_ic2eq_l = 0.0;
-        self.svf_ic1eq_r = 0.0;
-        self.svf_ic2eq_r = 0.0;
+        self.svf_l = Svf::default();
+        self.svf_r = Svf::default();
         self.chorus_buffer_l.fill(0.0);
         self.chorus_buffer_r.fill(0.0);
         self.chorus_write_pos = 0;

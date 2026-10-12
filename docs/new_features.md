@@ -158,7 +158,7 @@ Phase 4: Remove the legacy `Pattern`/`order` fields once the migration is stable
 
 Both trackers have dedicated Groove screens: arrays of tick counts that redistribute timing across steps. LSDj's default is 6/6 (even), but 7/5 creates swing, 8/4 creates shuffle, etc. picoTracker supports multi-step grooves like 4/8/4 for a 3-step cycle.
 
-rtrack currently has a single `swing` field on Song -- not per-pattern, not selectable per-channel, and not a reusable named groove.
+rtrack currently has a single `swing` field on Song -- not per-pattern, not selectable per-channel, and not a reusable named groove. (Superseded: `Song.groove`, row weights rather than tick counts; see `docs/dev/g9-groove.md`.)
 
 **Proposal:** Add named groove slots (like existing instrument slots) with a `GRV` effect command to switch grooves mid-pattern. Each groove is a variable-length array of tick counts that cycle across rows. Default groove is 6/6 (equivalent to speed=6 with no swing).
 

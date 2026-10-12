@@ -1,7 +1,7 @@
 use egui::Key;
 use rtrack_core::constants::*;
 use rtrack_core::midi::MidiInputEvent;
-use rtrack_core::tracker::{Cell, Note};
+use rtrack_core::tracker::{Cell, Fx, Note};
 
 use crate::app::RtrackApp;
 use crate::history::{CellEdit, Edit};
@@ -9,6 +9,10 @@ use crate::state::{Mode, SubColumn};
 
 impl RtrackApp {
     pub fn process_keys(&mut self, ctx: &egui::Context) {
+        // The effect prompt has the keyboard while it is open.
+        if self.effect_prompt.is_some() {
+            return;
+        }
         let mut actions: Vec<Action> = Vec::new();
 
         ctx.input(|input| {
@@ -269,6 +273,13 @@ impl RtrackApp {
                         if input.key_pressed(Key::Equals) && self.cursor_sub == SubColumn::Note {
                             actions.push(Action::NoteOff);
                         }
+                        // Edit an effect by name
+                        if input.key_pressed(Key::Equals)
+                            && !shift
+                            && self.cursor_sub.fx_column().is_some()
+                        {
+                            actions.push(Action::OpenEffectPrompt);
+                        }
 
                         // Piano keys and hex digits via text events
                         for event in &input.events {
@@ -346,15 +357,17 @@ impl RtrackApp {
                 }
             }
             Action::CursorLeft => {
-                self.cursor_sub = self.cursor_sub.prev();
-                if self.cursor_sub == SubColumn::Effect && self.cursor_channel > 0 {
+                let old = self.cursor_sub;
+                self.cursor_sub = old.prev(self.fx_columns());
+                if old == SubColumn::Note && self.cursor_channel > 0 {
                     self.cursor_channel -= 1;
                 }
             }
             Action::CursorRight => {
-                let old = self.cursor_sub;
-                self.cursor_sub = self.cursor_sub.next();
-                if old == SubColumn::Effect && self.cursor_channel + 1 < self.core.song.channels {
+                self.cursor_sub = self.cursor_sub.next(self.fx_columns());
+                if self.cursor_sub == SubColumn::Note
+                    && self.cursor_channel + 1 < self.core.song.channels
+                {
                     self.cursor_channel += 1;
                 }
             }
@@ -401,6 +414,7 @@ impl RtrackApp {
             Action::ClearCell => {
                 self.clear_cell();
             }
+            Action::OpenEffectPrompt => self.open_effect_prompt(),
             Action::NoteOff => {
                 self.enter_note_off();
             }
@@ -416,7 +430,6 @@ impl RtrackApp {
             Action::Copy => {
                 if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
                     // Block copy
-                    let pattern_idx = self.core.song.order[self.edit_order];
                     let min_r = r1.min(r2);
                     let max_r = r1.max(r2);
                     let min_c = c1.min(c2);
@@ -425,7 +438,7 @@ impl RtrackApp {
                     for row in min_r..=max_r {
                         let mut row_cells = Vec::new();
                         for ch in min_c..=max_c {
-                            row_cells.push(*self.core.song.patterns[pattern_idx].get(row, ch));
+                            row_cells.push(self.shown_cell(row, ch));
                         }
                         block.push(row_cells);
                     }
@@ -435,9 +448,7 @@ impl RtrackApp {
                     self.status_message = Some(format!("Block copied ({}x{})", rows, chs));
                 } else {
                     // Single cell copy
-                    let pattern_idx = self.core.song.order[self.edit_order];
-                    let cell = *self.core.song.patterns[pattern_idx]
-                        .get(self.cursor_row, self.cursor_channel);
+                    let cell = self.shown_cell(self.cursor_row, self.cursor_channel);
                     self.clipboard.set_cell(cell);
                     self.status_message = Some("Copied".to_string());
                 }
@@ -445,7 +456,6 @@ impl RtrackApp {
             Action::Cut => {
                 if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
                     // Block cut
-                    let pattern_idx = self.core.song.order[self.edit_order];
                     let min_r = r1.min(r2);
                     let max_r = r1.max(r2);
                     let min_c = c1.min(c2);
@@ -455,17 +465,8 @@ impl RtrackApp {
                     for row in min_r..=max_r {
                         let mut row_cells = Vec::new();
                         for ch in min_c..=max_c {
-                            let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
-                            row_cells.push(old_cell);
-                            let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
-                            *cell = Cell::default();
-                            edits.push(CellEdit {
-                                pattern_idx,
-                                row,
-                                channel: ch,
-                                old_cell,
-                                new_cell: Cell::default(),
-                            });
+                            row_cells.push(self.shown_cell(row, ch));
+                            self.write_cell(row, ch, Cell::default(), &mut edits);
                         }
                         block.push(row_cells);
                     }
@@ -479,55 +480,20 @@ impl RtrackApp {
                     self.status_message = Some(format!("Block cut ({}x{})", rows, chs));
                 } else {
                     // Single cell cut
-                    let pattern_idx = self.core.song.order[self.edit_order];
-                    let old_cell = *self.core.song.patterns[pattern_idx]
-                        .get(self.cursor_row, self.cursor_channel);
-                    self.clipboard.set_cell(old_cell);
-
-                    let cell = self.core.song.patterns[pattern_idx]
-                        .get_mut(self.cursor_row, self.cursor_channel);
-                    *cell = Cell::default();
-                    let new_cell = *cell;
-
-                    self.record_cell_edit(
-                        pattern_idx,
-                        self.cursor_row,
-                        self.cursor_channel,
-                        old_cell,
-                        new_cell,
-                    );
-                    self.core.dirty = true;
+                    if let Some(old_cell) = self.write_cursor_cell(Cell::default()) {
+                        self.clipboard.set_cell(old_cell);
+                    }
                     self.status_message = Some("Cut".to_string());
                 }
             }
             Action::Paste => {
                 if let Some(block) = self.clipboard.block().cloned() {
-                    // Block paste
-                    let pattern_idx = self.core.song.order[self.edit_order];
-                    let pattern = &self.core.song.patterns[pattern_idx];
-                    let max_rows = pattern.rows;
-                    let max_chs = pattern.channels;
+                    // Block paste; cells past the pattern's edge do not resolve
                     let mut edits = Vec::new();
                     for (dr, row_cells) in block.iter().enumerate() {
-                        let row = self.cursor_row + dr;
-                        if row >= max_rows {
-                            break;
-                        }
                         for (dc, clip_cell) in row_cells.iter().enumerate() {
-                            let ch = self.cursor_channel + dc;
-                            if ch >= max_chs {
-                                break;
-                            }
-                            let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
-                            let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
-                            *cell = *clip_cell;
-                            edits.push(CellEdit {
-                                pattern_idx,
-                                row,
-                                channel: ch,
-                                old_cell,
-                                new_cell: *clip_cell,
-                            });
+                            let (row, ch) = (self.cursor_row + dr, self.cursor_channel + dc);
+                            self.write_cell(row, ch, *clip_cell, &mut edits);
                         }
                     }
                     self.core.history.push(edits);
@@ -535,22 +501,7 @@ impl RtrackApp {
                     self.status_message = Some("Block pasted".to_string());
                 } else if let Some(clip) = self.clipboard.cell() {
                     // Single cell paste
-                    let pattern_idx = self.core.song.order[self.edit_order];
-                    let old_cell = *self.core.song.patterns[pattern_idx]
-                        .get(self.cursor_row, self.cursor_channel);
-
-                    let cell = self.core.song.patterns[pattern_idx]
-                        .get_mut(self.cursor_row, self.cursor_channel);
-                    *cell = clip;
-
-                    self.record_cell_edit(
-                        pattern_idx,
-                        self.cursor_row,
-                        self.cursor_channel,
-                        old_cell,
-                        clip,
-                    );
-                    self.core.dirty = true;
+                    self.write_cursor_cell(clip);
 
                     // Advance cursor
                     let step = self.edit_step;
@@ -569,6 +520,10 @@ impl RtrackApp {
                         .insert(self.cursor_row, vec![Cell::default(); channels]);
                     pattern.rows += 1;
                     self.core.dirty = true;
+                    if pattern.links.iter().any(Option::is_some) {
+                        self.status_message =
+                            Some("Row inserted (linked phrases unchanged)".into());
+                    }
                 }
             }
             Action::DeleteRow => {
@@ -581,6 +536,9 @@ impl RtrackApp {
                         self.cursor_row = pattern.rows - 1;
                     }
                     self.core.dirty = true;
+                    if pattern.links.iter().any(Option::is_some) {
+                        self.status_message = Some("Row deleted (linked phrases unchanged)".into());
+                    }
                 }
             }
             Action::TransposeUp => {
@@ -805,7 +763,6 @@ impl RtrackApp {
             }
             Action::BlockInterpolate => {
                 if let (Some((r1, c1)), Some((r2, c2))) = (self.block_start, self.block_end) {
-                    let pattern_idx = self.core.song.order[self.edit_order];
                     let min_r = r1.min(r2);
                     let max_r = r1.max(r2);
                     let min_c = c1.min(c2);
@@ -816,61 +773,29 @@ impl RtrackApp {
                             Some("Need at least 3 rows to interpolate".to_string());
                         return;
                     }
+                    let lerp = |a: u8, b: u8, row: usize| {
+                        let t = (row - min_r) as f64 / span as f64;
+                        (a as f64 + (b as f64 - a as f64) * t).round() as u8
+                    };
                     let mut edits = Vec::new();
                     for ch in min_c..=max_c {
-                        let first = *self.core.song.patterns[pattern_idx].get(min_r, ch);
-                        let last = *self.core.song.patterns[pattern_idx].get(max_r, ch);
-
-                        // Interpolate volume
-                        if let (Some(v0), Some(v1)) = (first.volume, last.volume) {
-                            for row in min_r..=max_r {
-                                let t = (row - min_r) as f64 / span as f64;
-                                let v = v0 as f64 + (v1 as f64 - v0 as f64) * t;
-                                let old_cell = *self.core.song.patterns[pattern_idx].get(row, ch);
-                                let cell = self.core.song.patterns[pattern_idx].get_mut(row, ch);
-                                cell.volume = Some(v.round() as u8);
-                                edits.push(CellEdit {
-                                    pattern_idx,
-                                    row,
-                                    channel: ch,
-                                    old_cell,
-                                    new_cell: *cell,
-                                });
-                            }
+                        let first = self.shown_cell(min_r, ch);
+                        let last = self.shown_cell(max_r, ch);
+                        let volumes = first.volume.zip(last.volume);
+                        // The effect parameter, when both ends have the same command
+                        let fx = first.fx[0].zip(last.fx[0]).filter(|(a, b)| a.cmd == b.cmd);
+                        if volumes.is_none() && fx.is_none() {
+                            continue;
                         }
-
-                        // Interpolate effect_value
-                        if let (Some(e0), Some(e1)) = (first.effect_value, last.effect_value) {
-                            // Only interpolate if effect command matches at both ends
-                            if first.effect == last.effect && first.effect.is_some() {
-                                for row in min_r..=max_r {
-                                    let t = (row - min_r) as f64 / span as f64;
-                                    let e = e0 as f64 + (e1 as f64 - e0 as f64) * t;
-                                    let old_cell =
-                                        *self.core.song.patterns[pattern_idx].get(row, ch);
-                                    let cell =
-                                        self.core.song.patterns[pattern_idx].get_mut(row, ch);
-                                    cell.effect = first.effect;
-                                    cell.effect_value = Some(e.round() as u8);
-                                    // Check if we already have an edit for this cell from volume interpolation
-                                    let existing = edits.iter_mut().find(|ed: &&mut CellEdit| {
-                                        ed.pattern_idx == pattern_idx
-                                            && ed.row == row
-                                            && ed.channel == ch
-                                    });
-                                    if let Some(existing) = existing {
-                                        existing.new_cell = *cell;
-                                    } else {
-                                        edits.push(CellEdit {
-                                            pattern_idx,
-                                            row,
-                                            channel: ch,
-                                            old_cell,
-                                            new_cell: *cell,
-                                        });
-                                    }
-                                }
+                        for row in min_r..=max_r {
+                            let mut cell = self.shown_cell(row, ch);
+                            if let Some((v0, v1)) = volumes {
+                                cell.volume = Some(lerp(v0, v1, row));
                             }
+                            if let Some((f0, f1)) = fx {
+                                cell.fx[0] = Some(Fx::new(f0.cmd, lerp(f0.param, f1.param, row)));
+                            }
+                            self.write_cell(row, ch, cell, &mut edits);
                         }
                     }
                     if edits.is_empty() {
@@ -977,21 +902,38 @@ impl RtrackApp {
         }
     }
 
-    pub(crate) fn record_cell_edit(
+    /// The cell shown at (row, channel) of the pattern being edited.
+    pub(crate) fn shown_cell(&self, row: usize, channel: usize) -> Cell {
+        *self.core.song.cell_at(self.edit_order, row, channel)
+    }
+
+    /// Write the cell shown at (row, channel) of the pattern being edited,
+    /// wherever it is stored, and record the change in `edits`. Returns the
+    /// old cell, or `None` if the coordinate does not resolve.
+    pub(crate) fn write_cell(
         &mut self,
-        pattern_idx: usize,
         row: usize,
         channel: usize,
-        old: Cell,
         new: Cell,
-    ) {
-        self.core.history.push(vec![CellEdit {
-            pattern_idx,
-            row,
-            channel,
+        edits: &mut Vec<CellEdit>,
+    ) -> Option<Cell> {
+        let at = self.core.song.address(self.edit_order, row, channel)?;
+        let old = std::mem::replace(self.core.song.cell_mut(at)?, new);
+        edits.push(CellEdit {
+            at,
             old_cell: old,
             new_cell: new,
-        }]);
+        });
+        Some(old)
+    }
+
+    /// [`RtrackApp::write_cell`] at the cursor, as one undo step.
+    pub(crate) fn write_cursor_cell(&mut self, new: Cell) -> Option<Cell> {
+        let mut edits = Vec::new();
+        let old = self.write_cell(self.cursor_row, self.cursor_channel, new, &mut edits);
+        self.core.history.push(edits);
+        self.core.dirty = true;
+        old
     }
 
     fn try_enter_note(&mut self, c: char) {
@@ -1019,24 +961,14 @@ impl RtrackApp {
             );
         }
 
-        let Some(pattern_idx) = self.current_pattern_idx() else {
-            return;
-        };
-        let Some(cell) = self
-            .core
-            .song
-            .cell_at_mut(self.edit_order, self.cursor_row, ch)
-        else {
-            return;
-        };
-        let old_cell = *cell;
+        let mut cell = self.shown_cell(self.cursor_row, ch);
         cell.note = Some(note);
         if let Some(inst) = track_inst {
             cell.instrument = Some(inst);
         }
-        let new_cell = *cell;
-        self.record_cell_edit(pattern_idx, self.cursor_row, ch, old_cell, new_cell);
-        self.core.dirty = true;
+        if self.write_cursor_cell(cell).is_none() {
+            return;
+        }
 
         // Advance cursor
         let step = self.edit_step;
@@ -1051,12 +983,7 @@ impl RtrackApp {
             _ => return,
         };
 
-        let pattern_idx = self.core.song.order[self.edit_order];
-        let old_cell =
-            *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
-        let cell =
-            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-
+        let mut cell = self.shown_cell(self.cursor_row, self.cursor_channel);
         match self.cursor_sub {
             SubColumn::Instrument => {
                 let current = cell.instrument.unwrap_or(0);
@@ -1066,25 +993,11 @@ impl RtrackApp {
                 let current = cell.volume.unwrap_or(0);
                 cell.volume = Some((current << 4) | digit);
             }
-            SubColumn::Effect => {
-                if cell.effect.is_none() {
-                    cell.effect = Some(digit);
-                } else {
-                    let current_val = cell.effect_value.unwrap_or(0);
-                    cell.effect_value = Some((current_val << 4) | digit);
-                }
-            }
+            SubColumn::Effect => cell.enter_effect_digit(0, digit),
+            SubColumn::Effect2 => cell.enter_effect_digit(1, digit),
             SubColumn::Note => {}
         }
-        let new_cell = *cell;
-        self.record_cell_edit(
-            pattern_idx,
-            self.cursor_row,
-            self.cursor_channel,
-            old_cell,
-            new_cell,
-        );
-        self.core.dirty = true;
+        self.write_cursor_cell(cell);
 
         let step = self.edit_step;
         let max_row = self.current_pattern_rows().saturating_sub(1);
@@ -1092,11 +1005,7 @@ impl RtrackApp {
     }
 
     fn clear_cell(&mut self) {
-        let pattern_idx = self.core.song.order[self.edit_order];
-        let old_cell =
-            *self.core.song.patterns[pattern_idx].get(self.cursor_row, self.cursor_channel);
-        let cell =
-            self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
+        let mut cell = self.shown_cell(self.cursor_row, self.cursor_channel);
         match self.cursor_sub {
             SubColumn::Note => {
                 cell.note = None;
@@ -1104,44 +1013,61 @@ impl RtrackApp {
             }
             SubColumn::Instrument => cell.instrument = None,
             SubColumn::Volume => cell.volume = None,
-            SubColumn::Effect => {
-                cell.effect = None;
-                cell.effect_value = None;
-            }
+            SubColumn::Effect => cell.fx[0] = None,
+            SubColumn::Effect2 => cell.fx[1] = None,
         }
-        let new_cell = *cell;
-        self.record_cell_edit(
-            pattern_idx,
-            self.cursor_row,
-            self.cursor_channel,
-            old_cell,
-            new_cell,
-        );
-        self.core.dirty = true;
+        self.write_cursor_cell(cell);
     }
 
-    fn enter_note_off(&mut self) {
-        let Some(pattern_idx) = self.current_pattern_idx() else {
+    fn open_effect_prompt(&mut self) {
+        let Some(col) = self.cursor_sub.fx_column() else {
             return;
         };
-        let Some(cell) =
+        let Some(at) =
             self.core
                 .song
-                .cell_at_mut(self.edit_order, self.cursor_row, self.cursor_channel)
+                .address(self.edit_order, self.cursor_row, self.cursor_channel)
         else {
             return;
         };
-        let old_cell = *cell;
+        let cell = self.shown_cell(self.cursor_row, self.cursor_channel);
+        self.effect_prompt = Some(crate::app::EffectPrompt {
+            text: cell.fx[col].map(|fx| fx.to_string()).unwrap_or_default(),
+            at,
+            col,
+        });
+    }
+
+    /// Apply the effect prompt's text; empty text clears the effect.
+    pub(crate) fn apply_effect_prompt(&mut self) {
+        let Some(prompt) = self.effect_prompt.take() else {
+            return;
+        };
+        let Some(slot) = self.core.song.cell_mut(prompt.at) else {
+            return;
+        };
+        let old_cell = *slot;
+        let mut new_cell = old_cell;
+        match new_cell.set_effect_text(prompt.col, &prompt.text) {
+            Ok(()) => {
+                *slot = new_cell;
+                self.core.history.push(vec![CellEdit {
+                    at: prompt.at,
+                    old_cell,
+                    new_cell,
+                }]);
+                self.core.dirty = true;
+            }
+            Err(e) => self.status_message = Some(e),
+        }
+    }
+
+    fn enter_note_off(&mut self) {
+        let mut cell = self.shown_cell(self.cursor_row, self.cursor_channel);
         cell.note = Some(Note::Off);
-        let new_cell = *cell;
-        self.record_cell_edit(
-            pattern_idx,
-            self.cursor_row,
-            self.cursor_channel,
-            old_cell,
-            new_cell,
-        );
-        self.core.dirty = true;
+        if self.write_cursor_cell(cell).is_none() {
+            return;
+        }
 
         let step = self.edit_step;
         let max_row = self.current_pattern_rows().saturating_sub(1);
@@ -1152,41 +1078,44 @@ impl RtrackApp {
         self.core.song.rows_at(self.edit_order)
     }
 
-    /// Index of the pattern the edit cursor currently points at, or None if
-    /// the order position does not resolve to one.
-    fn current_pattern_idx(&self) -> Option<usize> {
-        let pattern_idx = *self.core.song.order.get(self.edit_order)?;
-        (pattern_idx < self.core.song.patterns.len()).then_some(pattern_idx)
-    }
-
     fn transpose_notes(&mut self, steps: i8) {
-        // Copied out before the pattern is borrowed mutably.
         let scale = self.core.song.scale;
-        let pattern_idx = self.core.song.order[self.edit_order];
-
-        if let (Some(start), Some(end)) = (self.block_start, self.block_end) {
-            let r0 = start.0.min(end.0);
-            let r1 = start.0.max(end.0);
-            let c0 = start.1.min(end.1);
-            let c1 = start.1.max(end.1);
-            let pattern = &mut self.core.song.patterns[pattern_idx];
-            for r in r0..=r1 {
-                for c in c0..=c1 {
-                    pattern.get_mut(r, c).transpose_note(steps, scale);
-                }
+        let (r0, r1, c0, c1) = match (self.block_start, self.block_end) {
+            (Some(start), Some(end)) => (
+                start.0.min(end.0),
+                start.0.max(end.0),
+                start.1.min(end.1),
+                start.1.max(end.1),
+            ),
+            _ => (
+                self.cursor_row,
+                self.cursor_row,
+                self.cursor_channel,
+                self.cursor_channel,
+            ),
+        };
+        // Each stored cell once, however many times it shows in the block.
+        let mut edits = Vec::new();
+        for at in self.core.song.addresses(self.edit_order, r0..=r1, c0..=c1) {
+            if let Some(cell) = self.core.song.cell_mut(at) {
+                let old_cell = *cell;
+                cell.transpose_note(steps, scale);
+                edits.push(CellEdit {
+                    at,
+                    old_cell,
+                    new_cell: *cell,
+                });
             }
-            self.core.dirty = true;
+        }
+        self.core.history.push(edits);
+        self.core.dirty = true;
+        if self.block_start.is_some() {
             let unit = if scale.is_some() {
                 "scale degree(s)"
             } else {
                 "semitone(s)"
             };
             self.status_message = Some(format!("Transposed block by {} {}", steps, unit));
-        } else {
-            let cell =
-                self.core.song.patterns[pattern_idx].get_mut(self.cursor_row, self.cursor_channel);
-            cell.transpose_note(steps, scale);
-            self.core.dirty = true;
         }
     }
 
@@ -1236,8 +1165,8 @@ impl RtrackApp {
                     .preview_note_for_cell(order, self.cursor_row, ch, note, velocity);
             }
             MidiInputEvent::NoteOff { channel: _, note } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                self.core.send_note_off(midi_ch, note);
+                let track = self.cursor_channel as u8;
+                self.core.send_note_off(track, note);
 
                 if self.core.playing && self.core.recording && self.mode == Mode::Insert {
                     self.core.record_note_off_at(
@@ -1252,21 +1181,21 @@ impl RtrackApp {
                 controller,
                 value,
             } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                if let Some(msg) = self.core.handle_midi_cc(controller, value, midi_ch) {
+                let track = self.cursor_channel as u8;
+                if let Some(msg) = self.core.handle_midi_cc(controller, value, track) {
                     self.status_message = Some(msg);
                 }
             }
             MidiInputEvent::PitchBend { channel: _, value } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                self.core.send_pitch_bend(midi_ch, value);
+                let track = self.cursor_channel as u8;
+                self.core.send_pitch_bend(track, value);
             }
             MidiInputEvent::ProgramChange {
                 channel: _,
                 program,
             } => {
-                let midi_ch = self.core.midi_channel_for(self.cursor_channel);
-                self.core.send_program_change(midi_ch, program);
+                let track = self.cursor_channel as u8;
+                self.core.send_program_change(track, program);
             }
             MidiInputEvent::ChannelPressure {
                 channel: _,
@@ -1319,6 +1248,7 @@ enum Action {
     EnterHexDigit(char),
     ClearCell,
     NoteOff,
+    OpenEffectPrompt,
     Save,
     Undo,
     Redo,
@@ -1370,10 +1300,49 @@ mod tests {
     use super::*;
     use crate::state::SubColumn;
     use rtrack_core::tracker::NoteValue;
-    use rtrack_core::ChannelType;
 
     fn app() -> RtrackApp {
         RtrackApp::headless(4, 16)
+    }
+
+    #[test]
+    fn the_second_effect_column_is_reached_once_shown() {
+        let mut a = app();
+        a.cursor_sub = SubColumn::Effect;
+        a.execute_action(Action::CursorRight);
+        assert_eq!((a.cursor_channel, a.cursor_sub), (1, SubColumn::Note));
+
+        a.show_second_fx = true;
+        a.cursor_channel = 0;
+        a.cursor_sub = SubColumn::Effect;
+        a.execute_action(Action::CursorRight);
+        assert_eq!((a.cursor_channel, a.cursor_sub), (0, SubColumn::Effect2));
+        a.execute_action(Action::CursorLeft);
+        assert_eq!(a.cursor_sub, SubColumn::Effect);
+    }
+
+    #[test]
+    fn an_effect_is_edited_by_name_and_the_edit_undoes() {
+        let mut a = app();
+        a.cursor_sub = SubColumn::Effect;
+        a.execute_action(Action::OpenEffectPrompt);
+        a.effect_prompt.as_mut().unwrap().text = "pvb44".to_string();
+        a.apply_effect_prompt();
+        let fx = |a: &RtrackApp| a.core.song.cell_at(a.edit_order, 0, 0).fx[0];
+        assert_eq!(
+            fx(&a),
+            Some(Fx::new(rtrack_core::tracker::FxCmd::Vibrato, 0x44))
+        );
+
+        a.execute_action(Action::OpenEffectPrompt);
+        assert_eq!(a.effect_prompt.as_ref().unwrap().text, "PVB44");
+        a.effect_prompt.as_mut().unwrap().text = "nope".to_string();
+        a.apply_effect_prompt();
+        assert!(a.status_message.is_some());
+        assert!(fx(&a).is_some(), "bad text changed the cell");
+
+        a.apply_undo();
+        assert_eq!(fx(&a), None);
     }
 
     fn note_at(app: &RtrackApp, row: usize, channel: usize) -> Option<Note> {
@@ -1486,9 +1455,8 @@ mod tests {
     }
 
     #[test]
-    fn synth_tracks_auto_fill_the_track_instrument() {
+    fn tracks_auto_fill_the_track_instrument() {
         let mut a = app();
-        a.core.channels[0].channel_type = ChannelType::Synth;
         a.core.channels[0].default_instrument = Some(7);
         a.try_enter_note('z');
         let cell = a.core.song.cell_at(a.edit_order, 0, 0);
@@ -1502,7 +1470,7 @@ mod tests {
         // and a note typed on an empty row used to fall through to the
         // built-in synth instead of playing the slice.
         let mut a = app();
-        a.core.instruments[3].sample_index = Some(3);
+        a.core.instruments[3].kind = rtrack_core::InstrumentKind::sample(3);
         a.core.song.set_cell(
             a.edit_order,
             0,
@@ -1569,10 +1537,8 @@ mod tests {
     }
 
     #[test]
-    fn midi_tracks_do_not_auto_fill_an_instrument() {
+    fn a_track_without_a_default_fills_no_instrument() {
         let mut a = app();
-        a.core.channels[0].channel_type = ChannelType::Midi;
-        a.core.channels[0].default_instrument = Some(7);
         a.try_enter_note('z');
         let cell = a.core.song.cell_at(a.edit_order, 0, 0);
         assert_eq!(cell.instrument, None);
@@ -1683,8 +1649,8 @@ mod tests {
         app.record_settings_edit("song.bpm", before);
 
         let before = app.core.song.clone();
-        app.core.song.swing = 60;
-        app.record_settings_edit("song.swing", before);
+        app.core.song.groove = vec![60, 40];
+        app.record_settings_edit("song.groove", before);
 
         assert_eq!(app.core.history.undo_depth(), depth + 2);
     }
@@ -1836,7 +1802,15 @@ mod tests {
         // patterns from the previous one must not panic.
         let mut a = app();
         a.try_enter_note('z');
-        a.record_cell_edit(99, 0, 0, Cell::default(), Cell::default());
+        a.core.history.push(vec![CellEdit {
+            at: rtrack_core::tracker::CellAddr::Pattern {
+                pattern: 99,
+                row: 0,
+                channel: 0,
+            },
+            old_cell: Cell::default(),
+            new_cell: Cell::default(),
+        }]);
         a.apply_undo();
         a.apply_undo();
         // Reached here without panicking; the real edit is still undone.
@@ -1863,7 +1837,7 @@ mod tests {
 
         let mut a = app();
         a.core.song.scale = Some(ScaleSetting::new(NoteValue::C, Scale::Major));
-        let pattern_idx = a.current_pattern_idx().unwrap();
+        let pattern_idx = a.core.song.order[a.edit_order];
         a.core.song.patterns[pattern_idx].get_mut(0, 0).note = on(NoteValue::E, 4);
 
         a.transpose_notes(1);
@@ -1881,10 +1855,100 @@ mod tests {
     }
 
     #[test]
+    fn the_phrase_window_links_edits_and_unlinks_with_undo() {
+        use crate::dialogs::PhraseAction;
+        use rtrack_core::tracker::PhraseTiming;
+        let mut a = app();
+        let link = |a: &RtrackApp| a.core.song.pattern_at(a.edit_order).unwrap().link(0);
+
+        a.apply_phrase_action(PhraseAction::LinkNew);
+        assert_eq!(link(&a).map(|l| l.phrase), Some(0));
+
+        // An edit through the grid lands in the phrase, and undoes there.
+        a.cursor_sub = SubColumn::Volume;
+        a.enter_hex_digit('5');
+        assert_eq!(a.core.song.phrases[0].rows[0].volume, Some(5));
+        a.apply_undo();
+        assert_eq!(a.core.song.phrases[0].rows[0].volume, None);
+
+        a.apply_phrase_action(PhraseAction::Transpose(7));
+        assert_eq!(link(&a).map(|l| l.transpose), Some(7));
+
+        a.apply_phrase_action(PhraseAction::Timing(true));
+        assert_eq!(link(&a).map(|l| l.timing), Some(PhraseTiming::Running));
+
+        // Typing a name is one undo step, not one per character.
+        let depth = a.core.history.undo_depth();
+        for name in ["B", "Ba", "Bass"] {
+            a.apply_phrase_action(PhraseAction::Rename(0, name.to_string()));
+        }
+        assert_eq!(a.core.history.undo_depth(), depth + 1);
+
+        a.apply_phrase_action(PhraseAction::Unlink);
+        assert_eq!(link(&a), None);
+        a.apply_undo();
+        assert!(link(&a).is_some());
+    }
+
+    #[test]
+    fn the_table_window_builds_and_deletes_a_table_with_undo() {
+        use crate::dialogs::TableAction;
+        let mut a = app();
+        let table = |a: &RtrackApp| a.core.song.tables.get(&5).cloned();
+
+        a.apply_table_action(TableAction::Select(5));
+        assert!(table(&a).is_none(), "selecting creates nothing");
+        a.apply_table_action(TableAction::Rows(3));
+        a.apply_table_action(TableAction::Transpose(1, 4));
+        a.apply_table_action(TableAction::Transpose(2, 7));
+        a.apply_table_action(TableAction::Volume(0, Some(0x30)));
+        a.apply_table_action(TableAction::Loop(Some(0)));
+
+        // Dragging the ticks is one undo step.
+        let depth = a.core.history.undo_depth();
+        for t in 2..=4 {
+            a.apply_table_action(TableAction::Ticks(t));
+        }
+        assert_eq!(a.core.history.undo_depth(), depth + 1);
+
+        a.apply_table_action(TableAction::Effect(2, "JMP00".to_string()));
+        assert!(a
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("JMP")));
+        a.apply_table_action(TableAction::Effect(2, "pvb44".to_string()));
+        let t = table(&a).unwrap();
+        let transposes: Vec<i8> = t.rows.iter().map(|r| r.transpose).collect();
+        assert_eq!(transposes, vec![0, 4, 7]);
+        assert_eq!(
+            (t.ticks_per_row, t.loop_from, t.rows[0].volume),
+            (4, Some(0), Some(0x30))
+        );
+        assert!(t.rows[2].fx.is_some());
+
+        a.apply_table_action(TableAction::Delete);
+        assert!(table(&a).is_none());
+        a.apply_undo();
+        assert_eq!(table(&a), Some(t));
+    }
+
+    #[test]
+    fn transpose_is_undoable() {
+        let mut a = app();
+        a.try_enter_note('z');
+        a.cursor_row = 0;
+        let before = note_at(&a, 0, 0);
+        a.transpose_notes(1);
+        assert_ne!(note_at(&a, 0, 0), before);
+        a.apply_undo();
+        assert_eq!(note_at(&a, 0, 0), before);
+    }
+
+    #[test]
     fn transpose_stays_chromatic_without_a_scale() {
         let mut a = app();
         assert_eq!(a.core.song.scale, None);
-        let pattern_idx = a.current_pattern_idx().unwrap();
+        let pattern_idx = a.core.song.order[a.edit_order];
         a.core.song.patterns[pattern_idx].get_mut(0, 0).note = on(NoteValue::E, 4);
 
         a.transpose_notes(1);
@@ -1943,8 +2007,8 @@ mod tests {
             SubColumn::Effect,
         ];
         for (i, sub) in order.iter().enumerate() {
-            assert_eq!(sub.next(), order[(i + 1) % order.len()]);
-            assert_eq!(sub.prev(), order[(i + order.len() - 1) % order.len()]);
+            assert_eq!(sub.next(1), order[(i + 1) % order.len()]);
+            assert_eq!(sub.prev(1), order[(i + order.len() - 1) % order.len()]);
         }
     }
 

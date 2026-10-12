@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "title": "Portamento & Slides",
   "bpm": 110,
   "speed": 6,
@@ -16,9 +17,7 @@
               }
             },
             "instrument": 0,
-            "volume": 96,
-            "effect": null,
-            "effect_value": null
+            "volume": 96
           },
           {
             "note": {
@@ -28,9 +27,7 @@
               }
             },
             "instrument": 0,
-            "volume": 96,
-            "effect": null,
-            "effect_value": null
+            "volume": 96
           },
           {
             "note": {
@@ -40,115 +37,57 @@
               }
             },
             "instrument": 0,
-            "volume": 16,
-            "effect": null,
-            "effect_value": null
+            "volume": 16
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
           {
             "note": {
@@ -159,353 +98,156 @@
             },
             "instrument": 0,
             "volume": 96,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 1,
-            "effect_value": 8
+            "fx": [
+              "PUP08"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
           {
-            "note": "Off",
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "note": "Off"
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "fx": [
+              "PSL10"
+            ]
           },
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 3,
-            "effect_value": 16
+            "fx": [
+              "VSL20"
+            ]
           },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": 5,
-            "effect_value": 32
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
+          {},
           {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "note": "Off"
           },
           {
-            "note": "Off",
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
+            "note": "Off"
           },
-          {
-            "note": "Off",
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {}
         ],
         [
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {},
+          {},
+          {},
+          {}
         ],
         [
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {},
+          {},
+          {},
+          {}
         ],
         [
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          },
-          {
-            "note": null,
-            "instrument": null,
-            "volume": null,
-            "effect": null,
-            "effect_value": null
-          }
+          {},
+          {},
+          {},
+          {}
         ]
       ]
     }
@@ -513,13 +255,20 @@
   "order": [
     0
   ],
+  "order_repeats": [],
   "channels": 4,
   "rows_per_pattern": 16,
+  "highlight_beat": 4,
+  "highlight_bar": 16,
+  "swing": 50,
   "instruments": [
     {
       "slot": 0,
       "name": "Saw Lead",
-      "midi_program": 0
+      "kind": {
+        "type": "midi",
+        "program": 0
+      }
     }
   ]
 }

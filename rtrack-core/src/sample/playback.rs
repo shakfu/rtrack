@@ -1,8 +1,11 @@
 use super::{Sample, SampleBank};
 use crate::audio::envelope::Envelope;
+use crate::audio::svf::{Svf, SvfCoeffs};
+use crate::audio::synth::FilterType;
 use crate::constants::{
     MIDI_MAX_VALUE, SAMPLE_DECLICK_SECS, SAMPLE_INAUDIBLE_LEVEL, SEMITONES_PER_OCTAVE,
 };
+use crate::types::SampleFx;
 
 /// Type alias for backward compatibility (previously a separate struct)
 pub type SampleEnvelope = Envelope;
@@ -21,6 +24,51 @@ pub enum NewNoteAction {
     Cut,
     /// Leave the other voices on the channel sounding.
     Continue,
+}
+
+/// Highest resonance a voice filter runs at. At 1.0 the filter is
+/// undamped, and a resonant input then grows without bound.
+const MAX_VOICE_RESONANCE: f32 = 0.95;
+
+/// A voice's drive and filter, set up from its instrument's [`SampleFx`]
+/// at note-on. Values from a file are clamped here, where they reach audio.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VoiceFx {
+    drive: Option<f32>,
+    filter: Option<(FilterType, SvfCoeffs)>,
+    svf: [Svf; 2],
+}
+
+impl VoiceFx {
+    pub fn new(fx: &SampleFx, output_rate: f64) -> Self {
+        // `NaN > 1.0` is false, so a non-number is off.
+        let drive = (fx.drive > 1.0).then(|| fx.drive.min(SampleFx::MAX_DRIVE));
+        let filter = fx.filter.map(|f| {
+            let finite = |v: f32, or: f32| if v.is_finite() { v } else { or };
+            let cutoff = finite(f.cutoff_hz, 20000.0).clamp(20.0, 20000.0);
+            let res = finite(f.resonance, 0.0).clamp(0.0, MAX_VOICE_RESONANCE);
+            (f.kind, SvfCoeffs::new(cutoff, res, output_rate as f32))
+        });
+        Self {
+            drive,
+            filter,
+            svf: [Svf::default(); 2],
+        }
+    }
+
+    /// Drive, then filter, one stereo frame.
+    #[inline]
+    fn process(&mut self, mut l: f32, mut r: f32) -> (f32, f32) {
+        if let Some(drive) = self.drive {
+            l = (l * drive).tanh();
+            r = (r * drive).tanh();
+        }
+        if let Some((kind, c)) = &self.filter {
+            l = self.svf[0].tick_kind(c, *kind, l);
+            r = self.svf[1].tick_kind(c, *kind, r);
+        }
+        (l, r)
+    }
 }
 
 /// A single playing voice (one sample instance)
@@ -43,6 +91,7 @@ pub struct SampleVoice {
     /// least once. Until then, the frame before the loop start is audio that
     /// really did play just before it.
     pub looped: bool,
+    pub fx: VoiceFx,
 }
 
 impl SampleVoice {
@@ -150,6 +199,7 @@ fn render_voice(
 
         let l = cubic_hermite(fm1[0], f0[0], f1[0], f2[0], frac);
         let r = cubic_hermite(fm1[1], f0[1], f1[1], f2[1], frac);
+        let (l, r) = voice.fx.process(l, r);
 
         // Fade towards the end of a one-shot. A slice ends at an arbitrary
         // frame, so stopping on it would leave a step in the output.
@@ -220,6 +270,7 @@ impl SamplePlaybackEngine {
             output_rate,
             action,
             0,
+            &SampleFx::default(),
         );
     }
 
@@ -237,6 +288,7 @@ impl SamplePlaybackEngine {
         output_rate: f64,
         action: NewNoteAction,
         offset: u8,
+        fx: &SampleFx,
     ) {
         match action {
             NewNoteAction::Cut => {
@@ -275,6 +327,7 @@ impl SamplePlaybackEngine {
             active: true,
             envelope: Envelope::sample_default(output_rate as f32),
             looped: false,
+            fx: VoiceFx::new(fx, output_rate),
         });
     }
 
@@ -523,6 +576,26 @@ mod tests {
     }
 
     #[test]
+    fn hostile_voice_fx_values_render_finite_audio() {
+        let fx = SampleFx {
+            drive: f32::INFINITY,
+            filter: Some(crate::types::VoiceFilter {
+                kind: FilterType::BandPass,
+                cutoff_hz: f32::NAN,
+                resonance: 50.0,
+            }),
+        };
+        let smp = make_test_sample();
+        let mut engine = SamplePlaybackEngine::new(4);
+        engine.note_on_with_offset(0, 60, 127, 0, &smp, 44100.0, NewNoteAction::Cut, 0, &fx);
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(std::sync::Arc::new(smp));
+        let (mut l, mut r) = (vec![0.0; 2048], vec![0.0; 2048]);
+        engine.render(&bank, &mut l, &mut r);
+        assert!(l.iter().chain(&r).all(|v| v.is_finite() && v.abs() <= 2.0));
+    }
+
+    #[test]
     fn test_sample_offset_starts_part_way_into_the_played_span() {
         let mut smp = make_test_sample();
         smp.data = vec![[0.1; 2]; 4000].into();
@@ -530,7 +603,17 @@ mod tests {
         smp.trim_end = 3000;
         for (offset, start) in [(0x00u8, 1000.0), (0x80, 2000.0), (0xFF, 2992.0)] {
             let mut engine = SamplePlaybackEngine::new(8);
-            engine.note_on_with_offset(0, 60, 127, 0, &smp, 44100.0, NewNoteAction::Cut, offset);
+            engine.note_on_with_offset(
+                0,
+                60,
+                127,
+                0,
+                &smp,
+                44100.0,
+                NewNoteAction::Cut,
+                offset,
+                &SampleFx::default(),
+            );
             assert_eq!(engine.voices[0].position, start, "offset {offset:02X}");
         }
         // Past the end of a loop, playback wraps into it rather than stopping.
@@ -540,7 +623,17 @@ mod tests {
         let mut bank = SampleBank::new();
         bank.samples[0] = Some(Arc::new(smp.clone()));
         let mut engine = SamplePlaybackEngine::new(8);
-        engine.note_on_with_offset(0, 60, 127, 0, &smp, 44100.0, NewNoteAction::Cut, 0xC0);
+        engine.note_on_with_offset(
+            0,
+            60,
+            127,
+            0,
+            &smp,
+            44100.0,
+            NewNoteAction::Cut,
+            0xC0,
+            &SampleFx::default(),
+        );
         let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
         engine.render(&bank, &mut l, &mut r);
         let pos = engine.voices[0].position;

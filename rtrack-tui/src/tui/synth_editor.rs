@@ -30,7 +30,7 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
 
     let mut lines = Vec::new();
 
-    if let Some(ref params) = app.core.instruments[slot].synth_params {
+    if let Some(params) = app.core.instruments[slot].synth_params() {
         let patch = Patch::from_program(params.waveform);
 
         let filter_type_str = match params.filter_type {
@@ -59,6 +59,15 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
                 SynthField::Release,
                 "Release",
                 format!("{:.3}s", params.release),
+            ),
+            (
+                SynthField::Drive,
+                "Drive",
+                if params.drive > 1.0 {
+                    format!("{:.1}", params.drive)
+                } else {
+                    "off".to_string()
+                },
             ),
             (
                 SynthField::FilterType,

@@ -50,6 +50,20 @@ pub struct RtrackApp {
     pub slice_count: usize,
     pub slice_sensitivity: f32,
 
+    /// Show the second effect column even where the pattern does not use it.
+    pub show_second_fx: bool,
+    /// Whether the phrase window is open.
+    pub show_phrases: bool,
+    /// The groove text being typed in song settings, until it is applied.
+    pub groove_edit: Option<String>,
+    /// Whether the table window is open, and the table it shows.
+    pub show_tables: bool,
+    pub table_number: u8,
+    /// The table row whose effect text is being typed, and the text.
+    pub table_fx_edit: Option<(usize, String)>,
+    /// The effect being edited by name, while its prompt is open.
+    pub effect_prompt: Option<EffectPrompt>,
+
     // Pattern matrix
     pub show_pattern_matrix: bool,
     pub matrix_cursor: usize,
@@ -103,6 +117,13 @@ impl RtrackApp {
             selected_instrument: None,
             slice_count: 8,
             slice_sensitivity: 0.5,
+            show_second_fx: false,
+            show_phrases: false,
+            groove_edit: None,
+            show_tables: false,
+            table_number: 0,
+            table_fx_edit: None,
+            effect_prompt: None,
             show_pattern_matrix: false,
             matrix_cursor: 0,
             recent_files: rtrack_core::config::load_recent_files(),
@@ -247,7 +268,7 @@ impl RtrackApp {
                 let slot = if self.show_instrument_list {
                     self.selected_instrument
                         .and_then(|idx| self.core.instruments.get(idx))
-                        .and_then(|inst| inst.sample_index)
+                        .and_then(|inst| inst.sample_index())
                         .unwrap_or_else(|| {
                             self.selected_instrument.unwrap_or_else(|| {
                                 (0..self.core.sample_bank.samples.len())
@@ -336,6 +357,9 @@ impl eframe::App for RtrackApp {
                 self.status_message = Some(format!("Audio error: {}", err));
             }
         }
+        if let Some(notice) = self.core.take_notice() {
+            self.status_message = Some(notice);
+        }
         self.core.expire_preview_note();
 
         // Poll MIDI input
@@ -374,6 +398,10 @@ impl eframe::App for RtrackApp {
 
         // Process keyboard input
         self.process_keys(ctx);
+        // Keep the cursor off the second effect column while it is hidden.
+        if self.cursor_sub == crate::state::SubColumn::Effect2 && self.fx_columns() < 2 {
+            self.cursor_sub = crate::state::SubColumn::Effect;
+        }
 
         // Intercept window close when dirty
         if ctx.input(|i| i.viewport().close_requested()) && self.core.dirty {
@@ -437,7 +465,7 @@ impl eframe::App for RtrackApp {
                     .core
                     .instruments
                     .iter()
-                    .position(|i| i.sample_index == Some(action.slot))
+                    .position(|i| i.sample_index() == Some(action.slot))
                     .unwrap_or(action.slot);
                 match action.mode {
                     SliceMode::Equal => {
@@ -475,17 +503,42 @@ impl eframe::App for RtrackApp {
             // Pattern grid
             egui::CentralPanel::default().show(ui, |ui| {
                 let order_pos = self.current_order_position();
-                let Some(pattern) = self.core.song.pattern_at(order_pos) else {
-                    return;
-                };
 
                 let muted: Vec<bool> = self.core.channels.iter().map(|c| c.muted).collect();
-                let names: Vec<String> =
-                    self.core.channels.iter().map(|c| c.name.clone()).collect();
+                // A linked track shows its phrase: P for aligned, R for running.
+                let names: Vec<String> = self
+                    .core
+                    .channels
+                    .iter()
+                    .enumerate()
+                    .map(|(ch, c)| {
+                        let link = self
+                            .core
+                            .song
+                            .pattern_at(order_pos)
+                            .and_then(|p| p.link(ch));
+                        let name = if c.name.is_empty() {
+                            format!("Ch{}", ch + 1)
+                        } else {
+                            c.name.clone()
+                        };
+                        match link {
+                            Some(l) => {
+                                let kind = match l.timing {
+                                    rtrack_core::tracker::PhraseTiming::Aligned => 'P',
+                                    rtrack_core::tracker::PhraseTiming::Running => 'R',
+                                };
+                                format!("{name} [{kind}{:02X}]", l.phrase)
+                            }
+                            None => name,
+                        }
+                    })
+                    .collect();
 
                 // Compute how many channels fit in the available width
-                let visible_count =
-                    grid::max_visible_channels(ui.available_width()).min(self.core.song.channels);
+                let fx_columns = self.fx_columns();
+                let visible_count = grid::max_visible_channels(ui.available_width(), fx_columns)
+                    .min(self.core.song.channels);
 
                 // Auto-scroll to keep cursor visible
                 if self.cursor_channel < self.first_visible_channel {
@@ -517,10 +570,11 @@ impl eframe::App for RtrackApp {
                     channel_names: names,
                     block_start: self.block_start,
                     block_end: self.block_end,
+                    fx_columns,
                     colors: self.grid_colors,
                 };
 
-                let actions = grid::draw_grid(ui, pattern, &params);
+                let actions = grid::draw_grid(ui, &self.core.song, order_pos, &params);
                 for action in actions {
                     match action {
                         GridAction::SetCursor { row, channel, sub } => {
@@ -529,7 +583,7 @@ impl eframe::App for RtrackApp {
                             self.cursor_sub = sub;
                         }
                         GridAction::Scroll { rows } => {
-                            let max_row = pattern.rows.saturating_sub(1);
+                            let max_row = self.core.song.rows_at(order_pos).saturating_sub(1);
                             let new_row = if rows > 0 {
                                 self.cursor_row.saturating_add(rows as usize).min(max_row)
                             } else {
@@ -549,6 +603,27 @@ impl eframe::App for RtrackApp {
                     }
                 }
             });
+        }
+    }
+}
+
+/// An effect cell open for editing by name.
+pub struct EffectPrompt {
+    pub text: String,
+    /// The cell being edited, resolved when the prompt opened.
+    pub at: rtrack_core::tracker::CellAddr,
+    pub col: usize,
+}
+
+impl RtrackApp {
+    /// Effect columns shown: two when toggled on, or when the pattern being
+    /// edited uses the second, so its data is never hidden.
+    pub fn fx_columns(&self) -> usize {
+        let used = self.core.song.uses_second_fx(self.edit_order);
+        if self.show_second_fx || used {
+            2
+        } else {
+            1
         }
     }
 }

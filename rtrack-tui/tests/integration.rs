@@ -34,16 +34,6 @@ fn app_with_note() -> App {
 #[test]
 fn test_export_wav_roundtrip() {
     let app = app_with_note();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = app
-        .core
-        .instruments
-        .iter()
-        .map(|i| rtrack_core::sample::export::ExportInstrument {
-            sample_index: i.sample_index,
-            midi_program: i.midi_program.unwrap_or(0),
-            synth_params: i.synth_params.clone(),
-        })
-        .collect();
 
     let dir = std::env::temp_dir();
     let path = dir.join("rtrack_integration_test.wav");
@@ -52,8 +42,9 @@ fn test_export_wav_roundtrip() {
         &path,
         &app.core.song,
         &app.core.sample_bank,
-        &instruments,
-        &app.core.channel_effects_params_slice(),
+        &app.core.instruments,
+        None,
+        &app.core.channels,
         &app.core.send_bus_params,
         44100,
     );
@@ -276,13 +267,8 @@ fn test_multi_pattern_song_renders() {
     );
 
     let bank = rtrack_core::sample::SampleBank::new();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
-        .map(|_| rtrack_core::sample::export::ExportInstrument {
-            sample_index: None,
-            midi_program: 0,
-            synth_params: None,
-        })
-        .collect();
+    let instruments: Vec<rtrack_core::Instrument> =
+        (0..256).map(rtrack_core::Instrument::for_slot).collect();
 
     let dir = std::env::temp_dir();
     let path = dir.join("rtrack_integration_multi.wav");
@@ -291,6 +277,7 @@ fn test_multi_pattern_song_renders() {
         &song,
         &bank,
         &instruments,
+        None,
         &[],
         &[],
         44100,
@@ -332,13 +319,8 @@ fn test_channel_effects_in_render() {
     );
 
     let bank = rtrack_core::sample::SampleBank::new();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
-        .map(|_| rtrack_core::sample::export::ExportInstrument {
-            sample_index: None,
-            midi_program: 0,
-            synth_params: None,
-        })
-        .collect();
+    let instruments: Vec<rtrack_core::Instrument> =
+        (0..256).map(rtrack_core::Instrument::for_slot).collect();
 
     // Render without effects
     let dir = std::env::temp_dir();
@@ -348,6 +330,7 @@ fn test_channel_effects_in_render() {
         &song,
         &bank,
         &instruments,
+        None,
         &[],
         &[],
         44100,
@@ -367,7 +350,8 @@ fn test_channel_effects_in_render() {
         &song,
         &bank,
         &instruments,
-        &[ch_fx],
+        None,
+        &[ch_config(ch_fx.clone())],
         &[],
         44100,
     )
@@ -417,13 +401,8 @@ fn test_send_bus_in_render() {
     );
 
     let bank = rtrack_core::sample::SampleBank::new();
-    let instruments: Vec<rtrack_core::sample::export::ExportInstrument> = (0..256)
-        .map(|_| rtrack_core::sample::export::ExportInstrument {
-            sample_index: None,
-            midi_program: 0,
-            synth_params: None,
-        })
-        .collect();
+    let instruments: Vec<rtrack_core::Instrument> =
+        (0..256).map(rtrack_core::Instrument::for_slot).collect();
 
     // Render without send bus
     let dir = std::env::temp_dir();
@@ -433,6 +412,7 @@ fn test_send_bus_in_render() {
         &song,
         &bank,
         &instruments,
+        None,
         &[],
         &[],
         44100,
@@ -457,7 +437,8 @@ fn test_send_bus_in_render() {
         &song,
         &bank,
         &instruments,
-        &[ch_fx],
+        None,
+        &[ch_config(ch_fx.clone())],
         &[bus_params],
         44100,
     )
@@ -565,13 +546,11 @@ fn test_sliced_sample_song_round_trips() {
     let instruments: Vec<InstrumentEntry> = (0..num_slices)
         .map(|i| InstrumentEntry {
             slot: i,
-            def: InstrumentDef {
+            def: InstrumentDef::from_instrument(&rtrack_core::Instrument {
                 name: slices[i].name.clone(),
-                midi_program: None,
-                sample_index: Some(i),
-                synth_params: None,
+                kind: rtrack_core::InstrumentKind::sample(i),
                 pitch_bend_range: None,
-            },
+            }),
         })
         .collect();
 
@@ -640,4 +619,13 @@ fn test_sliced_sample_song_round_trips() {
     }
 
     let _ = std::fs::remove_file(&out_path);
+}
+
+/// A track config carrying `effects`, for render calls.
+fn ch_config(
+    effects: rtrack_core::audio::channel_effects::ChannelEffectsParams,
+) -> rtrack_core::ChannelConfig {
+    let mut cfg = rtrack_core::ChannelConfig::new(0);
+    cfg.effects_params = effects;
+    cfg
 }

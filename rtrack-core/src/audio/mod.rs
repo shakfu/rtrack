@@ -1,6 +1,7 @@
 pub mod channel_effects;
 pub mod effects;
 pub mod envelope;
+pub mod svf;
 pub mod synth;
 
 use std::collections::VecDeque;
@@ -63,6 +64,15 @@ const _: () = assert!(MAX_CALLBACK_FRAMES > 0);
 /// Sizing to what the device actually asks for keeps the common callback a
 /// single block. When the backend reports no range -- or an implausible one
 /// -- the default is used and oversized callbacks are split instead.
+/// Load a SoundFont, for the live engine and for offline render.
+pub fn load_sound_font(path: &Path) -> Result<Arc<SoundFont>> {
+    let mut file =
+        File::open(path).with_context(|| format!("Failed to open SF2 file: {}", path.display()))?;
+    let sound_font = SoundFont::new(&mut file)
+        .map_err(|e| anyhow::anyhow!("Failed to load SoundFont: {:?}", e))?;
+    Ok(Arc::new(sound_font))
+}
+
 fn render_buffer_frames(buffer_size: &cpal::SupportedBufferSize) -> usize {
     match buffer_size {
         cpal::SupportedBufferSize::Range { max, .. } => {
@@ -111,12 +121,17 @@ enum AudioCommand {
         velocity: u8,
         params: Box<SynthParams>,
     },
+    /// Stop one note: on the built-in synth by track (`voice`), on the
+    /// SF2 by MIDI channel (`sf2`).
     NoteOff {
-        channel: u8,
+        voice: u8,
+        sf2: u8,
         note: u8,
     },
+    /// Stop a track's notes: built-in synth by track, SF2 by MIDI channel.
     NoteOffAllChannel {
-        channel: u8,
+        voice: u8,
+        sf2: u8,
     },
     NoteOffAll,
     SendCC {
@@ -124,13 +139,36 @@ enum AudioCommand {
         controller: u8,
         value: u8,
     },
+    /// Program for a track's built-in voice (`voice`) and its SF2 MIDI
+    /// channel (`sf2`).
     ProgramChange {
+        voice: u8,
+        sf2: u8,
+        program: u8,
+    },
+    /// Select an SF2 program and start a note in one step, so a scheduled
+    /// note cannot change the program of notes queued before it.
+    Sf2ProgramNoteOn {
         channel: u8,
         program: u8,
+        note: u8,
+        velocity: u8,
     },
     PitchBend {
         channel: u8,
         value: u16,
+    },
+    /// Pitch offset in semitones for the built-in synth's and the sample
+    /// engine's voices on a channel; `PitchBend` reaches only the SF2.
+    ChannelPitch {
+        channel: u8,
+        semitones: f32,
+    },
+    /// Volume (0-127) for the built-in synth's and the sample engine's
+    /// voices on a channel; `SendCC` reaches only the SF2.
+    ChannelVolume {
+        channel: u8,
+        volume: u8,
     },
     ToggleEffects,
     SetSampleBank {
@@ -144,6 +182,7 @@ enum AudioCommand {
         action: NewNoteAction,
         /// Start point as a fraction of the played span, in 256ths (`9xx`).
         offset: u8,
+        fx: crate::types::SampleFx,
     },
     SampleNoteOff {
         channel: u8,
@@ -488,6 +527,8 @@ impl AudioStats {
 pub struct AudioEngine {
     producer: Producer<TimedCommand>,
     has_sf2: bool,
+    /// The loaded SoundFont, kept so offline render can play it too.
+    sound_font: Option<Arc<SoundFont>>,
     effects_enabled: Arc<AtomicBool>,
     sample_rate: f64,
     _stream: Stream,
@@ -563,15 +604,10 @@ impl AudioEngine {
         );
 
         // Load SF2 if provided
-        let sf2_synth = if let Some(path) = sf2_path {
-            let mut file = File::open(path)
-                .with_context(|| format!("Failed to open SF2 file: {}", path.display()))?;
-            let sound_font = Arc::new(
-                SoundFont::new(&mut file)
-                    .map_err(|e| anyhow::anyhow!("Failed to load SoundFont: {:?}", e))?,
-            );
+        let sound_font = sf2_path.map(load_sound_font).transpose()?;
+        let sf2_synth = if let Some(sound_font) = &sound_font {
             let settings = SynthesizerSettings::new(sample_rate);
-            let synth = Synthesizer::new(&sound_font, &settings)
+            let synth = Synthesizer::new(sound_font, &settings)
                 .map_err(|e| anyhow::anyhow!("Failed to create synthesizer: {:?}", e))?;
             Some(synth)
         } else {
@@ -724,6 +760,7 @@ impl AudioEngine {
         Ok(Self {
             producer,
             has_sf2,
+            sound_font,
             effects_enabled,
             sample_rate: sr_f64,
             _stream: stream,
@@ -809,6 +846,27 @@ impl AudioEngine {
         );
     }
 
+    /// Start an SF2 note with `program`, at `frame` or now.
+    pub fn sf2_program_note_on(
+        &mut self,
+        frame: Option<u64>,
+        channel: u8,
+        program: u8,
+        note: u8,
+        velocity: u8,
+    ) {
+        let cmd = AudioCommand::Sf2ProgramNoteOn {
+            channel,
+            program,
+            note,
+            velocity,
+        };
+        match frame {
+            Some(frame) => self.send_at(frame, cmd),
+            None => self.send(cmd),
+        }
+    }
+
     /// Schedule a note-on with explicit synth parameters at a specific frame.
     pub fn note_on_with_params_at(
         &mut self,
@@ -830,8 +888,10 @@ impl AudioEngine {
     }
 
     /// Schedule "all notes off for this channel" at a specific frame.
-    pub fn note_off_all_channel_at(&mut self, frame: u64, channel: u8) {
-        self.send_at(frame, AudioCommand::NoteOffAllChannel { channel });
+    /// Schedule "all notes off" for a track: its built-in voices on
+    /// `voice`, its SF2 notes on MIDI channel `sf2`.
+    pub fn note_off_all_channel_at(&mut self, frame: u64, voice: u8, sf2: u8) {
+        self.send_at(frame, AudioCommand::NoteOffAllChannel { voice, sf2 });
     }
 
     /// Schedule a sample trigger at a specific frame.
@@ -845,6 +905,7 @@ impl AudioEngine {
         channel: u8,
         action: NewNoteAction,
         offset: u8,
+        fx: crate::types::SampleFx,
     ) {
         self.send_at(
             frame,
@@ -855,6 +916,7 @@ impl AudioEngine {
                 channel,
                 action,
                 offset,
+                fx,
             },
         );
     }
@@ -866,6 +928,10 @@ impl AudioEngine {
 
     pub fn has_sf2(&self) -> bool {
         self.has_sf2
+    }
+
+    pub fn sound_font(&self) -> Option<&Arc<SoundFont>> {
+        self.sound_font.as_ref()
     }
 
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
@@ -892,12 +958,12 @@ impl AudioEngine {
     }
 
     #[allow(dead_code)]
-    pub fn note_off(&mut self, channel: u8, note: u8) {
-        self.send(AudioCommand::NoteOff { channel, note });
+    pub fn note_off(&mut self, voice: u8, sf2: u8, note: u8) {
+        self.send(AudioCommand::NoteOff { voice, sf2, note });
     }
 
-    pub fn note_off_all_channel(&mut self, channel: u8) {
-        self.send(AudioCommand::NoteOffAllChannel { channel });
+    pub fn note_off_all_channel(&mut self, voice: u8, sf2: u8) {
+        self.send(AudioCommand::NoteOffAllChannel { voice, sf2 });
     }
 
     pub fn note_off_all(&mut self) {
@@ -912,12 +978,36 @@ impl AudioEngine {
         });
     }
 
-    pub fn program_change(&mut self, channel: u8, program: u8) {
-        self.send(AudioCommand::ProgramChange { channel, program });
+    pub fn program_change(&mut self, voice: u8, sf2: u8, program: u8) {
+        self.send(AudioCommand::ProgramChange {
+            voice,
+            sf2,
+            program,
+        });
     }
 
     pub fn pitch_bend(&mut self, channel: u8, value: u16) {
         self.send(AudioCommand::PitchBend { channel, value });
+    }
+
+    /// Bend the built-in synth's and samples' voices on `channel`, at
+    /// `frame` or now.
+    pub fn channel_pitch(&mut self, frame: Option<u64>, channel: u8, semitones: f32) {
+        let cmd = AudioCommand::ChannelPitch { channel, semitones };
+        match frame {
+            Some(frame) => self.send_at(frame, cmd),
+            None => self.send(cmd),
+        }
+    }
+
+    /// Set the volume of the built-in synth's and samples' voices on
+    /// `channel`, at `frame` or now.
+    pub fn channel_volume(&mut self, frame: Option<u64>, channel: u8, volume: u8) {
+        let cmd = AudioCommand::ChannelVolume { channel, volume };
+        match frame {
+            Some(frame) => self.send_at(frame, cmd),
+            None => self.send(cmd),
+        }
     }
 
     /// Toggle effects chain on/off
@@ -941,6 +1031,7 @@ impl AudioEngine {
     }
 
     /// Trigger a sample voice
+    #[allow(clippy::too_many_arguments)]
     pub fn sample_note_on(
         &mut self,
         sample_index: usize,
@@ -949,6 +1040,7 @@ impl AudioEngine {
         channel: u8,
         action: NewNoteAction,
         offset: u8,
+        fx: crate::types::SampleFx,
     ) {
         self.send(AudioCommand::SampleNoteOn {
             sample_index,
@@ -957,6 +1049,7 @@ impl AudioEngine {
             channel,
             action,
             offset,
+            fx,
         });
     }
 
@@ -1201,6 +1294,18 @@ fn process_command(
                 builtin_synth.note_on(channel, note, velocity);
             }
         }
+        AudioCommand::Sf2ProgramNoteOn {
+            channel,
+            program,
+            note,
+            velocity,
+        } => {
+            if let Some(ref mut sf2) = sf2_synth {
+                sf2.process_midi_message(channel as i32, 0xC0, (program & 0x7F) as i32, 0);
+                sf2.note_off_all_channel(channel as i32, false);
+                sf2.note_on(channel as i32, note as i32, velocity as i32);
+            }
+        }
         AudioCommand::NoteOnWithParams {
             channel,
             note,
@@ -1210,21 +1315,19 @@ fn process_command(
             builtin_synth.note_on_with_params(channel, note, velocity, &params);
             hand_back(Reclaimed::SynthParams(params));
         }
-        AudioCommand::NoteOff { channel, note } => {
-            if let Some(ref mut sf2) = sf2_synth {
-                sf2.note_off(channel as i32, note as i32);
+        // The built-in synth is stopped with an SF2 loaded too: synth
+        // instruments still play on it.
+        AudioCommand::NoteOff { voice, sf2, note } => {
+            if let Some(ref mut synth) = sf2_synth {
+                synth.note_off(sf2 as i32, note as i32);
             }
-            if !has_sf2 {
-                builtin_synth.note_off(channel, note);
-            }
+            builtin_synth.note_off(voice, note);
         }
-        AudioCommand::NoteOffAllChannel { channel } => {
-            if let Some(ref mut sf2) = sf2_synth {
-                sf2.note_off_all_channel(channel as i32, false);
+        AudioCommand::NoteOffAllChannel { voice, sf2 } => {
+            if let Some(ref mut synth) = sf2_synth {
+                synth.note_off_all_channel(sf2 as i32, false);
             }
-            if !has_sf2 {
-                builtin_synth.note_off_all_channel(channel);
-            }
+            builtin_synth.note_off_all_channel(voice);
         }
         AudioCommand::NoteOffAll => {
             if let Some(ref mut sf2) = sf2_synth {
@@ -1241,11 +1344,15 @@ fn process_command(
                 sf2.process_midi_message(channel as i32, 0xB0, controller as i32, value as i32);
             }
         }
-        AudioCommand::ProgramChange { channel, program } => {
-            if let Some(ref mut sf2) = sf2_synth {
-                sf2.process_midi_message(channel as i32, 0xC0, program as i32, 0);
+        AudioCommand::ProgramChange {
+            voice,
+            sf2,
+            program,
+        } => {
+            if let Some(ref mut synth) = sf2_synth {
+                synth.process_midi_message(sf2 as i32, 0xC0, program as i32, 0);
             }
-            builtin_synth.program_change(channel, program);
+            builtin_synth.program_change(voice, program);
         }
         AudioCommand::PitchBend { channel, value } => {
             if let Some(ref mut sf2) = sf2_synth {
@@ -1253,6 +1360,19 @@ fn process_command(
                 let msb = ((value >> 7) & 0x7F) as i32;
                 sf2.process_midi_message(channel as i32, 0xE0, lsb, msb);
             }
+        }
+        AudioCommand::ChannelPitch { channel, semitones } => {
+            builtin_synth.set_channel_pitch_offset(channel, semitones);
+            sample_engine.set_channel_pitch_offset(
+                channel,
+                semitones as f64,
+                sample_bank,
+                sample_rate,
+            );
+        }
+        AudioCommand::ChannelVolume { channel, volume } => {
+            builtin_synth.set_channel_volume(channel, volume);
+            sample_engine.set_channel_volume(channel, volume);
         }
         AudioCommand::ToggleEffects => {
             effects.enabled = !effects.enabled;
@@ -1271,6 +1391,7 @@ fn process_command(
             channel,
             action,
             offset,
+            fx,
         } => {
             // Same path as the offline renderer takes, rather than a copy of
             // it: voice allocation, de-clicking and loop handling only stay
@@ -1286,6 +1407,7 @@ fn process_command(
                     sample_rate,
                     action,
                     offset,
+                    &fx,
                 );
             }
         }
@@ -1576,6 +1698,53 @@ mod scheduler_tests {
         );
     }
 
+    /// A built-in synth note on channel 0, then `cmd`, rendered.
+    fn note_then(cmd: Option<AudioCommand>) -> Vec<f32> {
+        let mut state = RenderState::for_test(SR);
+        apply(
+            &mut state,
+            AudioCommand::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+        );
+        if let Some(cmd) = cmd {
+            apply(&mut state, cmd);
+        }
+        render_whole(&mut state, 2048)
+    }
+
+    /// Pitch effects reach the built-in synth live, as they do in render:
+    /// `PitchBend` alone reaches only the SF2.
+    #[test]
+    fn a_channel_pitch_offset_retunes_the_built_in_synth() {
+        let plain = note_then(None);
+        let bent = note_then(Some(AudioCommand::ChannelPitch {
+            channel: 0,
+            semitones: 7.0,
+        }));
+        assert_ne!(plain, bent);
+        let only_sf2 = note_then(Some(AudioCommand::PitchBend {
+            channel: 0,
+            value: 0x3FFF,
+        }));
+        assert_eq!(
+            plain, only_sf2,
+            "the SF2 bend does not move the built-in synth"
+        );
+    }
+
+    #[test]
+    fn a_channel_volume_reaches_the_built_in_synth() {
+        let silent = note_then(Some(AudioCommand::ChannelVolume {
+            channel: 0,
+            volume: 0,
+        }));
+        assert!(silent.iter().all(|s| s.abs() < 1e-6), "volume 0 left sound");
+        assert!(note_then(None).iter().any(|s| s.abs() > 1e-6));
+    }
+
     #[test]
     fn segmented_rendering_matches_with_channel_effects_engaged() {
         // The per-channel path runs channel effects and send buses, which
@@ -1742,6 +1911,7 @@ mod scheduler_tests {
                 channel: 0,
                 action: NewNoteAction::Cut,
                 offset: 0x40,
+                fx: crate::types::SampleFx::default(),
             },
         );
         assert_eq!(state.sample_engine.voices[0].position, 1000.0);
@@ -2176,7 +2346,7 @@ mod scheduler_tests {
                 },
                 TimedCommand {
                     frame: 2,
-                    cmd: AudioCommand::NoteOffAllChannel { channel: 0 },
+                    cmd: AudioCommand::NoteOffAllChannel { voice: 0, sf2: 0 },
                 },
             ],
         );

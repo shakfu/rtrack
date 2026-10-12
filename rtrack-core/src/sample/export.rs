@@ -1,34 +1,33 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use dasp::Sample as DaspSample;
+use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
 use super::playback::{NewNoteAction, SamplePlaybackEngine};
 use super::SampleBank;
-use crate::audio::channel_effects::{ChannelEffects, ChannelEffectsParams, MAX_EFFECT_CHANNELS};
+use crate::audio::channel_effects::{ChannelEffects, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::{self, EffectsChain};
 use crate::audio::synth::{BuiltinSynth, SynthParams};
+use crate::constants::{DEFAULT_PITCH_BEND_RANGE, PITCH_BEND_CENTER, PITCH_BEND_MAX};
 use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::routing::{route, Route};
 use crate::tracker::Song;
+use crate::types::{ChannelConfig, Instrument};
 
 /// Render an entire song to a WAV file (offline, non-real-time).
 ///
-/// Renders built-in synths (fundsp) and sample playback. SF2 is not included
-/// in offline render (use the built-in synth patches or samples).
-/// Instrument slot info for offline render
-pub struct ExportInstrument {
-    pub sample_index: Option<usize>,
-    #[allow(dead_code)]
-    pub midi_program: u8,
-    pub synth_params: Option<SynthParams>,
-}
-
+/// Notes route as in live playback (`crate::routing`). With `sound_font`,
+/// built-in MIDI voices play it, as they do live with one loaded.
+#[allow(clippy::too_many_arguments)]
 pub fn render_to_wav(
     path: &Path,
     song: &Song,
     bank: &SampleBank,
-    instruments: &[ExportInstrument],
-    channel_fx_params: &[ChannelEffectsParams],
+    instruments: &[Instrument],
+    sound_font: Option<&Arc<SoundFont>>,
+    channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
@@ -47,7 +46,8 @@ pub fn render_to_wav(
         song,
         bank,
         instruments,
-        channel_fx_params,
+        sound_font,
+        channels,
         send_bus_params,
         sample_rate,
         &mut |left, right| write_block(&mut writer, left, right),
@@ -133,6 +133,7 @@ fn render_block(
     frames: usize,
     per_channel: bool,
     synth: &mut BuiltinSynth,
+    sf2: Option<&mut Synthesizer>,
     sample_engine: &mut SamplePlaybackEngine,
     bank: &SampleBank,
     channel_effects: &mut [ChannelEffects],
@@ -140,6 +141,12 @@ fn render_block(
     master_fx: &mut EffectsChain,
 ) {
     scratch.prepare(frames, per_channel);
+
+    // SF2 always renders to the master, as it does live: it cannot be
+    // separated by channel.
+    if let Some(sf2) = sf2 {
+        sf2.render(&mut scratch.left, &mut scratch.right);
+    }
 
     if per_channel {
         for i in 0..frames {
@@ -211,8 +218,9 @@ fn render_block(
 fn render_song_streaming(
     song: &Song,
     bank: &SampleBank,
-    instruments: &[ExportInstrument],
-    channel_fx_params: &[ChannelEffectsParams],
+    instruments: &[Instrument],
+    sound_font: Option<&Arc<SoundFont>>,
+    channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
     sink: &mut BlockSink<'_>,
@@ -221,14 +229,21 @@ fn render_song_streaming(
 
     // Create offline audio components
     let mut synth = BuiltinSynth::new(sr);
+    let mut sf2 = match sound_font {
+        Some(font) => Some(
+            Synthesizer::new(font, &SynthesizerSettings::new(sample_rate as i32))
+                .map_err(|e| anyhow::anyhow!("Failed to create synthesizer: {:?}", e))?,
+        ),
+        None => None,
+    };
     let mut sample_engine = SamplePlaybackEngine::new(32);
     let mut master_fx = EffectsChain::new(sr);
 
     let mut channel_effects: Vec<ChannelEffects> = (0..MAX_EFFECT_CHANNELS)
         .map(|ch| {
             let mut fx = ChannelEffects::new(sr);
-            if let Some(params) = channel_fx_params.get(ch) {
-                fx.params = params.clone();
+            if let Some(cfg) = channels.get(ch) {
+                fx.params = cfg.effects_params.clone();
             }
             fx
         })
@@ -253,9 +268,29 @@ fn render_song_streaming(
 
     // Drive playback via TrackerEngine (no wrap = stop at end)
     let mut engine = TrackerEngine::new(song, false);
+    // The per-track state live playback gives its engine: mute, volume and
+    // the default instrument. Solo is a listening aid and is not rendered.
+    engine.set_channel_info(
+        channels
+            .iter()
+            .map(|c| crate::engine::ChannelInfo {
+                audible: !c.muted,
+                volume_scale: c.volume,
+                default_instrument: c.default_instrument,
+            })
+            .collect(),
+    );
     let num_channels = song.channels.max(1);
     let mut active_notes: Vec<Option<u8>> = vec![None; num_channels];
     let mut frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
+
+    // The built-in synth, samples and track effects play by track; the SF2
+    // plays by the track's MIDI channel, as in live playback.
+    let sf2_channel = |ch: usize| {
+        channels
+            .get(ch)
+            .map_or((ch & 0x0F) as u8, |c| c.midi_channel & 0x0F)
+    };
 
     while !engine.finished {
         // Snapshot timing before tick 0 advances the row
@@ -276,47 +311,78 @@ fn render_song_streaming(
                     instrument,
                     sample_offset,
                 } => {
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let voice = (*channel & 0x0F) as u8;
+                    let sf2_ch = sf2_channel(*channel);
                     // Turn off previous note on this channel
                     if let Some(prev) = active_notes.get(*channel).copied().flatten() {
-                        synth.note_off(midi_ch, prev);
-                        sample_engine.note_off(midi_ch, prev);
+                        synth.note_off(voice, prev);
+                        sample_engine.note_off(voice, prev);
                     }
                     while active_notes.len() <= *channel {
                         active_notes.push(None);
                     }
-                    // Route based on instrument
-                    let inst_idx = instrument.unwrap_or(0) as usize;
-                    let inst = instruments.get(inst_idx);
-                    let has_sample = inst
-                        .and_then(|i| i.sample_index)
-                        .and_then(|idx| bank.get(idx))
-                        .is_some();
-                    if has_sample {
-                        let sample_idx = inst.unwrap().sample_index.unwrap();
-                        let sample = bank.get(sample_idx).unwrap();
-                        sample_engine.note_on_with_offset(
-                            sample_idx,
+                    let inst = instruments.get(instrument.unwrap_or(0) as usize);
+                    // `Some(program)` for a built-in voice; `Some(None)` keeps
+                    // the channel's current program.
+                    let builtin = match route(inst, instrument.is_some(), bank) {
+                        Route::Sample(sample_idx, fx) => {
+                            if let Some(sample) = bank.get(sample_idx) {
+                                sample_engine.note_on_with_offset(
+                                    sample_idx,
+                                    *midi_note,
+                                    *velocity,
+                                    voice,
+                                    sample,
+                                    sr,
+                                    NewNoteAction::Cut,
+                                    *sample_offset,
+                                    &fx,
+                                );
+                            }
+                            None
+                        }
+                        Route::Synth(sp) => {
+                            synth.note_on_with_params(voice, *midi_note, *velocity, sp);
+                            None
+                        }
+                        // No MIDI port here, so an external voice plays built in.
+                        Route::Preset(program) | Route::External { program, .. } => {
+                            Some(Some(program))
+                        }
+                        Route::ChannelVoice => Some(None),
+                        Route::Silent => None,
+                    };
+                    // SF2 when loaded, else the built-in synth, as live
+                    // (`AudioCommand::NoteOn`, `Sf2ProgramNoteOn`).
+                    match (builtin, sf2.as_mut()) {
+                        (Some(program), Some(sf2)) => {
+                            let ch = sf2_ch as i32;
+                            if let Some(program) = program {
+                                sf2.process_midi_message(ch, 0xC0, (program & 0x7F) as i32, 0);
+                            }
+                            sf2.note_off_all_channel(ch, false);
+                            sf2.note_on(ch, *midi_note as i32, *velocity as i32);
+                        }
+                        (Some(Some(program)), None) => synth.note_on_with_params(
+                            voice,
                             *midi_note,
                             *velocity,
-                            midi_ch,
-                            sample,
-                            sr,
-                            NewNoteAction::Cut,
-                            *sample_offset,
-                        );
-                    } else if let Some(sp) = inst.and_then(|i| i.synth_params.as_ref()) {
-                        synth.note_on_with_params(midi_ch, *midi_note, *velocity, sp);
-                    } else {
-                        synth.note_on(midi_ch, *midi_note, *velocity);
+                            &SynthParams::from_patch(program),
+                        ),
+                        (Some(None), None) => synth.note_on(voice, *midi_note, *velocity),
+                        (None, _) => {}
                     }
                     active_notes[*channel] = Some(*midi_note);
                 }
                 TrackerEvent::NoteOff { channel } => {
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let voice = (*channel & 0x0F) as u8;
+                    let sf2_ch = sf2_channel(*channel);
                     if let Some(prev) = active_notes.get(*channel).copied().flatten() {
-                        synth.note_off(midi_ch, prev);
-                        sample_engine.note_off(midi_ch, prev);
+                        synth.note_off(voice, prev);
+                        sample_engine.note_off(voice, prev);
+                    }
+                    if let Some(sf2) = sf2.as_mut() {
+                        sf2.note_off_all_channel(sf2_ch as i32, false);
                     }
                     if *channel < active_notes.len() {
                         active_notes[*channel] = None;
@@ -326,18 +392,46 @@ fn render_song_streaming(
                     channel,
                     semitone_offset,
                 } => {
-                    let midi_ch = (*channel & 0x0F) as u8;
-                    synth.set_channel_pitch_offset(midi_ch, *semitone_offset as f32);
-                    sample_engine.set_channel_pitch_offset(midi_ch, *semitone_offset, bank, sr);
+                    let voice = (*channel & 0x0F) as u8;
+                    let sf2_ch = sf2_channel(*channel);
+                    synth.set_channel_pitch_offset(voice, *semitone_offset as f32);
+                    sample_engine.set_channel_pitch_offset(voice, *semitone_offset, bank, sr);
+                    if let Some(sf2) = sf2.as_mut() {
+                        // The bend range of the playing instrument, as live.
+                        let range = engine
+                            .channel_states
+                            .get(*channel)
+                            .and_then(|cs| cs.active_instrument)
+                            .and_then(|i| instruments.get(i as usize))
+                            .and_then(|i| i.pitch_bend_range)
+                            .unwrap_or(DEFAULT_PITCH_BEND_RANGE);
+                        let bend = (semitone_offset * PITCH_BEND_CENTER as f64 / range) as i32;
+                        let value =
+                            (PITCH_BEND_CENTER as i32 + bend).clamp(0, PITCH_BEND_MAX as i32);
+                        sf2.process_midi_message(
+                            sf2_ch as i32,
+                            0xE0,
+                            value & 0x7F,
+                            (value >> 7) & 0x7F,
+                        );
+                    }
                 }
                 TrackerEvent::VolumeChange { channel, volume } => {
-                    let midi_ch = (*channel & 0x0F) as u8;
-                    synth.set_channel_volume(midi_ch, *volume);
-                    sample_engine.set_channel_volume(midi_ch, *volume);
+                    let voice = (*channel & 0x0F) as u8;
+                    let sf2_ch = sf2_channel(*channel);
+                    synth.set_channel_volume(voice, *volume);
+                    sample_engine.set_channel_volume(voice, *volume);
+                    if let Some(sf2) = sf2.as_mut() {
+                        sf2.process_midi_message(sf2_ch as i32, 0xB0, 7, *volume as i32);
+                    }
                 }
                 TrackerEvent::ProgramChange { channel, program } => {
-                    let midi_ch = (*channel & 0x0F) as u8;
-                    synth.program_change(midi_ch, *program);
+                    let voice = (*channel & 0x0F) as u8;
+                    let sf2_ch = sf2_channel(*channel);
+                    synth.program_change(voice, *program);
+                    if let Some(sf2) = sf2.as_mut() {
+                        sf2.process_midi_message(sf2_ch as i32, 0xC0, *program as i32, 0);
+                    }
                 }
                 _ => {} // RowAdvanced, SpeedChanged, TempoChanged, GenerationAdvanced handled by engine
             }
@@ -349,6 +443,7 @@ fn render_song_streaming(
             frames_per_tick,
             per_channel,
             &mut synth,
+            sf2.as_mut(),
             &mut sample_engine,
             bank,
             &mut channel_effects,
@@ -361,12 +456,16 @@ fn render_song_streaming(
     // Turn off all remaining notes and render a short tail for reverb/release
     synth.note_off_all();
     sample_engine.note_off_all();
+    if let Some(sf2) = sf2.as_mut() {
+        sf2.note_off_all(false);
+    }
     let tail_frames = (sr * 2.0) as usize;
     render_block(
         &mut scratch,
         tail_frames,
         per_channel,
         &mut synth,
+        sf2.as_mut(),
         &mut sample_engine,
         bank,
         &mut channel_effects,
@@ -385,8 +484,9 @@ fn render_song_streaming(
 fn render_song(
     song: &Song,
     bank: &SampleBank,
-    instruments: &[ExportInstrument],
-    channel_fx_params: &[ChannelEffectsParams],
+    instruments: &[Instrument],
+    sound_font: Option<&Arc<SoundFont>>,
+    channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
@@ -396,7 +496,8 @@ fn render_song(
         song,
         bank,
         instruments,
-        channel_fx_params,
+        sound_font,
+        channels,
         send_bus_params,
         sample_rate,
         &mut |left, right| {
@@ -421,12 +522,14 @@ fn to_interleaved_i16(left: &[f32], right: &[f32]) -> Vec<i16> {
 }
 
 /// Render an entire song to a FLAC file (offline, non-real-time).
+#[allow(clippy::too_many_arguments)]
 pub fn render_to_flac(
     path: &Path,
     song: &Song,
     bank: &SampleBank,
-    instruments: &[ExportInstrument],
-    channel_fx_params: &[ChannelEffectsParams],
+    instruments: &[Instrument],
+    sound_font: Option<&Arc<SoundFont>>,
+    channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
 ) -> Result<()> {
@@ -434,7 +537,8 @@ pub fn render_to_flac(
         song,
         bank,
         instruments,
-        channel_fx_params,
+        sound_font,
+        channels,
         send_bus_params,
         sample_rate,
     )?;
@@ -473,24 +577,17 @@ fn write_flac(path: &Path, samples_i16: &[i16], sample_rate: u32) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::*;
-    use crate::tracker::{Cell, Note, NoteValue, Song};
+    use crate::tracker::{Cell, Fx, FxCmd, Note, NoteValue, Song};
 
     #[test]
     fn test_render_empty_song() {
         let song = Song::new(4, 64);
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument {
-                sample_index: None,
-                midi_program: 0,
-                synth_params: None,
-            })
-            .collect();
+        let instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_empty.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, None, &[], &[], 44100);
         assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         // Verify the file exists and is a valid WAV
@@ -518,17 +615,11 @@ mod tests {
         );
 
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument {
-                sample_index: None,
-                midi_program: 0,
-                synth_params: None,
-            })
-            .collect();
+        let instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_synth.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, None, &[], &[], 44100);
         assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         // Should have some audio content (not all silence)
@@ -579,21 +670,15 @@ mod tests {
             source_path: None,
         }));
 
-        let instruments: Vec<ExportInstrument> = {
-            let mut v: Vec<ExportInstrument> = (0..256)
-                .map(|_| ExportInstrument {
-                    sample_index: None,
-                    midi_program: 0,
-                    synth_params: None,
-                })
-                .collect();
-            v[0].sample_index = Some(0); // instrument 0 -> sample 0
+        let instruments: Vec<Instrument> = {
+            let mut v: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
+            v[0].kind = crate::types::InstrumentKind::sample(0); // instrument 0 -> sample 0
             v
         };
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_sample.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, &[], &[], 44100);
+        let result = render_to_wav(&path, &song, &bank, &instruments, None, &[], &[], 44100);
         assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -605,7 +690,7 @@ mod tests {
     #[test]
     fn test_render_sample_offset_skips_into_the_sample() {
         // Silence, then a tone. Starting at 9 80 skips the silence.
-        let render = |effect: Option<u8>| -> Vec<f32> {
+        let render = |offset: Option<u8>| -> Vec<f32> {
             let mut song = Song::new(1, 1);
             song.speed = 1;
             song.set_cell(
@@ -619,8 +704,7 @@ mod tests {
                     }),
                     volume: Some(127),
                     instrument: Some(0),
-                    effect,
-                    effect_value: effect.map(|_| 0x80),
+                    fx: [offset.map(|o| Fx::new(FxCmd::Offset, o)), None],
                 },
             );
             let data: Vec<[f32; 2]> = (0..8000)
@@ -646,22 +730,16 @@ mod tests {
                 loop_end: 0,
                 source_path: None,
             }));
-            let mut instruments: Vec<ExportInstrument> = (0..256)
-                .map(|_| ExportInstrument {
-                    sample_index: None,
-                    midi_program: 0,
-                    synth_params: None,
-                })
-                .collect();
-            instruments[0].sample_index = Some(0);
-            render_song(&song, &bank, &instruments, &[], &[], 44100)
+            let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
+            instruments[0].kind = crate::types::InstrumentKind::sample(0);
+            render_song(&song, &bank, &instruments, None, &[], &[], 44100)
                 .unwrap()
                 .0
         };
         let peak = |x: &[f32]| x[200..3000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
 
         let plain = render(None);
-        let offset = render(Some(EFFECT_SAMPLE_OFFSET));
+        let offset = render(Some(0x80));
         assert!(
             peak(&plain) < 1e-3,
             "the silent half was audible: {}",
@@ -671,6 +749,84 @@ mod tests {
             peak(&offset) > 0.05,
             "9 80 did not skip the silence: {}",
             peak(&offset)
+        );
+    }
+
+    /// A sample instrument's filter and drive shape its render.
+    #[test]
+    fn a_sample_instruments_filter_and_drive_reach_the_render() {
+        let mut song = Song::new(1, 4);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(60),
+                instrument: Some(0),
+                ..Cell::default()
+            },
+        );
+        // Quiet, with a Nyquist-rate buzz on top of a slow sine.
+        let data: Vec<[f32; 2]> = (0..22050)
+            .map(|n| {
+                let v = 0.04 * (n as f32 * 0.01).sin() + if n % 2 == 0 { 0.01 } else { -0.01 };
+                [v, v]
+            })
+            .collect();
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(std::sync::Arc::new(super::super::Sample {
+            name: "buzz".into(),
+            data: data.into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+        }));
+        let render = |fx: crate::types::SampleFx| {
+            let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
+            instruments[0].kind = crate::types::InstrumentKind::Sample { slot: 0, fx };
+            render_song(&song, &bank, &instruments, None, &[], &[], 44100)
+                .unwrap()
+                .0
+        };
+        let window = 2000..8000;
+        // Mean absolute difference between neighbouring frames: high for the buzz.
+        let roughness = |x: &[f32]| {
+            x[window.clone()]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .sum::<f32>()
+                / window.len() as f32
+        };
+        let peak = |x: &[f32]| x[window.clone()].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+
+        let plain = render(crate::types::SampleFx::default());
+        let low_pass = render(crate::types::SampleFx {
+            filter: Some(crate::types::VoiceFilter {
+                cutoff_hz: 500.0,
+                ..crate::types::VoiceFilter::default()
+            }),
+            ..crate::types::SampleFx::default()
+        });
+        let driven = render(crate::types::SampleFx {
+            drive: 20.0,
+            ..crate::types::SampleFx::default()
+        });
+        assert!(
+            roughness(&low_pass) < roughness(&plain) * 0.2,
+            "low-pass kept the buzz: {} vs {}",
+            roughness(&low_pass),
+            roughness(&plain)
+        );
+        assert!(
+            peak(&driven) > peak(&plain) * 3.0,
+            "drive did not raise a quiet sample: {} vs {}",
+            peak(&driven),
+            peak(&plain)
         );
     }
 
@@ -702,24 +858,27 @@ mod tests {
             1,
             0,
             Cell {
-                effect: Some(EFFECT_PORTA_UP),
-                effect_value: Some(0x40),
+                fx: [Some(Fx::new(FxCmd::PitchUp, 0x40)), None],
                 ..Cell::default()
             },
         );
 
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument {
-                sample_index: None,
-                midi_program: 0,
-                synth_params: None,
-            })
-            .collect();
+        let instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path_with = dir.path().join("rtrack_test_porta.wav");
 
-        render_to_wav(&path_with, &song, &bank, &instruments, &[], &[], 44100).unwrap();
+        render_to_wav(
+            &path_with,
+            &song,
+            &bank,
+            &instruments,
+            None,
+            &[],
+            &[],
+            44100,
+        )
+        .unwrap();
 
         // Now render without the effect for comparison
         let mut song_no_fx = Song::new(1, 4);
@@ -745,6 +904,7 @@ mod tests {
             &song_no_fx,
             &bank,
             &instruments,
+            None,
             &[],
             &[],
             44100,
@@ -803,25 +963,28 @@ mod tests {
             1,
             0,
             Cell {
-                effect: Some(EFFECT_VOLUME_SLIDE),
-                effect_value: Some(0x0F),
+                fx: [Some(Fx::new(FxCmd::VolSlide, 0x0F)), None],
                 ..Cell::default()
             },
         );
 
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument {
-                sample_index: None,
-                midi_program: 0,
-                synth_params: None,
-            })
-            .collect();
+        let instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
         let dir = tempfile::tempdir().expect("failed to create temp dir");
 
         // Render with volume slide
         let path_slide = dir.path().join("rtrack_test_volslide.wav");
-        render_to_wav(&path_slide, &song, &bank, &instruments, &[], &[], 44100).unwrap();
+        render_to_wav(
+            &path_slide,
+            &song,
+            &bank,
+            &instruments,
+            None,
+            &[],
+            &[],
+            44100,
+        )
+        .unwrap();
 
         // Render without (static volume)
         let mut song_static = Song::new(1, 4);
@@ -846,6 +1009,7 @@ mod tests {
             &song_static,
             &bank,
             &instruments,
+            None,
             &[],
             &[],
             44100,
@@ -874,6 +1038,282 @@ mod tests {
         );
     }
 
+    /// Render one C-4 on instrument `inst` with `instruments`.
+    fn render_one_note(inst: Option<u8>, instruments: &[Instrument]) -> Vec<f32> {
+        let mut song = Song::new(1, 4);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: inst,
+                ..Cell::default()
+            },
+        );
+        render_song(
+            &song,
+            &SampleBank::new(),
+            instruments,
+            None,
+            &[],
+            &[],
+            44100,
+        )
+        .unwrap()
+        .0
+    }
+
+    fn default_instruments() -> Vec<Instrument> {
+        (0..256).map(Instrument::for_slot).collect()
+    }
+
+    #[test]
+    fn a_linked_phrase_renders_as_its_notes_written_out() {
+        let notes: Vec<Cell> = [60u8, 64, 67]
+            .iter()
+            .map(|&n| Cell {
+                note: Note::from_midi(n),
+                instrument: Some(5),
+                ..Cell::default()
+            })
+            .collect();
+        let render = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+        };
+
+        let mut linked = Song::new(1, 6);
+        linked.speed = 2;
+        linked.phrases.push(crate::tracker::Phrase {
+            name: String::new(),
+            rows: notes.clone(),
+        });
+        linked.patterns[0].links = vec![Some(crate::tracker::PhraseLink {
+            phrase: 0,
+            transpose: 0,
+            timing: crate::tracker::PhraseTiming::Aligned,
+        })];
+
+        let mut written = Song::new(1, 6);
+        written.speed = 2;
+        for row in 0..6 {
+            written.set_cell(0, row, 0, notes[row % 3]);
+        }
+
+        assert_eq!(render(&linked), render(&written));
+    }
+
+    #[test]
+    fn a_transposed_link_renders_as_its_notes_written_out_transposed() {
+        let cell = |n: u8| Cell {
+            note: Note::from_midi(n),
+            instrument: Some(5),
+            ..Cell::default()
+        };
+        let render = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+        };
+
+        let mut linked = Song::new(1, 2);
+        linked.phrases.push(crate::tracker::Phrase {
+            name: String::new(),
+            rows: vec![cell(60), cell(64)],
+        });
+        linked.patterns[0].links = vec![Some(crate::tracker::PhraseLink {
+            phrase: 0,
+            transpose: 7,
+            timing: crate::tracker::PhraseTiming::Aligned,
+        })];
+
+        let mut written = Song::new(1, 2);
+        written.set_cell(0, 0, 0, cell(67));
+        written.set_cell(0, 1, 0, cell(71));
+
+        assert_eq!(render(&linked), render(&written));
+    }
+
+    #[test]
+    fn an_arpeggio_table_renders_as_arp_does() {
+        let song_with = |inst: u8, fx: Option<Fx>| {
+            let mut song = Song::new(1, 4);
+            song.set_cell(
+                0,
+                0,
+                0,
+                Cell {
+                    note: Note::from_midi(60),
+                    instrument: Some(inst),
+                    fx: [fx, None],
+                    ..Cell::default()
+                },
+            );
+            song
+        };
+        let mut table_song = song_with(5, None);
+        let mut t = crate::tracker::Table::new(3);
+        t.rows[1].transpose = 4;
+        t.rows[2].transpose = 7;
+        t.loop_from = Some(0);
+        table_song.tables.insert(5, t);
+        let arp_song = song_with(5, Some(Fx::new(FxCmd::Arp, 0x47)));
+        let render = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+        };
+        // ARP only runs on the row it is written on; the table runs on, so
+        // compare the first row only.
+        // Frames per tick truncate before they are multiplied, as the renderer does.
+        let row = 6 * (44100.0 * Song::new(1, 4).seconds_per_tick()) as usize;
+        assert_eq!(render(&table_song)[..row], render(&arp_song)[..row]);
+    }
+
+    /// A note with no instrument column, rendered with `channels`.
+    fn render_with_channels(channels: &[ChannelConfig]) -> Vec<f32> {
+        let mut song = Song::new(1, 2);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(60),
+                ..Cell::default()
+            },
+        );
+        render_song(
+            &song,
+            &SampleBank::new(),
+            &default_instruments(),
+            None,
+            channels,
+            &[],
+            44100,
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn render_honours_track_mute_volume_and_default_instrument() {
+        let track = ChannelConfig::new(0);
+        let plain = render_with_channels(std::slice::from_ref(&track));
+        assert!(plain.iter().any(|s| s.abs() > 1e-6));
+
+        let mut muted = track.clone();
+        muted.muted = true;
+        assert!(render_with_channels(&[muted])
+            .iter()
+            .all(|s| s.abs() < 1e-6));
+
+        let mut quiet = track.clone();
+        quiet.volume = 0.25;
+        let peak = |x: &[f32]| x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak(&render_with_channels(&[quiet])) < peak(&plain));
+
+        // The default instrument fills the empty instrument column, as live.
+        let mut defaulted = track;
+        defaulted.default_instrument = Some(5);
+        assert_ne!(render_with_channels(&[defaulted]), plain);
+    }
+
+    #[test]
+    fn tracks_sharing_a_midi_channel_do_not_cut_each_others_synth_notes() {
+        let mut song = Song::new(2, 2);
+        for (track, note) in [(0, 60u8), (1, 67)] {
+            song.set_cell(
+                0,
+                0,
+                track,
+                Cell {
+                    note: Note::from_midi(note),
+                    instrument: Some(5),
+                    ..Cell::default()
+                },
+            );
+        }
+        let render = |midi: [u8; 2]| {
+            let channels: Vec<ChannelConfig> =
+                midi.iter().map(|&m| ChannelConfig::new(m)).collect();
+            render_song(
+                &song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &channels,
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+        };
+        assert_eq!(render([0, 0]), render([0, 1]));
+    }
+
+    #[test]
+    fn a_preset_instrument_renders_its_preset_as_live_does() {
+        let presets = default_instruments();
+        let mut written_out = default_instruments();
+        written_out[5].kind = crate::types::InstrumentKind::Synth(SynthParams::from_patch(5));
+
+        let preset = render_one_note(Some(5), &presets);
+        assert_eq!(preset, render_one_note(Some(5), &written_out));
+        // Before shared routing, render played the channel voice instead.
+        assert_ne!(preset, render_one_note(None, &presets));
+    }
+
+    #[test]
+    fn an_external_instrument_renders_as_its_preset() {
+        let mut instruments = default_instruments();
+        instruments[5].kind = crate::types::InstrumentKind::Midi {
+            program: 5,
+            channel: None,
+            output: crate::types::MidiOutput::External { port: None },
+        };
+        assert_eq!(
+            render_one_note(Some(5), &instruments),
+            render_one_note(Some(5), &default_instruments())
+        );
+    }
+
+    #[test]
+    fn a_missing_sample_renders_silence() {
+        let mut instruments = default_instruments();
+        instruments[0].kind = crate::types::InstrumentKind::sample(3);
+        let out = render_one_note(Some(0), &instruments);
+        assert!(out.iter().all(|v| *v == 0.0), "a missing sample made sound");
+    }
+
     #[test]
     fn test_render_to_flac() {
         let mut song = Song::new(1, 2);
@@ -893,17 +1333,11 @@ mod tests {
         );
 
         let bank = SampleBank::new();
-        let instruments: Vec<ExportInstrument> = (0..256)
-            .map(|_| ExportInstrument {
-                sample_index: None,
-                midi_program: 0,
-                synth_params: None,
-            })
-            .collect();
+        let instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_export.flac");
 
-        let result = render_to_flac(&path, &song, &bank, &instruments, &[], &[], 44100);
+        let result = render_to_flac(&path, &song, &bank, &instruments, None, &[], &[], 44100);
         assert!(result.is_ok(), "FLAC export failed: {:?}", result.err());
 
         // Verify the file exists and is non-empty

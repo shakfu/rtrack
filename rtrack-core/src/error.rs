@@ -43,6 +43,8 @@ pub enum Error {
     },
     /// Rendering or encoding audio failed.
     Export { source: anyhow::Error },
+    /// A MIDI output port could not be opened.
+    MidiPort { name: String, source: anyhow::Error },
     /// The operation needs a file path and the song has never been saved.
     NoFilePath,
 }
@@ -77,6 +79,7 @@ impl fmt::Display for Error {
                 }
             }
             Error::Export { source } => write!(f, "export failed: {source}"),
+            Error::MidiPort { name, source } => write!(f, "MIDI port {name}: {source}"),
             Error::NoFilePath => write!(f, "song has no file path"),
         }
     }
@@ -86,7 +89,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::File { source, .. } | Error::Sample { source, .. } => Some(source.as_ref()),
-            Error::Export { source } => Some(source.as_ref()),
+            Error::Export { source } | Error::MidiPort { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }

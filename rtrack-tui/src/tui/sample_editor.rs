@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use rtrack_core::audio::synth::FilterType;
 use rtrack_core::sample::{Sample, SliceRange};
 use rtrack_core::tracker::midi_note_name;
 
@@ -100,7 +101,7 @@ fn current_sample_slot(app: &App) -> Option<usize> {
     let ch = app.cursor_channel;
     let instruments = &app.core.instruments;
     if ch < instruments.len() {
-        instruments[ch].sample_index
+        instruments[ch].sample_index()
     } else {
         None
     }
@@ -108,7 +109,7 @@ fn current_sample_slot(app: &App) -> Option<usize> {
 
 /// Draw the sample editor popup
 pub fn draw_sample_editor(f: &mut Frame, app: &App) {
-    let area = centered_rect(65, 24, f.area());
+    let area = centered_rect(65, 30, f.area());
     f.render_widget(Clear, area);
 
     let slot = app.dialogs.sample_editor_slot;
@@ -227,8 +228,73 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             ]));
         }
 
+        // Instrument section: the drive and filter of the instrument in this
+        // slot, which apply to every note it plays.
+        lines.push(Line::from(Span::styled(
+            "  -- Instrument --",
+            Style::default().fg(Color::DarkGray),
+        )));
+        let fx = match app.core.instruments.get(slot).map(|i| &i.kind) {
+            Some(rtrack_core::InstrumentKind::Sample { fx, .. }) => Some(*fx),
+            _ => None,
+        };
+        let filter = fx.and_then(|fx| fx.filter);
+        let dash = || "-".to_string();
+        let fx_fields: Vec<(SampleField, &str, String)> = vec![
+            (
+                SampleField::Drive,
+                "Drive",
+                fx.map_or_else(dash, |fx| {
+                    if fx.drive > 1.0 {
+                        format!("{:.1}", fx.drive)
+                    } else {
+                        "off".to_string()
+                    }
+                }),
+            ),
+            (
+                SampleField::Filter,
+                "Filter",
+                match (fx, filter) {
+                    (None, _) => dash(),
+                    (Some(_), None) => "off".to_string(),
+                    (Some(_), Some(f)) => match f.kind {
+                        FilterType::LowPass => "LP",
+                        FilterType::HighPass => "HP",
+                        FilterType::BandPass => "BP",
+                    }
+                    .to_string(),
+                },
+            ),
+            (
+                SampleField::Cutoff,
+                "Cutoff",
+                filter.map_or_else(dash, |f| format!("{:.0} Hz", f.cutoff_hz)),
+            ),
+            (
+                SampleField::Resonance,
+                "Resonance",
+                filter.map_or_else(dash, |f| format!("{:.2}", f.resonance)),
+            ),
+        ];
+        for (field, label, value) in &fx_fields {
+            let is_active = *field == app.dialogs.sample_editor_field;
+            let marker = if is_active { "> " } else { "  " };
+            let label_style = if is_active {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, label_style),
+                Span::styled(format!("{:<12}", label), label_style),
+                Span::styled(value.clone(), Style::default().fg(Color::White)),
+            ]));
+        }
+
         // Slice section
-        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  -- Slice --",
             Style::default().fg(Color::DarkGray),

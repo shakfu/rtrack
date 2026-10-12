@@ -25,9 +25,11 @@ mod tests {
 
     fn edit(row: usize, new: Option<Note>) -> CellEdit {
         CellEdit {
-            pattern_idx: 0,
-            row,
-            channel: 0,
+            at: rtrack_core::tracker::CellAddr::Pattern {
+                pattern: 0,
+                row,
+                channel: 0,
+            },
             old_cell: Cell::default(),
             new_cell: Cell {
                 note: new,
@@ -94,7 +96,10 @@ mod tests {
         // Only the last three survive: rows 4, 3, 2 in undo order.
         let mut seen = Vec::new();
         while let Some(edit) = h.undo() {
-            seen.push(cells(edit)[0].row);
+            match cells(edit)[0].at {
+                rtrack_core::tracker::CellAddr::Pattern { row, .. } => seen.push(row),
+                other => panic!("unexpected address {other:?}"),
+            }
         }
         assert_eq!(seen, vec![4, 3, 2]);
     }
