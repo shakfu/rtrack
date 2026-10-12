@@ -497,17 +497,8 @@ impl RtrackApp {
                     .add_filter("Audio", &["wav", "aif", "aiff"])
                     .pick_file()
                 {
-                    let slot = self.core.instruments[idx].sample_index.unwrap_or(idx);
-
-                    let mut bank = (*self.core.sample_bank).clone();
-                    match bank.load(slot, &path) {
-                        Ok(()) => {
-                            self.core.sample_bank = Arc::new(bank);
-                            self.core.instruments[idx].sample_index = Some(slot);
-                            if let Some(ref mut audio) = self.core.audio {
-                                audio.set_sample_bank(self.core.sample_bank.clone());
-                            }
-                            self.core.dirty = true;
+                    match self.core.load_instrument_sample(idx, &path) {
+                        Ok(slot) => {
                             self.status_message =
                                 Some(format!("Loaded sample into slot {:02X}", slot));
                         }
@@ -1136,10 +1127,12 @@ mod tests {
         let (mut app, _dir) = app_with_amen();
         app.core.instruments[3].name = "Bass".to_string();
         app.slice_count = 8;
+        let depth = app.core.history.undo_depth();
 
         app.do_equal_slice(0, 0, SliceRange::Source, SliceOverwrite::Refuse);
-        assert!(
-            !app.core.history.can_undo(),
+        assert_eq!(
+            app.core.history.undo_depth(),
+            depth,
             "a slice that wrote nothing should not be undoable"
         );
         assert!(app.vis.slice_blocked.is_some(), "no warning was raised");

@@ -8,7 +8,7 @@
 
 ### Architecture & Quality
 
-- [ ] Loading a sample over an occupied slot is still not undoable -- the last part of the sample bank outside the history
+- [ ] Gesture undo still pushes to `TrackerCore::history` from the frontends: GUI boundary drags, `record_settings_edit` and `end_structural_edit`, and the TUI's `record_sample_field_edit`. Two recording styles beside `begin_edit`/`commit_edit`; a core transaction API keyed by `EditSource` would make one
 
 ## Low
 
@@ -32,6 +32,6 @@
 
 - [ ] Audio recording to sample slots
 
-- [ ] Live granular editing / waveform scrubbing -- depends on `Arc<Sample>` refactor above to avoid O(256 x frames) clone on every edit
+- [ ] Live granular editing / waveform scrubbing
 
 - [ ] Chord type -- a note that sounds several pitches at once, as a third kind of sound source alongside samples and single monophonic notes. A tracker channel is one voice, and the engine now enforces it: a pattern note-off stops the whole channel, per-channel effect state holds a single `porta_target`/`vibrato_phase`/`pitch_offset`, and a pattern row has one note per channel. Polyphony therefore has to live inside the note rather than in overlapping notes on a channel. Open questions: how a chord is entered and shown in a pattern cell, whether its voices share the channel's effect state or each track their own, and how it is stored in `.rtrk` and written to MIDI export. Live MIDI chord entry is the same problem one layer up -- `TrackerCore::preview_note` is a single `Option<PreviewNote>` that stops the previous note before starting the next, so a keyboard chord cannot currently be captured either.

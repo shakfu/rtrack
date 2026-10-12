@@ -80,6 +80,9 @@ pub struct PreviewNote {
 pub struct SampleSnapshot {
     bank: Arc<SampleBank>,
     instruments: Vec<Instrument>,
+    /// Each track's default instrument. Loading into a slot sets it, so
+    /// undoing the load without it leaves the track pointing at an empty slot.
+    default_instruments: Vec<Option<u8>>,
 }
 
 impl SampleSnapshot {
@@ -1364,7 +1367,16 @@ impl TrackerCore {
     // Sample loading
     // -----------------------------------------------------------------------
 
-    /// Load a sample file into a bank slot. Returns Ok(name) or Err(message).
+    /// Install `bank` as the live bank, on the audio thread too.
+    fn set_sample_bank(&mut self, bank: SampleBank) {
+        self.sample_bank = Arc::new(bank);
+        if let Some(ref mut audio) = self.audio {
+            audio.set_sample_bank(Arc::clone(&self.sample_bank));
+        }
+    }
+
+    /// Load a sample file into a bank slot, as one undo step.
+    /// Returns Ok(name) or Err(message).
     pub fn load_sample(&mut self, slot: usize, path: &std::path::Path) -> Result<String> {
         let mut bank = (*self.sample_bank).clone();
         match bank.load(slot, path) {
@@ -1374,89 +1386,99 @@ impl TrackerCore {
                     .and_then(|s| s.to_str())
                     .unwrap_or("sample")
                     .to_string();
-                if slot < self.instruments.len() {
-                    self.instruments[slot].sample_index = Some(slot);
-                    if self.instruments[slot].name.is_empty() {
-                        self.instruments[slot].name = name.clone();
+                self.record_sample_edit(|core| {
+                    if slot < core.instruments.len() {
+                        core.instruments[slot].sample_index = Some(slot);
+                        if core.instruments[slot].name.is_empty() {
+                            core.instruments[slot].name = name.clone();
+                        }
                     }
-                }
-                self.sample_bank = Arc::new(bank);
-                if let Some(ref mut audio) = self.audio {
-                    audio.set_sample_bank(Arc::clone(&self.sample_bank));
-                }
+                    core.set_sample_bank(bank);
+                });
                 Ok(name)
             }
             Err(e) => Err(Error::Sample { slot, source: e }),
         }
     }
 
-    /// Load samples from a directory named `<slot>-<name>.wav`.
+    /// Load a sample into the slot instrument `idx` plays, or slot `idx` if
+    /// it plays none, as one undo step. Returns the slot.
+    pub fn load_instrument_sample(&mut self, idx: usize, path: &std::path::Path) -> Result<usize> {
+        let slot = self.instruments[idx].sample_index.unwrap_or(idx);
+        let mut bank = (*self.sample_bank).clone();
+        bank.load(slot, path)
+            .map_err(|e| Error::Sample { slot, source: e })?;
+        self.record_sample_edit(|core| {
+            core.instruments[idx].sample_index = Some(slot);
+            core.set_sample_bank(bank);
+        });
+        Ok(slot)
+    }
+
+    /// Load samples from a directory named `<slot>-<name>.wav`, as one undo
+    /// step that includes any tempo the directory sets.
     /// Returns how many slots were filled.
     pub fn load_sample_directory(&mut self, dir: &std::path::Path) -> Result<usize> {
         let mut bank = (*self.sample_bank).clone();
         match bank.load_directory(dir) {
-            Ok(meta) => {
+            Ok(meta) => Ok(self.record_sample_edit(|core| {
                 let mut loaded = 0;
                 for (i, sample) in bank.samples.iter().enumerate() {
                     if let Some(s) = sample {
                         loaded += 1;
-                        if i < self.instruments.len() {
-                            self.instruments[i].sample_index = Some(i);
-                            if self.instruments[i].name.is_empty() {
-                                self.instruments[i].name = s.name.clone();
+                        if i < core.instruments.len() {
+                            core.instruments[i].sample_index = Some(i);
+                            if core.instruments[i].name.is_empty() {
+                                core.instruments[i].name = s.name.clone();
                             }
                         }
                     }
                 }
-                self.sample_bank = Arc::new(bank);
-                if let Some(ref mut audio) = self.audio {
-                    audio.set_sample_bank(Arc::clone(&self.sample_bank));
-                }
+                core.set_sample_bank(bank);
                 if let Some(bpm) = meta.bpm {
-                    self.song.bpm = bpm;
-                    if self.link.is_enabled() {
-                        self.link.set_tempo(bpm as f64);
+                    core.song.bpm = bpm;
+                    if core.link.is_enabled() {
+                        core.link.set_tempo(bpm as f64);
                     }
                 }
-                Ok(loaded)
-            }
+                loaded
+            })),
             Err(e) => Err(Error::file(dir, e)),
         }
     }
 
     /// Load a sample into a slot, also making it that track's default
-    /// instrument if the track does not have one yet.
+    /// instrument if the track does not have one yet. One undo step.
     pub fn load_sample_into_slot(&mut self, slot: usize, path: &std::path::Path) -> Result<()> {
         let mut bank = (*self.sample_bank).clone();
         match bank.load(slot, path) {
             Ok(()) => {
-                if slot < self.instruments.len() {
-                    self.instruments[slot].sample_index = Some(slot);
-                    if self.instruments[slot].name.is_empty() {
-                        self.instruments[slot].name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("sample")
-                            .to_string();
+                self.record_sample_edit(|core| {
+                    if slot < core.instruments.len() {
+                        core.instruments[slot].sample_index = Some(slot);
+                        if core.instruments[slot].name.is_empty() {
+                            core.instruments[slot].name = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("sample")
+                                .to_string();
+                        }
                     }
-                }
-                if let Some(ch) = self.channels.get_mut(slot) {
-                    if ch.default_instrument.is_none() {
-                        ch.default_instrument = Some(slot as u8);
+                    if let Some(ch) = core.channels.get_mut(slot) {
+                        if ch.default_instrument.is_none() {
+                            ch.default_instrument = Some(slot as u8);
+                        }
                     }
-                }
-                self.sample_bank = Arc::new(bank);
-                if let Some(ref mut audio) = self.audio {
-                    audio.set_sample_bank(Arc::clone(&self.sample_bank));
-                }
+                    core.set_sample_bank(bank);
+                });
                 Ok(())
             }
             Err(e) => Err(Error::Sample { slot, source: e }),
         }
     }
 
-    /// Slice a sample. Returns Ok(count) or Err(message).
-    /// The sample bank and instrument table as they stand, for undo.
+    /// The sample bank, instrument table and track default instruments as
+    /// they stand, for undo.
     ///
     /// Slicing rewrites consecutive slots, so an editor needs to be able to
     /// put back what was there. Cheap despite the size: slots are
@@ -1465,6 +1487,7 @@ impl TrackerCore {
         SampleSnapshot {
             bank: Arc::clone(&self.sample_bank),
             instruments: self.instruments.clone(),
+            default_instruments: self.channels.iter().map(|c| c.default_instrument).collect(),
         }
     }
 
@@ -1472,6 +1495,10 @@ impl TrackerCore {
     pub fn restore_samples(&mut self, snapshot: SampleSnapshot) {
         self.sample_bank = snapshot.bank;
         self.instruments = snapshot.instruments;
+        for (ch, inst) in self.channels.iter_mut().zip(snapshot.default_instruments) {
+            ch.default_instrument = inst;
+        }
+        self.sync_engine_channel_info();
         if let Some(ref mut audio) = self.audio {
             audio.set_sample_bank(Arc::clone(&self.sample_bank));
         }
@@ -1504,14 +1531,28 @@ impl TrackerCore {
     /// sample bank, so undo can put the overwritten slots back.
     pub fn begin_edit_with_samples(&mut self) {
         self.begin_edit();
-        if let Some(pending) = self.pending_edit.as_mut() {
-            if pending.samples.is_none() {
-                pending.samples = Some(SampleSnapshot {
-                    bank: Arc::clone(&self.sample_bank),
-                    instruments: self.instruments.clone(),
-                });
+        if self
+            .pending_edit
+            .as_ref()
+            .is_some_and(|p| p.samples.is_none())
+        {
+            let snapshot = self.snapshot_samples();
+            if let Some(pending) = self.pending_edit.as_mut() {
+                pending.samples = Some(snapshot);
             }
         }
+    }
+
+    /// Run `f` as one undoable sample edit, joining the pending edit if there
+    /// is one and committing it as its own step otherwise.
+    fn record_sample_edit<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let own = self.pending_edit.is_none();
+        self.begin_edit_with_samples();
+        let result = f(self);
+        if own {
+            self.commit_edit();
+        }
+        result
     }
 
     /// Abandon the pending snapshot: the edit it was taken for did not happen.

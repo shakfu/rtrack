@@ -175,6 +175,7 @@ fn setup_app(
     }
 
     // Load samples after file so they aren't wiped by load_file
+    let dirty = app.core.dirty;
     for spec in &samples {
         if let Some((slot_str, file_str)) = spec.split_once(':') {
             if let Ok(slot) = slot_str.parse::<usize>() {
@@ -186,6 +187,11 @@ fn setup_app(
     if let Some(dir) = sample_dir {
         app.load_sample_directory(&dir);
     }
+
+    // Command-line loads set up the session; they are not edits to undo.
+    app.core.cancel_edit();
+    app.core.history.clear();
+    app.core.dirty = dirty;
 
     // Last, so a load message does not replace it before anyone reads it.
     if let Some(problem) = &audio_problem {

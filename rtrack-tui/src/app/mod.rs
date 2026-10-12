@@ -2484,6 +2484,25 @@ pub(crate) mod tests {
         assert_eq!(app.core.engine.channel_states[0].note, None);
     }
 
+    #[test]
+    fn a_sample_picked_in_the_file_browser_is_undoable() {
+        let (mut app, dir) = app_with_amen();
+        let snare = dir.path().join("snare.wav");
+        std::fs::copy(dir.path().join("amen.wav"), &snare).unwrap();
+        app.core.history.clear();
+        app.core.dirty = false;
+
+        app.dialogs.file_browser.action = FileBrowserAction::LoadSample(0);
+        app.on_file_selected(snare);
+        assert!(app.core.dirty, "a load is an unsaved change");
+        assert_eq!(app.core.sample_bank.get(0).unwrap().name, "snare");
+
+        app.undo();
+        assert_eq!(app.core.sample_bank.get(0).unwrap().name, "amen");
+        app.redo();
+        assert_eq!(app.core.sample_bank.get(0).unwrap().name, "snare");
+    }
+
     fn app_with_amen() -> (App, tempfile::TempDir) {
         // A private directory per test: these run in parallel, and a shared
         // path had one test deleting the fixture another was loading.
