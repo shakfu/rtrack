@@ -246,10 +246,7 @@ impl RtrackApp {
                 // Load as project file
                 match self.core.load_file(path) {
                     Ok(report) => {
-                        self.cursor_row = 0;
-                        self.cursor_channel = 0;
-                        self.edit_order = 0;
-                        self.first_visible_channel = 0;
+                        self.reset_cursor_state();
                         rtrack_core::config::push_recent_file(&mut self.recent_files, path);
                         rtrack_core::config::save_recent_files(&self.recent_files);
                         self.status_message = Some(Self::describe_load(&report));
@@ -306,6 +303,37 @@ impl RtrackApp {
                 loaded,
                 if loaded == 1 { "" } else { "s" }
             ));
+        }
+    }
+
+    /// Apply a mouse action from the pattern grid.
+    pub fn apply_grid_action(&mut self, action: GridAction, order_pos: usize) {
+        match action {
+            GridAction::SetCursor { row, channel, sub } => {
+                self.cursor_row = row;
+                self.cursor_channel = channel;
+                self.cursor_sub = sub;
+                self.block_start = None;
+                self.block_end = None;
+            }
+            GridAction::Scroll { rows } => {
+                let max_row = self.core.song.rows_at(order_pos).saturating_sub(1);
+                let new_row = if rows > 0 {
+                    self.cursor_row.saturating_add(rows as usize).min(max_row)
+                } else {
+                    self.cursor_row.saturating_sub(rows.unsigned_abs() as usize)
+                };
+                self.cursor_row = new_row;
+            }
+            GridAction::DragStart { row, channel } => {
+                self.cursor_row = row;
+                self.cursor_channel = channel;
+                self.block_start = Some((row, channel));
+                self.block_end = Some((row, channel));
+            }
+            GridAction::DragUpdate { row, channel } => {
+                self.block_end = Some((row, channel));
+            }
         }
     }
 }
@@ -576,31 +604,7 @@ impl eframe::App for RtrackApp {
 
                 let actions = grid::draw_grid(ui, &self.core.song, order_pos, &params);
                 for action in actions {
-                    match action {
-                        GridAction::SetCursor { row, channel, sub } => {
-                            self.cursor_row = row;
-                            self.cursor_channel = channel;
-                            self.cursor_sub = sub;
-                        }
-                        GridAction::Scroll { rows } => {
-                            let max_row = self.core.song.rows_at(order_pos).saturating_sub(1);
-                            let new_row = if rows > 0 {
-                                self.cursor_row.saturating_add(rows as usize).min(max_row)
-                            } else {
-                                self.cursor_row.saturating_sub(rows.unsigned_abs() as usize)
-                            };
-                            self.cursor_row = new_row;
-                        }
-                        GridAction::DragStart { row, channel } => {
-                            self.cursor_row = row;
-                            self.cursor_channel = channel;
-                            self.block_start = Some((row, channel));
-                            self.block_end = Some((row, channel));
-                        }
-                        GridAction::DragUpdate { row, channel } => {
-                            self.block_end = Some((row, channel));
-                        }
-                    }
+                    self.apply_grid_action(action, order_pos);
                 }
             });
         }
@@ -632,6 +636,18 @@ impl RtrackApp {
 mod tests {
     use super::*;
     use rtrack_core::core::LoadReport;
+
+    #[test]
+    fn a_click_clears_a_dragged_selection() {
+        let mut a = RtrackApp::headless(4, 16);
+        a.apply_grid_action(GridAction::DragStart { row: 0, channel: 0 }, 0);
+        a.apply_grid_action(GridAction::DragUpdate { row: 3, channel: 0 }, 0);
+        assert_eq!(a.block_end, Some((3, 0)));
+        let sub = SubColumn::Note;
+        a.apply_grid_action(GridAction::SetCursor { row: 8, channel: 0, sub }, 0);
+        assert_eq!((a.block_start, a.block_end), (None, None));
+        assert_eq!(a.cursor_row, 8);
+    }
 
     /// A mono WAV of `frames` silent samples, which is enough for the sample
     /// loader to accept it.
@@ -751,8 +767,12 @@ mod tests {
         app.cursor_row = 9;
         app.cursor_channel = 2;
         app.first_visible_channel = 1;
+        app.block_start = Some((0, 0));
+        app.block_end = Some((5, 2));
 
         app.handle_dropped_files(&[&song_path]);
+
+        assert_eq!((app.block_start, app.block_end), (None, None));
 
         assert_eq!(app.core.song.title, "Dropped");
         assert_eq!(app.core.song.channels, 3);

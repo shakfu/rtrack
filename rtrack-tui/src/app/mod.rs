@@ -850,6 +850,7 @@ impl App {
                 self.cursor_sub = SubColumn::Note;
                 self.edit_order = 0;
                 self.track_page = 0;
+                self.block_anchor = None;
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(Self::describe_load("Loaded", &report));
@@ -1806,6 +1807,19 @@ pub(crate) mod tests {
             status.contains("truncated"),
             "the truncation must reach the status line: {status}"
         );
+    }
+
+    #[test]
+    fn loading_a_song_clears_the_block_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("song.rtrk");
+        let mut app = make_app();
+        app.core.file_path = Some(path.clone());
+        app.save();
+
+        app.block_anchor = Some((2, 1));
+        app.load_file(path);
+        assert!(app.block_anchor.is_none());
     }
 
     #[test]

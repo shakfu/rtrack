@@ -281,11 +281,14 @@ impl RtrackApp {
         }
     }
 
-    fn reset_cursor_state(&mut self) {
+    pub(crate) fn reset_cursor_state(&mut self) {
         self.cursor_row = 0;
         self.cursor_channel = 0;
         self.cursor_sub = SubColumn::Note;
         self.edit_order = 0;
+        self.first_visible_channel = 0;
+        self.block_start = None;
+        self.block_end = None;
     }
 }
 
@@ -373,6 +376,9 @@ mod tests {
         app.cursor_channel = 3;
         app.cursor_sub = SubColumn::Effect;
         app.edit_order = 2;
+        app.first_visible_channel = 1;
+        app.block_start = Some((0, 0));
+        app.block_end = Some((3, 1));
 
         app.reset_cursor_state();
 
@@ -380,5 +386,7 @@ mod tests {
         assert_eq!(app.cursor_channel, 0);
         assert_eq!(app.cursor_sub, SubColumn::Note);
         assert_eq!(app.edit_order, 0);
+        assert_eq!(app.first_visible_channel, 0);
+        assert_eq!((app.block_start, app.block_end), (None, None));
     }
 }

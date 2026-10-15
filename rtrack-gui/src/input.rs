@@ -329,6 +329,9 @@ impl RtrackApp {
                 } else if mode == Mode::Normal && self.show_song_settings {
                     self.show_song_settings = false;
                     self.break_edit_coalescing();
+                } else if mode == Mode::Normal && self.block_start.is_some() {
+                    self.block_start = None;
+                    self.block_end = None;
                 } else {
                     self.mode = mode;
                 }
@@ -1303,6 +1306,19 @@ mod tests {
 
     fn app() -> RtrackApp {
         RtrackApp::headless(4, 16)
+    }
+
+    #[test]
+    fn escape_clears_a_block_selection_before_leaving_insert() {
+        let mut a = app();
+        a.mode = Mode::Insert;
+        a.block_start = Some((0, 0));
+        a.block_end = Some((3, 1));
+        a.execute_action(Action::SetMode(Mode::Normal));
+        assert_eq!((a.block_start, a.block_end), (None, None));
+        assert_eq!(a.mode, Mode::Insert, "first Esc only clears the selection");
+        a.execute_action(Action::SetMode(Mode::Normal));
+        assert_eq!(a.mode, Mode::Normal);
     }
 
     #[test]
