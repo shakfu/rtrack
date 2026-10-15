@@ -439,6 +439,8 @@ pub struct App {
     pub clipboard: rtrack_core::editor::Clipboard,
     /// Where a block selection was anchored, if one is active.
     pub block_anchor: BlockAnchor,
+    /// The phrase shown in the grid in place of the pattern, if any.
+    pub phrase_view: Option<rtrack_core::editor::PhraseView>,
     /// Channel rename edit buffer
     pub rename_buf: String,
     /// Channel effects editor: currently focused field index
@@ -497,6 +499,7 @@ impl App {
             last_autosave: Instant::now(),
             clipboard: rtrack_core::editor::Clipboard::default(),
             block_anchor: None,
+            phrase_view: None,
             edit_order: 0,
             prev_mode: Mode::Normal,
             theme_index: 0,
@@ -743,7 +746,7 @@ impl App {
     /// Effect columns shown: two when toggled on with `:fx2`, or when the
     /// pattern on screen uses the second, so its data is never hidden.
     pub fn fx_columns(&self) -> usize {
-        let used = self.core.song.uses_second_fx(self.current_order_position());
+        let used = self.core.song.uses_second_fx(self.sheet());
         if self.show_second_fx || used {
             2
         } else {
@@ -757,6 +760,26 @@ impl App {
         } else {
             self.edit_order
         }
+    }
+
+    /// What the grid shows and edits: the phrase view's phrase, or the
+    /// pattern at the current order position.
+    pub fn sheet(&self) -> rtrack_core::tracker::Sheet {
+        match self.phrase_view {
+            Some(view) => view.sheet(self.cursor_channel),
+            None => self.current_order_position().into(),
+        }
+    }
+
+    /// The pattern row playback starts from and the phrase view returns to.
+    pub fn pattern_row(&self) -> usize {
+        self.phrase_view.map_or(self.cursor_row, |v| v.pattern_row)
+    }
+
+    /// Whether the grid highlights and scrolls with playback. The phrase
+    /// view does not: the phrase shown need not be the one playing.
+    pub fn grid_follows_playback(&self) -> bool {
+        self.core.is_playing() && self.phrase_view.is_none()
     }
 
     /// Row currently being heard, for the playback row highlight.
@@ -851,6 +874,7 @@ impl App {
                 self.edit_order = 0;
                 self.track_page = 0;
                 self.block_anchor = None;
+                self.phrase_view = None;
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(Self::describe_load("Loaded", &report));
@@ -899,13 +923,14 @@ impl App {
         if self.edit_order >= order_len {
             self.edit_order = order_len - 1;
         }
-        let rows = self
-            .core
-            .song
-            .pattern_at(self.edit_order)
-            .map(|p| p.rows)
-            .unwrap_or(self.core.song.rows_per_pattern)
-            .max(1);
+        // An undo can remove the phrase on view.
+        let phrases = self.core.song.phrases.len();
+        match self.phrase_view.as_mut() {
+            Some(_) if phrases == 0 => self.close_phrase_view(),
+            Some(view) => view.phrase = view.phrase.min(phrases - 1),
+            None => {}
+        }
+        let rows = self.core.song.rows_at(self.sheet());
         if self.cursor_row >= rows {
             self.cursor_row = rows - 1;
         }
@@ -935,9 +960,9 @@ impl App {
     // -- Clipboard --
 
     pub fn copy_row(&mut self) {
-        let pos = self.current_order_position();
+        let pos = self.sheet();
         let song = &self.core.song;
-        let channels = song.pattern_at(pos).map_or(0, |p| p.channels);
+        let channels = song.channels;
         let row: Vec<rtrack_core::tracker::Cell> = (0..channels)
             .map(|ch| *song.cell_at(pos, self.cursor_row, ch))
             .collect();
@@ -948,7 +973,7 @@ impl App {
     pub fn paste_row(&mut self) {
         if let Some(row) = self.clipboard.run().map(|r| r.to_vec()) {
             self.core.begin_edit();
-            let pos = self.current_order_position();
+            let pos = self.sheet();
             for (ch, cell) in row.iter().enumerate() {
                 self.core.song.set_cell(pos, self.cursor_row, ch, *cell);
             }
@@ -959,9 +984,8 @@ impl App {
     pub fn cut_row(&mut self) {
         self.copy_row();
         self.core.begin_edit();
-        let pos = self.current_order_position();
-        let channels = self.core.song.pattern_at(pos).map_or(0, |p| p.channels);
-        for ch in 0..channels {
+        let pos = self.sheet();
+        for ch in 0..self.core.song.channels {
             self.core.song.set_cell(
                 pos,
                 self.cursor_row,
@@ -1039,6 +1063,9 @@ impl App {
 
     /// Get the range of visible channels for the current track page
     pub fn visible_channels(&self) -> std::ops::Range<usize> {
+        if self.phrase_view.is_some() {
+            return self.cursor_channel..self.cursor_channel + 1;
+        }
         let start = self.track_page * CHANNELS_PER_PAGE;
         let end = (start + CHANNELS_PER_PAGE).min(self.core.song.channels);
         start..end
@@ -1087,6 +1114,7 @@ pub(crate) mod tests {
             last_autosave: Instant::now(),
             clipboard: rtrack_core::editor::Clipboard::default(),
             block_anchor: None,
+            phrase_view: None,
             edit_order: 0,
             prev_mode: Mode::Normal,
             theme_index: 0,
@@ -4257,6 +4285,145 @@ pub(crate) mod tests {
         let len = app.core.song.phrases[0].rows.len();
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
         assert_eq!(app.core.song.phrases[0].rows.len(), len - 1);
+    }
+
+    fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        app.handle_key(KeyEvent::new(code, mods));
+    }
+
+    #[test]
+    fn the_phrase_view_edits_the_tracks_phrase_and_returns_to_the_pattern() {
+        let mut app = make_app();
+        let pos = app.current_order_position();
+        app.cursor_channel = 1;
+        run_command(&mut app, "phrase");
+        app.cursor_row = 5;
+
+        press(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+        assert_eq!(app.phrase_view.map(|v| v.phrase), Some(0));
+        assert_eq!(app.cursor_row, 5, "opens at the phrase row shown");
+
+        app.mode = Mode::Insert;
+        app.cursor_sub = SubColumn::Volume;
+        press(&mut app, KeyCode::Char('7'), KeyModifiers::NONE);
+        assert_eq!(app.core.song.phrases[0].rows[5].volume, Some(7));
+        assert_eq!(app.core.song.cell_at(pos, 5, 1).volume, Some(7));
+
+        // The cursor stays in the phrase's column.
+        app.cursor_sub = SubColumn::Effect;
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.cursor_channel, 1);
+        assert_eq!(app.visible_channels(), 1..2);
+
+        app.mode = Mode::Normal;
+        app.cursor_row = 0;
+        assert_eq!(app.pattern_row(), 5, "playback starts from the pattern row");
+        press(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+        assert!(app.phrase_view.is_none());
+        assert_eq!(app.cursor_row, 5);
+
+        app.undo();
+        assert_eq!(app.core.song.phrases[0].rows[5].volume, None);
+    }
+
+    #[test]
+    fn the_phrase_view_steps_adds_and_survives_undo() {
+        let mut app = make_app();
+        press(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+        assert!(app.phrase_view.is_none(), "nothing to show yet");
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("No phrases")));
+
+        app.core.song.add_phrase(4);
+        app.core.song.phrases[0].rows[1].volume = Some(9);
+        run_command(&mut app, "pedit");
+        let shown = |app: &App| app.phrase_view.map(|v| v.phrase);
+        assert_eq!(shown(&app), Some(0), "an unlinked track opens phrase 00");
+
+        press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(shown(&app), Some(1));
+        assert_eq!(app.core.song.phrases[1].rows[1].volume, Some(9));
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(shown(&app), Some(2));
+        let pattern_rows = app.core.song.rows_at(app.current_order_position());
+        assert_eq!(app.current_pattern_rows(), pattern_rows);
+
+        press(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(shown(&app), Some(2), "stops at the last phrase");
+        press(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(shown(&app), Some(1));
+
+        run_command(&mut app, "pedit 2");
+        app.undo();
+        assert_eq!(app.core.song.phrases.len(), 2);
+        assert_eq!(shown(&app), Some(1), "the undone phrase is no longer shown");
+
+        run_command(&mut app, "pedit 9");
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("No such")));
+        assert_eq!(shown(&app), Some(1));
+    }
+
+    #[test]
+    fn rows_insert_and_delete_in_the_phrase_not_the_pattern() {
+        let mut app = make_app();
+        run_command(&mut app, "phrase");
+        let pattern_idx = app.core.song.order[app.current_order_position()];
+        app.core.song.patterns[pattern_idx].links[0] = None;
+        app.core.song.patterns[pattern_idx].data[0][0].volume = Some(1);
+        app.core.song.phrases[0].rows[0].volume = Some(2);
+        let len = app.core.song.phrases[0].rows.len();
+
+        run_command(&mut app, "pedit 0");
+        press(&mut app, KeyCode::Insert, KeyModifiers::NONE);
+        assert_eq!(app.core.song.phrases[0].rows[1].volume, Some(2));
+        assert_eq!(app.core.song.phrases[0].rows.len(), len);
+        assert_eq!(
+            app.core.song.patterns[pattern_idx].data[0][0].volume,
+            Some(1)
+        );
+
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.core.song.phrases[0].rows[0].volume, Some(2));
+    }
+
+    #[test]
+    fn the_phrase_list_shows_a_phrase_while_the_view_is_open() {
+        let mut app = make_app();
+        app.core.song.add_phrase(4);
+        app.core.song.add_phrase(4);
+        run_command(&mut app, "pedit 1");
+        run_command(&mut app, "phrases");
+        assert_eq!(
+            app.dialogs.phrase_cursor, 1,
+            "the list starts on the phrase shown"
+        );
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.phrase_view.map(|v| v.phrase), Some(0));
+        let pos = app.current_order_position();
+        assert!(
+            app.core.song.pattern_at(pos).unwrap().link(0).is_none(),
+            "nothing is linked"
+        );
+    }
+
+    #[test]
+    fn loading_a_song_closes_the_phrase_view() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("song.rtrk");
+        let mut app = make_app();
+        app.core.file_path = Some(path.clone());
+        app.save();
+        app.core.song.add_phrase(4);
+        run_command(&mut app, "pedit 0");
+        app.load_file(path);
+        assert!(app.phrase_view.is_none());
     }
 
     #[test]

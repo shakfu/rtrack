@@ -1,5 +1,5 @@
 use egui::{FontId, Pos2, Rect, Ui};
-use rtrack_core::tracker::Song;
+use rtrack_core::tracker::{Sheet, Song};
 
 use crate::state::{GridColors, Mode, SubColumn};
 
@@ -162,12 +162,18 @@ pub fn hit_test(pos: Pos2, geom: &GridGeometry) -> Option<(usize, usize, SubColu
     Some((row_idx, ch_idx, sub))
 }
 
-/// Draw the pattern at `order` of `song`. Cells are read through
-/// [`Song::cell_at`], so a column linked to a phrase shows the phrase.
-pub fn draw_grid(ui: &mut Ui, song: &Song, order: usize, params: &GridParams) -> Vec<GridAction> {
-    let Some(pattern) = song.pattern_at(order) else {
-        return Vec::new();
+/// Draw a sheet of `song`: a pattern, or a phrase in one track's column.
+/// Cells are read through [`Song::cell_at`], so a column linked to a phrase
+/// shows the phrase.
+pub fn draw_grid(ui: &mut Ui, song: &Song, sheet: Sheet, params: &GridParams) -> Vec<GridAction> {
+    let channels = match sheet {
+        Sheet::Order(order) => match song.pattern_at(order) {
+            Some(pattern) => pattern.channels,
+            None => return Vec::new(),
+        },
+        Sheet::Phrase { .. } => song.channels,
     };
+    let rows = song.rows_at(sheet);
     let font = FontId::monospace(13.0);
     let available = ui.available_size();
     let (response, painter) = ui.allocate_painter(available, egui::Sense::click_and_drag());
@@ -179,7 +185,7 @@ pub fn draw_grid(ui: &mut Ui, song: &Song, order: usize, params: &GridParams) ->
 
     // Calculate layout
     let first_ch = params.first_visible_channel;
-    let last_ch = (first_ch + params.visible_channel_count).min(pattern.channels);
+    let last_ch = (first_ch + params.visible_channel_count).min(channels);
     let header_height = ROW_HEIGHT;
 
     // Draw channel headers
@@ -229,7 +235,7 @@ pub fn draw_grid(ui: &mut Ui, song: &Song, order: usize, params: &GridParams) ->
 
     for screen_y in 0..visible_rows {
         let row_idx = start_row + screen_y;
-        if row_idx >= pattern.rows {
+        if row_idx >= rows {
             break;
         }
 
@@ -326,7 +332,7 @@ pub fn draw_grid(ui: &mut Ui, song: &Song, order: usize, params: &GridParams) ->
                 );
             }
 
-            let cell = song.cell_at(order, row_idx, ch_idx);
+            let cell = song.cell_at(sheet, row_idx, ch_idx);
             let is_muted = if let Some(solo) = params.solo_channel {
                 ch_idx != solo
             } else {
@@ -458,7 +464,7 @@ pub fn draw_grid(ui: &mut Ui, song: &Song, order: usize, params: &GridParams) ->
         data_top,
         left: rect.left(),
         start_row,
-        rows: pattern.rows,
+        rows,
         first_channel: first_ch,
         last_channel: last_ch,
         fx_columns: params.fx_columns,

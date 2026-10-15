@@ -276,10 +276,17 @@ impl RtrackApp {
                 if self.core.song.phrases.is_empty() {
                     ui.label("No phrases yet.");
                 }
-                egui::Grid::new("phrase_grid").num_columns(3).show(ui, |ui| {
+                let shown = self.phrase_view.map(|v| v.phrase);
+                egui::Grid::new("phrase_grid").num_columns(6).show(ui, |ui| {
                     for i in 0..self.core.song.phrases.len() {
+                        // The number the track headers show, marked when
+                        // it is the cursor track's phrase or the one on view.
+                        let current = link.map(|l| l.phrase) == Some(i) || shown == Some(i);
+                        ui.label(egui::RichText::new(format!("{i:02X}")).monospace().strong())
+                            .on_hover_text("Shown in track headers as [Pnn] or [Rnn]");
                         let mut name = self.core.song.phrases[i].name.clone();
-                        if ui.text_edit_singleline(&mut name).changed() {
+                        let field = egui::TextEdit::singleline(&mut name).desired_width(140.0);
+                        if ui.add(field).changed() {
                             action = Some(PhraseAction::Rename(i, name));
                         }
                         let mut len = self.core.song.phrases[i].rows.len();
@@ -288,6 +295,19 @@ impl RtrackApp {
                             .changed()
                         {
                             action = Some(PhraseAction::Resize(i, len));
+                        }
+                        let uses = self.core.song.phrase_uses(i);
+                        ui.label(if current {
+                            egui::RichText::new(format!("{uses} uses")).strong()
+                        } else {
+                            egui::RichText::new(format!("{uses} uses"))
+                        });
+                        if ui
+                            .button("Edit")
+                            .on_hover_text("Show the phrase in the grid (F5)")
+                            .clicked()
+                        {
+                            action = Some(PhraseAction::Show(i));
                         }
                         if ui.button("Link track").clicked() {
                             action = Some(PhraseAction::Link(i));
@@ -306,6 +326,14 @@ impl RtrackApp {
     /// name and dragging a length fold into one step each.
     pub(crate) fn apply_phrase_action(&mut self, action: PhraseAction) {
         use rtrack_core::tracker::PhraseTiming;
+        // Moving the view edits nothing.
+        match action {
+            PhraseAction::Show(i) => return self.open_phrase_view(Some(i)),
+            PhraseAction::Step(forward) => return self.step_phrase_view(forward),
+            PhraseAction::Add { duplicate } => return self.add_phrase_in_view(duplicate),
+            PhraseAction::Close => return self.close_phrase_view(),
+            _ => {}
+        }
         let pos = self.edit_order;
         let ch = self.cursor_channel;
         let before = self.begin_structural_edit();
@@ -343,10 +371,82 @@ impl RtrackApp {
             }
             PhraseAction::Resize(i, len) => {
                 self.core.song.resize_phrase(i, len);
+                self.clamp_cursor_to_song();
                 return self.record_settings_edit("phrase length", before);
             }
+            PhraseAction::Show(_)
+            | PhraseAction::Step(_)
+            | PhraseAction::Add { .. }
+            | PhraseAction::Close => unreachable!("handled above"),
         }
         self.end_structural_edit(before);
+    }
+
+    /// The bar above the grid while it shows a phrase: which phrase, its
+    /// name and length, and moving between phrases.
+    pub(crate) fn draw_phrase_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(view) = self.phrase_view else {
+            return;
+        };
+        let Some(phrase) = self.core.song.phrases.get(view.phrase) else {
+            return;
+        };
+        let count = self.core.song.phrases.len();
+        let mut action: Option<PhraseAction> = None;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Phrase {:02X}/{:02X}", view.phrase, count - 1))
+                    .monospace()
+                    .strong(),
+            );
+            if ui
+                .add_enabled(view.phrase > 0, egui::Button::new("<"))
+                .on_hover_text("Previous phrase (Ctrl+Left)")
+                .clicked()
+            {
+                action = Some(PhraseAction::Step(false));
+            }
+            if ui
+                .add_enabled(view.phrase + 1 < count, egui::Button::new(">"))
+                .on_hover_text("Next phrase (Ctrl+Right)")
+                .clicked()
+            {
+                action = Some(PhraseAction::Step(true));
+            }
+            let mut name = phrase.name.clone();
+            let field = egui::TextEdit::singleline(&mut name).desired_width(140.0);
+            if ui.add(field).changed() {
+                action = Some(PhraseAction::Rename(view.phrase, name));
+            }
+            let mut len = phrase.rows.len();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut len)
+                        .range(1..=256)
+                        .suffix(" rows"),
+                )
+                .changed()
+            {
+                action = Some(PhraseAction::Resize(view.phrase, len));
+            }
+            ui.label(format!(
+                "{} uses, plays through Ch{}",
+                self.core.song.phrase_uses(view.phrase),
+                self.cursor_channel + 1
+            ));
+            if ui.button("New").on_hover_text("Ctrl+N").clicked() {
+                action = Some(PhraseAction::Add { duplicate: false });
+            }
+            if ui.button("Duplicate").on_hover_text("Ctrl+D").clicked() {
+                action = Some(PhraseAction::Add { duplicate: true });
+            }
+            if ui.button("Back to pattern").on_hover_text("F5").clicked() {
+                action = Some(PhraseAction::Close);
+            }
+        });
+        if let Some(action) = action {
+            self.apply_phrase_action(action);
+        }
     }
 
     /// One-line editor for an effect's text form, e.g. PVB44 or C0740.
@@ -1018,6 +1118,15 @@ impl RtrackApp {
                         ], dim);
 
                         ui.add_space(8.0);
+                        ui.heading("Phrase Editor");
+                        help_grid(ui, "help_phrase", &[
+                            ("F5", "Show the cursor track's phrase in the grid / back"),
+                            ("Ctrl+Left / Right", "Previous / next phrase"),
+                            ("Ctrl+N / Ctrl+D", "New / duplicate phrase"),
+                            ("Insert / Backspace", "Insert / delete a phrase row"),
+                        ], dim);
+
+                        ui.add_space(8.0);
                         ui.heading("Export");
                         help_grid(ui, "help_export", &[
                             ("Ctrl+E", "Export MIDI"),
@@ -1247,6 +1356,16 @@ pub(crate) enum PhraseAction {
     Transpose(i8),
     Rename(usize, String),
     Resize(usize, usize),
+    /// Show phrase n in the grid.
+    Show(usize),
+    /// Show the next (true) or previous phrase.
+    Step(bool),
+    /// Add an empty phrase, or a copy of the one shown, and show it.
+    Add {
+        duplicate: bool,
+    },
+    /// Return the grid to the pattern.
+    Close,
 }
 
 /// A change made in the table window.

@@ -38,12 +38,21 @@ pub fn channel_total_width(num_channels: usize, fx_columns: usize) -> u16 {
 pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let buf = f.buffer_mut();
 
-    let pattern = match app.core.song.pattern_at(app.current_order_position()) {
-        Some(p) => p,
-        // A song with no resolvable pattern at the cursor has nothing to
-        // draw. Bail out rather than panicking inside the draw loop.
-        None => return,
-    };
+    // A song with no resolvable pattern at the cursor has nothing to draw.
+    // Bail out rather than panicking inside the draw loop.
+    if app.phrase_view.is_none()
+        && app
+            .core
+            .song
+            .pattern_at(app.current_order_position())
+            .is_none()
+    {
+        return;
+    }
+    let rows = app.current_pattern_rows();
+    let phrase = app
+        .phrase_view
+        .and_then(|v| app.core.song.phrases.get(v.phrase));
 
     // Draw column headers on the first row
     let header_y = area.y;
@@ -75,18 +84,23 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 hx += SEPARATOR_WIDTH;
             }
             let col_start = hx;
-            let ch_name = app
-                .core
-                .channels
-                .get(ch)
-                .map(|c| &c.name)
-                .filter(|n| !n.is_empty());
+            // The phrase view's one column is named after the phrase.
+            let ch_name = match phrase {
+                Some(ph) => Some(&ph.name).filter(|n| !n.is_empty()),
+                None => app
+                    .core
+                    .channels
+                    .get(ch)
+                    .map(|c| &c.name)
+                    .filter(|n| !n.is_empty()),
+            };
             // A linked track shows its phrase: P for aligned, R for running.
             let link = app
                 .core
                 .song
                 .pattern_at(app.current_order_position())
-                .and_then(|p| p.link(ch));
+                .and_then(|p| p.link(ch))
+                .filter(|_| phrase.is_none());
             let link_label = link.map(|l| {
                 let kind = match l.timing {
                     rtrack_core::tracker::PhraseTiming::Aligned => 'P',
@@ -94,12 +108,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 };
                 format!("[{kind}{:02X}]", l.phrase.min(0xFF))
             });
-            let type_label: &str = link_label
-                .as_deref()
-                .unwrap_or_else(|| app.core.track_label(ch));
+            let type_label: &str = match link_label.as_deref() {
+                Some(label) => label,
+                None if phrase.is_some() => "[PHR]",
+                None => app.core.track_label(ch),
+            };
             let type_style = Style::default()
                 .fg(match type_label {
-                    _ if link.is_some() => theme.mode_insert,
+                    _ if link.is_some() || phrase.is_some() => theme.mode_insert,
                     "[SMP]" => theme.effect_set,
                     "[SYN]" => theme.header_octave,
                     "[---]" => theme.muted_dim,
@@ -176,7 +192,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let center_offset = visible_rows / 2;
 
     // Determine which rows to display, centered on cursor/playback position
-    let focus_row = if app.core.is_playing() {
+    let follows = app.grid_follows_playback();
+    let focus_row = if follows {
         app.playback_row()
     } else {
         app.cursor_row
@@ -186,7 +203,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     for screen_y in 0..visible_rows {
         let row_idx = start_row + screen_y;
-        if row_idx >= pattern.rows {
+        if row_idx >= rows {
             break;
         }
 
@@ -195,8 +212,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             break;
         }
 
-        let is_cursor_row = !app.core.is_playing() && row_idx == app.cursor_row;
-        let is_playback_row = app.core.is_playing() && row_idx == app.playback_row();
+        let is_cursor_row = !follows && row_idx == app.cursor_row;
+        let is_playback_row = follows && row_idx == app.playback_row();
         let beat_interval = app.core.song.highlight_beat.max(1);
         let bar_interval = app.core.song.highlight_bar.max(1);
         let is_beat = row_idx % beat_interval == 0;
@@ -234,10 +251,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 x += SEPARATOR_WIDTH;
             }
 
-            let cell = app
-                .core
-                .song
-                .cell_at(app.current_order_position(), row_idx, ch);
+            let cell = app.core.song.cell_at(app.sheet(), row_idx, ch);
 
             // Check if this cell is inside a block selection
             let in_block = app.block_bounds().is_some_and(|(r0, r1, c0, c1)| {
@@ -288,11 +302,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
             // Highlight the cursor sub-column
             let cursor_on = |sub: SubColumn| -> Style {
-                if is_cursor_row
-                    && ch == app.cursor_channel
-                    && app.cursor_sub == sub
-                    && !app.core.is_playing()
-                {
+                if is_cursor_row && ch == app.cursor_channel && app.cursor_sub == sub && !follows {
                     Style::default()
                         .bg(theme.cursor_bg)
                         .add_modifier(Modifier::BOLD)

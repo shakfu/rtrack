@@ -1,7 +1,7 @@
 use egui::Key;
 use rtrack_core::constants::*;
 use rtrack_core::midi::MidiInputEvent;
-use rtrack_core::tracker::{Cell, Fx, Note};
+use rtrack_core::tracker::{Cell, Fx, Note, Sheet};
 
 use crate::app::RtrackApp;
 use crate::history::{CellEdit, Edit};
@@ -9,8 +9,9 @@ use crate::state::{Mode, SubColumn};
 
 impl RtrackApp {
     pub fn process_keys(&mut self, ctx: &egui::Context) {
-        // The effect prompt has the keyboard while it is open.
-        if self.effect_prompt.is_some() {
+        // The effect prompt has the keyboard while it is open, as does any
+        // focused text field: typing a name must not enter notes or delete rows.
+        if self.effect_prompt.is_some() || ctx.text_edit_focused() {
             return;
         }
         let mut actions: Vec<Action> = Vec::new();
@@ -49,6 +50,9 @@ impl RtrackApp {
             }
             if input.key_pressed(Key::F4) {
                 actions.push(Action::ToggleVisualization);
+            }
+            if input.key_pressed(Key::F5) {
+                actions.push(Action::TogglePhraseView);
             }
             if input.key_pressed(Key::F7) {
                 actions.push(Action::ToggleInstrumentList);
@@ -312,7 +316,15 @@ impl RtrackApp {
     fn execute_action(&mut self, action: Action) {
         match action {
             Action::TogglePlayback => {
-                self.core.toggle_playback(self.edit_order, self.cursor_row);
+                self.core
+                    .toggle_playback(self.edit_order, self.pattern_row());
+            }
+            Action::TogglePhraseView => {
+                if self.phrase_view.is_some() {
+                    self.close_phrase_view();
+                } else {
+                    self.open_phrase_view(None);
+                }
             }
             Action::PlayFromStart => {
                 self.edit_order = 0;
@@ -362,7 +374,8 @@ impl RtrackApp {
             Action::CursorLeft => {
                 let old = self.cursor_sub;
                 self.cursor_sub = old.prev(self.fx_columns());
-                if old == SubColumn::Note && self.cursor_channel > 0 {
+                // The phrase view shows one track's column.
+                if old == SubColumn::Note && self.cursor_channel > 0 && self.phrase_view.is_none() {
                     self.cursor_channel -= 1;
                 }
             }
@@ -370,6 +383,7 @@ impl RtrackApp {
                 self.cursor_sub = self.cursor_sub.next(self.fx_columns());
                 if self.cursor_sub == SubColumn::Note
                     && self.cursor_channel + 1 < self.core.song.channels
+                    && self.phrase_view.is_none()
                 {
                     self.cursor_channel += 1;
                 }
@@ -380,6 +394,7 @@ impl RtrackApp {
             Action::CursorEnd => {
                 self.cursor_row = self.current_pattern_rows().saturating_sub(1);
             }
+            Action::NextChannel | Action::PrevChannel if self.phrase_view.is_some() => {}
             Action::NextChannel => {
                 self.cursor_channel = (self.cursor_channel + 1) % self.core.song.channels;
                 if self.block_start.is_some() {
@@ -396,6 +411,8 @@ impl RtrackApp {
                     self.block_end = Some((self.cursor_row, self.cursor_channel));
                 }
             }
+            Action::NextOrder if self.phrase_view.is_some() => self.step_phrase_view(true),
+            Action::PrevOrder if self.phrase_view.is_some() => self.step_phrase_view(false),
             Action::NextOrder => {
                 if self.edit_order + 1 < self.core.song.order.len() {
                     self.edit_order += 1;
@@ -513,7 +530,18 @@ impl RtrackApp {
                     self.status_message = Some("Pasted".to_string());
                 }
             }
+            Action::InsertRow | Action::DeleteRow if self.phrase_view.is_some() => {
+                let phrase = self.phrase_view.map_or(0, |v| v.phrase);
+                let before = self.begin_structural_edit();
+                if matches!(action, Action::InsertRow) {
+                    self.core.song.insert_phrase_row(phrase, self.cursor_row);
+                } else {
+                    self.core.song.delete_phrase_row(phrase, self.cursor_row);
+                }
+                self.end_structural_edit(before);
+            }
             Action::InsertRow => {
+                let before = self.begin_structural_edit();
                 let pattern_idx = self.core.song.order[self.edit_order];
                 let pattern = &mut self.core.song.patterns[pattern_idx];
                 if pattern.rows < 256 {
@@ -522,14 +550,15 @@ impl RtrackApp {
                         .data
                         .insert(self.cursor_row, vec![Cell::default(); channels]);
                     pattern.rows += 1;
-                    self.core.dirty = true;
                     if pattern.links.iter().any(Option::is_some) {
                         self.status_message =
                             Some("Row inserted (linked phrases unchanged)".into());
                     }
+                    self.end_structural_edit(before);
                 }
             }
             Action::DeleteRow => {
+                let before = self.begin_structural_edit();
                 let pattern_idx = self.core.song.order[self.edit_order];
                 let pattern = &mut self.core.song.patterns[pattern_idx];
                 if pattern.rows > 1 {
@@ -538,10 +567,10 @@ impl RtrackApp {
                     if self.cursor_row >= pattern.rows {
                         self.cursor_row = pattern.rows - 1;
                     }
-                    self.core.dirty = true;
                     if pattern.links.iter().any(Option::is_some) {
                         self.status_message = Some("Row deleted (linked phrases unchanged)".into());
                     }
+                    self.end_structural_edit(before);
                 }
             }
             Action::TransposeUp => {
@@ -553,6 +582,8 @@ impl RtrackApp {
             Action::OpenTrackConfig => {
                 self.show_track_config = Some(self.cursor_channel);
             }
+            Action::NewPattern if self.phrase_view.is_some() => self.add_phrase_in_view(false),
+            Action::ClonePattern if self.phrase_view.is_some() => self.add_phrase_in_view(true),
             Action::NewPattern => {
                 let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
@@ -886,13 +917,14 @@ impl RtrackApp {
         if self.edit_order >= order_len {
             self.edit_order = order_len - 1;
         }
-        let rows = self
-            .core
-            .song
-            .pattern_at(self.edit_order)
-            .map(|p| p.rows)
-            .unwrap_or(self.core.song.rows_per_pattern)
-            .max(1);
+        // An undo can remove the phrase on view.
+        let phrases = self.core.song.phrases.len();
+        match self.phrase_view.as_mut() {
+            Some(_) if phrases == 0 => self.close_phrase_view(),
+            Some(view) => view.phrase = view.phrase.min(phrases - 1),
+            None => {}
+        }
+        let rows = self.current_pattern_rows();
         if self.cursor_row >= rows {
             self.cursor_row = rows - 1;
         }
@@ -905,9 +937,100 @@ impl RtrackApp {
         }
     }
 
-    /// The cell shown at (row, channel) of the pattern being edited.
+    /// What the grid edits: the phrase view's phrase, or the pattern at the
+    /// edit position.
+    pub(crate) fn sheet(&self) -> Sheet {
+        match self.phrase_view {
+            Some(view) => view.sheet(self.cursor_channel),
+            None => self.edit_order.into(),
+        }
+    }
+
+    /// The pattern row playback starts from and the phrase view returns to.
+    pub(crate) fn pattern_row(&self) -> usize {
+        self.phrase_view.map_or(self.cursor_row, |v| v.pattern_row)
+    }
+
+    /// Show a phrase in the grid in place of the pattern: `phrase`, or the
+    /// one the cursor's track plays.
+    pub(crate) fn open_phrase_view(&mut self, phrase: Option<usize>) {
+        use rtrack_core::editor::PhraseView;
+        let pattern_row = self.pattern_row();
+        let opened = match phrase {
+            Some(i) if i < self.core.song.phrases.len() => Some((
+                PhraseView {
+                    phrase: i,
+                    pattern_row,
+                },
+                0,
+            )),
+            Some(_) => None,
+            None => PhraseView::open(
+                &self.core.song,
+                self.edit_order,
+                pattern_row,
+                self.cursor_channel,
+            ),
+        };
+        match opened {
+            Some((view, row)) => {
+                self.phrase_view = Some(view);
+                self.cursor_row = row;
+                self.block_start = None;
+                self.block_end = None;
+            }
+            None if phrase.is_some() => self.status_message = Some("No such phrase".to_string()),
+            None => {
+                self.status_message =
+                    Some("No phrases yet: View > Phrases makes one from a track".to_string())
+            }
+        }
+    }
+
+    /// Return the grid to the pattern, at the row it showed before.
+    pub(crate) fn close_phrase_view(&mut self) {
+        if let Some(view) = self.phrase_view.take() {
+            self.block_start = None;
+            self.block_end = None;
+            self.cursor_row = view.pattern_row.min(self.current_pattern_rows() - 1);
+        }
+    }
+
+    /// Show the next or previous phrase.
+    pub(crate) fn step_phrase_view(&mut self, forward: bool) {
+        let Some(mut view) = self.phrase_view else {
+            return;
+        };
+        if view.step(&self.core.song, forward) {
+            self.phrase_view = Some(view);
+            self.block_start = None;
+            self.block_end = None;
+            self.cursor_row = self.cursor_row.min(self.current_pattern_rows() - 1);
+        }
+    }
+
+    /// Add an empty phrase as long as the pattern, or a copy of the phrase
+    /// on view, and show it.
+    pub(crate) fn add_phrase_in_view(&mut self, duplicate: bool) {
+        let Some(view) = self.phrase_view else {
+            return;
+        };
+        let before = self.begin_structural_edit();
+        let added = if duplicate {
+            self.core.song.duplicate_phrase(view.phrase)
+        } else {
+            let rows = self.core.song.rows_at(self.edit_order);
+            Some(self.core.song.add_phrase(rows))
+        };
+        if let Some(i) = added {
+            self.end_structural_edit(before);
+            self.open_phrase_view(Some(i));
+        }
+    }
+
+    /// The cell shown at (row, channel) of the sheet being edited.
     pub(crate) fn shown_cell(&self, row: usize, channel: usize) -> Cell {
-        *self.core.song.cell_at(self.edit_order, row, channel)
+        *self.core.song.cell_at(self.sheet(), row, channel)
     }
 
     /// Write the cell shown at (row, channel) of the pattern being edited,
@@ -920,7 +1043,7 @@ impl RtrackApp {
         new: Cell,
         edits: &mut Vec<CellEdit>,
     ) -> Option<Cell> {
-        let at = self.core.song.address(self.edit_order, row, channel)?;
+        let at = self.core.song.address(self.sheet(), row, channel)?;
         let old = std::mem::replace(self.core.song.cell_mut(at)?, new);
         edits.push(CellEdit {
             at,
@@ -952,11 +1075,11 @@ impl RtrackApp {
         // you hear while typing is what plays back.
         let track_inst = self
             .core
-            .resolve_edit_instrument(self.edit_order, self.cursor_row, ch);
+            .resolve_edit_instrument(self.sheet(), self.cursor_row, ch);
 
         if let Some(midi_note) = note.to_midi_note() {
             self.core.preview_note_for_cell(
-                self.edit_order,
+                self.sheet(),
                 self.cursor_row,
                 ch,
                 midi_note,
@@ -1000,11 +1123,8 @@ impl RtrackApp {
             SubColumn::Effect2 => cell.enter_effect_digit(1, digit),
             SubColumn::Note => {}
         }
+        // The cursor stays, so the next digit completes the value, as in the TUI.
         self.write_cursor_cell(cell);
-
-        let step = self.edit_step;
-        let max_row = self.current_pattern_rows().saturating_sub(1);
-        self.cursor_row = (self.cursor_row + step).min(max_row);
     }
 
     fn clear_cell(&mut self) {
@@ -1026,10 +1146,10 @@ impl RtrackApp {
         let Some(col) = self.cursor_sub.fx_column() else {
             return;
         };
-        let Some(at) =
-            self.core
-                .song
-                .address(self.edit_order, self.cursor_row, self.cursor_channel)
+        let Some(at) = self
+            .core
+            .song
+            .address(self.sheet(), self.cursor_row, self.cursor_channel)
         else {
             return;
         };
@@ -1077,8 +1197,9 @@ impl RtrackApp {
         self.cursor_row = (self.cursor_row + step).min(max_row);
     }
 
-    fn current_pattern_rows(&self) -> usize {
-        self.core.song.rows_at(self.edit_order)
+    /// Rows on the sheet being edited: the pattern or the phrase.
+    pub(crate) fn current_pattern_rows(&self) -> usize {
+        self.core.song.rows_at(self.sheet())
     }
 
     fn transpose_notes(&mut self, steps: i8) {
@@ -1099,7 +1220,7 @@ impl RtrackApp {
         };
         // Each stored cell once, however many times it shows in the block.
         let mut edits = Vec::new();
-        for at in self.core.song.addresses(self.edit_order, r0..=r1, c0..=c1) {
+        for at in self.core.song.addresses(self.sheet(), r0..=r1, c0..=c1) {
             if let Some(cell) = self.core.song.cell_mut(at) {
                 let old_cell = *cell;
                 cell.transpose_note(steps, scale);
@@ -1149,7 +1270,7 @@ impl RtrackApp {
 
                 // Step recording: Insert mode + stopped
                 if self.mode == Mode::Insert && !self.core.playing {
-                    let order = self.current_order_position();
+                    let order = self.sheet();
                     let row = self.cursor_row;
                     self.core
                         .preview_note_for_cell(order, row, ch, note, velocity);
@@ -1163,7 +1284,7 @@ impl RtrackApp {
 
                 // Preview only, still through the instrument the cursor's
                 // cell would use.
-                let order = self.current_order_position();
+                let order = self.sheet();
                 self.core
                     .preview_note_for_cell(order, self.cursor_row, ch, note, velocity);
             }
@@ -1295,6 +1416,7 @@ enum Action {
     ToggleLink,
     ToggleMidiPorts,
     ToggleVisualization,
+    TogglePhraseView,
     CycleTheme,
 }
 
@@ -1904,6 +2026,169 @@ mod tests {
         assert_eq!(link(&a), None);
         a.apply_undo();
         assert!(link(&a).is_some());
+    }
+
+    /// Run one egui pass in which `focus` is drawn and given keyboard focus,
+    /// then one in which `key` is pressed and the app reads the keyboard.
+    fn press_after_focusing(
+        a: &mut RtrackApp,
+        focus: impl Fn(&mut egui::Ui) -> egui::Response,
+        key: Key,
+    ) {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            focus(ui).request_focus();
+        })
+        .drop_without_applying_deltas();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            focus(ui);
+            a.process_keys(ui.ctx());
+        })
+        .drop_without_applying_deltas();
+    }
+
+    /// Clicking a button or the grid focuses it. That must not take the
+    /// keyboard from the grid, which it did when any focused widget counted.
+    #[test]
+    fn a_focused_button_leaves_the_keyboard_to_the_grid() {
+        let mut a = app();
+        press_after_focusing(&mut a, |ui| ui.button("Edit"), Key::I);
+        assert_eq!(a.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn a_focused_text_field_keeps_keys_from_the_grid() {
+        let mut a = app();
+        let mut text = String::new();
+        let text = std::cell::RefCell::new(&mut text);
+        press_after_focusing(
+            &mut a,
+            |ui| ui.text_edit_singleline(*text.borrow_mut()),
+            Key::I,
+        );
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn two_hex_digits_make_one_value_in_one_cell() {
+        let mut a = app();
+        a.cursor_sub = SubColumn::Volume;
+        a.enter_hex_digit('7');
+        a.enter_hex_digit('0');
+        assert_eq!(a.cursor_row, 0, "the cursor stays on the cell");
+        assert_eq!(a.shown_cell(0, 0).volume, Some(0x70));
+    }
+
+    #[test]
+    fn the_phrase_view_edits_the_tracks_phrase_and_returns_to_the_pattern() {
+        use crate::dialogs::PhraseAction;
+        let mut a = app();
+        a.cursor_channel = 1;
+        a.apply_phrase_action(PhraseAction::LinkNew);
+        a.cursor_row = 5;
+
+        a.execute_action(Action::TogglePhraseView);
+        assert_eq!(a.phrase_view.map(|v| v.phrase), Some(0));
+        assert_eq!(a.cursor_row, 5, "opens at the phrase row shown");
+
+        a.cursor_sub = SubColumn::Volume;
+        a.enter_hex_digit('7');
+        assert_eq!(a.core.song.phrases[0].rows[5].volume, Some(7));
+        assert_eq!(a.core.song.cell_at(a.edit_order, 5, 1).volume, Some(7));
+
+        // The cursor stays in the phrase's column.
+        a.cursor_sub = SubColumn::Effect;
+        a.execute_action(Action::CursorRight);
+        a.execute_action(Action::NextChannel);
+        a.cursor_sub = SubColumn::Note;
+        a.execute_action(Action::CursorLeft);
+        assert_eq!(a.cursor_channel, 1);
+
+        a.cursor_row = 0;
+        assert_eq!(a.pattern_row(), 5, "playback starts from the pattern row");
+        a.apply_phrase_action(PhraseAction::Close);
+        assert!(a.phrase_view.is_none());
+        assert_eq!(a.cursor_row, 5);
+    }
+
+    #[test]
+    fn the_phrase_view_steps_adds_and_survives_undo() {
+        use crate::dialogs::PhraseAction;
+        let mut a = app();
+        a.execute_action(Action::TogglePhraseView);
+        assert!(a.phrase_view.is_none(), "nothing to show yet");
+
+        a.core.song.add_phrase(4);
+        a.core.song.phrases[0].rows[1].volume = Some(9);
+        a.execute_action(Action::TogglePhraseView);
+        let shown = |a: &RtrackApp| a.phrase_view.map(|v| v.phrase);
+        assert_eq!(shown(&a), Some(0), "an unlinked track opens phrase 00");
+
+        a.execute_action(Action::ClonePattern);
+        assert_eq!(shown(&a), Some(1));
+        assert_eq!(a.core.song.phrases[1].rows[1].volume, Some(9));
+        a.execute_action(Action::NewPattern);
+        assert_eq!(shown(&a), Some(2));
+        assert_eq!(a.core.song.order.len(), 1, "no pattern was added");
+        assert_eq!(a.current_pattern_rows(), a.core.song.rows_at(a.edit_order));
+
+        a.execute_action(Action::NextOrder);
+        assert_eq!(shown(&a), Some(2), "stops at the last phrase");
+        a.execute_action(Action::PrevOrder);
+        assert_eq!(shown(&a), Some(1));
+
+        a.apply_phrase_action(PhraseAction::Show(2));
+        a.apply_undo();
+        assert_eq!(a.core.song.phrases.len(), 2);
+        assert_eq!(shown(&a), Some(1), "the undone phrase is no longer shown");
+    }
+
+    #[test]
+    fn pattern_rows_insert_and_delete_with_undo() {
+        let mut a = app();
+        let pattern_idx = a.core.song.order[a.edit_order];
+        a.core.song.patterns[pattern_idx].data[0][0].volume = Some(3);
+        let rows = a.core.song.patterns[pattern_idx].rows;
+
+        a.execute_action(Action::InsertRow);
+        assert_eq!(a.core.song.patterns[pattern_idx].rows, rows + 1);
+        a.apply_undo();
+        assert_eq!(a.core.song.patterns[pattern_idx].rows, rows);
+
+        a.execute_action(Action::DeleteRow);
+        assert_eq!(a.core.song.patterns[pattern_idx].data[0][0].volume, None);
+        a.apply_undo();
+        assert_eq!(a.core.song.patterns[pattern_idx].data[0][0].volume, Some(3));
+    }
+
+    #[test]
+    fn phrase_rows_insert_and_delete_with_undo() {
+        let mut a = app();
+        let p = a.core.song.add_phrase(4);
+        a.core.song.phrases[p].rows[0].volume = Some(2);
+        a.open_phrase_view(Some(p));
+
+        a.execute_action(Action::InsertRow);
+        assert_eq!(a.core.song.phrases[p].rows[1].volume, Some(2));
+        assert_eq!(a.core.song.phrases[p].rows.len(), 4);
+        a.apply_undo();
+        assert_eq!(a.core.song.phrases[p].rows[0].volume, Some(2));
+
+        a.cursor_row = 0;
+        a.execute_action(Action::DeleteRow);
+        assert_eq!(a.core.song.phrases[p].rows[0].volume, None);
+        a.apply_undo();
+        assert_eq!(a.core.song.phrases[p].rows[0].volume, Some(2));
     }
 
     #[test]

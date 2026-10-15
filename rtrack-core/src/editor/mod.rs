@@ -28,7 +28,7 @@
 use std::collections::VecDeque;
 
 use crate::constants::{MAX_UNDO_BYTES, MAX_UNDO_STEPS};
-use crate::tracker::{Cell, Song};
+use crate::tracker::{Cell, CellAddr, Sheet, Song};
 
 /// Which field within a channel the edit cursor is on.
 ///
@@ -522,10 +522,132 @@ impl Clipboard {
     }
 }
 
+/// A phrase shown in the grid in place of the pattern
+/// (`docs/dev/phrase-editor.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhraseView {
+    pub phrase: usize,
+    /// The pattern row the cursor returns to on leaving.
+    pub pattern_row: usize,
+}
+
+impl PhraseView {
+    /// Open on the phrase `track` shows at `order`, `row`, returning the
+    /// view and the phrase row shown there. A track with no link opens
+    /// phrase 0 at row 0; a song with no phrases opens nothing.
+    pub fn open(song: &Song, order: usize, row: usize, track: usize) -> Option<(Self, usize)> {
+        let (phrase, phrase_row) = match song.address(order, row, track) {
+            Some(CellAddr::Phrase { phrase, row }) => (phrase, row),
+            _ if !song.phrases.is_empty() => (0, 0),
+            _ => return None,
+        };
+        Some((
+            PhraseView {
+                phrase,
+                pattern_row: row,
+            },
+            phrase_row,
+        ))
+    }
+
+    /// The sheet the grid shows, in `track`'s column.
+    pub fn sheet(&self, track: usize) -> Sheet {
+        Sheet::Phrase {
+            phrase: self.phrase,
+            track,
+        }
+    }
+
+    /// Move to the next (`forward`) or previous phrase, stopping at either
+    /// end of the list. Returns whether it moved.
+    pub fn step(&mut self, song: &Song, forward: bool) -> bool {
+        let next = if forward {
+            self.phrase + 1
+        } else {
+            match self.phrase.checked_sub(1) {
+                Some(p) => p,
+                None => return false,
+            }
+        };
+        if next >= song.phrases.len() {
+            return false;
+        }
+        self.phrase = next;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracker::{Note, NoteValue};
+    use crate::tracker::{Note, NoteValue, PhraseTiming};
+
+    fn linked_song() -> Song {
+        let mut song = Song::new(2, 16);
+        song.add_phrase(4);
+        song.add_phrase(3);
+        song.link_column(0, 1, 1, PhraseTiming::Aligned);
+        song
+    }
+
+    #[test]
+    fn a_phrase_view_opens_on_the_linked_phrase_at_the_row_shown() {
+        let song = linked_song();
+        // Row 5 of a 3-row aligned phrase shows phrase row 2.
+        let (view, row) = PhraseView::open(&song, 0, 5, 1).unwrap();
+        assert_eq!((view.phrase, view.pattern_row, row), (1, 5, 2));
+    }
+
+    #[test]
+    fn an_unlinked_track_opens_the_first_phrase_and_no_phrases_open_nothing() {
+        let song = linked_song();
+        let (view, row) = PhraseView::open(&song, 0, 5, 0).unwrap();
+        assert_eq!((view.phrase, view.pattern_row, row), (0, 5, 0));
+        assert!(PhraseView::open(&Song::new(2, 16), 0, 0, 0).is_none());
+    }
+
+    #[test]
+    fn stepping_stops_at_either_end_of_the_list() {
+        let song = linked_song();
+        let mut view = PhraseView {
+            phrase: 0,
+            pattern_row: 0,
+        };
+        assert!(!view.step(&song, false));
+        assert!(view.step(&song, true));
+        assert_eq!(view.phrase, 1);
+        assert!(!view.step(&song, true));
+        assert_eq!(view.phrase, 1);
+    }
+
+    #[test]
+    fn a_phrase_sheet_resolves_only_in_its_track() {
+        let mut song = linked_song();
+        let sheet = PhraseView {
+            phrase: 1,
+            pattern_row: 0,
+        }
+        .sheet(0);
+        assert_eq!(song.rows_at(sheet), 3);
+        assert_eq!(
+            song.address(sheet, 2, 0),
+            Some(CellAddr::Phrase { phrase: 1, row: 2 })
+        );
+        assert_eq!(song.address(sheet, 3, 0), None, "past the phrase's end");
+        assert_eq!(song.address(sheet, 0, 1), None, "another track's column");
+
+        // A write through the sheet changes what the linked track plays.
+        song.set_cell(
+            sheet,
+            0,
+            0,
+            Cell {
+                note: c4(),
+                ..Cell::default()
+            },
+        );
+        assert_eq!(song.cell_at(0, 3, 1).note, c4());
+    }
 
     fn c4() -> Option<Note> {
         Some(Note::On {

@@ -13,7 +13,7 @@ use crate::midi::{MidiEngine, MidiInputEngine};
 use crate::sample::playback::NewNoteAction;
 use crate::sample::{Sample, SampleBank};
 use crate::tracker::{
-    Cell, InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Song,
+    Cell, InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Sheet, Song,
     SongFile,
 };
 
@@ -1267,7 +1267,13 @@ impl TrackerCore {
     /// Step 3 is what makes a sliced sample usable: the slices are separate
     /// instruments, the track is often a plain Midi-typed one, and without it
     /// every newly entered note fell through to the built-in synth.
-    pub fn resolve_edit_instrument(&self, order: usize, row: usize, channel: usize) -> Option<u8> {
+    pub fn resolve_edit_instrument(
+        &self,
+        sheet: impl Into<Sheet>,
+        row: usize,
+        channel: usize,
+    ) -> Option<u8> {
+        let order = sheet.into();
         if let Some(inst) = self.track_default_instrument(channel) {
             return Some(inst);
         }
@@ -1325,19 +1331,19 @@ impl TrackerCore {
     /// falling back to the built-in synth.
     pub fn preview_note_for_cell(
         &mut self,
-        order: usize,
+        sheet: impl Into<Sheet>,
         row: usize,
         channel: usize,
         note: u8,
         velocity: u8,
     ) {
-        let instrument = self.resolve_edit_instrument(order, row, channel);
+        let instrument = self.resolve_edit_instrument(sheet, row, channel);
         self.preview_note_with_instrument(channel as u8, note, velocity, instrument);
     }
 
     pub fn record_note_at(
         &mut self,
-        order: usize,
+        sheet: impl Into<Sheet>,
         row: usize,
         channel: usize,
         note: u8,
@@ -1349,7 +1355,8 @@ impl TrackerCore {
             Some(v) => v,
             None => return false,
         };
-        if order >= self.song.order_len() {
+        let order = sheet.into();
+        if self.song.address(order, row, channel).is_none() {
             return false;
         }
         let tracker_note = Note::On {
@@ -1371,8 +1378,9 @@ impl TrackerCore {
     }
 
     /// Record a note-off at the given position (punch-in recording).
-    pub fn record_note_off_at(&mut self, order: usize, row: usize, channel: usize) {
-        if order >= self.song.order_len() {
+    pub fn record_note_off_at(&mut self, sheet: impl Into<Sheet>, row: usize, channel: usize) {
+        let order = sheet.into();
+        if self.song.address(order, row, channel).is_none() {
             return;
         }
         let mut cell = *self.song.cell_at(order, row, channel);

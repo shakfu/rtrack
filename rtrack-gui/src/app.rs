@@ -20,6 +20,8 @@ pub struct RtrackApp {
     pub edit_order: usize,
     pub follow_playback: bool,
     pub first_visible_channel: usize,
+    /// The phrase shown in the grid in place of the pattern, if any.
+    pub phrase_view: Option<rtrack_core::editor::PhraseView>,
 
     // Mode
     pub mode: Mode,
@@ -101,6 +103,7 @@ impl RtrackApp {
             edit_order: 0,
             follow_playback: true,
             first_visible_channel: 0,
+            phrase_view: None,
             mode: Mode::Normal,
             status_message: None,
             clipboard: rtrack_core::editor::Clipboard::default(),
@@ -307,7 +310,7 @@ impl RtrackApp {
     }
 
     /// Apply a mouse action from the pattern grid.
-    pub fn apply_grid_action(&mut self, action: GridAction, order_pos: usize) {
+    pub fn apply_grid_action(&mut self, action: GridAction) {
         match action {
             GridAction::SetCursor { row, channel, sub } => {
                 self.cursor_row = row;
@@ -317,7 +320,7 @@ impl RtrackApp {
                 self.block_end = None;
             }
             GridAction::Scroll { rows } => {
-                let max_row = self.core.song.rows_at(order_pos).saturating_sub(1);
+                let max_row = self.current_pattern_rows().saturating_sub(1);
                 let new_row = if rows > 0 {
                     self.cursor_row.saturating_add(rows as usize).min(max_row)
                 } else {
@@ -375,8 +378,11 @@ impl eframe::App for RtrackApp {
             // run ahead to.
             if self.follow_playback {
                 let (order, row) = self.core.playback_position();
-                self.cursor_row = row;
                 self.edit_order = order;
+                match self.phrase_view.as_mut() {
+                    Some(view) => view.pattern_row = row,
+                    None => self.cursor_row = row,
+                }
             }
             ctx.request_repaint();
         }
@@ -531,6 +537,13 @@ impl eframe::App for RtrackApp {
             // Pattern grid
             egui::CentralPanel::default().show(ui, |ui| {
                 let order_pos = self.current_order_position();
+                if self.phrase_view.is_some() {
+                    self.draw_phrase_bar(ui);
+                }
+                let sheet = match self.phrase_view {
+                    Some(view) => view.sheet(self.cursor_channel),
+                    None => order_pos.into(),
+                };
 
                 let muted: Vec<bool> = self.core.channels.iter().map(|c| c.muted).collect();
                 // A linked track shows its phrase: P for aligned, R for running.
@@ -540,6 +553,12 @@ impl eframe::App for RtrackApp {
                     .iter()
                     .enumerate()
                     .map(|(ch, c)| {
+                        // The phrase view's one column is named after the phrase.
+                        if let Some(view) = self.phrase_view {
+                            let phrases = &self.core.song.phrases;
+                            let name = phrases.get(view.phrase).map_or("", |ph| ph.name.as_str());
+                            return format!("{:02X} {name}", view.phrase);
+                        }
                         let link = self
                             .core
                             .song
@@ -579,19 +598,25 @@ impl eframe::App for RtrackApp {
                 if self.first_visible_channel > max_first {
                     self.first_visible_channel = max_first;
                 }
+                // The phrase view shows the cursor's track alone.
+                let (first_visible_channel, visible_count) = match self.phrase_view {
+                    Some(_) => (self.cursor_channel, 1),
+                    None => (self.first_visible_channel, visible_count),
+                };
 
                 let params = GridParams {
                     cursor_row: self.cursor_row,
                     cursor_channel: self.cursor_channel,
                     cursor_sub: self.cursor_sub,
                     mode: self.mode,
-                    playing: self.core.playing,
+                    // The phrase shown need not be the one playing.
+                    playing: self.core.playing && self.phrase_view.is_none(),
                     playback_row: self.core.playback_position().1,
                     playback_order: self.core.playback_position().0,
                     edit_order: self.edit_order,
                     highlight_beat: self.core.song.highlight_beat,
                     highlight_bar: self.core.song.highlight_bar,
-                    first_visible_channel: self.first_visible_channel,
+                    first_visible_channel,
                     visible_channel_count: visible_count,
                     muted_channels: muted,
                     solo_channel: self.core.solo_channel,
@@ -602,9 +627,9 @@ impl eframe::App for RtrackApp {
                     colors: self.grid_colors,
                 };
 
-                let actions = grid::draw_grid(ui, &self.core.song, order_pos, &params);
+                let actions = grid::draw_grid(ui, &self.core.song, sheet, &params);
                 for action in actions {
-                    self.apply_grid_action(action, order_pos);
+                    self.apply_grid_action(action);
                 }
             });
         }
@@ -640,11 +665,15 @@ mod tests {
     #[test]
     fn a_click_clears_a_dragged_selection() {
         let mut a = RtrackApp::headless(4, 16);
-        a.apply_grid_action(GridAction::DragStart { row: 0, channel: 0 }, 0);
-        a.apply_grid_action(GridAction::DragUpdate { row: 3, channel: 0 }, 0);
+        a.apply_grid_action(GridAction::DragStart { row: 0, channel: 0 });
+        a.apply_grid_action(GridAction::DragUpdate { row: 3, channel: 0 });
         assert_eq!(a.block_end, Some((3, 0)));
         let sub = SubColumn::Note;
-        a.apply_grid_action(GridAction::SetCursor { row: 8, channel: 0, sub }, 0);
+        a.apply_grid_action(GridAction::SetCursor {
+            row: 8,
+            channel: 0,
+            sub,
+        });
         assert_eq!((a.block_start, a.block_end), (None, None));
         assert_eq!(a.cursor_row, 8);
     }
@@ -849,5 +878,58 @@ mod tests {
         };
         let described = RtrackApp::describe_load(&report);
         assert!(described.contains("kick"), "{described}");
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use eframe::App as _;
+
+    /// Run the app's whole frame once on `events`, as eframe would.
+    fn frame(app: &mut RtrackApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut f = eframe::Frame::_new_kittest();
+        ctx.run_ui(input, |ui| app.ui(ui, &mut f))
+            .drop_without_applying_deltas();
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// F5, then a note in Insert mode, through the whole frame as eframe
+    /// runs it, so input routing the unit tests bypass is covered too.
+    #[test]
+    fn a_note_typed_in_the_phrase_view_lands_in_the_phrase() {
+        let mut app = RtrackApp::headless(4, 16);
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/polymeter.rtrk");
+        app.core.load_file(&path).expect("load");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![key(egui::Key::F5)]);
+        assert_eq!(app.phrase_view.map(|v| v.phrase), Some(0));
+        frame(&mut app, &ctx, vec![key(egui::Key::I)]);
+        app.core.song.phrases[0].rows[0].note = None;
+        frame(
+            &mut app,
+            &ctx,
+            vec![key(egui::Key::Z), egui::Event::Text("z".into())],
+        );
+        assert!(app.core.song.phrases[0].rows[0].note.is_some());
     }
 }

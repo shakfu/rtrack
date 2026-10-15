@@ -206,7 +206,7 @@ impl App {
     /// Open the table editor on table `number`, or on the table of the
     /// instrument under the cursor: the cell's, else the track's default.
     pub(crate) fn open_table_editor(&mut self, number: Option<u8>) {
-        let pos = self.current_order_position();
+        let pos = self.sheet();
         let number = number
             .or_else(|| {
                 self.core
@@ -374,6 +374,9 @@ impl App {
 
     pub(crate) fn open_phrase_list(&mut self) {
         let count = self.core.song.phrases.len();
+        if let Some(view) = self.phrase_view {
+            self.dialogs.phrase_cursor = view.phrase;
+        }
         self.dialogs.phrase_cursor = self.dialogs.phrase_cursor.min(count.saturating_sub(1));
         self.prev_mode = Mode::Normal;
         self.mode = Mode::PhraseList;
@@ -401,6 +404,12 @@ impl App {
             }
             KeyCode::Up => self.dialogs.phrase_cursor = cursor.saturating_sub(1),
             KeyCode::Down if cursor + 1 < count => self.dialogs.phrase_cursor = cursor + 1,
+            // With the phrase view open there is no pattern column to link,
+            // so Enter shows the phrase instead.
+            KeyCode::Enter if cursor < count && self.phrase_view.is_some() => {
+                self.mode = Mode::Normal;
+                self.open_phrase_view(Some(cursor));
+            }
             KeyCode::Enter if cursor < count => {
                 self.mode = Mode::Normal;
                 self.link_cursor_column(Some(cursor));
@@ -414,6 +423,87 @@ impl App {
                 self.core.song.phrases[cursor].name.pop();
             }
             _ => {}
+        }
+    }
+
+    /// Show a phrase in the grid in place of the pattern: `phrase`, or the
+    /// one the cursor's track plays.
+    pub(crate) fn open_phrase_view(&mut self, phrase: Option<usize>) {
+        use rtrack_core::editor::PhraseView;
+        let pattern_row = self.pattern_row();
+        let opened = match phrase {
+            Some(i) if i < self.core.song.phrases.len() => Some((
+                PhraseView {
+                    phrase: i,
+                    pattern_row,
+                },
+                0,
+            )),
+            Some(_) => None,
+            None => PhraseView::open(
+                &self.core.song,
+                self.current_order_position(),
+                pattern_row,
+                self.cursor_channel,
+            ),
+        };
+        match opened {
+            Some((view, row)) => {
+                self.phrase_view = Some(view);
+                self.cursor_row = row;
+                self.block_anchor = None;
+            }
+            None if phrase.is_some() => self.status_message = Some("No such phrase".to_string()),
+            None => {
+                self.status_message =
+                    Some("No phrases yet: :phrase links the track to a new one".to_string())
+            }
+        }
+    }
+
+    /// Return the grid to the pattern, at the row it showed before.
+    pub(crate) fn close_phrase_view(&mut self) {
+        if let Some(view) = self.phrase_view.take() {
+            self.block_anchor = None;
+            self.cursor_row = view.pattern_row.min(self.current_pattern_rows() - 1);
+        }
+    }
+
+    fn toggle_phrase_view(&mut self) {
+        if self.phrase_view.is_some() {
+            self.close_phrase_view();
+        } else {
+            self.open_phrase_view(None);
+        }
+    }
+
+    /// Show the next or previous phrase.
+    fn step_phrase_view(&mut self, forward: bool) {
+        let Some(mut view) = self.phrase_view else {
+            return;
+        };
+        if view.step(&self.core.song, forward) {
+            self.phrase_view = Some(view);
+            self.block_anchor = None;
+            self.cursor_row = self.cursor_row.min(self.current_pattern_rows() - 1);
+        }
+    }
+
+    /// Add an empty phrase as long as the pattern, or a copy of the phrase
+    /// on view, and show it.
+    fn add_phrase_in_view(&mut self, duplicate: bool) {
+        let Some(view) = self.phrase_view else {
+            return;
+        };
+        self.core.begin_edit();
+        let added = if duplicate {
+            self.core.song.duplicate_phrase(view.phrase)
+        } else {
+            let rows = self.core.song.rows_at(self.current_order_position());
+            Some(self.core.song.add_phrase(rows))
+        };
+        if let Some(i) = added {
+            self.open_phrase_view(Some(i));
         }
     }
 
@@ -1601,6 +1691,18 @@ impl App {
                 self.set_effect_at_cursor("");
             }
             "phrases" => self.open_phrase_list(),
+            "pedit" => {
+                self.mode = Mode::Normal;
+                self.open_phrase_view(None);
+            }
+            _ if cmd.starts_with("pedit ") => {
+                self.mode = Mode::Normal;
+                let arg = cmd["pedit ".len()..].trim();
+                match usize::from_str_radix(arg, 16) {
+                    Ok(i) => self.open_phrase_view(Some(i)),
+                    Err(_) => self.status_message = Some(format!("Not a phrase number: {arg}")),
+                }
+            }
             "table" => self.open_table_editor(None),
             _ if cmd.starts_with("table ") => {
                 let arg = cmd["table ".len()..].trim();
@@ -1725,7 +1827,7 @@ impl App {
         // Copied out before the pattern is borrowed mutably.
         let scale = self.core.song.scale;
         self.core.begin_edit();
-        let pos = self.current_order_position();
+        let pos = self.sheet();
 
         if let Some((anchor_row, anchor_ch)) = self.block_anchor {
             let (r0, r1) = if anchor_row <= self.cursor_row {
@@ -1785,14 +1887,13 @@ impl App {
         let screen_y = (y - area_y) as usize;
 
         // Calculate which row was clicked
-        let pattern_idx = self.core.song.order[self.current_order_position()];
-        let pattern = &self.core.song.patterns[pattern_idx];
+        let rows = self.current_pattern_rows();
         let visible_rows = 40usize; // approximate
         let center_offset = visible_rows / 2;
         let focus_row = self.cursor_row;
         let start_row = focus_row.saturating_sub(center_offset);
         let clicked_row = start_row + screen_y;
-        if clicked_row < pattern.rows {
+        if clicked_row < rows {
             self.cursor_row = clicked_row;
         }
 
@@ -1812,8 +1913,9 @@ impl App {
         let within = col_x % stride;
 
         // Map visible channel index to actual channel (offset by page)
-        let actual_ch = self.track_page * CHANNELS_PER_PAGE + ch;
-        if actual_ch < pattern.channels && actual_ch < self.core.song.channels {
+        let visible = self.visible_channels();
+        let actual_ch = visible.start + ch;
+        if visible.contains(&actual_ch) {
             self.cursor_channel = actual_ch;
             // note=0..3, gap=3..5, inst=5..7, gap=7..9, vol=9..11, gap=11..13,
             // fx=13..18, gap=18..20, fx2=20..25
@@ -1917,6 +2019,14 @@ impl App {
                     } else {
                         self.cut_row();
                     }
+                    return true;
+                }
+                KeyCode::Right if self.phrase_view.is_some() => {
+                    self.step_phrase_view(true);
+                    return true;
+                }
+                KeyCode::Left if self.phrase_view.is_some() => {
+                    self.step_phrase_view(false);
                     return true;
                 }
                 KeyCode::Right => {
@@ -2050,6 +2160,10 @@ impl App {
                 self.vis.panel = self.vis.panel.cycle();
                 return true;
             }
+            KeyCode::F(5) => {
+                self.toggle_phrase_view();
+                return true;
+            }
             KeyCode::F(6) => {
                 self.open_song_settings();
                 return true;
@@ -2129,7 +2243,8 @@ impl App {
     /// Cycle to next/previous track, wrapping around. Updates track page automatically.
     fn cycle_track(&mut self, dir: i32) {
         let n = self.core.song.channels;
-        if n == 0 {
+        // The phrase view shows one track's column.
+        if n == 0 || self.phrase_view.is_some() {
             return;
         }
         self.cursor_channel = if dir > 0 {
@@ -2152,6 +2267,14 @@ impl App {
         // Ctrl combos specific to Normal mode
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Char('n') if self.phrase_view.is_some() => {
+                    self.add_phrase_in_view(false);
+                    return;
+                }
+                KeyCode::Char('d') if self.phrase_view.is_some() => {
+                    self.add_phrase_in_view(true);
+                    return;
+                }
                 KeyCode::Char('n') => {
                     self.add_new_pattern_to_order();
                     return;
@@ -2304,7 +2427,7 @@ impl App {
 
         self.core.begin_edit();
 
-        let order = self.current_order_position();
+        let order = self.sheet();
         let ch = self.cursor_channel;
         // One resolution for both the preview and the written cell, so what
         // you hear while typing is what plays back.
@@ -2389,7 +2512,7 @@ impl App {
 
     /// The cell under the cursor, wherever it is stored.
     fn cursor_cell_mut(&mut self) -> Option<&mut rtrack_core::tracker::Cell> {
-        let pos = self.current_order_position();
+        let pos = self.sheet();
         self.core
             .song
             .cell_at_mut(pos, self.cursor_row, self.cursor_channel)
@@ -2401,11 +2524,10 @@ impl App {
         let Some(col) = self.cursor_sub.fx_column() else {
             return;
         };
-        let cell = self.core.song.cell_at(
-            self.current_order_position(),
-            self.cursor_row,
-            self.cursor_channel,
-        );
+        let cell = self
+            .core
+            .song
+            .cell_at(self.sheet(), self.cursor_row, self.cursor_channel);
         let text = cell.fx[col].map(|fx| fx.to_string()).unwrap_or_default();
         self.command_buf = format!("e {text}");
         self.prev_mode = self.mode;
@@ -2419,7 +2541,7 @@ impl App {
             self.status_message = Some("Move the cursor to an effect column first".to_string());
             return;
         };
-        let pos = self.current_order_position();
+        let pos = self.sheet();
         let mut cell = *self
             .core
             .song
@@ -2450,10 +2572,9 @@ impl App {
         self.cursor_row = (self.cursor_row + amount).min(max);
     }
 
-    /// Get the number of rows in the current pattern (per-pattern length)
-    fn current_pattern_rows(&self) -> usize {
-        let pattern_idx = self.core.song.order[self.current_order_position()];
-        self.core.song.patterns[pattern_idx].rows
+    /// Rows on the sheet the grid shows: the current pattern or the phrase.
+    pub(crate) fn current_pattern_rows(&self) -> usize {
+        self.core.song.rows_at(self.sheet())
     }
 
     fn change_bpm(&mut self, delta: i16) {
@@ -2472,6 +2593,13 @@ impl App {
 
     pub(crate) fn insert_row_at_cursor(&mut self) {
         self.core.begin_edit();
+        if let Some(view) = self.phrase_view {
+            self.core
+                .song
+                .insert_phrase_row(view.phrase, self.cursor_row);
+            self.status_message = Some(format!("Inserted phrase row at {:02X}", self.cursor_row));
+            return;
+        }
         let pattern_idx = self.core.song.order[self.current_order_position()];
         self.core.song.patterns[pattern_idx].insert_row(self.cursor_row);
         self.status_message = Some(format!(
@@ -2483,6 +2611,13 @@ impl App {
 
     pub(crate) fn delete_row_at_cursor(&mut self) {
         self.core.begin_edit();
+        if let Some(view) = self.phrase_view {
+            self.core
+                .song
+                .delete_phrase_row(view.phrase, self.cursor_row);
+            self.status_message = Some(format!("Deleted phrase row at {:02X}", self.cursor_row));
+            return;
+        }
         let pattern_idx = self.core.song.order[self.current_order_position()];
         self.core.song.patterns[pattern_idx].delete_row(self.cursor_row);
         self.status_message = Some(format!(
@@ -2516,7 +2651,7 @@ impl App {
 
     pub(crate) fn move_cursor_left(&mut self) {
         if self.cursor_sub == SubColumn::Note {
-            if self.cursor_channel > 0 {
+            if self.cursor_channel > 0 && self.phrase_view.is_none() {
                 self.cursor_channel -= 1;
                 self.cursor_sub = SubColumn::Note.prev(self.fx_columns());
                 self.track_page = self.cursor_channel / CHANNELS_PER_PAGE;
@@ -2528,7 +2663,7 @@ impl App {
 
     pub(crate) fn move_cursor_right(&mut self) {
         if self.cursor_sub.next(self.fx_columns()) == SubColumn::Note {
-            if self.cursor_channel < self.core.song.channels - 1 {
+            if self.cursor_channel + 1 < self.core.song.channels && self.phrase_view.is_none() {
                 self.cursor_channel += 1;
                 self.cursor_sub = SubColumn::Note;
                 self.track_page = self.cursor_channel / CHANNELS_PER_PAGE;
@@ -2571,7 +2706,7 @@ impl App {
     /// Copy the block selection to clipboard (2D grid)
     fn copy_block(&mut self) {
         if let Some((r0, r1, c0, c1)) = self.block_bounds() {
-            let pos = self.current_order_position();
+            let pos = self.sheet();
             let song = &self.core.song;
             let block: Vec<Vec<_>> = (r0..=r1)
                 .map(|r| (c0..=c1).map(|c| *song.cell_at(pos, r, c)).collect())
@@ -2588,7 +2723,7 @@ impl App {
         self.copy_block();
         if let Some((r0, r1, c0, c1)) = self.block_bounds() {
             self.core.begin_edit();
-            let pos = self.current_order_position();
+            let pos = self.sheet();
             for r in r0..=r1 {
                 for c in c0..=c1 {
                     self.core
@@ -2618,7 +2753,7 @@ impl App {
         }
 
         self.core.begin_edit();
-        let pos = self.current_order_position();
+        let pos = self.sheet();
         let song = &mut self.core.song;
         let steps = (r1 - r0) as f64;
 
@@ -2658,7 +2793,7 @@ impl App {
     fn paste_block(&mut self) {
         if let Some(block) = self.clipboard.block().cloned() {
             self.core.begin_edit();
-            let pos = self.current_order_position();
+            let pos = self.sheet();
             for (ri, row) in block.iter().enumerate() {
                 for (ci, cell) in row.iter().enumerate() {
                     // Cells past the pattern's edge do not resolve and are skipped.

@@ -6,7 +6,8 @@ impl App {
     // -- Playback --
 
     pub fn toggle_playback(&mut self) {
-        self.core.toggle_playback(self.edit_order, self.cursor_row);
+        self.core
+            .toggle_playback(self.edit_order, self.pattern_row());
     }
 
     pub fn toggle_recording(&mut self) {
@@ -25,7 +26,7 @@ impl App {
     }
 
     pub fn play(&mut self) {
-        self.core.play(self.edit_order, self.cursor_row);
+        self.core.play(self.edit_order, self.pattern_row());
     }
 
     pub fn tick_playback(&mut self) {
@@ -34,8 +35,11 @@ impl App {
         // sequencer has run ahead to.
         if self.follow_playback {
             let (order, row) = self.core.playback_position();
-            self.cursor_row = row;
             self.edit_order = order;
+            match self.phrase_view.as_mut() {
+                Some(view) => view.pattern_row = row,
+                None => self.cursor_row = row,
+            }
         }
     }
 
@@ -79,7 +83,7 @@ impl App {
                 // Step recording: Insert mode + stopped
                 if self.mode == Mode::Insert && !self.core.playing {
                     self.core.begin_edit();
-                    let order = self.current_order_position();
+                    let order = self.sheet();
                     let row = self.cursor_row;
                     self.core
                         .preview_note_for_cell(order, row, ch, note, velocity);
@@ -91,7 +95,7 @@ impl App {
 
                 // All other modes: preview only, still through the
                 // instrument the cursor's cell would use.
-                let order = self.current_order_position();
+                let order = self.sheet();
                 self.core
                     .preview_note_for_cell(order, self.cursor_row, ch, note, velocity);
             }

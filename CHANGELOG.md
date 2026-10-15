@@ -6,6 +6,10 @@ All notable changes to rtrack will be documented in this file.
 
 ### Added
 
+- **Phrase editor.** F5 shows a phrase in the grid in place of the pattern, so a phrase can be read and edited without linking it to a track. It opens on the cursor track's phrase; Ctrl+Left/Right step through phrases, Ctrl+N and Ctrl+D add and duplicate one. TUI: `:pedit [NN]`, and Enter in `:phrases` while it is open. GUI: View > Phrase Editor, an Edit button and phrase numbers in the Phrases window, and a bar above the grid for name and length.
+
+  The grid shows a `Sheet`, a pattern or one phrase, which the cell accessors take in place of an order position, so every existing edit and undo works on a phrase unchanged. A separate editor, as tables have, would have needed its own copy of each. Design: `docs/dev/phrase-editor.md`.
+
 - **Instrument drive and filter.** Sample instruments get drive and a low-, high- or band-pass filter; synth instruments get drive in front of their existing filter. Both run per voice, before the envelope, so an instrument sounds the same on whatever track plays it. Edit them in the TUI sample editor and synth editor, or the GUI instrument editor; sample instrument edits are undoable. Replacing an instrument's sample keeps its settings. Live playback, previews and render share one path.
 
   Added beside the track effects rather than moved from them: moving would change every saved song with a track filter, with no exact equivalent when an instrument plays on two differently filtered tracks, and would remove the track-wide sweep that MIDI learn and aftertouch drive. Per-voice drive also differs from track drive, which intermodulates the voices it sums. Design: `docs/dev/g5-instrument-fx.md`.
@@ -53,6 +57,12 @@ All notable changes to rtrack will be documented in this file.
   A scale is a 12-bit mask over semitones rotated to its root, so no music-theory dependency was added; `tonal_rs` and `rust-music-theory` were both evaluated and rejected (`docs/dev/music-theory-crates.md`).
 
 ### Fixed
+
+- **GUI: typing in a text field no longer edits the pattern.** Grid keys were read while a name or value field had focus, so typing a phrase or song name entered notes in Insert mode, and Backspace deleted a pattern row in Normal mode.
+
+- **GUI: a two-digit value goes into one cell.** The cursor moved down after each hex digit, so typing `70` put `7` in one row and `0` in the next. It now stays on the cell, as in the TUI.
+
+- **GUI: inserting and deleting a pattern row are undoable.** They changed the pattern without recording an undo step.
 
 - **A track's MIDI channel addresses only the SoundFont and MIDI out.** Live playback keyed the built-in synth's and samples' voices by the track's MIDI channel but track effects by track, so a track moved to another MIDI channel played through that channel's filter and effects, and two tracks sharing one cut each other's notes. Render keyed everything by track. Both now key the built-in synth, samples and track effects by track, and the SoundFont and MIDI out by MIDI channel, which keeps General MIDI channel 10 drums. The note, note-off, pitch-bend, CC and program-change calls on `TrackerCore` take a track index; frontends no longer convert with `midi_channel_for`.
 

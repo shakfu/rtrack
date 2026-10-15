@@ -217,6 +217,19 @@ impl RtrackApp {
                         self.show_phrases = !self.show_phrases;
                         ui.close();
                     }
+                    let phrase_label = if self.phrase_view.is_some() {
+                        "Back to Pattern  (F5)"
+                    } else {
+                        "Phrase Editor  (F5)"
+                    };
+                    if ui.button(phrase_label).clicked() {
+                        if self.phrase_view.is_some() {
+                            self.close_phrase_view();
+                        } else {
+                            self.open_phrase_view(None);
+                        }
+                        ui.close();
+                    }
                     ui.checkbox(&mut self.show_second_fx, "Second effect column")
                         .on_hover_text("Shown anyway where the pattern uses it");
                     if ui.button("Instruments  (F7)").clicked() {
@@ -289,6 +302,7 @@ impl RtrackApp {
         self.first_visible_channel = 0;
         self.block_start = None;
         self.block_end = None;
+        self.phrase_view = None;
     }
 }
 
@@ -379,6 +393,10 @@ mod tests {
         app.first_visible_channel = 1;
         app.block_start = Some((0, 0));
         app.block_end = Some((3, 1));
+        app.phrase_view = Some(rtrack_core::editor::PhraseView {
+            phrase: 0,
+            pattern_row: 0,
+        });
 
         app.reset_cursor_state();
 
@@ -388,5 +406,6 @@ mod tests {
         assert_eq!(app.edit_order, 0);
         assert_eq!(app.first_visible_channel, 0);
         assert_eq!((app.block_start, app.block_end), (None, None));
+        assert!(app.phrase_view.is_none());
     }
 }

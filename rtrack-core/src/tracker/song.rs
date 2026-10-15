@@ -28,6 +28,23 @@ pub enum CellAddr {
     },
 }
 
+/// What an editor's grid shows. Cell accessors take `impl Into<Sheet>`, and an
+/// order position converts to `Order`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sheet {
+    /// The pattern at an order position.
+    Order(usize),
+    /// One phrase, in column `track` alone; the other columns do not resolve.
+    /// Notes entered there preview through that track.
+    Phrase { phrase: usize, track: usize },
+}
+
+impl From<usize> for Sheet {
+    fn from(order_idx: usize) -> Self {
+        Sheet::Order(order_idx)
+    }
+}
+
 /// The furthest a phrase link transposes, in steps either way: four
 /// octaves of semitones, or more than six of scale degrees.
 pub const MAX_LINK_TRANSPOSE: i8 = 48;
@@ -574,17 +591,19 @@ impl Song {
         self.order.len()
     }
 
-    /// Row count of the pattern at an order position. Falls back to
-    /// `rows_per_pattern` for out-of-range positions, and never returns 0
+    /// Row count of a sheet: the pattern at an order position, or a phrase.
+    /// Falls back to `rows_per_pattern` when it does not resolve, and never returns 0
     /// so that callers can safely compute `rows - 1`.
-    pub fn rows_at(&self, order_idx: usize) -> usize {
-        let rows = self
-            .order
-            .get(order_idx)
-            .and_then(|&p| self.patterns.get(p))
-            .map(|p| p.rows)
-            .unwrap_or(self.rows_per_pattern);
-        rows.max(1)
+    pub fn rows_at(&self, sheet: impl Into<Sheet>) -> usize {
+        let rows = match sheet.into() {
+            Sheet::Order(order_idx) => self
+                .order
+                .get(order_idx)
+                .and_then(|&p| self.patterns.get(p))
+                .map(|p| p.rows),
+            Sheet::Phrase { phrase, .. } => self.phrases.get(phrase).map(|ph| ph.rows.len()),
+        };
+        rows.unwrap_or(self.rows_per_pattern).max(1)
     }
 
     /// The pattern played at an order position, if that position resolves.
@@ -608,18 +627,25 @@ impl Song {
         order_idx.min(self.order.len().saturating_sub(1))
     }
 
-    /// Where the cell shown at an order position is stored, or `None` if
-    /// the coordinate does not resolve. Editors read and write through this
-    /// so that a linked column edits its phrase.
+    /// Where the cell shown on a sheet is stored, or `None` if the coordinate
+    /// does not resolve. Editors read and write through this so that a linked
+    /// column edits its phrase.
     ///
     /// A running link resolves by the first pass through the order list,
     /// which is what the grid shows; playback follows the path it actually
     /// took, through [`Song::playback_cell`].
-    pub fn address(&self, order_idx: usize, row: usize, channel: usize) -> Option<CellAddr> {
-        self.resolve(order_idx, row, channel, || {
-            self.first_pass_row(order_idx) + row as u64
-        })
-        .map(|(at, _)| at)
+    pub fn address(&self, sheet: impl Into<Sheet>, row: usize, channel: usize) -> Option<CellAddr> {
+        match sheet.into() {
+            Sheet::Order(order_idx) => self
+                .resolve(order_idx, row, channel, || {
+                    self.first_pass_row(order_idx) + row as u64
+                })
+                .map(|(at, _)| at),
+            Sheet::Phrase { phrase, track } => {
+                let len = self.phrases.get(phrase)?.rows.len();
+                (channel == track && row < len).then_some(CellAddr::Phrase { phrase, row })
+            }
+        }
     }
 
     /// The cell playback plays at an order position, when `rows_played`
@@ -646,9 +672,18 @@ impl Song {
         cell
     }
 
-    /// Whether the pattern at an order position shows anything in the second
-    /// effect column, in its own cells or in a phrase it links to.
-    pub fn uses_second_fx(&self, order_idx: usize) -> bool {
+    /// Whether a sheet shows anything in the second effect column: a phrase,
+    /// or a pattern in its own cells or in a phrase it links to.
+    pub fn uses_second_fx(&self, sheet: impl Into<Sheet>) -> bool {
+        let order_idx = match sheet.into() {
+            Sheet::Order(order_idx) => order_idx,
+            Sheet::Phrase { phrase, .. } => {
+                return self
+                    .phrases
+                    .get(phrase)
+                    .is_some_and(|ph| ph.rows.iter().any(|c| c.fx[1].is_some()));
+            }
+        };
         let Some(p) = self.pattern_at(order_idx) else {
             return false;
         };
@@ -714,21 +749,22 @@ impl Song {
         })
     }
 
-    /// The distinct addresses of a block of rows and channels at an order
-    /// position, in row-major order. A cell an operation transforms in place
-    /// must be visited once even when it shows at several places, as a
-    /// phrase linked twice, or looping inside its pattern, does.
+    /// The distinct addresses of a block of rows and channels on a sheet, in
+    /// row-major order. A cell an operation transforms in place must be
+    /// visited once even when it shows at several places, as a phrase linked
+    /// twice, or looping inside its pattern, does.
     pub fn addresses(
         &self,
-        order_idx: usize,
+        sheet: impl Into<Sheet>,
         rows: std::ops::RangeInclusive<usize>,
         channels: std::ops::RangeInclusive<usize>,
     ) -> Vec<CellAddr> {
+        let sheet = sheet.into();
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         for row in rows {
             for ch in channels.clone() {
-                if let Some(at) = self.address(order_idx, row, ch) {
+                if let Some(at) = self.address(sheet, row, ch) {
                     if seen.insert(at) {
                         out.push(at);
                     }
@@ -767,29 +803,29 @@ impl Song {
         }
     }
 
-    /// Read a cell by order position. Returns an empty cell for any
-    /// out-of-range coordinate rather than panicking.
-    pub fn cell_at(&self, order_idx: usize, row: usize, channel: usize) -> &Cell {
-        self.address(order_idx, row, channel)
+    /// Read a cell on a sheet. Returns an empty cell for any out-of-range
+    /// coordinate rather than panicking.
+    pub fn cell_at(&self, sheet: impl Into<Sheet>, row: usize, channel: usize) -> &Cell {
+        self.address(sheet, row, channel)
             .and_then(|at| self.cell(at))
             .unwrap_or(&EMPTY_CELL)
     }
 
-    /// Mutable cell access by order position. Returns None if the
-    /// coordinate does not resolve.
+    /// Mutable cell access on a sheet. Returns None if the coordinate does
+    /// not resolve.
     pub fn cell_at_mut(
         &mut self,
-        order_idx: usize,
+        sheet: impl Into<Sheet>,
         row: usize,
         channel: usize,
     ) -> Option<&mut Cell> {
-        let at = self.address(order_idx, row, channel)?;
+        let at = self.address(sheet, row, channel)?;
         self.cell_mut(at)
     }
 
-    /// Write a cell by order position. Out-of-range coordinates are ignored.
-    pub fn set_cell(&mut self, order_idx: usize, row: usize, channel: usize, cell: Cell) {
-        if let Some(slot) = self.cell_at_mut(order_idx, row, channel) {
+    /// Write a cell on a sheet. Out-of-range coordinates are ignored.
+    pub fn set_cell(&mut self, sheet: impl Into<Sheet>, row: usize, channel: usize, cell: Cell) {
+        if let Some(slot) = self.cell_at_mut(sheet, row, channel) {
             *slot = cell;
         }
     }
@@ -905,6 +941,52 @@ impl Song {
             ph.rows
                 .resize(rows.clamp(1, MAX_ROWS_PER_PATTERN), Cell::default());
         }
+    }
+
+    /// Append an empty phrase of `rows` rows, within 1 to
+    /// `MAX_ROWS_PER_PATTERN`. Returns its index.
+    pub fn add_phrase(&mut self, rows: usize) -> usize {
+        let index = self.phrases.len();
+        self.phrases.push(Phrase {
+            name: format!("Phrase {index:02X}"),
+            rows: vec![Cell::default(); rows.clamp(1, MAX_ROWS_PER_PATTERN)],
+        });
+        index
+    }
+
+    /// Append a copy of a phrase. Returns the copy's index.
+    pub fn duplicate_phrase(&mut self, phrase: usize) -> Option<usize> {
+        let mut copy = self.phrases.get(phrase)?.clone();
+        let index = self.phrases.len();
+        copy.name = format!("Phrase {index:02X}");
+        self.phrases.push(copy);
+        Some(index)
+    }
+
+    /// Insert an empty row into a phrase, dropping its last row so the
+    /// length is unchanged, as [`Pattern::insert_row`] does.
+    pub fn insert_phrase_row(&mut self, phrase: usize, at: usize) {
+        if let Some(ph) = self.phrases.get_mut(phrase).filter(|ph| at < ph.rows.len()) {
+            ph.rows.insert(at, Cell::default());
+            ph.rows.pop();
+        }
+    }
+
+    /// Delete a phrase row, appending an empty one so the length is unchanged.
+    pub fn delete_phrase_row(&mut self, phrase: usize, at: usize) {
+        if let Some(ph) = self.phrases.get_mut(phrase).filter(|ph| at < ph.rows.len()) {
+            ph.rows.remove(at);
+            ph.rows.push(Cell::default());
+        }
+    }
+
+    /// How many pattern columns link to a phrase.
+    pub fn phrase_uses(&self, phrase: usize) -> usize {
+        self.patterns
+            .iter()
+            .flat_map(|p| p.links.iter().flatten())
+            .filter(|l| l.phrase == phrase)
+            .count()
     }
 
     // -------------------------------------------------------------------
@@ -1319,6 +1401,55 @@ mod tests {
         assert_eq!(song.cell(at).unwrap().volume, Some(9));
         assert!(song.cell(CellAddr::Phrase { phrase: 0, row: 3 }).is_none());
         assert!(song.cell(CellAddr::Phrase { phrase: 1, row: 0 }).is_none());
+    }
+
+    #[test]
+    fn phrase_rows_insert_and_delete_at_a_fixed_length() {
+        let mut song = Song::new(1, 4);
+        let p = song.add_phrase(3);
+        song.phrases[p].rows[0].volume = Some(1);
+        song.phrases[p].rows[2].volume = Some(3);
+
+        song.insert_phrase_row(p, 0);
+        let vols = |s: &Song| {
+            s.phrases[p]
+                .rows
+                .iter()
+                .map(|c| c.volume)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(vols(&song), [None, Some(1), None], "the last row drops off");
+
+        song.delete_phrase_row(p, 0);
+        assert_eq!(vols(&song), [Some(1), None, None]);
+
+        song.insert_phrase_row(p, 3);
+        song.delete_phrase_row(p, 3);
+        assert_eq!(
+            vols(&song),
+            [Some(1), None, None],
+            "past the end is ignored"
+        );
+    }
+
+    #[test]
+    fn a_duplicated_phrase_is_a_separate_copy_and_uses_count_links() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(2, 4);
+        let p = song.add_phrase(2);
+        assert_eq!(song.add_phrase(0), 1, "an empty phrase still has a row");
+        assert_eq!(song.phrases[1].rows.len(), 1);
+        song.phrases[p].rows[1].volume = Some(7);
+
+        let copy = song.duplicate_phrase(p).unwrap();
+        assert_eq!(song.phrases[copy].rows, song.phrases[p].rows);
+        song.phrases[copy].rows[1].volume = None;
+        assert_eq!(song.phrases[p].rows[1].volume, Some(7));
+        assert!(song.duplicate_phrase(99).is_none());
+
+        song.link_column(0, 0, p, PhraseTiming::Aligned);
+        song.link_column(0, 1, p, PhraseTiming::Running);
+        assert_eq!((song.phrase_uses(p), song.phrase_uses(copy)), (2, 0));
     }
 
     fn link_channel(song: &mut Song, pattern: usize, ch: usize, l: crate::tracker::PhraseLink) {

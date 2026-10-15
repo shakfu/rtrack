@@ -162,11 +162,20 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.header_bpm),
         ),
         Span::styled(
-            format!(
-                "P:{:02X}/{:02X}  ",
-                pattern_num,
-                song.current_pattern_count() - 1
-            ),
+            match app.phrase_view {
+                Some(view) => format!(
+                    "Phrase:{:02X}/{:02X} {} rows, {} uses  ",
+                    view.phrase,
+                    song.phrases.len().saturating_sub(1),
+                    song.rows_at(app.sheet()),
+                    song.phrase_uses(view.phrase)
+                ),
+                None => format!(
+                    "P:{:02X}/{:02X}  ",
+                    pattern_num,
+                    song.current_pattern_count() - 1
+                ),
+            },
             Style::default().fg(theme.header_position),
         ),
         Span::styled(
@@ -494,6 +503,18 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("Insert / delete row in pattern", text_style),
         ]),
         Line::from(vec![
+            Span::styled("  F5           ", key_style),
+            Span::styled("Phrase editor: show a phrase in the grid", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("    Ctrl+<- -> ", key_style),
+            Span::styled("Phrase editor: previous / next phrase", text_style),
+        ]),
+        Line::from(vec![
+            Span::styled("    Ctrl+N / D ", key_style),
+            Span::styled("Phrase editor: new / duplicate phrase", text_style),
+        ]),
+        Line::from(vec![
             Span::styled("  F6           ", key_style),
             Span::styled("Song settings dialog", text_style),
         ]),
@@ -634,7 +655,17 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  :phrases     ", key_style),
-            Span::styled("Phrase list: rename, resize, link", text_style),
+            Span::styled(
+                "Phrase list: rename, resize, link (or open, in the editor)",
+                text_style,
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  :pedit [NN]  ", key_style),
+            Span::styled(
+                "Phrase editor: the track's phrase, or phrase NN",
+                text_style,
+            ),
         ]),
         Line::from(vec![
             Span::styled("  :fx2         ", key_style),
@@ -860,15 +891,6 @@ fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
     let phrases = &app.core.song.phrases;
     let visible = (popup_area.height.saturating_sub(2)) as usize;
     let start = app.dialogs.phrase_cursor.saturating_sub(visible / 2);
-    let uses = |i: usize| {
-        app.core
-            .song
-            .patterns
-            .iter()
-            .flat_map(|p| p.links.iter().flatten())
-            .filter(|l| l.phrase == i)
-            .count()
-    };
     let items: Vec<ListItem> = if phrases.is_empty() {
         vec![
             ListItem::new(" No phrases yet: :phrase links the cursor's track to a new one")
@@ -883,7 +905,7 @@ fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
                     i,
                     ph.name,
                     ph.rows.len(),
-                    uses(i)
+                    app.core.song.phrase_uses(i)
                 );
                 let style = if i == app.dialogs.phrase_cursor {
                     Style::default()
@@ -900,7 +922,11 @@ fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
     let list = List::new(items).block(
         Block::default()
             .title(" Phrases ")
-            .title_bottom(" Esc:close Type:name ^<>:length Enter:link track ")
+            .title_bottom(if app.phrase_view.is_some() {
+                " Esc:close Type:name ^<>:length Enter:show "
+            } else {
+                " Esc:close Type:name ^<>:length Enter:link track "
+            })
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );
@@ -1646,6 +1672,37 @@ mod tests {
             }
         }
         lines.join("\n")
+    }
+
+    #[test]
+    fn the_phrase_view_draws_one_column_named_for_the_phrase() {
+        let mut app = make_app();
+        let p = app.core.song.add_phrase(3);
+        app.core.song.phrases[p].name = "riff".into();
+        app.core.song.phrases[p].rows[2].volume = Some(0x42);
+        app.cursor_channel = 2;
+        app.open_phrase_view(Some(p));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        for text in ["Phrase:00/00 3 rows, 0 uses", "riff", "[PHR]", "42"] {
+            assert!(screen.contains(text), "{text} missing:\n{screen}");
+        }
+        assert!(
+            screen
+                .lines()
+                .any(|l| l.trim_end() == "02  | ---  --  42  -----"),
+            "one column, no other track:\n{screen}"
+        );
     }
 
     #[test]

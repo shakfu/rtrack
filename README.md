@@ -209,8 +209,18 @@ The grid shows a running phrase as it plays the first time playback reaches the 
 | `:tr N` | Phrases > Transpose | Transpose the linked phrase at playback by N steps |
 | `:unlink` | Phrases > Unlink | Make the phrase rows the track's own cells again |
 | `:phrases` | Phrases window | Rename and resize phrases |
+| F5, `:pedit [NN]` | F5, View > Phrase Editor, Phrases > Edit | Show the track's phrase, or phrase `NN`, in the grid |
 
 Inserting or deleting a row changes the pattern's own cells, not a linked phrase.
+
+#### Phrase editor
+
+F5 shows a phrase in the grid in place of the pattern: the phrase the cursor's track plays, at the row under the cursor, or phrase 00 for an unlinked track. Every edit works there as in a pattern, and notes preview through the cursor's track. F5 again returns to the pattern.
+
+- Ctrl+Left / Ctrl+Right step through the phrases.
+- Ctrl+N adds an empty phrase; Ctrl+D duplicates the one shown.
+- Insert and Backspace insert and delete phrase rows; the length stays the same.
+- The TUI header shows the phrase number, length and use count. In the GUI, a bar above the grid shows these and edits the name and length.
 
 ### Tables
 
