@@ -6,6 +6,10 @@ All notable changes to rtrack will be documented in this file.
 
 ### Added
 
+- **Aligned phrase links are tagged `[Ann]`, not `[Pnn]`.** A track header's `[P00]` read as pattern 00 from the order list; A pairs with `[Rnn]` for running.
+
+- **GUI: phrase borders.** The grid draws a faint box around each repetition of a linked phrase, blue for aligned links and orange for running ones, so phrase rows no longer look like the pattern's own notes. A side cut off by the pattern's end or the view is left open. View > Phrase borders turns them off.
+
 - **Phrase editor.** F5 shows a phrase in the grid in place of the pattern, so a phrase can be read and edited without linking it to a track. It opens on the cursor track's phrase; Ctrl+Left/Right step through phrases, Ctrl+N and Ctrl+D add and duplicate one. TUI: `:pedit [NN]`, and Enter in `:phrases` while it is open. GUI: View > Phrase Editor, an Edit button and phrase numbers in the Phrases window, and a bar above the grid for name and length.
 
   The grid shows a `Sheet`, a pattern or one phrase, which the cell accessors take in place of an order position, so every existing edit and undo works on a phrase unchanged. A separate editor, as tables have, would have needed its own copy of each. Design: `docs/dev/phrase-editor.md`.
@@ -97,6 +101,8 @@ All notable changes to rtrack will be documented in this file.
 - **TUI song settings: typing now replaces the field's current value.** The edit buffer is seeded with that value and every character appended to it, so entering a scale over the seeded `off` produced `offc minor` unless you backspaced first. The first character typed after selecting a field clears the buffer; Backspace still edits the seeded value rather than dropping it, so correcting one digit of a BPM works as before.
 
 ### Changed
+
+- **GUI: a new song has 4 tracks, and the window opens 900 px wide to fit them.** The GUI started and File > New made 8 tracks where the core and the TUI make 4; it now uses the core's default.
 
 - **Groove replaces swing.** `Song.groove` is a list of relative row lengths that repeats by pattern row: `[67, 33]` is the old swing 67, and `[55, 45, 52, 48]` pushes and pulls over four rows, which swing could not express. A cycle lasts as long as the same rows played straight. Set it in song settings as text (`67 33`, `off`, or one number for swing). Older files' `swing` becomes the equivalent groove on load and is no longer written; the timing is identical to the frame, checked for every swing value at several tempos and sample rates. MIDI export now applies the groove; it ignored swing.
 

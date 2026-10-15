@@ -20,7 +20,7 @@ mod visualization;
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1220.0, 700.0])
+            .with_inner_size(app::DEFAULT_WINDOW_SIZE)
             .with_title("rtrack"),
         ..Default::default()
     };

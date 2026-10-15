@@ -22,6 +22,8 @@ pub struct RtrackApp {
     pub first_visible_channel: usize,
     /// The phrase shown in the grid in place of the pattern, if any.
     pub phrase_view: Option<rtrack_core::editor::PhraseView>,
+    /// Box each repetition of a linked phrase in the grid.
+    pub show_phrase_borders: bool,
 
     // Mode
     pub mode: Mode,
@@ -104,6 +106,7 @@ impl RtrackApp {
             follow_playback: true,
             first_visible_channel: 0,
             phrase_view: None,
+            show_phrase_borders: true,
             mode: Mode::Normal,
             status_message: None,
             clipboard: rtrack_core::editor::Clipboard::default(),
@@ -185,7 +188,7 @@ impl RtrackApp {
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (config, mut startup_notes) = rtrack_core::config::load_config_verbose();
-        let mut core = TrackerCore::with_song_size(8, 64);
+        let mut core = TrackerCore::new();
 
         // Try to start audio engine with SF2 from config
         match rtrack_core::audio::AudioEngine::new_with_sf2_fallback(config.sf2.as_deref()) {
@@ -340,6 +343,10 @@ impl RtrackApp {
         }
     }
 }
+
+/// The window's size at launch: wide enough for four tracks, the default
+/// song's count, with one effect column.
+pub const DEFAULT_WINDOW_SIZE: [f32; 2] = [900.0, 700.0];
 
 /// How soon the GUI must wake itself when nothing else is driving it.
 ///
@@ -546,7 +553,7 @@ impl eframe::App for RtrackApp {
                 };
 
                 let muted: Vec<bool> = self.core.channels.iter().map(|c| c.muted).collect();
-                // A linked track shows its phrase: P for aligned, R for running.
+                // A linked track shows its phrase: A for aligned, R for running.
                 let names: Vec<String> = self
                     .core
                     .channels
@@ -572,7 +579,7 @@ impl eframe::App for RtrackApp {
                         match link {
                             Some(l) => {
                                 let kind = match l.timing {
-                                    rtrack_core::tracker::PhraseTiming::Aligned => 'P',
+                                    rtrack_core::tracker::PhraseTiming::Aligned => 'A',
                                     rtrack_core::tracker::PhraseTiming::Running => 'R',
                                 };
                                 format!("{name} [{kind}{:02X}]", l.phrase)
@@ -624,6 +631,7 @@ impl eframe::App for RtrackApp {
                     block_start: self.block_start,
                     block_end: self.block_end,
                     fx_columns,
+                    phrase_borders: self.show_phrase_borders,
                     colors: self.grid_colors,
                 };
 
@@ -888,6 +896,41 @@ mod frame_tests {
 
     /// Run the app's whole frame once on `events`, as eframe would.
     fn frame(app: &mut RtrackApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        frame_shapes(app, ctx, events);
+    }
+
+    /// The default window shows four tracks: the default song's count.
+    #[test]
+    fn the_default_window_fits_four_tracks() {
+        let mut app = RtrackApp::headless(8, 16);
+        app.cursor_channel = 7;
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            frame_sized(&mut app, &ctx, DEFAULT_WINDOW_SIZE[0]);
+        }
+        // With the cursor on the last track, the view scrolls to end there.
+        assert_eq!(8 - app.first_visible_channel, 4);
+    }
+
+    fn frame_sized(app: &mut RtrackApp, ctx: &egui::Context, width: f32) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, DEFAULT_WINDOW_SIZE[1]),
+            )),
+            ..Default::default()
+        };
+        let mut f = eframe::Frame::_new_kittest();
+        ctx.run_ui(input, |ui| app.ui(ui, &mut f))
+            .drop_without_applying_deltas();
+    }
+
+    /// As [`frame`], returning what the frame drew.
+    fn frame_shapes(
+        app: &mut RtrackApp,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::ClippedShape> {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -897,8 +940,44 @@ mod frame_tests {
             ..Default::default()
         };
         let mut f = eframe::Frame::_new_kittest();
-        ctx.run_ui(input, |ui| app.ui(ui, &mut f))
-            .drop_without_applying_deltas();
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui, &mut f));
+        let shapes = std::mem::take(&mut out.shapes);
+        out.drop_without_applying_deltas();
+        shapes
+    }
+
+    /// Line segments drawn in `color`.
+    fn lines_in(shapes: &[egui::epaint::ClippedShape], color: egui::Color32) -> usize {
+        shapes
+            .iter()
+            .filter(|s| {
+                matches!(&s.shape, egui::Shape::LineSegment { stroke, .. } if stroke.color == color)
+            })
+            .count()
+    }
+
+    /// polymeter.rtrk links Ch1 aligned and Ch2 and Ch3 running, so both
+    /// colours of box are drawn, and none once switched off.
+    #[test]
+    fn linked_phrases_are_boxed_in_their_timings_colour() {
+        let mut app = RtrackApp::headless(4, 16);
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/polymeter.rtrk");
+        app.core.load_file(&path).expect("load");
+        let ctx = egui::Context::default();
+        let (aligned, running) = (
+            app.grid_colors.phrase_aligned,
+            app.grid_colors.phrase_running,
+        );
+
+        let shapes = frame_shapes(&mut app, &ctx, vec![]);
+        // Ch1's 4-row pulse in a 16-row pattern: 4 closed boxes of 4 lines.
+        assert_eq!(lines_in(&shapes, aligned), 16);
+        assert!(lines_in(&shapes, running) > 0);
+
+        app.show_phrase_borders = false;
+        let shapes = frame_shapes(&mut app, &ctx, vec![]);
+        assert_eq!(lines_in(&shapes, aligned) + lines_in(&shapes, running), 0);
     }
 
     fn key(key: egui::Key) -> egui::Event {

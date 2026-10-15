@@ -1674,6 +1674,27 @@ mod tests {
         lines.join("\n")
     }
 
+    /// A as in aligned: `[P..]` read as a pattern number from the order list.
+    #[test]
+    fn a_linked_track_header_tags_its_phrase_by_timing() {
+        use rtrack_core::tracker::PhraseTiming;
+        let mut app = make_app();
+        app.core.song.add_phrase(4);
+        app.core.song.link_column(0, 0, 0, PhraseTiming::Aligned);
+        app.core.song.link_column(0, 1, 0, PhraseTiming::Running);
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(
+            screen.contains("[A00]") && screen.contains("[R00]"),
+            "{screen}"
+        );
+    }
+
     #[test]
     fn the_phrase_view_draws_one_column_named_for_the_phrase() {
         let mut app = make_app();

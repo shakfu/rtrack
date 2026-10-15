@@ -283,7 +283,7 @@ impl RtrackApp {
                         // it is the cursor track's phrase or the one on view.
                         let current = link.map(|l| l.phrase) == Some(i) || shown == Some(i);
                         ui.label(egui::RichText::new(format!("{i:02X}")).monospace().strong())
-                            .on_hover_text("Shown in track headers as [Pnn] or [Rnn]");
+                            .on_hover_text("Shown in track headers as [Ann] or [Rnn]");
                         let mut name = self.core.song.phrases[i].name.clone();
                         let field = egui::TextEdit::singleline(&mut name).desired_width(140.0);
                         if ui.add(field).changed() {

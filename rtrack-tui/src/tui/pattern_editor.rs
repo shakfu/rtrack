@@ -94,7 +94,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                     .map(|c| &c.name)
                     .filter(|n| !n.is_empty()),
             };
-            // A linked track shows its phrase: P for aligned, R for running.
+            // A linked track shows its phrase: A for aligned, R for running.
             let link = app
                 .core
                 .song
@@ -103,7 +103,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 .filter(|_| phrase.is_none());
             let link_label = link.map(|l| {
                 let kind = match l.timing {
-                    rtrack_core::tracker::PhraseTiming::Aligned => 'P',
+                    rtrack_core::tracker::PhraseTiming::Aligned => 'A',
                     rtrack_core::tracker::PhraseTiming::Running => 'R',
                 };
                 format!("[{kind}{:02X}]", l.phrase.min(0xFF))

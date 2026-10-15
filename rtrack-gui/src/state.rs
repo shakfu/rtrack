@@ -55,6 +55,9 @@ pub struct GridColors {
     pub fg_separator: Color32,
     pub fg_muted: Color32,
     pub fg_header: Color32,
+    /// Faint boxes around each repetition of a linked phrase.
+    pub phrase_aligned: Color32,
+    pub phrase_running: Color32,
 }
 
 impl GridColors {
@@ -81,6 +84,8 @@ impl GridColors {
             fg_separator: Color32::from_rgb(50, 50, 70),
             fg_muted: Color32::from_rgb(70, 70, 85),
             fg_header: Color32::from_rgb(140, 140, 180),
+            phrase_aligned: Color32::from_rgba_unmultiplied(110, 160, 255, 110),
+            phrase_running: Color32::from_rgba_unmultiplied(255, 170, 80, 110),
         }
     }
 
@@ -107,6 +112,8 @@ impl GridColors {
             fg_separator: Color32::from_rgb(180, 180, 200),
             fg_muted: Color32::from_rgb(200, 200, 210),
             fg_header: Color32::from_rgb(80, 80, 120),
+            phrase_aligned: Color32::from_rgba_unmultiplied(40, 90, 200, 140),
+            phrase_running: Color32::from_rgba_unmultiplied(200, 110, 20, 140),
         }
     }
 
@@ -133,6 +140,8 @@ impl GridColors {
             fg_separator: Color32::from_rgb(60, 60, 54),
             fg_muted: Color32::from_rgb(75, 73, 65),
             fg_header: Color32::from_rgb(248, 248, 242),
+            phrase_aligned: Color32::from_rgba_unmultiplied(102, 217, 239, 110),
+            phrase_running: Color32::from_rgba_unmultiplied(253, 151, 31, 110),
         }
     }
 

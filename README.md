@@ -199,7 +199,7 @@ A phrase is a single-track run of 1-256 rows that any track of any pattern can p
 
 A link can transpose its phrase at playback: by scale degrees when the song has a scale, by semitones otherwise, as Shift+Up/Down moves notes. One riff can then play under several chords. The grid shows the phrase as stored.
 
-The grid shows a running phrase as it plays the first time playback reaches the pattern. A linked track's header shows `[Pnn]` (aligned) or `[Rnn]` (running).
+The grid shows a running phrase as it plays the first time playback reaches the pattern. A linked track's header shows `[Ann]` (aligned) or `[Rnn]` (running). In the GUI, a faint box marks each repetition of a linked phrase: blue for aligned, orange for running (View > Phrase borders).
 
 | TUI | GUI | |
 |-|-|-|

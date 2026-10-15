@@ -11,7 +11,7 @@ impl RtrackApp {
                 ui.menu_button("File", |ui| {
                     if ui.button("New").clicked() {
                         let config = rtrack_core::config::load_config();
-                        self.core = TrackerCore::with_song_size(8, 64);
+                        self.core = TrackerCore::new();
                         // Re-init audio on the new core with SF2 from config
                         match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
                             Ok(engine) => {
@@ -230,6 +230,10 @@ impl RtrackApp {
                         }
                         ui.close();
                     }
+                    ui.checkbox(&mut self.show_phrase_borders, "Phrase borders")
+                        .on_hover_text(
+                            "Box each repetition of a linked phrase: blue aligned, orange running",
+                        );
                     ui.checkbox(&mut self.show_second_fx, "Second effect column")
                         .on_hover_text("Shown anyway where the pattern uses it");
                     if ui.button("Instruments  (F7)").clicked() {

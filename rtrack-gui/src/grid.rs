@@ -1,5 +1,5 @@
 use egui::{FontId, Pos2, Rect, Ui};
-use rtrack_core::tracker::{Sheet, Song};
+use rtrack_core::tracker::{CellAddr, PhraseTiming, Sheet, Song};
 
 use crate::state::{GridColors, Mode, SubColumn};
 
@@ -74,7 +74,56 @@ pub struct GridParams {
     pub block_end: Option<(usize, usize)>,
     /// Effect columns shown, 1 or 2.
     pub fx_columns: usize,
+    /// Draw a box around each repetition of a linked phrase.
+    pub phrase_borders: bool,
     pub colors: GridColors,
+}
+
+/// One repetition of a linked phrase in a column, as pattern rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhraseSpan {
+    pub rows: std::ops::RangeInclusive<usize>,
+    /// Whether the span holds the phrase's first and last rows. A side that
+    /// does not is cut off by the pattern or the view, and is drawn open.
+    pub starts: bool,
+    pub ends: bool,
+    pub timing: PhraseTiming,
+}
+
+/// The repetitions of the phrase `channel` links to at `order`, within
+/// `rows`, as the grid shows them.
+pub fn phrase_spans(
+    song: &Song,
+    order: usize,
+    channel: usize,
+    rows: std::ops::Range<usize>,
+) -> Vec<PhraseSpan> {
+    let Some(link) = song.pattern_at(order).and_then(|p| p.link(channel)) else {
+        return Vec::new();
+    };
+    let Some(len) = song.phrases.get(link.phrase).map(|ph| ph.rows.len()) else {
+        return Vec::new();
+    };
+    let mut spans: Vec<PhraseSpan> = Vec::new();
+    for row in rows {
+        let Some(CellAddr::Phrase { row: shown, .. }) = song.address(order, row, channel) else {
+            continue;
+        };
+        let ends = shown + 1 == len;
+        match spans.last_mut() {
+            Some(span) if shown != 0 && *span.rows.end() + 1 == row => {
+                span.rows = *span.rows.start()..=row;
+                span.ends = ends;
+            }
+            _ => spans.push(PhraseSpan {
+                rows: row..=row,
+                starts: shown == 0,
+                ends,
+                timing: link.timing,
+            }),
+        }
+    }
+    spans
 }
 
 /// Where the grid was laid out, as far as hit-testing needs to know.
@@ -447,6 +496,39 @@ pub fn draw_grid(ui: &mut Ui, song: &Song, sheet: Sheet, params: &GridParams) ->
         }
     }
 
+    if params.phrase_borders {
+        if let Sheet::Order(order) = sheet {
+            let shown_rows = start_row..(start_row + visible_rows).min(rows);
+            let width = channel_width_chars(params.fx_columns) as f32 * CHAR_WIDTH;
+            for ch_idx in first_ch..last_ch {
+                let base_x = rect.left()
+                    + (ROW_NUM_CHARS + SEPARATOR_CHARS) as f32 * CHAR_WIDTH
+                    + (ch_idx - first_ch) as f32
+                        * (channel_width_chars(params.fx_columns) + SEPARATOR_CHARS) as f32
+                        * CHAR_WIDTH;
+                let (x0, x1) = (base_x - CHAR_WIDTH * 0.5, base_x + width + CHAR_WIDTH * 0.5);
+                for span in phrase_spans(song, order, ch_idx, shown_rows.clone()) {
+                    let color = match span.timing {
+                        PhraseTiming::Aligned => c.phrase_aligned,
+                        PhraseTiming::Running => c.phrase_running,
+                    };
+                    let stroke = egui::Stroke::new(1.0, color);
+                    // Inset a pixel, so adjacent repetitions stay apart.
+                    let y0 = data_top + (span.rows.start() - start_row) as f32 * ROW_HEIGHT + 1.0;
+                    let y1 = data_top + (span.rows.end() + 1 - start_row) as f32 * ROW_HEIGHT - 1.0;
+                    painter.line_segment([Pos2::new(x0, y0), Pos2::new(x0, y1)], stroke);
+                    painter.line_segment([Pos2::new(x1, y0), Pos2::new(x1, y1)], stroke);
+                    if span.starts {
+                        painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y0)], stroke);
+                    }
+                    if span.ends {
+                        painter.line_segment([Pos2::new(x0, y1), Pos2::new(x1, y1)], stroke);
+                    }
+                }
+            }
+        }
+    }
+
     // Handle mouse interactions
     let mut actions = Vec::new();
 
@@ -502,6 +584,77 @@ pub fn draw_grid(ui: &mut Ui, song: &Song, sheet: Sheet, params: &GridParams) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (rows, starts, ends) of each span, for compact comparison.
+    fn spans(
+        song: &Song,
+        order: usize,
+        ch: usize,
+        rows: std::ops::Range<usize>,
+    ) -> Vec<(std::ops::RangeInclusive<usize>, bool, bool)> {
+        phrase_spans(song, order, ch, rows)
+            .into_iter()
+            .map(|s| (s.rows, s.starts, s.ends))
+            .collect()
+    }
+
+    #[test]
+    fn an_aligned_phrase_is_boxed_once_per_repetition() {
+        let mut song = Song::new(2, 8);
+        song.add_phrase(3);
+        song.link_column(0, 1, 0, PhraseTiming::Aligned);
+        assert_eq!(
+            spans(&song, 0, 1, 0..8),
+            [
+                (0..=2, true, true),
+                (3..=5, true, true),
+                (6..=7, true, false)
+            ],
+            "the pattern's end cuts the last repetition"
+        );
+        assert_eq!(
+            phrase_spans(&song, 0, 1, 0..8)[0].timing,
+            PhraseTiming::Aligned
+        );
+        assert_eq!(
+            spans(&song, 0, 1, 1..5),
+            [(1..=2, false, true), (3..=4, true, false)],
+            "the view's edges cut the spans they cross"
+        );
+        assert!(spans(&song, 0, 0, 0..8).is_empty(), "an unlinked column");
+    }
+
+    #[test]
+    fn a_running_phrase_is_boxed_where_its_repetitions_fall() {
+        let mut song = Song::new(1, 4);
+        song.add_order_entry();
+        song.add_phrase(3);
+        song.link_column(1, 0, 0, PhraseTiming::Running);
+        // Pattern 1 starts on row 4 of the song, phrase row 1.
+        assert_eq!(
+            spans(&song, 1, 0, 0..4),
+            [(0..=1, false, true), (2..=3, true, false)]
+        );
+        assert_eq!(
+            phrase_spans(&song, 1, 0, 0..4)[0].timing,
+            PhraseTiming::Running
+        );
+    }
+
+    #[test]
+    fn a_one_row_phrase_boxes_every_row() {
+        let mut song = Song::new(1, 3);
+        song.add_phrase(1);
+        song.link_column(0, 0, 0, PhraseTiming::Aligned);
+        assert_eq!(
+            spans(&song, 0, 0, 0..3),
+            [
+                (0..=0, true, true),
+                (1..=1, true, true),
+                (2..=2, true, true)
+            ]
+        );
+    }
 
     /// A grid drawn at the origin: header 40px tall, showing rows 0..64 of a
     /// 64-row pattern and channels 0..4.
