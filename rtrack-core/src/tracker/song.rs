@@ -401,6 +401,18 @@ impl Song {
         self.patterns.len()
     }
 
+    /// Set the track count, within 1 to `MAX_CHANNELS`, resizing every
+    /// pattern. A removed track's phrase link goes with its cells, so a track
+    /// added back starts empty and unlinked. Returns the count set.
+    pub fn set_channels(&mut self, channels: usize) -> usize {
+        let channels = channels.clamp(1, MAX_CHANNELS);
+        self.channels = channels;
+        for p in &mut self.patterns {
+            p.conform(p.rows, channels);
+        }
+        channels
+    }
+
     pub fn add_pattern(&mut self) -> usize {
         let idx = self.patterns.len();
         self.patterns
@@ -1401,6 +1413,35 @@ mod tests {
         assert_eq!(song.cell(at).unwrap().volume, Some(9));
         assert!(song.cell(CellAddr::Phrase { phrase: 0, row: 3 }).is_none());
         assert!(song.cell(CellAddr::Phrase { phrase: 1, row: 0 }).is_none());
+    }
+
+    /// Removing a track removes its link, so adding the track back gives an
+    /// empty, unlinked track rather than the old phrase.
+    #[test]
+    fn a_removed_track_comes_back_empty_and_unlinked() {
+        use crate::tracker::PhraseTiming;
+        let mut song = Song::new(3, 4);
+        let p = song.add_phrase(2);
+        song.phrases[p].rows[0].volume = Some(5);
+        song.link_column(0, 2, p, PhraseTiming::Running);
+        song.patterns[0].data[1][2].volume = Some(9);
+
+        assert_eq!(song.set_channels(2), 2);
+        assert_eq!(song.patterns[0].links.len(), 2);
+        assert_eq!(song.patterns[0].data[0].len(), 2);
+
+        song.set_channels(3);
+        assert!(song.patterns[0].link(2).is_none());
+        assert_eq!(song.cell_at(0, 0, 2), &Cell::default());
+        assert_eq!(song.cell_at(0, 1, 2), &Cell::default());
+        assert_eq!(
+            song.phrases[p].rows[0].volume,
+            Some(5),
+            "the phrase is kept"
+        );
+
+        assert_eq!(song.set_channels(0), 1);
+        assert_eq!(song.set_channels(99), MAX_CHANNELS);
     }
 
     #[test]

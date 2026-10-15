@@ -67,6 +67,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | F1 | Help |
 | F2 | MIDI port selector |
 | F3 | Toggle Ableton Link |
+| F5 | Phrase editor: show the cursor track's phrase in the grid / back |
 | F6 | Song settings |
 | F7 | Instrument list |
 | F8 | Cycle color theme |
@@ -129,6 +130,9 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:open` | Open file browser to load a song (same as Ctrl+O) |
 | `:recent` | Open recent files list (last 3 songs) |
 | `:audio` / `:astat` | Report dropped or rescheduled audio commands |
+| `:pedit [NN]` | Phrase editor: the track's phrase, or phrase `NN` |
+
+Phrase and table commands (`:phrase`, `:phrases`, `:run`, `:unlink`, `:tr`, `:table`) are listed in the [main README](../README.md).
 
 ### Track Config (Enter on channel)
 

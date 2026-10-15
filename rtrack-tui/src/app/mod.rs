@@ -3481,6 +3481,32 @@ pub(crate) mod tests {
         app.dialogs.settings_edit_buf = "8".to_string();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.core.song.channels, 8);
+        assert_eq!(app.core.channels.len(), 8);
+    }
+
+    #[test]
+    fn reducing_the_channel_count_unlinks_the_removed_tracks() {
+        let mut app = make_app();
+        app.cursor_channel = 3;
+        run_command(&mut app, "phrase");
+        let set_channels = |app: &mut App, n: &str| {
+            app.open_song_settings();
+            app.dialogs.settings_field = SettingsField::Channels;
+            app.dialogs.settings_edit_buf = n.to_string();
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        };
+        app.core.channels[3].name = "bass".into();
+        set_channels(&mut app, "2");
+        assert_eq!(app.cursor_channel, 1, "the cursor stays on a track");
+        set_channels(&mut app, "4");
+        let pos = app.current_order_position();
+        assert!(app.core.song.pattern_at(pos).unwrap().link(3).is_none());
+
+        // Undo returns to two tracks, then to the four with their config.
+        app.undo();
+        app.undo();
+        assert_eq!(app.core.channels[3].name, "bass");
+        assert!(app.core.song.pattern_at(pos).unwrap().link(3).is_some());
     }
 
     #[test]

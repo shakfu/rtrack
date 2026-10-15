@@ -201,14 +201,17 @@ fn test_add_remove_channels() {
     let mut app = App::new();
     let initial = app.core.song.channels;
 
-    // Add channel via Ctrl+A (if that's the binding)
-    // Actually, channels are added via settings. Let's test directly.
-    app.core.song.channels = initial + 2;
+    app.core.set_channel_count(initial + 2);
     assert_eq!(app.core.song.channels, initial + 2);
+    assert_eq!(app.core.channels.len(), initial + 2);
+    for pat in &app.core.song.patterns {
+        assert_eq!(pat.channels, initial + 2);
+        assert!(pat.data.iter().all(|row| row.len() == initial + 2));
+    }
 
-    // Patterns should still be accessible
-    let pat = &app.core.song.patterns[0];
-    assert!(pat.channels >= initial); // pattern channels may not auto-expand
+    app.core.set_channel_count(initial);
+    assert_eq!(app.core.song.patterns[0].data[0].len(), initial);
+    assert_eq!(app.core.channels.len(), initial);
 }
 
 #[test]

@@ -4,9 +4,9 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
-### Added
+## [0.2.0]
 
-- **Aligned phrase links are tagged `[Ann]`, not `[Pnn]`.** A track header's `[P00]` read as pattern 00 from the order list; A pairs with `[Rnn]` for running.
+### Added
 
 - **GUI: phrase borders.** The grid draws a faint box around each repetition of a linked phrase, blue for aligned links and orange for running ones, so phrase rows no longer look like the pattern's own notes. A side cut off by the pattern's end or the view is left open. View > Phrase borders turns them off.
 
@@ -24,7 +24,7 @@ All notable changes to rtrack will be documented in this file.
 
 - **Transpose a linked phrase at playback.** `:tr N` (TUI) or Phrases > Transpose (GUI) plays a track's phrase N steps away without changing it, so one riff can play under several chords; the grid keeps showing the stored notes. Steps are scale degrees when the song has a scale and semitones otherwise, the rule Shift+Up/Down already follows. There is no per-instrument opt-out for drums: a transpose belongs to one track's link, so a drum track's link stays at 0.
 
-- **Phrases: reuse and polymeter.** A phrase is a single-track run of rows that any track of any pattern can link to; editing it changes every place it plays. An aligned link restarts the phrase with each pattern and loops it inside; a running link keeps counting rows across patterns, repeats and jumps, so phrases of different lengths drift against each other. TUI: `:phrase`, `:phrase NN`, `:run`, `:unlink`, `:phrases`; GUI: View > Phrases. `examples/polymeter.rtrk` shows 4-, 3- and 5-row phrases together.
+- **Phrases: reuse and polymeter.** A phrase is a single-track run of rows that any track of any pattern can link to; editing it changes every place it plays. An aligned link restarts the phrase with each pattern and loops it inside; a running link keeps counting rows across patterns, repeats and jumps, so phrases of different lengths drift against each other. A linked track's header shows `[Ann]` (aligned) or `[Rnn]` (running); `P` would read as a pattern number from the order list. TUI: `:phrase`, `:phrase NN`, `:run`, `:unlink`, `:phrases`; GUI: View > Phrases. `examples/polymeter.rtrk` shows 4-, 3- and 5-row phrases together.
 
   Links over per-track order lists, which also give both: links keep one song position, so tempo automation, `JMP`/`BRK`, MIDI export and the pattern grid work unchanged. Per-track order lists would also allow per-track launch and per-track section lengths; neither is planned. Design and decisions: `docs/dev/g1-g3-sequencing.md`.
 
@@ -61,6 +61,8 @@ All notable changes to rtrack will be documented in this file.
   A scale is a 12-bit mask over semitones rotated to its root, so no music-theory dependency was added; `tonal_rs` and `rust-music-theory` were both evaluated and rejected (`docs/dev/music-theory-crates.md`).
 
 ### Fixed
+
+- **Removing tracks removes their phrase links and solo.** Reducing the channel count dropped the removed tracks' cells but kept their links, so adding a track back brought back its old phrase. A solo on a removed track stayed set and muted every track left. Both frontends now call `TrackerCore::set_channel_count`, which resizes the patterns, links and track configs in one place; each had its own copy of the resize. Undoing a reduction restored the tracks but not their configs, which live outside the song, so the GUI pattern matrix panicked on the first track without one. The step now records the configs too (`Edit::Tracks`), so undo brings back a track's name, mute and effects; a dragged count is still one step.
 
 - **GUI: typing in a text field no longer edits the pattern.** Grid keys were read while a name or value field had focus, so typing a phrase or song name entered notes in Insert mode, and Backspace deleted a pattern row in Normal mode.
 
@@ -101,6 +103,8 @@ All notable changes to rtrack will be documented in this file.
 - **TUI song settings: typing now replaces the field's current value.** The edit buffer is seeded with that value and every character appended to it, so entering a scale over the seeded `off` produced `offc minor` unless you backspaced first. The first character typed after selecting a field clears the buffer; Backspace still edits the seeded value rather than dropping it, so correcting one digit of a BPM works as before.
 
 ### Changed
+
+- **Version 0.2.0 across the workspace, including the internal `rtrack-core` pins.** A minor bump: 0.1.3 drops the effects of a format version 2 file, and the `TrackerCore`, render and event signatures listed below changed.
 
 - **GUI: a new song has 4 tracks, and the window opens 900 px wide to fit them.** The GUI started and File > New made 8 tracks where the core and the TUI make 4; it now uses the core's default.
 

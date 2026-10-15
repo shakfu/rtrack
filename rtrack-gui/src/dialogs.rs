@@ -654,25 +654,8 @@ impl RtrackApp {
                                 .range(1..=rtrack_core::constants::MAX_CHANNELS),
                         );
                         if ch_count != prev_ch_count {
-                            let before = self.core.song.clone();
-                            self.core.song.channels = ch_count;
-                            for pat in &mut self.core.song.patterns {
-                                for row in &mut pat.data {
-                                    row.resize(ch_count, rtrack_core::tracker::Cell::default());
-                                }
-                                pat.channels = ch_count;
-                            }
-                            while self.core.channels.len() < ch_count {
-                                let idx = self.core.channels.len();
-                                self.core
-                                    .channels
-                                    .push(rtrack_core::ChannelConfig::new(idx as u8));
-                            }
-                            self.core.channels.truncate(ch_count);
-                            if self.cursor_channel >= ch_count {
-                                self.cursor_channel = ch_count.saturating_sub(1);
-                            }
-                            self.record_settings_edit("song.channels", before);
+                            self.core.set_channel_count(ch_count);
+                            self.clamp_cursor_to_song();
                         }
                         ui.end_row();
 

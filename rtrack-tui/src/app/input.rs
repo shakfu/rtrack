@@ -19,6 +19,8 @@ impl App {
 
     fn close_song_settings(&mut self) {
         self.mode = Mode::Normal;
+        // A later visit's change is a step of its own.
+        self.break_edit_coalescing();
     }
 
     /// The song's current value for a settings field, as the edit buffer holds
@@ -81,26 +83,8 @@ impl App {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<usize>() {
                     let v = v.clamp(1, MAX_CHANNELS);
                     if v != self.core.song.channels {
-                        self.core.begin_edit();
-                        self.core.song.channels = v;
-                        // Resize all patterns
-                        for pat in &mut self.core.song.patterns {
-                            for row in &mut pat.data {
-                                row.resize(v, rtrack_core::tracker::Cell::default());
-                            }
-                            pat.channels = v;
-                        }
-                        // Grow or shrink channel configs to match new channel count
-                        while self.core.channels.len() < v {
-                            let idx = self.core.channels.len();
-                            self.core
-                                .channels
-                                .push(super::ChannelConfig::new(idx as u8));
-                        }
-                        self.core.channels.truncate(v);
-                        if self.cursor_channel >= v {
-                            self.cursor_channel = v - 1;
-                        }
+                        self.core.set_channel_count(v);
+                        self.clamp_cursor_to_song();
                     }
                 }
             }

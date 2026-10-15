@@ -371,7 +371,7 @@ The `examples/` directory contains `.rtrk` files demonstrating various features:
 | `sliced-amen.rtrk` | Sample slicing -- 8 equal slices of amen.wav played sequentially (170 BPM) |
 | `drumloops.rtrk` | Looping drum slices -- 8 amen.wav slices with loop points enabled (130 BPM) |
 | `sample-offset.rtrk` | `OFS` sample offset -- the whole break retriggered at 8 offsets, then reordered, then offsets within slices, with transposition and a no-note `OFS` row (175 BPM) |
-| `polymeter.rtrk` | Phrases -- tracks linked to 4-, 3- and 5-row phrases; the 3 and 5 run across patterns and drift against the 4 |
+| `polymeter.rtrk` | Phrases -- tracks linked to 4-, 3- and 5-row phrases; the 3 and 5 run across patterns and drift against the 4. Every track is linked, so every note shown comes from a phrase |
 | `tables.rtrk` | Tables -- a looping major arpeggio per note, `TBL` switching rows to a minor one, and a volume decay |
 
 ```sh
@@ -405,7 +405,7 @@ The MIDI output port you select is remembered in `midi_out.json` in the same dir
 
 ```sh
 make build            # compile all crates
-make test             # run all tests (648 tests across workspace)
+make test             # run all tests (874 tests across workspace)
 make fmt              # format code
 make clippy           # lint with clippy
 make lint             # fmt + clippy

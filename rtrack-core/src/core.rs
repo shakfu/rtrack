@@ -17,7 +17,7 @@ use crate::tracker::{
     SongFile,
 };
 
-use crate::editor::{BankEdit, CellEdit, Edit, StructureEdit};
+use crate::editor::{BankEdit, CellEdit, Edit, EditSource, StructureEdit, TracksEdit};
 use crate::error::{Error, Result};
 use crate::types::{
     autosave_path_for, autosave_path_for_unsaved, default_channel_configs, make_relative,
@@ -426,6 +426,53 @@ impl TrackerCore {
     }
 
     /// Returns true if the channel should produce sound (respects mute and solo state).
+    /// Set the track count: the song's patterns (see [`Song::set_channels`])
+    /// and the track configs. A solo on a removed track is cleared, since it
+    /// would mute every track left. Returns the count set.
+    ///
+    /// Records its own undo step, holding the configs as well as the song, so
+    /// undo brings back a removed track's name and effects. Consecutive calls
+    /// fold into one step, so dragging the count is one undo.
+    pub fn set_channel_count(&mut self, channels: usize) -> usize {
+        // Whatever the current event had pending is a step of its own.
+        self.commit_edit();
+        let (song, tracks) = (self.song.clone(), self.channels.clone());
+        let channels = self.song.set_channels(channels);
+        self.sync_channel_configs();
+        if song.channels != channels {
+            self.history.push_from(
+                EditSource::new("song.channels", 0),
+                Edit::Group(vec![
+                    Edit::Structure(Box::new(StructureEdit {
+                        before: song,
+                        after: self.song.clone(),
+                    })),
+                    Edit::Tracks(Box::new(TracksEdit {
+                        before: tracks,
+                        after: self.channels.clone(),
+                    })),
+                ]),
+            );
+            self.dirty = true;
+        }
+        channels
+    }
+
+    /// Give every track in the song a config, and only those. Undo restores
+    /// the song but not the configs, which live outside it, so an undone
+    /// channel reduction left tracks with none.
+    fn sync_channel_configs(&mut self) {
+        let channels = self.song.channels;
+        while self.channels.len() < channels {
+            let idx = self.channels.len();
+            self.channels.push(ChannelConfig::new(idx as u8));
+        }
+        self.channels.truncate(channels);
+        if self.solo_channel.is_some_and(|ch| ch >= channels) {
+            self.solo_channel = None;
+        }
+    }
+
     pub fn is_channel_audible(&self, channel: usize) -> bool {
         if let Some(solo) = self.solo_channel {
             return channel == solo;
@@ -1721,6 +1768,7 @@ impl TrackerCore {
             return false;
         };
         self.apply_edit_backward(edit);
+        self.sync_channel_configs();
         self.dirty = true;
         true
     }
@@ -1733,6 +1781,7 @@ impl TrackerCore {
             return false;
         };
         self.apply_edit_forward(edit);
+        self.sync_channel_configs();
         self.dirty = true;
         true
     }
@@ -1749,6 +1798,7 @@ impl TrackerCore {
             }
             Edit::Bank(bank) => self.restore_samples(bank.before),
             Edit::Structure(s) => self.song = s.before,
+            Edit::Tracks(t) => self.restore_tracks(t.before),
             // Undone in reverse, so the parts come apart the way they were
             // put together.
             Edit::Group(parts) => {
@@ -1769,12 +1819,19 @@ impl TrackerCore {
             }
             Edit::Bank(bank) => self.restore_samples(bank.after),
             Edit::Structure(s) => self.song = s.after,
+            Edit::Tracks(t) => self.restore_tracks(t.after),
             Edit::Group(parts) => {
                 for part in parts {
                     self.apply_edit_forward(part);
                 }
             }
         }
+    }
+
+    /// Put back recorded track configs, and their effects in the audio engine.
+    fn restore_tracks(&mut self, tracks: Vec<ChannelConfig>) {
+        self.channels = tracks;
+        self.push_all_channel_effects();
     }
 
     /// Write a cell recorded in the history. An entry that no longer
@@ -2305,6 +2362,62 @@ impl TrackerCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_track_count_resizes_configs_and_drops_a_removed_solo() {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(4, 16)
+            .headless()
+            .build();
+        core.channels[3].name = "gone".into();
+        core.solo_channel = Some(3);
+
+        assert_eq!(core.set_channel_count(2), 2);
+        assert_eq!(core.channels.len(), 2);
+        assert_eq!(
+            core.solo_channel, None,
+            "a solo on a removed track mutes the rest"
+        );
+        assert!(core.is_channel_audible(0));
+
+        core.solo_channel = Some(1);
+        core.set_channel_count(4);
+        assert_eq!(core.channels.len(), 4);
+        assert_eq!(core.channels[3].name, "", "a re-added track starts fresh");
+        assert_eq!(core.solo_channel, Some(1), "a solo on a kept track stays");
+        assert_eq!(core.song.patterns[0].channels, 4);
+    }
+
+    /// Undo brings removed tracks back with their configs, and a run of
+    /// count changes (a dragged value) undoes as one step.
+    #[test]
+    fn undoing_a_channel_reduction_restores_the_tracks_configs() {
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(4, 16)
+            .headless()
+            .build();
+        core.channels[3].name = "bass".into();
+        core.channels[3].muted = true;
+        let depth = core.history.undo_depth();
+
+        core.set_channel_count(3);
+        core.set_channel_count(2);
+        assert_eq!(core.history.undo_depth(), depth + 1, "one step for the run");
+
+        assert!(core.undo());
+        assert_eq!(core.song.channels, 4);
+        assert_eq!(core.channels.len(), 4);
+        assert_eq!(core.channels[3].name, "bass");
+        assert!(core.channels[3].muted);
+
+        assert!(core.redo());
+        assert_eq!((core.song.channels, core.channels.len()), (2, 2));
+
+        // Undo that predates config recording still leaves a config per track.
+        core.song.set_channels(4);
+        core.sync_channel_configs();
+        assert_eq!(core.channels.len(), 4);
+    }
 
     #[test]
     fn test_builder_headless() {

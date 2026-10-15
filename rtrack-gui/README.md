@@ -22,7 +22,7 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 
 - **Pattern grid** -- custom-painted monospace grid with click-to-position cursor, drag-to-select block regions, scroll wheel navigation, and color-coded sub-columns (note, instrument, volume, effect)
 - **Transport bar** -- drag-adjustable BPM, speed, octave, and edit step; play/stop/record buttons; order/row/pattern position display; playback elapsed time; follow mode toggle; mode indicator (Normal/Insert); audio engine status (SF2/Synth); clickable MIDI status and clock mode; Ableton Link toggle with peer count
-- **Menu bar** -- File (New, Open, Save, Save As, Load SF2, Load Sample Dir, Recent Files, Export WAV/FLAC/MIDI, Quit), Edit (Undo, Redo, Copy, Cut, Paste, Song Settings), View (Instruments, Pattern Matrix, Help, MIDI Ports, Spectrum, Theme)
+- **Menu bar** -- File (New, Open, Save, Save As, Load SF2, Load Sample Dir, Recent Files, Export WAV/FLAC/MIDI, Quit), Edit (Undo, Redo, Copy, Cut, Paste, Song Settings), View (Tables, Phrases, Phrase Editor, Phrase borders, Second effect column, Instruments, Pattern Matrix, Help, MIDI Ports, Spectrum, Theme)
 - **Sidebar** -- clickable order list with append, channel list with mute/solo toggles
 - **Visualization panel** -- real-time FFT spectrum analyzer (64 log-frequency bars, -72 to 0 dB range) with stereo level meters and peak hold; sample waveform viewer with trim/loop markers, playhead tracking across sliced samples, and interactive slicing controls
 - **Instrument editor** -- scrollable sidebar with type indicators ([SYN]/[SMP]/[MID]), create/clear buttons; central panel with name editing, type selector (Empty/Synth/Sample/MIDI), pitch bend range
@@ -59,6 +59,7 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 | F1 | Toggle help |
 | F2 | MIDI ports dialog |
 | F4 | Toggle spectrum/visualization panel |
+| F5 | Phrase editor: show the cursor track's phrase in the grid / back |
 | F7 | Instrument editor |
 | F8 | Cycle color theme (Dark/Light/Monokai) |
 | Ctrl+P | Pattern matrix |

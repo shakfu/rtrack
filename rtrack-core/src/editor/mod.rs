@@ -116,6 +116,15 @@ pub struct BankEdit {
     pub after: crate::core::SampleSnapshot,
 }
 
+/// The track configs (name, mute, effects, default instrument) either side
+/// of a change. They live in `TrackerCore`, not the song, so a song snapshot
+/// does not restore them.
+#[derive(Clone)]
+pub struct TracksEdit {
+    pub before: Vec<crate::types::ChannelConfig>,
+    pub after: Vec<crate::types::ChannelConfig>,
+}
+
 /// One undoable step.
 #[derive(Clone)]
 pub enum Edit {
@@ -134,6 +143,8 @@ pub enum Edit {
     /// Describing that as a diff costs more than copying the song, and they
     /// happen orders of magnitude less often than a keystroke.
     Structure(Box<StructureEdit>),
+    /// The track configs.
+    Tracks(Box<TracksEdit>),
     /// Several changes that one action made together, undone and redone as
     /// one step.
     ///
@@ -158,6 +169,7 @@ impl Edit {
             Self::Cells(_) => "cells",
             Self::Bank(_) => "samples",
             Self::Structure(_) => "song structure",
+            Self::Tracks(_) => "tracks",
             Self::Group(_) => "several changes",
         }
     }
@@ -188,6 +200,11 @@ impl Edit {
                 std::mem::size_of::<Self>()
                     + s.before.approx_heap_bytes()
                     + s.after.approx_heap_bytes()
+            }
+            Self::Tracks(t) => {
+                std::mem::size_of::<Self>()
+                    + (t.before.len() + t.after.len())
+                        * std::mem::size_of::<crate::types::ChannelConfig>()
             }
             Self::Group(edits) => {
                 std::mem::size_of::<Self>() + edits.iter().map(|e| e.approx_bytes()).sum::<usize>()
@@ -256,6 +273,25 @@ fn amend(existing: &mut Edit, next: Edit) -> Result<(), Edit> {
         }
         (Edit::Bank(old), Edit::Bank(new)) => {
             old.after = new.after;
+            Ok(())
+        }
+        (Edit::Tracks(old), Edit::Tracks(new)) => {
+            old.after = new.after;
+            Ok(())
+        }
+        // Part by part, checked first so a mismatch changes nothing.
+        (Edit::Group(old), Edit::Group(new))
+            if old.len() == new.len()
+                && old.iter().zip(&new).all(|(a, b)| {
+                    std::mem::discriminant(a) == std::mem::discriminant(b)
+                        && !matches!(a, Edit::Cells(_) | Edit::Group(_))
+                }) =>
+        {
+            for (part, next) in old.iter_mut().zip(new) {
+                amend(part, next)
+                    .map_err(|_| ())
+                    .expect("kinds checked above");
+            }
             Ok(())
         }
         (_, next) => Err(next),
