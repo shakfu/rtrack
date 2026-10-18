@@ -1347,6 +1347,20 @@ impl BuiltinSynth {
         }
     }
 
+    /// Remove voices whose release has ended. Through `reclaim_voice`, so a
+    /// pad's graph goes back to the pool instead of being dropped with it.
+    fn reclaim_finished_voices(&mut self) {
+        let mut i = 0;
+        while i < self.voices.len() {
+            let v = &self.voices[i];
+            if v.active || v.envelope.stage != EnvStage::Off {
+                i += 1;
+            } else {
+                self.reclaim_voice(i);
+            }
+        }
+    }
+
     pub fn note_off(&mut self, channel: u8, note: u8) {
         for voice in &mut self.voices {
             if voice.active && voice.channel == channel && voice.note == note {
@@ -1411,9 +1425,7 @@ impl BuiltinSynth {
             right += r;
         }
 
-        // Garbage collect dead voices periodically
-        self.voices
-            .retain(|v| v.active || v.envelope.stage != EnvStage::Off);
+        self.reclaim_finished_voices();
 
         (left, right)
     }
@@ -1432,8 +1444,7 @@ impl BuiltinSynth {
             channel_out[ch][0] += l;
             channel_out[ch][1] += r;
         }
-        self.voices
-            .retain(|v| v.active || v.envelope.stage != EnvStage::Off);
+        self.reclaim_finished_voices();
     }
 
     /// Get active voice count (for debugging/UI)
@@ -1944,6 +1955,25 @@ mod fundsp_pool_tests {
             held,
             MAX_VOICES
         );
+    }
+
+    #[test]
+    fn voices_that_finish_on_their_own_return_their_graph() {
+        let mut synth = BuiltinSynth::new(SR);
+        synth.program_change(0, PAD_PROGRAM);
+        // More notes than the pool holds, each released and left to end.
+        for i in 0..(MAX_VOICES + 8) {
+            synth.note_on(0, 60, 100);
+            synth.note_off(0, 60);
+            render_peak(&mut synth, SR as usize * 10);
+            assert_eq!(
+                synth.fundsp_pool.len(),
+                MAX_VOICES,
+                "graph leaked by note {i}"
+            );
+        }
+        synth.note_on(0, 60, 100);
+        assert!(render_peak(&mut synth, 512) > 1e-6, "the pad went silent");
     }
 
     #[test]

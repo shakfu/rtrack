@@ -234,7 +234,7 @@ fn every_truncation_of_a_valid_midi_file_is_survivable() {
             ..Default::default()
         },
     );
-    rtrack_core::midi_file::export_midi(&song, &src).expect("export");
+    rtrack_core::midi_file::export_midi(&song, &src, Default::default()).expect("export");
     let full = std::fs::read(&src).expect("read back");
 
     let probe = dir.path().join("probe.mid");
@@ -315,7 +315,8 @@ fn single_byte_corruption_of_an_aiff_is_survivable() {
 fn single_byte_corruption_of_a_midi_file_is_survivable() {
     let dir = tempfile::tempdir().expect("temp dir");
     let src = dir.path().join("full.mid");
-    rtrack_core::midi_file::export_midi(&Song::new(1, 16), &src).expect("export");
+    rtrack_core::midi_file::export_midi(&Song::new(1, 16), &src, Default::default())
+        .expect("export");
     let full = std::fs::read(&src).expect("read back");
 
     let probe = dir.path().join("probe.mid");

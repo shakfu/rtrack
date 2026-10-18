@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use super::{App, Mode, SampleField, SettingsField, SubColumn};
 use rtrack_core::constants::*;
+use rtrack_core::engine::ExportLength;
 use rtrack_core::theory::ScaleSetting;
 use rtrack_core::tracker::{Note, Song};
 
@@ -81,19 +82,7 @@ impl App {
                     let v = v.clamp(1, MAX_CHANNELS);
                     if v != self.core.song.channels {
                         self.push_undo();
-                        self.core.song.channels = v;
-                        // Resize all patterns
-                        for pat in &mut self.core.song.patterns {
-                            for row in &mut pat.data {
-                                row.resize(v, rtrack_core::tracker::Cell::default());
-                            }
-                            pat.channels = v;
-                        }
-                        // Grow or shrink channel configs to match new channel count
-                        self.core
-                            .channels
-                            .resize_with(v, super::ChannelConfig::default);
-                        self.core.channels.truncate(v);
+                        self.core.set_channel_count(v);
                         if self.cursor_channel >= v {
                             self.cursor_channel = v - 1;
                         }
@@ -769,20 +758,27 @@ impl App {
         self.core.dirty = true;
     }
 
+    /// Answer the unsaved-changes prompt, for quitting or for opening the
+    /// song in `pending_open`.
     fn handle_quit_confirm_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.should_quit = true;
-            }
+        let proceed = match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => true,
+            // A failed save leaves the prompt open; its status says why.
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                self.save();
-                self.should_quit = true;
+                if !self.save() {
+                    return;
+                }
+                true
             }
-            _ => {
-                // Any other key cancels
-                self.mode = self.prev_mode;
-                self.status_message = Some("Quit cancelled".to_string());
-            }
+            _ => false,
+        };
+        self.mode = self.prev_mode;
+        let open = self.pending_open.take();
+        match (proceed, open) {
+            (true, Some(path)) => self.load_file_discarding(path),
+            (true, None) => self.should_quit = true,
+            (false, Some(_)) => self.status_message = Some("Open cancelled".to_string()),
+            (false, None) => self.status_message = Some("Quit cancelled".to_string()),
         }
     }
 
@@ -1301,6 +1297,27 @@ impl App {
             self.alias_column(args);
             return;
         }
+        // Exports take an optional length: `:wav 3` (loops) or `:wav 90s`.
+        let (name, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
+        if matches!(name, "ew" | "wav" | "ef" | "flac" | "em" | "exportmidi") {
+            self.mode = Mode::Normal;
+            let length = match arg.trim() {
+                "" => ExportLength::default(),
+                arg => match arg.parse() {
+                    Ok(length) => length,
+                    Err(e) => {
+                        self.status_message = Some(e);
+                        return;
+                    }
+                },
+            };
+            match name {
+                "ew" | "wav" => self.export_wav_file(length),
+                "ef" | "flac" => self.export_flac_file(length),
+                _ => self.export_midi(length),
+            }
+            return;
+        }
         match cmd {
             "p" | "pattern" => {
                 self.open_pattern_matrix();
@@ -1321,8 +1338,8 @@ impl App {
                 self.save();
             }
             "wq" => {
-                self.save();
-                self.should_quit = true;
+                self.mode = Mode::Normal;
+                self.should_quit = self.save();
             }
             "h" | "help" => {
                 self.open_help();
@@ -1339,18 +1356,6 @@ impl App {
             "link" => {
                 self.mode = Mode::Normal;
                 self.core.toggle_link();
-            }
-            "ew" | "wav" => {
-                self.mode = Mode::Normal;
-                self.export_wav_file();
-            }
-            "ef" | "flac" => {
-                self.mode = Mode::Normal;
-                self.export_flac_file();
-            }
-            "em" | "exportmidi" => {
-                self.mode = Mode::Normal;
-                self.export_midi();
             }
             "fx" | "effects" => {
                 self.open_track_config();
@@ -1628,15 +1633,15 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('e') => {
-                    self.export_midi();
+                    self.export_midi(ExportLength::default());
                     return true;
                 }
                 KeyCode::Char('w') => {
-                    self.export_wav_file();
+                    self.export_wav_file(ExportLength::default());
                     return true;
                 }
                 KeyCode::Char('l') => {
-                    self.export_flac_file();
+                    self.export_flac_file(ExportLength::default());
                     return true;
                 }
                 KeyCode::Char('m') => {

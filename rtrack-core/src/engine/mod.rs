@@ -9,6 +9,110 @@ use crate::modulation::{ModOffsets, ModSlot, MOD_SLOTS};
 use crate::tracker::{allowed_in_table, Cell, Fx, FxCmd, Note, Song, FX_COLUMNS};
 
 // ---------------------------------------------------------------------------
+// Export length
+// ---------------------------------------------------------------------------
+
+/// How much of a song an offline export renders.
+///
+/// Exports run the engine with wrapping on, so a song that loops with a
+/// backward `JMP` ends a pass the same way as one that runs off the end of
+/// the order list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExportLength {
+    /// Passes through the song.
+    Loops(u32),
+    /// Seconds of song, looping as needed. Ends on a row boundary.
+    Seconds(f64),
+}
+
+impl Default for ExportLength {
+    fn default() -> Self {
+        ExportLength::Loops(1)
+    }
+}
+
+impl std::str::FromStr for ExportLength {
+    type Err = String;
+
+    /// `3` is three loops; `90s` is ninety seconds.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let invalid = || format!("invalid length \"{s}\": use a loop count (2) or seconds (90s)");
+        if let Some(secs) = s.strip_suffix('s') {
+            let secs: f64 = secs.parse().map_err(|_| invalid())?;
+            if !(secs > 0.0 && secs <= MAX_EXPORT_SECONDS) {
+                return Err(format!(
+                    "length must be between 0 and {MAX_EXPORT_SECONDS} seconds"
+                ));
+            }
+            return Ok(ExportLength::Seconds(secs));
+        }
+        match s.parse::<u32>() {
+            Ok(0) => Err("loop count must be at least 1".to_string()),
+            Ok(n) => Ok(ExportLength::Loops(n)),
+            Err(_) => Err(invalid()),
+        }
+    }
+}
+
+impl std::fmt::Display for ExportLength {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExportLength::Loops(1) => write!(f, "1 loop"),
+            ExportLength::Loops(n) => write!(f, "{n} loops"),
+            ExportLength::Seconds(s) => write!(f, "{s}s"),
+        }
+    }
+}
+
+/// Drives a [`TrackerEngine`] for an offline export and decides when to stop.
+pub struct ExportClock {
+    length: ExportLength,
+    elapsed: f64,
+}
+
+impl ExportClock {
+    pub fn new(length: ExportLength) -> Self {
+        Self {
+            length,
+            elapsed: 0.0,
+        }
+    }
+
+    /// Whether the export is complete before the engine's next tick.
+    ///
+    /// Errors once the render passes [`MAX_EXPORT_SECONDS`].
+    pub fn done(&self, engine: &TrackerEngine) -> anyhow::Result<bool> {
+        if engine.finished {
+            return Ok(true);
+        }
+        // Stop only between rows, so the last row keeps its full length.
+        if engine.tick == 0 {
+            let reached = match self.length {
+                ExportLength::Loops(n) => engine.generation >= n.max(1),
+                // Tolerance for the rounding summed over many ticks.
+                ExportLength::Seconds(s) => self.elapsed >= s - 1e-9,
+            };
+            if reached {
+                return Ok(true);
+            }
+        }
+        if self.elapsed > MAX_EXPORT_SECONDS {
+            anyhow::bail!(
+                "export passed the {} minute limit",
+                MAX_EXPORT_SECONDS / 60.0
+            );
+        }
+        Ok(false)
+    }
+
+    /// Account for one tick of `seconds`.
+    pub fn advance(&mut self, seconds: f64) {
+        self.elapsed += seconds;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Channel state
 // ---------------------------------------------------------------------------
 
@@ -1139,7 +1243,11 @@ impl TrackerEngine {
         let Some(run) = self.channel_states[ch].table else {
             return false;
         };
-        let row = song.tables[run.table as usize].rows[run.row];
+        // The song can be replaced under a running table (load, undo).
+        let Some(row) = song.tables.get(run.table as usize).map(|t| t.rows[run.row]) else {
+            self.channel_states[ch].table = None;
+            return false;
+        };
         let audible = self.channel_audible(ch);
         let state = &mut self.channel_states[ch];
         let before = run.transpose;
@@ -1194,7 +1302,10 @@ impl TrackerEngine {
                 self.channel_states[ch].table = Some(run);
                 continue;
             }
-            let table = &song.tables[run.table as usize];
+            let Some(table) = song.tables.get(run.table as usize) else {
+                self.channel_states[ch].table = None;
+                continue;
+            };
             run.tick += 1;
             if run.tick < table.tic {
                 self.channel_states[ch].table = Some(run);
@@ -1224,6 +1335,15 @@ mod tests {
 
     fn make_song() -> Song {
         Song::new(2, 16)
+    }
+
+    #[test]
+    fn export_lengths_parse_as_loops_or_seconds() {
+        assert_eq!("2".parse(), Ok(ExportLength::Loops(2)));
+        assert_eq!(" 90s ".parse(), Ok(ExportLength::Seconds(90.0)));
+        for bad in ["0", "0s", "-1", "s", "two", "1e9s", "nans"] {
+            assert!(bad.parse::<ExportLength>().is_err(), "{bad} parsed");
+        }
     }
 
     #[test]
@@ -2207,6 +2327,22 @@ mod tests {
             vec![7.0],
             "the first row sounds with the note"
         );
+    }
+
+    #[test]
+    fn a_running_table_whose_song_lost_its_tables_stops_instead_of_panicking() {
+        let mut song = table_song(&[(Some(0), None, None), (Some(5), None, None)], 2);
+        song.set_cell(0, 0, 0, c4(Fx::only(FxCmd::Table, 0), None));
+        let mut engine = TrackerEngine::new(&song, true);
+        engine.process_tick(&song);
+        engine.process_tick(&song);
+        assert!(engine.channel_states[0].table.is_some());
+
+        song.tables.clear();
+        for _ in 0..8 {
+            engine.process_tick(&song);
+        }
+        assert!(engine.channel_states[0].table.is_none());
     }
 
     #[test]

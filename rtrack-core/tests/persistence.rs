@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use rtrack_core::audio::effects::SendBusType;
 use rtrack_core::core::{TrackerCore, TrackerCoreBuilder};
-use rtrack_core::tracker::{Cell, Fx, FxCmd, Note, NoteValue, SongFile};
+use rtrack_core::tracker::{Cell, Fx, FxCmd, Note, NoteValue, Song, SongFile};
 use rtrack_core::types::{InstrumentKind, LearnableParam, MidiCcMapping, MidiOut};
 
 fn headless(channels: usize, rows: usize) -> TrackerCore {
@@ -186,8 +186,8 @@ fn files_without_channel_state_still_load() {
 
 #[test]
 fn files_with_unknown_fields_still_load() {
-    // Forward compatibility: a file written by a newer version must not be
-    // rejected outright just because it carries fields we do not know.
+    // Fields this build does not know, such as those of removed features,
+    // are ignored. Only a newer format version is refused.
     let path = scratch("unknown_fields");
     let json = r#"{
         "title": "FromTheFuture",
@@ -365,7 +365,6 @@ fn saved_files_carry_the_format_version() {
 
     let file = SongFile::load(&path).unwrap();
     assert_eq!(file.version, rtrack_core::tracker::FORMAT_VERSION);
-    assert!(!file.is_from_newer_version());
 
     let _ = std::fs::remove_file(&path);
 }
@@ -382,13 +381,12 @@ fn files_predating_the_version_field_load_as_version_zero() {
 
     let file = SongFile::load(&path).unwrap();
     assert_eq!(file.version, 0);
-    assert!(!file.is_from_newer_version());
 
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn a_file_from_a_newer_version_loads_but_says_so() {
+fn a_file_from_a_newer_version_is_refused() {
     let path = scratch("future_version");
     let json = r#"{
         "version": 9999,
@@ -399,12 +397,10 @@ fn a_file_from_a_newer_version_loads_but_says_so() {
     std::fs::write(&path, json).unwrap();
 
     let mut core = headless(4, 16);
-    let report = core.load_file(&path).unwrap();
-    assert!(
-        report.from_newer_version,
-        "newer-version file not flagged: {report:?}"
-    );
-    assert_eq!(core.song.title, "FromTheFuture");
+    let before = core.song.title.clone();
+    let err = core.load_file(&path).unwrap_err().to_string();
+    assert!(err.contains("newer rtrack"), "unexpected error: {err}");
+    assert_eq!(core.song.title, before, "the open song must be left alone");
 
     let _ = std::fs::remove_file(&path);
 }
@@ -737,5 +733,97 @@ fn tables_and_instrument_table_links_survive_a_round_trip() {
     assert!(report.is_clean(), "{report:?}");
     assert_eq!(reloaded.song.tables, vec![table]);
     assert_eq!(reloaded.instruments[4].table, Some(0));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn importing_midi_starts_an_unsaved_song_rather_than_retargeting_the_open_file() {
+    let song_path = scratch("import_keeps_path");
+    let mut core = headless(2, 8);
+    core.file_path = Some(song_path.clone());
+    core.save().unwrap();
+    let saved = std::fs::read(&song_path).unwrap();
+
+    let mid = song_path.with_extension("mid");
+    rtrack_core::midi_file::export_midi(&Song::new(1, 16), &mid, Default::default()).unwrap();
+    core.import_midi_file(&mid).unwrap();
+
+    assert_eq!(
+        core.file_path, None,
+        "the next save would overwrite the old song"
+    );
+    assert!(core.dirty, "the import must count as unsaved work");
+    assert_eq!(std::fs::read(&song_path).unwrap(), saved);
+
+    let _ = std::fs::remove_file(&song_path);
+    let _ = std::fs::remove_file(&mid);
+}
+
+#[test]
+fn loading_a_song_during_playback_stops_it_and_does_not_panic() {
+    use rtrack_core::tracker::{Table, FX_COLUMNS};
+
+    let empty_path = scratch("load_while_playing");
+    headless(1, 4)
+        .build_song_file(&empty_path)
+        .save(&empty_path)
+        .unwrap();
+
+    let mut core = headless(1, 4);
+    core.song.tables.push(Table::default());
+    let mut fx = [None; FX_COLUMNS];
+    fx[0] = Some(Fx::new(FxCmd::Table, 0));
+    core.song.set_cell(
+        0,
+        0,
+        0,
+        Cell {
+            fx,
+            ..note(NoteValue::C, 4)
+        },
+    );
+    core.play(0, 0);
+    core.process_tick();
+    core.process_tick();
+
+    core.load_file(&empty_path).unwrap();
+    assert!(!core.playing);
+    for _ in 0..8 {
+        core.process_tick();
+    }
+
+    let _ = std::fs::remove_file(&empty_path);
+}
+
+#[test]
+fn a_file_declaring_too_many_patterns_is_capped_before_allocation() {
+    use rtrack_core::constants::MAX_PATTERNS;
+
+    let path = scratch("pattern_bomb");
+    let patterns = vec![r#"{"rows":256,"channels":16,"data":[]}"#; MAX_PATTERNS * 4].join(",");
+    let json = format!(
+        r#"{{"title":"Bomb","bpm":120,"speed":6,"patterns":[{patterns}],
+            "order":[0, {last}],"channels":16,"rows_per_pattern":64}}"#,
+        last = MAX_PATTERNS * 4 - 1
+    );
+    std::fs::write(&path, json).unwrap();
+
+    let mut core = headless(1, 4);
+    let report = core.load_file(&path).unwrap();
+    assert_eq!(core.song.patterns.len(), MAX_PATTERNS);
+    assert_eq!(
+        core.song.order,
+        vec![0],
+        "an order entry past the cap must go"
+    );
+    assert!(
+        report
+            .repairs
+            .iter()
+            .any(|r| r.contains("patterns past the maximum")),
+        "{:?}",
+        report.repairs
+    );
+
     let _ = std::fs::remove_file(&path);
 }

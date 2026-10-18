@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::audio::AudioEngine;
 use crate::constants::*;
-use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::engine::{ExportLength, TrackerEngine, TrackerEvent};
 use crate::link::LinkEngine;
 use crate::midi::{MidiEngine, MidiInputEngine};
 use crate::sample::playback::NewNoteAction;
@@ -27,8 +27,7 @@ use crate::types::{
 /// What a load produced, beyond the song itself.
 ///
 /// A load can succeed while still having something to say -- samples that
-/// could not be found, structural damage that was repaired, a file from a
-/// newer version. The caller decides how much of that to show and how to
+/// could not be found, structural damage that was repaired. The caller decides how much of that to show and how to
 /// word it.
 #[derive(Debug, Clone, Default)]
 pub struct LoadReport {
@@ -39,14 +38,12 @@ pub struct LoadReport {
     /// Samples referenced by the song that could not be loaded, as
     /// (name, reason) pairs.
     pub missing_samples: Vec<(String, String)>,
-    /// The file declares a format version this build does not know.
-    pub from_newer_version: bool,
 }
 
 impl LoadReport {
     /// True if the load was completely clean.
     pub fn is_clean(&self) -> bool {
-        self.repairs.is_empty() && self.missing_samples.is_empty() && !self.from_newer_version
+        self.repairs.is_empty() && self.missing_samples.is_empty()
     }
 }
 
@@ -1596,6 +1593,38 @@ impl TrackerCore {
         self.dirty = true;
     }
 
+    /// Set the song's channel count, resizing every pattern to match.
+    ///
+    /// Settings of channels past the new count are kept, so `channels` can
+    /// be longer than the song. Undoing a reduction then finds them intact.
+    pub fn set_channel_count(&mut self, n: usize) {
+        let n = n.clamp(1, MAX_CHANNELS);
+        self.song.channels = n;
+        for pat in &mut self.song.patterns {
+            for row in &mut pat.data {
+                row.resize(n, crate::tracker::Cell::default());
+            }
+            pat.channels = n;
+        }
+        self.cover_song_channels();
+        self.dirty = true;
+    }
+
+    /// Put back a whole song from an undo step.
+    pub fn restore_song(&mut self, song: Song) {
+        self.song = song;
+        self.cover_song_channels();
+        self.sync_engine_channel_info();
+    }
+
+    /// Give every song channel a settings entry.
+    fn cover_song_channels(&mut self) {
+        if self.channels.len() < self.song.channels {
+            self.channels
+                .resize_with(self.song.channels, ChannelConfig::default);
+        }
+    }
+
     /// Put back a snapshot taken by [`TrackerCore::snapshot_samples`].
     pub fn restore_samples(&mut self, snapshot: SampleSnapshot) {
         self.sample_bank = snapshot.bank;
@@ -1763,6 +1792,15 @@ impl TrackerCore {
                 })
                 .collect(),
             sample_rate: self.export_sample_rate(),
+            length: ExportLength::default(),
+        }
+    }
+
+    /// [`Self::render_setup`] for `length` of the song.
+    fn render_setup_for(&self, length: ExportLength) -> crate::sample::export::RenderSetup<'_> {
+        crate::sample::export::RenderSetup {
+            length,
+            ..self.render_setup()
         }
     }
 
@@ -1776,13 +1814,13 @@ impl TrackerCore {
 
     /// Export the song to a WAV file at the given path.
     #[allow(dead_code)]
-    pub fn export_wav(&self, path: &std::path::Path) -> Result<()> {
-        crate::sample::export::render_to_wav(path, &self.render_setup())
+    pub fn export_wav(&self, path: &std::path::Path, length: ExportLength) -> Result<()> {
+        crate::sample::export::render_to_wav(path, &self.render_setup_for(length))
             .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a WAV file alongside the song file (or in the current directory).
-    pub fn export_wav_to_default(&self) -> Result<PathBuf> {
+    pub fn export_wav_to_default(&self, length: ExportLength) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -1791,13 +1829,13 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.wav", name))
             });
-        crate::sample::export::render_to_wav(&path, &self.render_setup())
+        crate::sample::export::render_to_wav(&path, &self.render_setup_for(length))
             .map(|()| path)
             .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a FLAC file alongside the song file (or in the current directory).
-    pub fn export_flac_to_default(&self) -> Result<PathBuf> {
+    pub fn export_flac_to_default(&self, length: ExportLength) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -1806,13 +1844,13 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.flac", name))
             });
-        crate::sample::export::render_to_flac(&path, &self.render_setup())
+        crate::sample::export::render_to_flac(&path, &self.render_setup_for(length))
             .map(|()| path)
             .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a standard MIDI file alongside the song file.
-    pub fn export_midi_to_default(&self) -> Result<PathBuf> {
+    pub fn export_midi_to_default(&self, length: ExportLength) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -1821,7 +1859,8 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.mid", name))
             });
-        crate::midi_file::export_midi(&self.song, &path).map_err(|e| Error::file(&path, e))?;
+        crate::midi_file::export_midi(&self.song, &path, length)
+            .map_err(|e| Error::file(&path, e))?;
         Ok(path)
     }
 
@@ -1882,7 +1921,7 @@ impl TrackerCore {
             song: self.song.clone(),
             instruments,
             sample_refs,
-            channels_config: self.channels.clone(),
+            channels_config: self.channels[..self.song.channels.min(self.channels.len())].to_vec(),
             send_buses: self.send_bus_params.clone(),
             midi_cc_mappings: self.midi_cc_mappings.clone(),
         }
@@ -1963,16 +2002,25 @@ impl TrackerCore {
         let _ = std::fs::remove_file(self.autosave_path());
     }
 
+    /// Swap in `song`, stopping playback first. Engine state left from the
+    /// old song (a running table, say) can index past the new one.
+    fn replace_song(&mut self, song: Song) {
+        if self.playing {
+            self.stop();
+        }
+        self.solo_channel = None;
+        self.song = song;
+        self.engine.reset(&self.song, 0, 0);
+    }
+
     /// Load a song file. Restores core state (song, instruments, samples).
     /// The caller is responsible for resetting UI state (cursor, history, etc.).
     pub fn load_file(&mut self, path: &std::path::Path) -> Result<LoadReport> {
         match SongFile::load(path) {
             Ok(song_file) => {
-                let from_newer = song_file.is_from_newer_version();
                 let mut song = song_file.song;
                 let repairs = song.repair();
-                self.solo_channel = None;
-                self.song = song;
+                self.replace_song(song);
 
                 // Restore mixer state. Files written before channel state was
                 // persisted carry no entries, so fall back to defaults and
@@ -2078,7 +2126,6 @@ impl TrackerCore {
                     path: path.to_path_buf(),
                     repairs,
                     missing_samples: sample_errors,
-                    from_newer_version: from_newer,
                 })
             }
             Err(e) => Err(Error::file(path, e)),
@@ -2095,8 +2142,12 @@ impl TrackerCore {
         match crate::midi_file::import_midi_with_report(path) {
             Ok((song, repairs)) => {
                 self.channels = default_channel_configs(song.channels);
-                self.solo_channel = None;
-                self.song = song;
+                self.replace_song(song);
+                self.midi_route = [None; MAX_CHANNELS];
+                // The import is a new, unsaved song. Keeping the previous
+                // path would let the next save overwrite that file with it.
+                self.file_path = None;
+                self.dirty = true;
                 Ok(LoadReport {
                     path: path.to_path_buf(),
                     repairs,

@@ -46,6 +46,8 @@ pub struct RtrackApp {
     // Dialogs
     pub show_song_settings: bool,
     pub show_quit_confirm: bool,
+    /// New or Open waiting on the unsaved-changes prompt.
+    pub(crate) pending_song_change: Option<crate::menu::PendingSongChange>,
     pub show_track_config: Option<usize>,
     pub show_help: bool,
     pub show_midi_ports: bool,
@@ -68,6 +70,9 @@ pub struct RtrackApp {
 
     // Recent files
     pub recent_files: Vec<PathBuf>,
+
+    /// How much of the song the next export writes.
+    pub export_length: rtrack_core::engine::ExportLength,
 
     // Theme
     pub theme: Theme,
@@ -109,6 +114,7 @@ impl RtrackApp {
             block_end: None,
             show_song_settings: false,
             show_quit_confirm: false,
+            pending_song_change: None,
             show_track_config: None,
             show_help: false,
             show_midi_ports: false,
@@ -123,6 +129,7 @@ impl RtrackApp {
             show_pattern_matrix: false,
             matrix_cursor: 0,
             recent_files: rtrack_core::config::load_recent_files(),
+            export_length: Default::default(),
             theme: Theme::Dark,
             grid_colors: GridColors::dark(),
             last_autosave: Instant::now(),
@@ -138,9 +145,6 @@ impl RtrackApp {
             return format!("Loaded: {}", report.path.display());
         }
         let mut notes = Vec::new();
-        if report.from_newer_version {
-            notes.push("written by a newer rtrack; some settings may be missing".to_string());
-        }
         if !report.repairs.is_empty() {
             notes.push(format!("repaired: {}", report.repairs.join("; ")));
         }
@@ -258,23 +262,7 @@ impl RtrackApp {
                 .to_lowercase();
 
             if ext == rtrk_ext {
-                // Load as project file
-                match self.core.load_file(path) {
-                    Ok(report) => {
-                        self.cursor_row = 0;
-                        self.cursor_channel = 0;
-                        self.edit_order = 0;
-                        self.first_visible_channel = 0;
-                        self.history = EditHistory::new();
-                        rtrack_core::config::push_recent_file(&mut self.recent_files, path);
-                        rtrack_core::config::save_recent_files(&self.recent_files);
-                        self.status_message = Some(Self::describe_load(&report));
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            Some(format!("Error loading {}: {}", path.display(), e));
-                    }
-                }
+                self.request_song_change(crate::menu::PendingSongChange::Open(path.to_path_buf()));
                 return; // Only load one project file
             }
 

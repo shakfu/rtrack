@@ -121,6 +121,8 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 | Ctrl+L | Export FLAC |
 | Ctrl+M | Toggle MIDI clock output |
 
+Exports write one pass of the song by default. *Export length* in the File menu sets a loop count or a number of seconds for the shortcuts and menu items alike.
+
 ## Build requirements
 
 - Rust 1.95+

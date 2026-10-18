@@ -1,8 +1,25 @@
+use rtrack_core::constants::MAX_EXPORT_SECONDS;
+use rtrack_core::engine::ExportLength;
 use rtrack_core::tracker::Cell;
 use rtrack_core::TrackerCore;
 
 use crate::app::RtrackApp;
 use crate::state::SubColumn;
+
+/// A replacement of the song waiting on the unsaved-changes prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PendingSongChange {
+    New,
+    Open(std::path::PathBuf),
+}
+
+/// What an export writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ExportFormat {
+    Wav,
+    Flac,
+    Midi,
+}
 
 impl RtrackApp {
     pub fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -10,22 +27,8 @@ impl RtrackApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New").clicked() {
-                        let config = rtrack_core::config::load_config();
-                        self.core = TrackerCore::with_song_size(8, 64);
-                        // Re-init audio on the new core with SF2 from config
-                        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
-                            Ok(engine) => {
-                                self.core.audio = Some(engine);
-                            }
-                            Err(e) => {
-                                eprintln!("Audio warning: {}", e);
-                            }
-                        }
-                        self.reset_cursor_state();
-                        self.history.clear();
-                        self.clipboard.clear();
-                        self.status_message = Some("New song created".to_string());
                         ui.close();
+                        self.request_song_change(PendingSongChange::New);
                     }
 
                     if ui.button("Open...").clicked() {
@@ -34,22 +37,7 @@ impl RtrackApp {
                             .add_filter("rtrack", &["rtrk"])
                             .pick_file()
                         {
-                            match self.core.load_file(&path) {
-                                Ok(report) => {
-                                    self.reset_cursor_state();
-                                    self.history.clear();
-                                    self.clipboard.clear();
-                                    rtrack_core::config::push_recent_file(
-                                        &mut self.recent_files,
-                                        &path,
-                                    );
-                                    rtrack_core::config::save_recent_files(&self.recent_files);
-                                    self.status_message = Some(Self::describe_load(&report));
-                                }
-                                Err(e) => {
-                                    self.status_message = Some(format!("Load failed: {}", e));
-                                }
-                            }
+                            self.request_song_change(PendingSongChange::Open(path));
                         }
                     }
 
@@ -89,20 +77,8 @@ impl RtrackApp {
                                 let label =
                                     path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                                 if ui.button(label).clicked() {
-                                    match self.core.load_file(path) {
-                                        Ok(report) => {
-                                            self.reset_cursor_state();
-                                            self.history.clear();
-                                            self.clipboard.clear();
-                                            self.status_message =
-                                                Some(Self::describe_load(&report));
-                                        }
-                                        Err(e) => {
-                                            self.status_message =
-                                                Some(format!("Load failed: {}", e));
-                                        }
-                                    }
                                     ui.close();
+                                    self.request_song_change(PendingSongChange::Open(path.clone()));
                                 }
                             }
                         });
@@ -110,26 +86,18 @@ impl RtrackApp {
 
                     ui.separator();
 
+                    self.draw_export_length(ui);
                     if ui.button("Export WAV").clicked() {
                         ui.close();
-                        self.status_message = Some(match self.core.export_wav_to_default() {
-                            Ok(path) => format!("Exported WAV: {}", path.display()),
-                            Err(e) => format!("WAV export failed: {}", e),
-                        });
+                        self.export(ExportFormat::Wav);
                     }
                     if ui.button("Export FLAC").clicked() {
                         ui.close();
-                        self.status_message = Some(match self.core.export_flac_to_default() {
-                            Ok(path) => format!("Exported FLAC: {}", path.display()),
-                            Err(e) => format!("FLAC export failed: {}", e),
-                        });
+                        self.export(ExportFormat::Flac);
                     }
                     if ui.button("Export MIDI").clicked() {
                         ui.close();
-                        self.status_message = Some(match self.core.export_midi_to_default() {
-                            Ok(path) => format!("Exported MIDI: {}", path.display()),
-                            Err(e) => format!("MIDI export failed: {}", e),
-                        });
+                        self.export(ExportFormat::Midi);
                     }
 
                     ui.separator();
@@ -268,17 +236,105 @@ impl RtrackApp {
         });
     }
 
-    pub fn do_save(&mut self) {
+    /// Save the song. Returns whether it was written.
+    pub fn do_save(&mut self) -> bool {
         match self.core.save() {
             Ok(path) => {
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(format!("Saved: {}", path.display()));
+                true
             }
             Err(e) => {
                 self.status_message = Some(format!("Save failed: {}", e));
+                false
             }
         }
+    }
+
+    /// Replace the song, asking first if the current one has unsaved
+    /// changes. Every path that replaces the song comes through here.
+    pub(crate) fn request_song_change(&mut self, change: PendingSongChange) {
+        if self.core.dirty {
+            self.pending_song_change = Some(change);
+        } else {
+            self.apply_song_change(change);
+        }
+    }
+
+    /// Replace the song, dropping any unsaved changes.
+    pub(crate) fn apply_song_change(&mut self, change: PendingSongChange) {
+        match change {
+            PendingSongChange::New => {
+                let config = rtrack_core::config::load_config();
+                self.core = TrackerCore::with_song_size(8, 64);
+                // Re-init audio on the new core with SF2 from config
+                match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
+                    Ok(engine) => {
+                        self.core.audio = Some(engine);
+                    }
+                    Err(e) => {
+                        eprintln!("Audio warning: {}", e);
+                    }
+                }
+                self.status_message = Some("New song created".to_string());
+            }
+            PendingSongChange::Open(path) => match self.core.load_file(&path) {
+                Ok(report) => {
+                    rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                    rtrack_core::config::save_recent_files(&self.recent_files);
+                    self.status_message = Some(Self::describe_load(&report));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Load failed: {}", e));
+                    return;
+                }
+            },
+        }
+        self.reset_cursor_state();
+        self.first_visible_channel = 0;
+        self.history.clear();
+        self.clipboard.clear();
+    }
+
+    /// Loops or seconds for the next export.
+    fn draw_export_length(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Export length:");
+            let loops = matches!(self.export_length, ExportLength::Loops(_));
+            if ui.selectable_label(loops, "Loops").clicked() && !loops {
+                self.export_length = ExportLength::Loops(1);
+            }
+            if ui.selectable_label(!loops, "Seconds").clicked() && loops {
+                self.export_length = ExportLength::Seconds(60.0);
+            }
+            match &mut self.export_length {
+                ExportLength::Loops(n) => {
+                    ui.add(egui::DragValue::new(n).range(1..=99));
+                }
+                ExportLength::Seconds(s) => {
+                    ui.add(
+                        egui::DragValue::new(s)
+                            .range(1.0..=MAX_EXPORT_SECONDS)
+                            .suffix(" s"),
+                    );
+                }
+            }
+        });
+    }
+
+    /// Export the song beside its file, at the length set in the File menu.
+    pub(crate) fn export(&mut self, format: ExportFormat) {
+        let length = self.export_length;
+        let (name, result) = match format {
+            ExportFormat::Wav => ("WAV", self.core.export_wav_to_default(length)),
+            ExportFormat::Flac => ("FLAC", self.core.export_flac_to_default(length)),
+            ExportFormat::Midi => ("MIDI", self.core.export_midi_to_default(length)),
+        };
+        self.status_message = Some(match result {
+            Ok(path) => format!("Exported {name} ({length}): {}", path.display()),
+            Err(e) => format!("{name} export failed: {e}"),
+        });
     }
 
     fn reset_cursor_state(&mut self) {

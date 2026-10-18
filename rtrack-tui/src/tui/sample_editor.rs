@@ -69,11 +69,7 @@ pub fn draw_sample_panel(f: &mut Frame, app: &App, area: Rect) {
     let mut lines = Vec::with_capacity(height);
 
     // Info line
-    let name = if sample.name.len() > 20 {
-        &sample.name[..20]
-    } else {
-        &sample.name
-    };
+    let name: String = sample.name.chars().take(20).collect();
     lines.push(Line::from(vec![
         Span::styled(format!(" {:02X}", slot), Style::default().fg(Color::Yellow)),
         Span::styled(format!(" {} ", name), Style::default().fg(Color::White)),

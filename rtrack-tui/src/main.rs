@@ -11,6 +11,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
+use rtrack_core::engine::ExportLength;
 use rtrack_tui::app::App;
 use rtrack_tui::tui;
 
@@ -48,6 +49,10 @@ struct Cli {
     /// Output file path for --render (format detected from extension: .wav or .flac)
     #[arg(long, short)]
     output: Option<PathBuf>,
+
+    /// How much of the song --render writes: a loop count (2) or seconds (90s)
+    #[arg(long, default_value = "1")]
+    length: ExportLength,
 }
 
 fn main() -> Result<()> {
@@ -76,6 +81,7 @@ fn main() -> Result<()> {
             cli.samples,
             sample_dir.clone(),
             cli.output.unwrap(),
+            cli.length,
         );
         if let Err(e) = result {
             eprintln!("Error: {}", e);
@@ -202,6 +208,7 @@ fn run_render(
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
     output: PathBuf,
+    length: ExportLength,
 ) -> Result<()> {
     // Offline rendering does not use the audio device.
     let (app, _) = setup_app(sf2_path, samples, sample_dir, file)?;
@@ -216,14 +223,18 @@ fn run_render(
     let bpm = app.core.song.bpm;
     let order_len = app.core.song.order.len();
     eprintln!(
-        "Rendering: \"{}\" ({} BPM, {} patterns in order) -> {}",
+        "Rendering: \"{}\" ({} BPM, {} patterns in order, {}) -> {}",
         title,
         bpm,
         order_len,
+        length,
         output.display()
     );
 
-    let setup = app.core.render_setup();
+    let setup = rtrack_core::sample::export::RenderSetup {
+        length,
+        ..app.core.render_setup()
+    };
 
     match ext.as_str() {
         "wav" => {

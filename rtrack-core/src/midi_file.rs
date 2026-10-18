@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::constants::*;
-use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::engine::{ExportClock, ExportLength, TrackerEngine, TrackerEvent};
 use crate::tracker::{Fx, FxCmd, Note, NoteValue, Pattern, Song, TempoPoint};
 
 /// Events collected during MIDI import
@@ -124,19 +124,23 @@ fn pitch_bend_from_offset(offset: f64) -> u16 {
 /// - 3xx tone portamento -> pitch bend
 /// - 4xy vibrato -> pitch bend
 /// - 5xy volume slide -> CC 7
-pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
+///
+/// `length` sets how much of the song is written; see [`ExportLength`].
+pub fn export_midi(song: &Song, path: &Path, length: ExportLength) -> Result<()> {
     let num_tracks = song.channels as u16 + 1;
     let ticks_per_subtick = TICKS_PER_BEAT as u32 / 24;
 
     // Run engine to collect per-channel MIDI events as (abs_tick, raw_bytes)
-    let mut engine = TrackerEngine::new(song, false);
+    let mut engine = TrackerEngine::new(song, true);
+    let mut clock = ExportClock::new(length);
     let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
     let mut tempo_events: Vec<(u32, f64)> = Vec::new();
     // Every note sounding per channel: the row's note and any `CHD` tones.
     let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); song.channels];
     let mut abs_tick: u32 = 0;
 
-    while !engine.finished {
+    while !clock.done(&engine)? {
+        clock.advance(engine.seconds_per_tick(song));
         engine.process_tick(song);
         let events = engine.drain_events();
 
@@ -833,7 +837,7 @@ mod tests {
     fn test_export_starts_with_mthd() {
         let song = Song::new(2, 16);
         let tmp = std::env::temp_dir().join("rtrack_test_export_mthd.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         let data = std::fs::read(&tmp).unwrap();
         assert!(data.len() >= 14, "File too small");
@@ -911,7 +915,7 @@ mod tests {
         );
 
         let tmp = std::env::temp_dir().join("rtrack_test_roundtrip.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         let imported = import_midi(&tmp).unwrap();
 
@@ -1002,7 +1006,7 @@ mod tests {
             },
         );
         let tmp = std::env::temp_dir().join("rtrack_test_porta.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         let data = std::fs::read(&tmp).unwrap();
         // Check that pitch bend events (0xE0) are present in the file
@@ -1033,7 +1037,7 @@ mod tests {
             },
         );
         let tmp = std::env::temp_dir().join("rtrack_test_volslide.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         let data = std::fs::read(&tmp).unwrap();
         // Check for CC events (0xB0) with controller 7
@@ -1061,7 +1065,7 @@ mod tests {
             },
         );
         let tmp = std::env::temp_dir().join("rtrack_test_vibrato.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         let data = std::fs::read(&tmp).unwrap();
         let has_pitch_bend = data.windows(1).any(|w| w[0] & 0xF0 == 0xE0);
@@ -1096,7 +1100,7 @@ mod tests {
             },
         );
         let path = std::env::temp_dir().join("rtrack_chord_export.mid");
-        export_midi(&song, &path).unwrap();
+        export_midi(&song, &path, ExportLength::default()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let ons = [48u8, 52, 55]
@@ -1147,8 +1151,8 @@ mod tests {
 
         let tmp_plain = std::env::temp_dir().join("rtrack_test_plain.mid");
         let tmp_fx = std::env::temp_dir().join("rtrack_test_fx.mid");
-        export_midi(&song_plain, &tmp_plain).unwrap();
-        export_midi(&song_fx, &tmp_fx).unwrap();
+        export_midi(&song_plain, &tmp_plain, ExportLength::default()).unwrap();
+        export_midi(&song_fx, &tmp_fx, ExportLength::default()).unwrap();
 
         let size_plain = std::fs::metadata(&tmp_plain).unwrap().len();
         let size_fx = std::fs::metadata(&tmp_fx).unwrap().len();
@@ -1211,7 +1215,7 @@ mod tests {
         );
 
         let tmp = std::env::temp_dir().join("rtrack_test_tempo_export.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         // Re-import and verify the tempo change survived
         let imported = import_midi(&tmp).unwrap();
@@ -1263,7 +1267,7 @@ mod tests {
         );
 
         let tmp = std::env::temp_dir().join("rtrack_test_tempo_automation.mid");
-        export_midi(&song, &tmp).unwrap();
+        export_midi(&song, &tmp, ExportLength::default()).unwrap();
 
         let imported = import_midi(&tmp).unwrap();
         // Should have a tempo change near 140 BPM
@@ -1424,5 +1428,49 @@ mod tests {
 
         let (song, _) = import_midi_with_report(&path).expect("import must not panic");
         assert_eq!(song.patterns.len(), MAX_IMPORT_PATTERNS);
+    }
+
+    #[test]
+    fn a_song_that_loops_with_a_backward_jump_exports_once_per_loop() {
+        let mut song = Song::new(1, 4);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        let mut fx = [None; FX_COLUMNS];
+        fx[0] = Some(Fx::new(FxCmd::Jump, 0));
+        song.set_cell(
+            0,
+            3,
+            0,
+            Cell {
+                fx,
+                ..Cell::default()
+            },
+        );
+
+        let note_ons = |length| {
+            let path = std::env::temp_dir().join(format!(
+                "rtrack_loop_export_{}_{length}.mid",
+                std::process::id()
+            ));
+            export_midi(&song, &path, length).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            bytes
+                .windows(3)
+                .filter(|w| w[0] == 0x90 && w[2] > 0)
+                .count()
+        };
+        assert_eq!(note_ons(ExportLength::Loops(1)), 1);
+        assert_eq!(note_ons(ExportLength::Loops(3)), 3);
     }
 }

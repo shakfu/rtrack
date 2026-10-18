@@ -30,6 +30,7 @@ fn render(
             send_buses,
             channel_info: Vec::new(),
             sample_rate: 44100,
+            length: Default::default(),
         },
     )
 }
@@ -94,7 +95,7 @@ fn test_export_midi_roundtrip() {
     app.core.file_path = Some(path.with_extension("rtrk"));
 
     // Export MIDI via the midi_file module directly
-    let result = rtrack_core::midi_file::export_midi(&app.core.song, &path);
+    let result = rtrack_core::midi_file::export_midi(&app.core.song, &path, Default::default());
     assert!(result.is_ok(), "MIDI export failed: {:?}", result.err());
 
     // Import it back

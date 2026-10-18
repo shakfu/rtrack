@@ -58,6 +58,8 @@ rtrack-gui                               # launch GUI frontend
 
 Native desktop application built on egui/eframe. Clickable pattern grid with drag-to-select and block operations, native file dialogs (open/save/export), interactive transport bar (drag to adjust BPM/speed/octave/step), order list and channel mute/solo sidebar, real-time audio visualization (FFT spectrum analyzer with level meters, sample waveform viewer with playhead tracking), full instrument editor (synth patch selector with ADSR/filter/oscillator/FM params, sample loader with waveform preview and trim/loop editing, MIDI channel and program), interactive sample slicing (equal or transient detection with live preview, dividing either the whole sample or one slice), drag-and-drop sample loading, per-channel effects editing with MIDI learn, pattern matrix with channel data indicators, MIDI port selection dialog with clock mode switching, color themes (Dark/Light/Monokai), undo/redo (100 levels), and keyboard shortcuts mirroring the TUI. MIDI file *import* is currently TUI-only; the GUI exports MIDI but cannot open a `.mid`. See [`rtrack-gui/README.md`](rtrack-gui/README.md) for GUI-specific details.
 
+The two frontends differ where the GUI can show more. Each difference is listed, with its review status, in [`docs/frontend-differences.md`](docs/frontend-differences.md).
+
 ### CLI (Headless)
 
 Both offline render and headless playback work without launching either frontend:
@@ -65,6 +67,7 @@ Both offline render and headless playback work without launching either frontend
 ```sh
 rtrack --render song.rtrk -o out.wav     # render to WAV (no audio device needed)
 rtrack --render song.rtrk -o out.flac    # render to FLAC
+rtrack --render song.rtrk -o out.wav --length 2    # two passes; --length 90s for 90 seconds
 rtrack --play song.rtrk                  # play once and exit
 rtrack --play --loops 0 song.rtrk        # loop forever (Ctrl+C to stop)
 ```
@@ -300,6 +303,10 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 - Export to MIDI, WAV (offline render with synth, samples, and effects), and FLAC
 
 - CLI offline render (`--render song.rtrk -o out.wav`) -- no audio device needed
+
+- Exports write one pass of the song by default; a pass ends at the end of the order list or at a backward `JMP`. A loop count or a length in seconds can be given instead, up to one hour
+
+- A `.rtrk` from a newer rtrack is refused with a message to update, rather than loaded in part
 
 ## File Format
 

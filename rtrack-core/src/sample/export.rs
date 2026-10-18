@@ -11,7 +11,7 @@ use crate::audio::channel_effects::{
 use crate::audio::effects::{self, EffectsChain};
 use crate::audio::soft_clip;
 use crate::audio::synth::BuiltinSynth;
-use crate::engine::{ChannelInfo, TrackerEngine, TrackerEvent};
+use crate::engine::{ChannelInfo, ExportClock, ExportLength, TrackerEngine, TrackerEvent};
 use crate::tracker::Song;
 use crate::types::{resolve_voice, Instrument, Voice};
 
@@ -29,6 +29,7 @@ pub struct RenderSetup<'a> {
     /// Mute and solo are ignored: a render contains every channel.
     pub channel_info: Vec<ChannelInfo>,
     pub sample_rate: u32,
+    pub length: ExportLength,
 }
 
 /// Render an entire song to a WAV file (offline, non-real-time).
@@ -254,8 +255,8 @@ fn render_song_streaming(setup: &RenderSetup, sink: &mut BlockSink<'_>) -> Resul
     let per_channel = any_ch_fx || any_send_bus;
     let mut scratch = RenderScratch::new();
 
-    // Drive playback via TrackerEngine (no wrap = stop at end)
-    let mut engine = TrackerEngine::new(song, false);
+    let mut engine = TrackerEngine::new(song, true);
+    let mut clock = ExportClock::new(setup.length);
     engine.set_channel_info(setup.channel_info.clone());
     engine.set_instruments(instruments.iter().map(Into::into).collect());
     let num_channels = song.channels.max(1);
@@ -263,11 +264,12 @@ fn render_song_streaming(setup: &RenderSetup, sink: &mut BlockSink<'_>) -> Resul
     let mut active_instruments: Vec<Option<u8>> = vec![None; num_channels];
     let mut frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
 
-    while !engine.finished {
+    while !clock.done(&engine)? {
         // Snapshot timing before tick 0 advances the row
         if engine.tick == 0 {
             frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
         }
+        clock.advance(engine.seconds_per_tick(song));
 
         engine.process_tick(song);
         let events = engine.drain_events();
@@ -504,6 +506,7 @@ mod tests {
             send_buses: &[],
             channel_info: Vec::new(),
             sample_rate: 44100,
+            length: ExportLength::default(),
         }
     }
 
@@ -514,6 +517,69 @@ mod tests {
             v[0].kind = InstrumentKind::Sample { slot: 0 };
         }
         v
+    }
+
+    /// Frames in a render's body, before the fixed release tail.
+    fn body_frames(song: &Song, length: ExportLength) -> usize {
+        let bank = SampleBank::new();
+        let instruments = instruments(false);
+        let setup = RenderSetup {
+            length,
+            ..setup(song, &bank, &instruments)
+        };
+        render_song(&setup).unwrap().0.len() - 2 * 44100
+    }
+
+    /// Four rows at speed 6 and 120bpm: half a second, 24 ticks of 918
+    /// frames. With `jump`, the last row loops back to the start.
+    fn four_row_song(jump: bool) -> Song {
+        let mut song = Song::new(1, 4);
+        if jump {
+            let mut fx = [None; FX_COLUMNS];
+            fx[0] = Some(Fx::new(FxCmd::Jump, 0));
+            song.set_cell(
+                0,
+                3,
+                0,
+                Cell {
+                    fx,
+                    ..Cell::default()
+                },
+            );
+        }
+        song
+    }
+
+    #[test]
+    fn a_song_that_loops_with_a_backward_jump_exports_one_pass() {
+        let pass = 24 * 918;
+        assert_eq!(
+            body_frames(&four_row_song(true), ExportLength::Loops(1)),
+            pass
+        );
+        assert_eq!(
+            body_frames(&four_row_song(false), ExportLength::Loops(1)),
+            pass
+        );
+    }
+
+    #[test]
+    fn exports_repeat_for_the_requested_loops() {
+        for jump in [true, false] {
+            let song = four_row_song(jump);
+            assert_eq!(body_frames(&song, ExportLength::Loops(3)), 3 * 24 * 918);
+        }
+    }
+
+    #[test]
+    fn a_timed_export_ends_on_the_first_row_boundary_past_its_length() {
+        let frames = body_frames(&four_row_song(true), ExportLength::Seconds(5.0));
+        let row = 6 * 918;
+        let five_seconds = 240 * 918;
+        assert!(
+            (five_seconds..five_seconds + row).contains(&frames),
+            "{frames} frames"
+        );
     }
 
     #[test]

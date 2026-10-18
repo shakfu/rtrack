@@ -124,9 +124,11 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:q!` | Force quit (discard changes) |
 | `:wq` | Save and quit |
 | `:h` / `:help` | Help screen |
-| `:ew` / `:wav` | Export WAV |
-| `:ef` / `:flac` | Export FLAC |
-| `:em` / `:exportmidi` | Export MIDI |
+| `:ew` / `:wav` `[length]` | Export WAV |
+| `:ef` / `:flac` `[length]` | Export FLAC |
+| `:em` / `:exportmidi` `[length]` | Export MIDI |
+
+An export writes one pass of the song unless given a length: a loop count (`:wav 3`) or seconds (`:wav 90s`). A pass ends at the end of the order list or at a backward `JMP`.
 | `:load` | Open file browser to load a sample |
 | `:open` | Open file browser to load a song (same as Ctrl+O) |
 | `:recent` | Open recent files list (last 3 songs) |

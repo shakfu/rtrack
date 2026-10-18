@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use rtrack_core::constants::*;
 use rtrack_core::editor::Edit;
+use rtrack_core::engine::ExportLength;
 use rtrack_core::midi::MidiEngine;
 use rtrack_core::tracker::Song;
 
@@ -473,6 +474,9 @@ pub struct App {
     pub edit_order: usize,
     /// The mode to return to after closing the port selector
     pub(crate) prev_mode: Mode,
+    /// A song to open once the discard prompt is answered. `None` means the
+    /// prompt is for quitting.
+    pub(crate) pending_open: Option<PathBuf>,
     pub theme_index: usize,
 
     // -----------------------------------------------------------------------
@@ -513,6 +517,7 @@ impl App {
             pending_undo: None,
             edit_order: 0,
             prev_mode: Mode::Normal,
+            pending_open: None,
             theme_index: 0,
             track_page: 0,
             follow_playback: true,
@@ -552,9 +557,6 @@ impl App {
             return format!("{}: {}", verb, report.path.display());
         }
         let mut notes = Vec::new();
-        if report.from_newer_version {
-            notes.push("written by a newer rtrack; some settings may be missing".to_string());
-        }
         if !report.repairs.is_empty() {
             notes.push(format!("repaired: {}", report.repairs.join("; ")));
         }
@@ -871,16 +873,19 @@ impl App {
 
     // -- File I/O --
 
-    pub fn save(&mut self) {
+    /// Save the song. Returns whether it was written.
+    pub fn save(&mut self) -> bool {
         match self.core.save() {
             Ok(path) => {
                 self.last_autosave = Instant::now();
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(format!("Saved: {}", path.display()));
+                true
             }
             Err(e) => {
                 self.status_message = Some(format!("Save failed: {}", e));
+                false
             }
         }
     }
@@ -891,7 +896,19 @@ impl App {
         }
     }
 
+    /// Open a song, asking first if the current one has unsaved changes.
     pub fn load_file(&mut self, path: PathBuf) {
+        if self.core.dirty {
+            self.pending_open = Some(path);
+            self.prev_mode = Mode::Normal;
+            self.mode = Mode::QuitConfirm;
+            return;
+        }
+        self.load_file_discarding(path);
+    }
+
+    /// Open a song, dropping any unsaved changes.
+    pub(crate) fn load_file_discarding(&mut self, path: PathBuf) {
         match self.core.load_file(&path) {
             Ok(report) => {
                 self.cursor_row = 0;
@@ -1118,7 +1135,7 @@ impl App {
     /// "add pattern" or a channel-count increase is exactly that -- and a
     /// cursor left past the end would index out of range on the next draw.
     fn restore_song(&mut self, song: Song) {
-        self.core.song = song;
+        self.core.restore_song(song);
         self.clamp_cursor_to_song();
     }
 
@@ -1252,23 +1269,23 @@ impl App {
 
     // -- Export/Import --
 
-    pub fn export_wav_file(&mut self) {
-        self.status_message = Some(match self.core.export_wav_to_default() {
-            Ok(path) => format!("Exported WAV: {}", path.display()),
+    pub fn export_wav_file(&mut self, length: ExportLength) {
+        self.status_message = Some(match self.core.export_wav_to_default(length) {
+            Ok(path) => format!("Exported WAV ({length}): {}", path.display()),
             Err(e) => format!("WAV export failed: {}", e),
         });
     }
 
-    pub fn export_flac_file(&mut self) {
-        self.status_message = Some(match self.core.export_flac_to_default() {
-            Ok(path) => format!("Exported FLAC: {}", path.display()),
+    pub fn export_flac_file(&mut self, length: ExportLength) {
+        self.status_message = Some(match self.core.export_flac_to_default(length) {
+            Ok(path) => format!("Exported FLAC ({length}): {}", path.display()),
             Err(e) => format!("FLAC export failed: {}", e),
         });
     }
 
-    pub fn export_midi(&mut self) {
-        self.status_message = Some(match self.core.export_midi_to_default() {
-            Ok(path) => format!("Exported MIDI: {}", path.display()),
+    pub fn export_midi(&mut self, length: ExportLength) {
+        self.status_message = Some(match self.core.export_midi_to_default(length) {
+            Ok(path) => format!("Exported MIDI ({length}): {}", path.display()),
             Err(e) => format!("MIDI export failed: {}", e),
         });
     }
@@ -1344,6 +1361,7 @@ pub(crate) mod tests {
             pending_undo: None,
             edit_order: 0,
             prev_mode: Mode::Normal,
+            pending_open: None,
             theme_index: 0,
             track_page: 0,
             dialogs: DialogState {
@@ -3751,6 +3769,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn undoing_a_channel_reduction_brings_back_the_channels_settings() {
+        let mut app = make_app();
+        app.open_song_settings();
+        app.dialogs.settings_field = SettingsField::Channels;
+        app.dialogs.settings_edit_buf = "8".to_string();
+        app.settings_apply_field();
+        app.commit_undo();
+        app.core.channels[6].name = "Keep".to_string();
+
+        app.dialogs.settings_edit_buf = "2".to_string();
+        app.settings_apply_field();
+        app.commit_undo();
+        assert_eq!(app.core.song.channels, 2);
+        app.undo();
+
+        assert_eq!(app.core.song.channels, 8);
+        assert!(app.core.channels.len() >= 8);
+        assert_eq!(app.core.channels[6].name, "Keep");
+    }
+
+    #[test]
     fn test_song_settings_clamps_bpm() {
         let mut app = make_app();
         app.open_song_settings();
@@ -4215,6 +4254,53 @@ pub(crate) mod tests {
         app.core.file_path = Some(path.clone());
         app.save();
         assert!(!app.core.dirty);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A path whose save fails: its directory does not exist.
+    fn unwritable_path() -> PathBuf {
+        std::env::temp_dir()
+            .join("rtrack_no_such_dir_for_tests")
+            .join("song.rtrk")
+    }
+
+    #[test]
+    fn save_and_quit_stays_open_when_the_save_fails() {
+        let mut app = make_app();
+        app.core.dirty = true;
+        app.core.file_path = Some(unwritable_path());
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!app.should_quit);
+        assert!(app.core.dirty);
+
+        app.mode = Mode::Normal;
+        run_command(&mut app, "wq");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn opening_a_song_over_unsaved_work_asks_first() {
+        let path =
+            std::env::temp_dir().join(format!("rtrack_open_prompt_{}.rtrk", std::process::id()));
+        let mut other = rtrack_core::TrackerCore::with_song_size(2, 8);
+        other.song.title = "Other".to_string();
+        other.file_path = Some(path.clone());
+        other.save().unwrap();
+
+        let mut app = make_app();
+        app.core.song.title = "Mine".to_string();
+        app.core.dirty = true;
+        app.load_file(path.clone());
+        assert_eq!(app.mode, Mode::QuitConfirm);
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.core.song.title, "Mine");
+        assert!(!app.should_quit);
+
+        app.load_file(path.clone());
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(app.core.song.title, "Other");
+        assert!(!app.should_quit, "answering an open prompt must not quit");
         let _ = std::fs::remove_file(path);
     }
 

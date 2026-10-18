@@ -7,6 +7,7 @@ impl RtrackApp {
     pub fn draw_dialogs(&mut self, ctx: &egui::Context) {
         self.draw_song_settings(ctx);
         self.draw_quit_confirm(ctx);
+        self.draw_discard_confirm(ctx);
         self.draw_track_config(ctx);
         self.draw_help(ctx);
         self.draw_midi_ports(ctx);
@@ -197,16 +198,7 @@ impl RtrackApp {
                         );
                         if ch_count != prev_ch_count {
                             let before = self.core.song.clone();
-                            self.core.song.channels = ch_count;
-                            for pat in &mut self.core.song.patterns {
-                                for row in &mut pat.data {
-                                    row.resize(ch_count, rtrack_core::tracker::Cell::default());
-                                }
-                                pat.channels = ch_count;
-                            }
-                            self.core
-                                .channels
-                                .resize_with(ch_count, rtrack_core::ChannelConfig::default);
+                            self.core.set_channel_count(ch_count);
                             if self.cursor_channel >= ch_count {
                                 self.cursor_channel = ch_count.saturating_sub(1);
                             }
@@ -254,8 +246,7 @@ impl RtrackApp {
                 ui.label("You have unsaved changes. What would you like to do?");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save & Quit").clicked() {
-                        self.do_save();
+                    if ui.button("Save & Quit").clicked() && self.do_save() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("Quit without saving").clicked() {
@@ -264,6 +255,40 @@ impl RtrackApp {
                     }
                     if ui.button("Cancel").clicked() {
                         self.show_quit_confirm = false;
+                    }
+                });
+            });
+    }
+
+    /// Ask before New or Open replaces a song with unsaved changes.
+    fn draw_discard_confirm(&mut self, ctx: &egui::Context) {
+        let Some(change) = self.pending_song_change.clone() else {
+            return;
+        };
+        let verb = match change {
+            crate::menu::PendingSongChange::New => "New Song",
+            crate::menu::PendingSongChange::Open(_) => "Open",
+        };
+        egui::Window::new("Unsaved Changes")
+            .id(egui::Id::new("discard_confirm"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("You have unsaved changes. What would you like to do?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    // A failed save keeps the prompt; the status bar says why.
+                    if ui.button(format!("Save & {verb}")).clicked() && self.do_save() {
+                        self.pending_song_change = None;
+                        self.apply_song_change(change.clone());
+                    }
+                    if ui.button(format!("{verb} without saving")).clicked() {
+                        self.pending_song_change = None;
+                        self.apply_song_change(change.clone());
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_song_change = None;
                     }
                 });
             });

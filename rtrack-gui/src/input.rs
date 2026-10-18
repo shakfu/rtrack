@@ -5,10 +5,19 @@ use rtrack_core::tracker::{Cell, Note};
 
 use crate::app::RtrackApp;
 use crate::history::{CellEdit, Edit};
+use crate::menu::ExportFormat;
 use crate::state::{Mode, SubColumn};
 
 impl RtrackApp {
     pub fn process_keys(&mut self, ctx: &egui::Context) {
+        // Keys typed into a text field are not editor commands. Save is the
+        // one shortcut that still applies.
+        if ctx.egui_wants_keyboard_input() {
+            if ctx.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(Key::S)) {
+                self.execute_action(Action::Save);
+            }
+            return;
+        }
         let mut actions: Vec<Action> = Vec::new();
 
         ctx.input(|input| {
@@ -529,28 +538,33 @@ impl RtrackApp {
                     self.status_message = Some("Pasted".to_string());
                 }
             }
+            // Structural: later cell edits name rows by index, so a row
+            // shift outside the history would make their undo hit the wrong
+            // rows.
             Action::InsertRow => {
                 let pattern_idx = self.core.song.order[self.edit_order];
-                let pattern = &mut self.core.song.patterns[pattern_idx];
-                if pattern.rows < 256 {
+                if self.core.song.patterns[pattern_idx].rows < 256 {
+                    let before = self.begin_structural_edit();
+                    let pattern = &mut self.core.song.patterns[pattern_idx];
                     let channels = pattern.channels;
                     pattern
                         .data
                         .insert(self.cursor_row, vec![Cell::default(); channels]);
                     pattern.rows += 1;
-                    self.core.dirty = true;
+                    self.end_structural_edit(before);
                 }
             }
             Action::DeleteRow => {
                 let pattern_idx = self.core.song.order[self.edit_order];
-                let pattern = &mut self.core.song.patterns[pattern_idx];
-                if pattern.rows > 1 {
+                if self.core.song.patterns[pattern_idx].rows > 1 {
+                    let before = self.begin_structural_edit();
+                    let pattern = &mut self.core.song.patterns[pattern_idx];
                     pattern.data.remove(self.cursor_row);
                     pattern.rows -= 1;
                     if self.cursor_row >= pattern.rows {
                         self.cursor_row = pattern.rows - 1;
                     }
-                    self.core.dirty = true;
+                    self.end_structural_edit(before);
                 }
             }
             Action::TransposeUp => {
@@ -705,22 +719,9 @@ impl RtrackApp {
                 let state = if self.core.recording { "on" } else { "off" };
                 self.status_message = Some(format!("Recording {}", state));
             }
-            Action::ExportMidi => match self.core.export_midi_to_default() {
-                Ok(path) => {
-                    self.status_message = Some(format!("Exported MIDI: {}", path.display()))
-                }
-                Err(e) => self.status_message = Some(format!("MIDI export failed: {}", e)),
-            },
-            Action::ExportWav => match self.core.export_wav_to_default() {
-                Ok(path) => self.status_message = Some(format!("Exported WAV: {}", path.display())),
-                Err(e) => self.status_message = Some(format!("WAV export failed: {}", e)),
-            },
-            Action::ExportFlac => match self.core.export_flac_to_default() {
-                Ok(path) => {
-                    self.status_message = Some(format!("Exported FLAC: {}", path.display()))
-                }
-                Err(e) => self.status_message = Some(format!("FLAC export failed: {}", e)),
-            },
+            Action::ExportMidi => self.export(ExportFormat::Midi),
+            Action::ExportWav => self.export(ExportFormat::Wav),
+            Action::ExportFlac => self.export(ExportFormat::Flac),
             Action::ToggleMidiClock => {
                 let msg = format!(
                     "MIDI clock {}",
@@ -937,7 +938,7 @@ impl RtrackApp {
     /// undoing "add pattern" is exactly that case -- and a cursor left past
     /// the end would index out of range on the next draw.
     fn restore_song(&mut self, song: rtrack_core::tracker::Song) {
-        self.core.song = song;
+        self.core.restore_song(song);
         self.clamp_cursor_to_song();
     }
 
@@ -1692,15 +1693,11 @@ mod tests {
         let note = app.core.song.cell_at(app.edit_order, 0, 3).note;
         assert!(note.is_some(), "the note should have been entered");
 
+        app.core.channels[3].name = "Keep".to_string();
+
         // Shrink to two channels, as the settings dialog does.
         let before = app.core.song.clone();
-        app.core.song.channels = 2;
-        for pat in &mut app.core.song.patterns {
-            for row in &mut pat.data {
-                row.truncate(2);
-            }
-            pat.channels = 2;
-        }
+        app.core.set_channel_count(2);
         app.cursor_channel = 1;
         app.record_settings_edit("song.channels", before);
 
@@ -1711,6 +1708,79 @@ mod tests {
             note,
             "the truncated cells should have come back"
         );
+        // The pattern matrix indexes `channels` by song channel.
+        assert!(app.core.channels.len() >= 4);
+        assert_eq!(app.core.channels[3].name, "Keep");
+    }
+
+    #[test]
+    fn row_insert_and_delete_are_undoable_and_keep_later_undos_aligned() {
+        let mut app = app();
+        app.mode = Mode::Insert;
+        app.cursor_row = 2;
+        app.try_enter_note('z');
+        let entered = note_at(&app, 2, 0);
+        app.mode = Mode::Normal;
+
+        app.cursor_row = 0;
+        app.execute_action(Action::DeleteRow);
+        assert_eq!(note_at(&app, 1, 0), entered);
+        app.apply_undo();
+        assert_eq!(note_at(&app, 2, 0), entered, "the deleted row came back");
+
+        app.cursor_row = 0;
+        app.execute_action(Action::InsertRow);
+        assert_eq!(note_at(&app, 3, 0), entered);
+        app.apply_undo();
+        assert_eq!(note_at(&app, 2, 0), entered);
+        app.apply_undo();
+        assert_eq!(
+            note_at(&app, 2, 0),
+            None,
+            "the note entry undid in its own row"
+        );
+    }
+
+    #[test]
+    fn opening_over_unsaved_work_waits_for_an_answer() {
+        let mut app = app();
+        app.core.dirty = true;
+        let title = app.core.song.title.clone();
+        app.request_song_change(crate::menu::PendingSongChange::New);
+        assert!(app.pending_song_change.is_some());
+        assert_eq!(app.core.song.title, title);
+        assert!(app.core.dirty, "nothing was replaced yet");
+    }
+
+    #[test]
+    fn typing_in_a_text_field_does_not_drive_the_editor() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let id = egui::Id::new("field");
+        let mut frame = |events: Vec<egui::Event>, app: &mut RtrackApp| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut text).id(id))
+                    .request_focus();
+                app.process_keys(ui.ctx());
+            });
+            out.textures_delta.clear();
+        };
+        frame(Vec::new(), &mut app);
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![key(Key::I), key(Key::Space)], &mut app);
+        assert_eq!(app.mode, Mode::Normal, "'i' was typed, not a mode switch");
+        assert!(!app.core.playing);
     }
 
     // -- Structural undo, which the GUI could not do at all before --

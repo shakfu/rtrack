@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{MAX_CHANNELS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
+use crate::constants::{MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
 use super::{Cell, ColumnAlias, Note, Pattern, Table, MAX_TABLES};
 use crate::audio::channel_effects::InstrumentFx;
@@ -139,8 +139,9 @@ pub struct SampleRef {
 /// MIDI-learn state.
 ///
 /// Backwards-compatible: old .rtrk files without these fields still load fine
-/// (serde default kicks in for the optional fields), and unknown fields
-/// written by newer versions are ignored rather than rejected.
+/// (serde default kicks in for the optional fields), and unknown fields are
+/// ignored. A file from a newer format version is refused; see
+/// [`SongFile::load`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SongFile {
     /// Format version this file was written with. See [`FORMAT_VERSION`].
@@ -196,14 +197,6 @@ pub const MAX_GROOVE_STEPS: usize = 16;
 pub const FORMAT_VERSION: u32 = 3;
 
 impl SongFile {
-    /// True if this file was written by a newer version of rtrack than this
-    /// one understands. Such a file is still loaded -- unknown fields are
-    /// ignored -- but the caller should say so rather than silently dropping
-    /// whatever it could not represent.
-    pub fn is_from_newer_version(&self) -> bool {
-        self.version > FORMAT_VERSION
-    }
-
     /// Wrap a song with no instrument, sample, mixer or MIDI-learn state.
     /// Use struct-update syntax to fill in the parts you care about:
     /// `SongFile { instruments, ..SongFile::from_song(song) }`.
@@ -256,9 +249,26 @@ impl SongFile {
     /// }
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    ///
+    /// A file from a newer format version is refused rather than loaded in
+    /// part: what this build cannot read would be lost on the next save.
     pub fn load(path: &Path) -> Result<Self> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
+        // Checked before the full parse, which may fail on newer content
+        // with a less useful message.
+        #[derive(Deserialize)]
+        struct Version {
+            #[serde(default)]
+            version: u32,
+        }
+        if let Ok(Version { version }) = serde_json::from_str::<Version>(&data) {
+            if version > FORMAT_VERSION {
+                anyhow::bail!(
+                    "written by a newer rtrack (format {version}; this version reads up to {FORMAT_VERSION}). Update rtrack to open it"
+                );
+            }
+        }
         let song_file: SongFile =
             serde_json::from_str(&data).context("Failed to parse song file")?;
         Ok(song_file)
@@ -856,6 +866,18 @@ impl Song {
             repairs.push("bpm was 0, set to 120".to_string());
         }
 
+        // Before the geometry pass below, which allocates every pattern in
+        // full. Order entries and aliases naming a dropped pattern are
+        // repaired further down.
+        if self.patterns.len() > MAX_PATTERNS {
+            repairs.push(format!(
+                "dropped {} patterns past the maximum of {}",
+                self.patterns.len() - MAX_PATTERNS,
+                MAX_PATTERNS
+            ));
+            self.patterns.truncate(MAX_PATTERNS);
+        }
+
         // Every pattern must have a geometry inside the editable range that
         // matches its own declared dimensions, and must cover all song
         // channels. The "resized" line below reports a clamp as well as a
@@ -1406,7 +1428,6 @@ mod tests {
         assert_eq!(file.song.channels, 3);
         // No version field was written, so it reads as the pre-versioning 0.
         assert_eq!(file.version, 0);
-        assert!(!file.is_from_newer_version());
         // And the recommended follow-up is safe on it.
         assert!(file.song.repair().is_empty(), "a bare song needs no repair");
     }

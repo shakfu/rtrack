@@ -639,7 +639,10 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  :wav :flac   ", key_style),
-            Span::styled("Export audio", text_style),
+            Span::styled(
+                "Export audio; add 2 for two loops, 90s for 90 seconds",
+                text_style,
+            ),
         ]),
         Line::from(vec![
             Span::styled("  :link        ", key_style),
@@ -997,26 +1000,31 @@ fn draw_table_editor(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(widget, popup_area);
 }
 
-fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
+fn draw_quit_confirm(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
     let popup_area = centered_rect(44, 5, area);
     f.render_widget(Clear, popup_area);
 
+    let verb = if app.pending_open.is_some() {
+        "Open"
+    } else {
+        "Quit"
+    };
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Unsaved changes! Quit without saving?",
+            format!("  Unsaved changes! {verb} without saving?"),
             Style::default().fg(theme.popup_text),
         )),
         Line::from(Span::styled(
-            "  [Y] Quit  [S] Save & Quit  [Any] Cancel",
+            format!("  [Y] {verb}  [S] Save & {verb}  [Any] Cancel"),
             Style::default().fg(theme.popup_key),
         )),
     ];
 
     let widget = Paragraph::new(lines).block(
         Block::default()
-            .title(" Quit Confirmation ")
+            .title(format!(" {verb} Confirmation "))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );
@@ -1469,7 +1477,7 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             .map(|c| &c.name)
             .filter(|n| !n.is_empty());
         let label = match name {
-            Some(n) => format!("{:>4} ", &n[..n.len().min(4)]),
+            Some(n) => format!("{:>4} ", n.chars().take(4).collect::<String>()),
             None => format!(" Ch{} ", ch + 1),
         };
         write_str(buf, col_x, header_y, inner, &label, header_style);
@@ -1653,6 +1661,16 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         (0..width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn a_channel_name_with_a_multibyte_char_at_the_cut_draws() {
+        let mut app = make_app();
+        // Sharp s spans bytes 3-4, where the four-char label is cut.
+        app.core.channels[0].name = "Ha\u{df}s".to_string();
+        app.mode = crate::app::Mode::PatternMatrix;
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
     }
 
     #[test]
