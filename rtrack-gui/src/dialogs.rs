@@ -46,8 +46,7 @@ impl RtrackApp {
                         ui.add(egui::DragValue::new(&mut bpm).range(20..=999));
                         if bpm != self.core.song.bpm {
                             let before = self.core.song.clone();
-                            self.core.song.bpm = bpm;
-                            self.core.link.set_tempo(bpm as f64);
+                            self.core.set_bpm(bpm);
                             self.record_settings_edit("song.bpm", before);
                         }
                         ui.end_row();
@@ -58,7 +57,7 @@ impl RtrackApp {
                         ui.add(egui::DragValue::new(&mut speed).range(1..=31));
                         if speed != self.core.song.speed {
                             let before = self.core.song.clone();
-                            self.core.song.speed = speed;
+                            self.core.set_speed(speed);
                             self.record_settings_edit("song.speed", before);
                         }
                         ui.end_row();

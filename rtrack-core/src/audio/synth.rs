@@ -891,6 +891,8 @@ struct Voice {
 
     // Oscillator state
     phase: f64,
+    /// Phase of the sub-oscillator, at half the note's frequency.
+    sub_phase: f64,
     phase2: f64,       // detuned second oscillator
     fm_mod_phase: f64, // for FM bell
 
@@ -950,6 +952,7 @@ impl Voice {
             patch,
             params,
             phase: 0.0,
+            sub_phase: 0.0,
             phase2: 0.0,
             fm_mod_phase: 0.0,
             pitch_offset: 0.0,
@@ -1001,6 +1004,10 @@ impl Voice {
         self.phase += phase_inc;
         if self.phase >= 1.0 {
             self.phase -= 1.0;
+        }
+        self.sub_phase += phase_inc * 0.5;
+        if self.sub_phase >= 1.0 {
+            self.sub_phase -= 1.0;
         }
         self.phase2 += phase_inc2;
         if self.phase2 >= 1.0 {
@@ -1131,8 +1138,7 @@ impl Voice {
 
         // -- Sub-oscillator (sine one octave below) --
         let osc = if self.params.sub_osc_mix > 0.0 {
-            let sub_phase = (self.phase * 0.5) % 1.0;
-            let sub = (sub_phase as f32 * std::f32::consts::TAU).sin();
+            let sub = (self.sub_phase as f32 * std::f32::consts::TAU).sin();
             osc * (1.0 - self.params.sub_osc_mix) + sub * self.params.sub_osc_mix
         } else {
             osc
@@ -1457,6 +1463,31 @@ impl BuiltinSynth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sub_oscillator_sounds_an_octave_below_without_dc() {
+        let sr = 48_000.0;
+        let params = PatchParams {
+            sub_osc_mix: 1.0,
+            filter_cutoff_mul: 40.0,
+            filter_env_amount: 0.0,
+            ..patch_params(Patch::Sub)
+        };
+        // A4, 440 Hz.
+        let mut voice = Voice::new_with_params(0, 69, 1.0, Patch::Sub, params, sr);
+        for _ in 0..4800 {
+            voice.tick();
+        }
+        let frames: Vec<f32> = (0..48_000).map(|_| voice.tick().0).collect();
+        let rising = frames
+            .windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count();
+        assert!((215..=225).contains(&rising), "{rising} cycles in a second");
+        let mean = frames.iter().sum::<f32>() / frames.len() as f32;
+        let peak = frames.iter().fold(0.0f32, |p, x| p.max(x.abs()));
+        assert!(mean.abs() < 0.02 * peak, "mean {mean}, peak {peak}");
+    }
 
     #[test]
     fn test_midi_to_freq() {

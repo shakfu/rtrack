@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -64,17 +65,14 @@ impl App {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u16>() {
                     let v = v.clamp(32, 300);
                     self.push_undo();
-                    self.core.song.bpm = v;
-                    if self.core.link.is_enabled() {
-                        self.core.link.set_tempo(v as f64);
-                    }
+                    self.core.set_bpm(v);
                 }
             }
             SettingsField::Speed => {
                 if let Ok(v) = self.dialogs.settings_edit_buf.parse::<u8>() {
                     let v = v.clamp(1, 31);
                     self.push_undo();
-                    self.core.song.speed = v;
+                    self.core.set_speed(v);
                 }
             }
             SettingsField::Channels => {
@@ -1035,6 +1033,9 @@ impl App {
             match key.code {
                 KeyCode::Char('n') => {
                     // New empty pattern, insert after cursor
+                    if self.refuse_at_pattern_limit() {
+                        return;
+                    }
                     self.push_undo();
                     let idx = self.core.song.add_pattern();
                     self.core.song.order.insert(self.matrix_cursor + 1, idx);
@@ -1049,6 +1050,9 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     // Clone current pattern, insert after cursor
+                    if self.refuse_at_pattern_limit() {
+                        return;
+                    }
                     self.push_undo();
                     let src_idx = self.core.song.order[self.matrix_cursor];
                     let cloned = self.core.song.patterns[src_idx].clone();
@@ -1296,6 +1300,14 @@ impl App {
             self.mode = Mode::Normal;
             self.alias_column(args);
             return;
+        }
+        // `:w <path>` saves as; `:w! <path>` may replace another file.
+        if let Some((name, path)) = cmd.split_once(' ') {
+            if matches!(name, "w" | "write" | "w!") && !path.trim().is_empty() {
+                self.mode = Mode::Normal;
+                self.save_as(PathBuf::from(path.trim()), name == "w!");
+                return;
+            }
         }
         // Exports take an optional length: `:wav 3` (loops) or `:wav 90s`.
         let (name, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
@@ -2143,9 +2155,9 @@ impl App {
 
     fn change_bpm(&mut self, delta: i16) {
         let new_bpm = (self.core.song.bpm as i16 + delta).clamp(32, 300) as u16;
-        self.core.song.bpm = new_bpm;
-        if self.core.link.is_enabled() {
-            self.core.link.set_tempo(new_bpm as f64);
+        if new_bpm != self.core.song.bpm {
+            self.push_undo();
+            self.core.set_bpm(new_bpm);
         }
     }
 

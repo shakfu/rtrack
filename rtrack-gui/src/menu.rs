@@ -48,13 +48,7 @@ impl RtrackApp {
 
                     if ui.button("Save As...").clicked() {
                         ui.close();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("rtrack", &["rtrk"])
-                            .save_file()
-                        {
-                            self.core.file_path = Some(path);
-                            self.do_save();
-                        }
+                        self.do_save_as();
                     }
 
                     if ui.button("Load SF2...").clicked() {
@@ -237,8 +231,32 @@ impl RtrackApp {
     }
 
     /// Save the song. Returns whether it was written.
+    /// Save the song, asking for a file if it has none. Returns whether it
+    /// was written.
     pub fn do_save(&mut self) -> bool {
-        match self.core.save() {
+        if self.core.file_path.is_none() {
+            return self.do_save_as();
+        }
+        let result = self.core.save();
+        self.report_save(result)
+    }
+
+    /// Ask for a file and save the song there. The native dialog confirms
+    /// overwriting an existing file.
+    pub fn do_save_as(&mut self) -> bool {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("rtrack", &["rtrk"])
+            .save_file()
+        else {
+            self.status_message = Some("Save cancelled".to_string());
+            return false;
+        };
+        let result = self.core.save_as(path);
+        self.report_save(result)
+    }
+
+    fn report_save(&mut self, result: rtrack_core::error::Result<std::path::PathBuf>) -> bool {
+        match result {
             Ok(path) => {
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);

@@ -528,6 +528,9 @@ impl TrackerCore {
     }
 
     /// Poll Ableton Link for tempo changes and apply them to the song.
+    ///
+    /// The Link session's tempo is the song's tempo once Link is on, so
+    /// this changes the song and marks it unsaved.
     pub fn sync_link(&mut self) {
         if !self.link.is_enabled() {
             return;
@@ -538,7 +541,40 @@ impl TrackerCore {
             if new_bpm != self.song.bpm && (32..=300).contains(&new_bpm) {
                 self.song.bpm = new_bpm;
                 self.engine.bpm = new_tempo;
+                self.dirty = true;
             }
+        }
+    }
+
+    /// Set the song's tempo. Playback hears it at once, and Link is told.
+    pub fn set_bpm(&mut self, bpm: u16) {
+        self.song.bpm = bpm;
+        if self.playing {
+            self.engine.bpm = bpm as f64;
+        }
+        if self.link.is_enabled() {
+            self.link.set_tempo(bpm as f64);
+        }
+        self.dirty = true;
+    }
+
+    /// Set the song's speed. Playback takes it from the next row, unless a
+    /// groove sets the row lengths.
+    pub fn set_speed(&mut self, speed: u8) {
+        self.song.speed = speed;
+        if self.playing {
+            self.engine.speed = speed;
+        }
+        self.dirty = true;
+    }
+
+    /// Tempo and speed as heard: the engine's while playing, which `TPO`
+    /// and `SPD` change, otherwise the song's.
+    pub fn live_tempo(&self) -> (f64, u8) {
+        if self.playing {
+            (self.engine.bpm, self.engine.speed)
+        } else {
+            (self.song.bpm as f64, self.song.speed)
         }
     }
 
@@ -836,11 +872,11 @@ impl TrackerCore {
                         audio.set_instrument_fx_at(at, channel as u8, fx);
                     }
                 }
-                TrackerEvent::SpeedChanged { speed } => {
-                    self.song.speed = speed;
-                }
+                // The engine holds the playing tempo. Writing it into the
+                // song would make the next play start from it, and the next
+                // save store it, without the song being marked changed.
+                TrackerEvent::SpeedChanged { .. } => {}
                 TrackerEvent::TempoChanged { bpm } => {
-                    self.song.bpm = bpm.round() as u16;
                     if self.link.is_enabled() {
                         self.link.set_tempo(bpm);
                     }
@@ -1927,12 +1963,15 @@ impl TrackerCore {
         }
     }
 
-    /// Save the song. Returns Ok(message) or Err(message).
+    /// Save the song to its file, returning the path written.
+    ///
+    /// A song that has never been saved has no path, and is refused with
+    /// [`Error::NoFilePath`] rather than written to `./<title>.rtrk`, where it
+    /// would overwrite any file of that name. Use [`Self::save_as`].
     pub fn save(&mut self) -> Result<PathBuf> {
-        let path = self.file_path.clone().unwrap_or_else(|| {
-            let name = self.song.title.replace(' ', "_").to_lowercase();
-            PathBuf::from(format!("{}.rtrk", name))
-        });
+        let Some(path) = self.file_path.clone() else {
+            return Err(Error::NoFilePath);
+        };
         // Taken before `file_path` moves: a song that had never been saved
         // has its recovery copy in the temp directory, and naming it after
         // the new path would leave that one behind for good.
@@ -1942,6 +1981,17 @@ impl TrackerCore {
         self.dirty = false;
         self.remove_autosave();
         Ok(path)
+    }
+
+    /// Save the song to `path` and make that its file. A failed save leaves
+    /// the previous path in place.
+    pub fn save_as(&mut self, path: PathBuf) -> Result<PathBuf> {
+        let previous = self.file_path.replace(path);
+        let result = self.save();
+        if result.is_err() {
+            self.file_path = previous;
+        }
+        result
     }
 
     /// Auto-save to a temporary file if the song is dirty and enough time has
@@ -2243,6 +2293,35 @@ mod tests {
         core.engine.sounding_order = 0;
         core.engine.sounding_row = 7;
         assert_eq!(core.playback_position(), (0, 7));
+    }
+
+    #[test]
+    fn tempo_effects_change_playback_but_not_the_song() {
+        use crate::tracker::{Cell, Fx, FxCmd, FX_COLUMNS};
+        let mut core = TrackerCoreBuilder::new().song_size(1, 4).headless().build();
+        let mut fx = [None; FX_COLUMNS];
+        fx[0] = Some(Fx::new(FxCmd::Speed, 3));
+        fx[1] = Some(Fx::new(FxCmd::Tempo, 200));
+        core.song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                fx,
+                ..Cell::default()
+            },
+        );
+        let (bpm, speed) = (core.song.bpm, core.song.speed);
+
+        core.play(0, 0);
+        for _ in 0..4 {
+            core.process_tick();
+        }
+        assert_eq!(core.live_tempo(), (200.0, 3));
+        core.stop();
+
+        assert_eq!((core.song.bpm, core.song.speed), (bpm, speed));
+        assert!(!core.dirty);
     }
 
     #[test]

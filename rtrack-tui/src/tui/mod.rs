@@ -133,7 +133,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.status_text),
         ),
         Span::styled(
-            format!("{}bpm", song.bpm),
+            format!("{}bpm", app.core.live_tempo().0.round()),
             Style::default().fg(theme.header_bpm),
         ),
         Span::styled(
@@ -591,7 +591,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  :w :write    ", key_style),
-            Span::styled("Save file", text_style),
+            Span::styled("Save file; :w <path> saves as, :w! replaces", text_style),
         ]),
         Line::from(vec![
             Span::styled("  :q :quit     ", key_style),

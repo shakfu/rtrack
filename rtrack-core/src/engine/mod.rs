@@ -116,6 +116,19 @@ impl ExportClock {
 // Channel state
 // ---------------------------------------------------------------------------
 
+/// A note or note-off held back by `DLY` until its tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DelayedNote {
+    pub midi_note: u8,
+    /// Velocity to play, after the channel's volume scale.
+    pub velocity: u8,
+    /// Channel volume to keep, before the scale, as an immediate note keeps.
+    pub volume: u8,
+    /// The row's instrument, which the note plays rather than the previous one.
+    pub instrument: Option<u8>,
+    pub off: bool,
+}
+
 /// Per-channel state for continuous effects (arpeggio, portamento, vibrato, volume slide).
 #[derive(Debug, Clone)]
 pub struct ChannelState {
@@ -127,7 +140,7 @@ pub struct ChannelState {
     /// The current row's effects, with `RND` already resolved. Continuous
     /// ones run on every tick until the next row.
     pub fx: [Option<Fx>; FX_COLUMNS],
-    pub delayed_note: Option<(u8, u8, bool)>,
+    pub delayed_note: Option<DelayedNote>,
     pub delay_tick: u8,
     pub active_instrument: Option<u8>,
     /// Last continuous effect written on this channel, with the parameter as
@@ -723,8 +736,13 @@ impl TrackerEngine {
                         } else if let Some(delay) = delay {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
                             let scaled_vel = self.scale_velocity(ch, vel);
-                            self.channel_states[ch].delayed_note =
-                                Some((midi_note, scaled_vel, false));
+                            self.channel_states[ch].delayed_note = Some(DelayedNote {
+                                midi_note,
+                                velocity: scaled_vel,
+                                volume: vel,
+                                instrument,
+                                off: false,
+                            });
                             self.channel_states[ch].delay_tick = delay;
                         } else {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
@@ -760,7 +778,13 @@ impl TrackerEngine {
                 }
                 Some(Note::Off) => {
                     if let Some(delay) = delay {
-                        self.channel_states[ch].delayed_note = Some((0, 0, true));
+                        self.channel_states[ch].delayed_note = Some(DelayedNote {
+                            midi_note: 0,
+                            velocity: 0,
+                            volume: 0,
+                            instrument: None,
+                            off: true,
+                        });
                         self.channel_states[ch].delay_tick = delay;
                     } else {
                         self.emit(TrackerEvent::NoteOff { channel: ch });
@@ -880,9 +904,10 @@ impl TrackerEngine {
             // Note delay
             let fx = self.channel_states[ch].fx;
             if fx.iter().flatten().any(|f| f.cmd == FxCmd::Delay) {
-                if let Some((midi_note, vel, is_off)) = self.channel_states[ch].delayed_note {
+                if let Some(delayed) = self.channel_states[ch].delayed_note {
                     if self.tick == self.channel_states[ch].delay_tick {
-                        if is_off {
+                        let midi_note = delayed.midi_note;
+                        if delayed.off {
                             self.events.push(TrackerEvent::NoteOff { channel: ch });
                             self.channel_states[ch].note = None;
                             self.channel_states[ch].pitch_offset = 0.0;
@@ -902,7 +927,8 @@ impl TrackerEngine {
                                 .flatten()
                                 .find(|f| f.cmd == FxCmd::Table)
                                 .map(|f| f.param);
-                            let instrument = self.channel_states[ch].active_instrument;
+                            let instrument = delayed.instrument;
+                            self.channel_states[ch].active_instrument = instrument;
                             let table = explicit.or_else(|| self.instrument_table(instrument));
                             self.start_table(ch, song, table);
                             self.events.push(TrackerEvent::PitchBend {
@@ -921,8 +947,8 @@ impl TrackerEngine {
                             self.events.push(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
-                                velocity: vel,
-                                instrument: self.channel_states[ch].active_instrument,
+                                velocity: delayed.velocity,
+                                instrument,
                                 sample_offset: fx
                                     .iter()
                                     .flatten()
@@ -931,7 +957,7 @@ impl TrackerEngine {
                                 chord,
                             });
                             self.channel_states[ch].note = Some(midi_note);
-                            self.channel_states[ch].volume = vel;
+                            self.channel_states[ch].volume = delayed.volume;
                             self.enter_table_row(ch, song);
                         }
                         self.channel_states[ch].delayed_note = None;
@@ -2285,6 +2311,57 @@ mod tests {
             fx,
             ..Cell::default()
         }
+    }
+
+    /// (instrument, velocity) of every NoteOn over `ticks` ticks.
+    fn note_ons(song: &Song, engine: &mut TrackerEngine, ticks: usize) -> Vec<(Option<u8>, u8)> {
+        let mut out = Vec::new();
+        for _ in 0..ticks {
+            for e in engine.process_tick(song) {
+                if let TrackerEvent::NoteOn {
+                    instrument,
+                    velocity,
+                    ..
+                } = e
+                {
+                    out.push((*instrument, *velocity));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_delayed_note_plays_its_own_instrument() {
+        let mut song = Song::new(1, 4);
+        song.speed = 4;
+        song.set_cell(0, 0, 0, c4([None; FX_COLUMNS], Some(1)));
+        song.set_cell(0, 1, 0, c4(Fx::only(FxCmd::Delay, 1), Some(2)));
+        let mut engine = TrackerEngine::new(&song, false);
+        let ons = note_ons(&song, &mut engine, 8);
+        assert_eq!(
+            ons.iter().map(|o| o.0).collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+        assert_eq!(engine.channel_states[0].active_instrument, Some(2));
+    }
+
+    #[test]
+    fn a_delayed_note_scales_its_volume_once() {
+        let mut song = Song::new(1, 4);
+        song.speed = 4;
+        let mut first = c4(Fx::only(FxCmd::Delay, 1), None);
+        first.volume = Some(100);
+        song.set_cell(0, 0, 0, first);
+        song.set_cell(0, 1, 0, c4([None; FX_COLUMNS], None));
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.set_channel_info(vec![ChannelInfo {
+            audible: true,
+            volume_scale: 0.5,
+            default_instrument: None,
+        }]);
+        let ons = note_ons(&song, &mut engine, 8);
+        assert_eq!(ons.iter().map(|o| o.1).collect::<Vec<_>>(), vec![50, 50]);
     }
 
     fn bends(events: &[TrackerEvent]) -> Vec<f64> {

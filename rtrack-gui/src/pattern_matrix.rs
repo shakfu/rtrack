@@ -174,7 +174,7 @@ impl RtrackApp {
         // Buttons at bottom
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Ctrl+N: New Pattern").clicked() {
+            if ui.button("Ctrl+N: New Pattern").clicked() && !self.refuse_at_pattern_limit() {
                 let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.matrix_cursor + 1, idx);
@@ -184,7 +184,7 @@ impl RtrackApp {
                 self.status_message = Some(format!("New pattern {:02X}", idx));
                 self.end_structural_edit(before);
             }
-            if ui.button("Ctrl+D: Clone").clicked() {
+            if ui.button("Ctrl+D: Clone").clicked() && !self.refuse_at_pattern_limit() {
                 let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.matrix_cursor];
                 let cloned = self.core.song.patterns[src_idx].clone();

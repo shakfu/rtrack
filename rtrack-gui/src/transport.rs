@@ -65,23 +65,27 @@ impl RtrackApp {
 
             ui.separator();
 
-            // BPM
-            let prev_bpm = self.core.song.bpm;
-            ui.add(
-                DragValue::new(&mut self.core.song.bpm)
-                    .range(20..=999)
-                    .suffix(" BPM"),
-            );
-            if self.core.song.bpm != prev_bpm {
-                self.core.link.set_tempo(self.core.song.bpm as f64);
+            // BPM and speed: the song's settings, recorded like the
+            // settings dialog's so a drag is one undo step.
+            let mut bpm = self.core.song.bpm;
+            ui.add(DragValue::new(&mut bpm).range(20..=999).suffix(" BPM"));
+            if bpm != self.core.song.bpm {
+                let before = self.core.song.clone();
+                self.core.set_bpm(bpm);
+                self.record_settings_edit("song.bpm", before);
             }
-
-            // Speed
-            ui.add(
-                DragValue::new(&mut self.core.song.speed)
-                    .range(1..=31)
-                    .prefix("Spd:"),
-            );
+            let mut speed = self.core.song.speed;
+            ui.add(DragValue::new(&mut speed).range(1..=31).prefix("Spd:"));
+            if speed != self.core.song.speed {
+                let before = self.core.song.clone();
+                self.core.set_speed(speed);
+                self.record_settings_edit("song.speed", before);
+            }
+            // What `TPO` and `SPD` have made of them during playback.
+            let (live_bpm, live_speed) = self.core.live_tempo();
+            if live_bpm.round() as u16 != self.core.song.bpm || live_speed != self.core.song.speed {
+                ui.label(format!("now {:.0}/{}", live_bpm, live_speed));
+            }
 
             ui.separator();
 

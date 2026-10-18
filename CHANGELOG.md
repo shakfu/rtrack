@@ -56,6 +56,18 @@ All notable changes to rtrack will be documented in this file.
 
 ### Fixed
 
+- **Playback rewrote the song's tempo and speed.** `TPO` and `SPD` were written into `song.bpm` and `song.speed`, so the next play started from them and the next save stored them without the song being marked changed. The engine now holds the playing tempo; `TrackerCore::live_tempo` reports it, and the TUI header and GUI transport show it. Tempo and speed edits go through `TrackerCore::set_bpm` and `set_speed`, which mark the song changed and are heard at once during playback. A tempo from Ableton Link still changes the song, and now marks it changed.
+
+- **Some edits skipped undo and the unsaved-changes prompt:** the GUI sidebar's order buttons, the GUI transport's BPM and speed, the GUI matrix's pattern assignment and repeat keys, and the TUI's `[` and `]` tempo keys. Each is now an undo step and marks the song changed.
+
+- **The editors could add more patterns than a song loads.** Past `MAX_PATTERNS`, new and cloned patterns are refused with a message, rather than dropped on the next load.
+
+- **The channel and instrument filter ran away at full resonance.** Its damping reached 0 at resonance 1.0, so it rang forever and grew without bound on input near the cutoff; a 0.1 sine reached 1563 after 5 s. Resonance now stops at 0.98 (Q 25), the cutoff stays below Nyquist, and a non-finite state resets the filter.
+
+- **The sub-oscillator played at the note's pitch.** It halved a phase that wraps at 1, which gives a rectified half-sine at the fundamental with a DC offset of about half its level. It now has its own phase at half the note's frequency.
+
+- **A `DLY` note played the previous instrument,** and stored its scaled velocity as the channel volume, so the next note without a volume was scaled twice. `ChannelState.delayed_note` is now a `DelayedNote` that carries the row's instrument and unscaled volume.
+
 - **Export of a looping song never finished.** A song ending in `JMP00` loops, and a non-wrapping engine only finishes at the end of the order list, so WAV, FLAC and MIDI export ran until disk or memory gave out. Exports now run the engine with wrapping on and stop after the requested passes, where a backward jump ends a pass like the end of the order list. The last row also keeps its full length; the render used to stop on its first tick.
 
 - **Saving after a MIDI import overwrote the previously open song.** The import kept the old `file_path` and left `dirty` false. It now starts an unsaved song.
@@ -103,6 +115,8 @@ All notable changes to rtrack will be documented in this file.
 - **TUI song settings: typing now replaces the field's current value.** The edit buffer is seeded with that value and every character appended to it, so entering a scale over the seeded `off` produced `offc minor` unless you backspaced first. The first character typed after selecting a field clears the buffer; Backspace still edits the seeded value rather than dropping it, so correcting one digit of a BPM works as before.
 
 ### Changed
+
+- **A song that has never been saved is not written to `./<title>.rtrk`,** which overwrote any file of that name. `TrackerCore::save` returns `Error::NoFilePath`; `TrackerCore::save_as` sets the path and keeps the old one if the write fails. The GUI's Save opens Save As. The TUI says to use `:w <path>`, which refuses to replace another file; `:w! <path>` replaces it.
 
 - **A `.rtrk` from a newer format version is refused,** with a message to update rtrack. It used to load with unknown fields dropped, and the next save lost them. `LoadReport.from_newer_version` and `SongFile::is_from_newer_version` are removed.
 

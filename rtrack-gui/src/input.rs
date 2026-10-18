@@ -577,6 +577,9 @@ impl RtrackApp {
                 self.show_track_config = Some(self.cursor_channel);
             }
             Action::NewPattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.edit_order + 1, idx);
@@ -588,6 +591,9 @@ impl RtrackApp {
                 self.end_structural_edit(before);
             }
             Action::ClonePattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.edit_order];
                 let cloned = self.core.song.patterns[src_idx].clone();
@@ -659,18 +665,23 @@ impl RtrackApp {
             Action::MatrixPrevPattern => {
                 let cur = self.core.song.order[self.matrix_cursor];
                 if cur > 0 {
+                    let before = self.begin_structural_edit();
                     self.core.song.order[self.matrix_cursor] = cur - 1;
-                    self.core.dirty = true;
+                    self.end_structural_edit(before);
                 }
             }
             Action::MatrixNextPattern => {
                 let cur = self.core.song.order[self.matrix_cursor];
                 if cur + 1 < self.core.song.patterns.len() {
+                    let before = self.begin_structural_edit();
                     self.core.song.order[self.matrix_cursor] = cur + 1;
-                    self.core.dirty = true;
+                    self.end_structural_edit(before);
                 }
             }
             Action::MatrixNewPattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.matrix_cursor + 1, idx);
@@ -681,6 +692,9 @@ impl RtrackApp {
                 self.end_structural_edit(before);
             }
             Action::MatrixClonePattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.matrix_cursor];
                 let cloned = self.core.song.patterns[src_idx].clone();
@@ -697,16 +711,18 @@ impl RtrackApp {
                 self.core.song.sync_order_repeats();
                 let cur = self.core.song.order_repeats[self.matrix_cursor];
                 if cur > 0 {
+                    let before = self.begin_structural_edit();
                     self.core.song.order_repeats[self.matrix_cursor] = cur - 1;
-                    self.core.dirty = true;
+                    self.end_structural_edit(before);
                 }
             }
             Action::MatrixIncRepeat => {
                 self.core.song.sync_order_repeats();
                 let cur = self.core.song.order_repeats[self.matrix_cursor];
                 if cur < 99 {
+                    let before = self.begin_structural_edit();
                     self.core.song.order_repeats[self.matrix_cursor] = cur + 1;
-                    self.core.dirty = true;
+                    self.end_structural_edit(before);
                 }
             }
             Action::ToggleFollow => {
@@ -929,6 +945,15 @@ impl RtrackApp {
     pub(crate) fn end_structural_edit(&mut self, before: rtrack_core::tracker::Song) {
         self.history.push_structure(before, self.core.song.clone());
         self.core.dirty = true;
+    }
+
+    /// Say so and return true if the song cannot take another pattern.
+    pub(crate) fn refuse_at_pattern_limit(&mut self) -> bool {
+        let full = self.core.song.at_pattern_limit();
+        if full {
+            self.status_message = Some(format!("Pattern limit reached ({MAX_PATTERNS})"));
+        }
+        full
     }
 
     /// Put back a whole song recorded by a structural edit.
@@ -1739,6 +1764,34 @@ mod tests {
             None,
             "the note entry undid in its own row"
         );
+    }
+
+    #[test]
+    fn matrix_pattern_assignment_and_repeats_are_undoable_and_mark_the_song() {
+        let mut app = app();
+        app.core.song.add_pattern();
+        app.matrix_cursor = 0;
+        app.execute_action(Action::MatrixNextPattern);
+        app.execute_action(Action::MatrixIncRepeat);
+        assert!(app.core.dirty);
+        assert_eq!(app.core.song.order[0], 1);
+        app.apply_undo();
+        app.apply_undo();
+        assert_eq!(app.core.song.order[0], 0);
+        assert_eq!(app.core.song.order_repeats[0], 1);
+    }
+
+    #[test]
+    fn no_pattern_is_added_past_the_limit() {
+        let mut app = app();
+        while !app.core.song.at_pattern_limit() {
+            app.core.song.add_pattern();
+        }
+        let order = app.core.song.order.clone();
+        app.execute_action(Action::NewPattern);
+        app.execute_action(Action::ClonePattern);
+        assert_eq!(app.core.song.patterns.len(), MAX_PATTERNS);
+        assert_eq!(app.core.song.order, order);
     }
 
     #[test]

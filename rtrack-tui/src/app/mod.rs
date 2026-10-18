@@ -832,6 +832,9 @@ impl App {
     }
 
     pub fn add_new_pattern_to_order(&mut self) {
+        if self.refuse_at_pattern_limit() {
+            return;
+        }
         self.push_undo();
         let idx = self.core.song.add_pattern();
         self.core.song.order.push(idx);
@@ -844,7 +847,19 @@ impl App {
         ));
     }
 
+    /// Say so and return true if the song cannot take another pattern.
+    pub(crate) fn refuse_at_pattern_limit(&mut self) -> bool {
+        let full = self.core.song.at_pattern_limit();
+        if full {
+            self.status_message = Some(format!("Pattern limit reached ({MAX_PATTERNS})"));
+        }
+        full
+    }
+
     pub fn clone_current_pattern(&mut self) {
+        if self.refuse_at_pattern_limit() {
+            return;
+        }
         self.push_undo();
         let src_idx = self.core.song.order[self.edit_order];
         let cloned = self.core.song.patterns[src_idx].clone();
@@ -875,13 +890,38 @@ impl App {
 
     /// Save the song. Returns whether it was written.
     pub fn save(&mut self) -> bool {
-        match self.core.save() {
+        let result = self.core.save();
+        self.report_save(result)
+    }
+
+    /// Save the song to `path`, as `:w <path>`. Without `force`, refuses to
+    /// replace a file other than the song's own.
+    pub fn save_as(&mut self, path: PathBuf, force: bool) -> bool {
+        let path = if path.extension().is_none() {
+            path.with_extension("rtrk")
+        } else {
+            path
+        };
+        if !force && path.exists() && self.core.file_path.as_ref() != Some(&path) {
+            self.status_message = Some(format!("{} exists; use :w! to overwrite", path.display()));
+            return false;
+        }
+        let result = self.core.save_as(path);
+        self.report_save(result)
+    }
+
+    fn report_save(&mut self, result: rtrack_core::error::Result<PathBuf>) -> bool {
+        match result {
             Ok(path) => {
                 self.last_autosave = Instant::now();
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(format!("Saved: {}", path.display()));
                 true
+            }
+            Err(rtrack_core::error::Error::NoFilePath) => {
+                self.status_message = Some("No file name: use :w <path>".to_string());
+                false
             }
             Err(e) => {
                 self.status_message = Some(format!("Save failed: {}", e));
@@ -2753,10 +2793,15 @@ pub(crate) mod tests {
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
         cell.fx = Fx::only(FxCmd::Speed, 3);
+        let speed = app.core.song.speed;
 
         app.play();
         app.core.process_tick();
-        assert_eq!(app.core.song.speed, 3);
+        assert_eq!(app.core.live_tempo().1, 3);
+        assert_eq!(
+            app.core.song.speed, speed,
+            "playback must not edit the song"
+        );
     }
 
     #[test]
@@ -2766,10 +2811,12 @@ pub(crate) mod tests {
 
         let cell = app.core.song.patterns[pat_idx].get_mut(0, 0);
         cell.fx = Fx::only(FxCmd::Tempo, 0x80);
+        let bpm = app.core.song.bpm;
 
         app.play();
         app.core.process_tick();
-        assert_eq!(app.core.song.bpm, 0x80);
+        assert_eq!(app.core.live_tempo().0, 0x80 as f64);
+        assert_eq!(app.core.song.bpm, bpm, "playback must not edit the song");
     }
 
     #[test]
@@ -3790,6 +3837,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn no_pattern_is_added_past_the_limit() {
+        let mut app = make_app();
+        while !app.core.song.at_pattern_limit() {
+            app.core.song.add_pattern();
+        }
+        app.add_new_pattern_to_order();
+        app.clone_current_pattern();
+        assert_eq!(app.core.song.patterns.len(), MAX_PATTERNS);
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("limit"));
+    }
+
+    #[test]
+    fn tempo_keys_mark_the_song_and_are_undoable() {
+        let mut app = make_app();
+        let bpm = app.core.song.bpm;
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.core.song.bpm, bpm + 1);
+        assert!(app.core.dirty);
+        app.undo();
+        assert_eq!(app.core.song.bpm, bpm);
+    }
+
+    #[test]
     fn test_song_settings_clamps_bpm() {
         let mut app = make_app();
         app.open_song_settings();
@@ -4262,6 +4336,28 @@ pub(crate) mod tests {
         std::env::temp_dir()
             .join("rtrack_no_such_dir_for_tests")
             .join("song.rtrk")
+    }
+
+    #[test]
+    fn write_with_a_path_saves_there_and_will_not_replace_another_file() {
+        let dir = std::env::temp_dir().join(format!("rtrack_w_path_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = make_app();
+        assert!(!app.save(), "an untitled song has nowhere to go");
+
+        let first = dir.join("first");
+        run_command(&mut app, &format!("w {}", first.display()));
+        let first = first.with_extension("rtrk");
+        assert!(first.exists());
+        assert_eq!(app.core.file_path.as_ref(), Some(&first));
+
+        let other = dir.join("other.rtrk");
+        std::fs::write(&other, "keep").unwrap();
+        run_command(&mut app, &format!("w {}", other.display()));
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "keep");
+        run_command(&mut app, &format!("w! {}", other.display()));
+        assert_ne!(std::fs::read_to_string(&other).unwrap(), "keep");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

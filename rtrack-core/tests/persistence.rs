@@ -827,3 +827,28 @@ fn a_file_declaring_too_many_patterns_is_capped_before_allocation() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn an_untitled_song_is_not_saved_to_a_guessed_path() {
+    let mut core = headless(2, 8);
+    core.song.title = "rtrack untitled guard".to_string();
+    let guessed = PathBuf::from("rtrack_untitled_guard.rtrk");
+    assert!(matches!(
+        core.save(),
+        Err(rtrack_core::error::Error::NoFilePath)
+    ));
+    assert!(!guessed.exists());
+}
+
+#[test]
+fn a_failed_save_as_keeps_the_previous_path() {
+    let path = scratch("save_as_keeps_path");
+    let mut core = headless(2, 8);
+    core.save_as(path.clone()).unwrap();
+    let bad = std::env::temp_dir()
+        .join("rtrack_no_such_dir")
+        .join("x.rtrk");
+    assert!(core.save_as(bad).is_err());
+    assert_eq!(core.file_path, Some(path.clone()));
+    let _ = std::fs::remove_file(&path);
+}

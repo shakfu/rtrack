@@ -159,6 +159,9 @@ impl InstrumentFx {
     }
 }
 
+/// Highest resonance [`Svf`] applies; see its `tick`.
+const MAX_SVF_RESONANCE: f32 = 0.98;
+
 /// Two-pole state variable low-pass, stereo.
 ///
 /// The "Cytomic SVF" / Andrew Simper's linear trapezoidal integration, with
@@ -181,8 +184,12 @@ impl Svf {
         resonance: f32,
         sample_rate: f64,
     ) -> (f32, f32) {
-        let cutoff = cutoff.clamp(20.0, 20000.0);
-        let res = resonance.clamp(0.0, 1.0);
+        // Below Nyquist, where `tan` stays finite and positive.
+        let cutoff = cutoff.clamp(20.0, 20000.0_f32.min(0.49 * sample_rate as f32));
+        // `k` is the damping. At resonance 1.0 it would be 0, and the filter
+        // would ring forever and grow without bound on input at the cutoff.
+        // 0.98 leaves a Q of 25.
+        let res = resonance.clamp(0.0, MAX_SVF_RESONANCE);
 
         let g = (std::f32::consts::PI * cutoff / sample_rate as f32).tan();
         let k = 2.0 - 2.0 * res;
@@ -201,6 +208,15 @@ impl Svf {
         let v2_r = self.ic2eq_r + a2 * self.ic1eq_r + a3 * v3_r;
         self.ic1eq_r = 2.0 * v1_r - self.ic1eq_r;
         self.ic2eq_r = 2.0 * v2_r - self.ic2eq_r;
+
+        // A NaN or infinity on the input would otherwise stay in the state.
+        if ![self.ic1eq_l, self.ic2eq_l, self.ic1eq_r, self.ic2eq_r]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            *self = Self::default();
+            return (0.0, 0.0);
+        }
 
         (v2_l, v2_r)
     }
@@ -545,6 +561,38 @@ impl ChannelEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_filter_stays_bounded_at_full_resonance() {
+        let sr = 44100.0;
+        let cutoff = 1000.0;
+        let mut svf = Svf::default();
+        let mut peak = 0.0f32;
+        for i in 0..(5 * 44100) {
+            let x = 0.1 * (std::f64::consts::TAU * cutoff * i as f64 / sr).sin() as f32;
+            let (l, _) = svf.tick(x, x, cutoff as f32, 1.0, sr);
+            peak = peak.max(l.abs());
+        }
+        // Q 25 on a 0.1 sine settles near 2.5. Undamped, it reached 1563.
+        assert!(peak < 5.0, "peak {peak}");
+    }
+
+    #[test]
+    fn the_filter_recovers_from_a_non_finite_input() {
+        let mut svf = Svf::default();
+        svf.tick(f32::NAN, f32::INFINITY, 1000.0, 0.5, 44100.0);
+        let (l, r) = svf.tick(0.5, 0.5, 1000.0, 0.5, 44100.0);
+        assert!(l.is_finite() && r.is_finite());
+    }
+
+    #[test]
+    fn a_cutoff_above_nyquist_is_held_below_it() {
+        let mut svf = Svf::default();
+        for _ in 0..1000 {
+            let (l, _) = svf.tick(0.5, 0.5, 20000.0, 0.5, 32000.0);
+            assert!(l.is_finite() && l.abs() < 10.0);
+        }
+    }
 
     #[test]
     fn a_disabled_instrument_stage_passes_audio_through() {

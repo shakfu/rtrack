@@ -412,6 +412,12 @@ impl Song {
         self.patterns.len()
     }
 
+    /// True when the song holds [`MAX_PATTERNS`] patterns. Editors check
+    /// this before adding one: a song past the cap loses the rest on load.
+    pub fn at_pattern_limit(&self) -> bool {
+        self.patterns.len() >= MAX_PATTERNS
+    }
+
     pub fn add_pattern(&mut self) -> usize {
         let idx = self.patterns.len();
         self.patterns
