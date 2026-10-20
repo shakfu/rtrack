@@ -26,10 +26,6 @@ pub enum NewNoteAction {
     Continue,
 }
 
-/// Highest resonance a voice filter runs at. At 1.0 the filter is
-/// undamped, and a resonant input then grows without bound.
-const MAX_VOICE_RESONANCE: f32 = 0.95;
-
 /// A voice's drive and filter, set up from its instrument's [`SampleFx`]
 /// at note-on. Values from a file are clamped here, where they reach audio.
 #[derive(Debug, Clone, Copy, Default)]
@@ -46,8 +42,10 @@ impl VoiceFx {
         let filter = fx.filter.map(|f| {
             let finite = |v: f32, or: f32| if v.is_finite() { v } else { or };
             let cutoff = finite(f.cutoff_hz, 20000.0).clamp(20.0, 20000.0);
-            let res = finite(f.resonance, 0.0).clamp(0.0, MAX_VOICE_RESONANCE);
-            (f.kind, SvfCoeffs::new(cutoff, res, output_rate as f32))
+            (
+                f.kind,
+                SvfCoeffs::new(cutoff, f.resonance, output_rate as f32),
+            )
         });
         Self {
             drive,

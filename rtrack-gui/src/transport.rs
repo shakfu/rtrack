@@ -82,6 +82,11 @@ impl RtrackApp {
                     .range(1..=31)
                     .prefix("Spd:"),
             );
+            // What `TPO` and `SPD` have made of them during playback.
+            let (live_bpm, live_speed) = self.core.live_tempo();
+            if live_bpm.round() as u16 != self.core.song.bpm || live_speed != self.core.song.speed {
+                ui.label(format!("now {:.0}/{}", live_bpm, live_speed));
+            }
 
             ui.separator();
 

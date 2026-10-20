@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -1065,20 +1066,27 @@ impl App {
         }
     }
 
+    /// Answer the unsaved-changes prompt, for quitting or for opening the
+    /// song in `pending_open`.
     fn handle_quit_confirm_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.should_quit = true;
-            }
+        let proceed = match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => true,
+            // A failed save leaves the prompt open; its status says why.
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                self.save();
-                self.should_quit = true;
+                if !self.save() {
+                    return;
+                }
+                true
             }
-            _ => {
-                // Any other key cancels
-                self.mode = self.prev_mode;
-                self.status_message = Some("Quit cancelled".to_string());
-            }
+            _ => false,
+        };
+        self.mode = self.prev_mode;
+        let open = self.pending_open.take();
+        match (proceed, open) {
+            (true, Some(path)) => self.load_file_discarding(path),
+            (true, None) => self.should_quit = true,
+            (false, Some(_)) => self.status_message = Some("Open cancelled".to_string()),
+            (false, None) => self.status_message = Some("Quit cancelled".to_string()),
         }
     }
 
@@ -1349,6 +1357,9 @@ impl App {
             match key.code {
                 KeyCode::Char('n') => {
                     // New empty pattern, insert after cursor
+                    if self.refuse_at_pattern_limit() {
+                        return;
+                    }
                     self.core.begin_edit();
                     let idx = self.core.song.add_pattern();
                     self.core.song.order.insert(self.matrix_cursor + 1, idx);
@@ -1363,6 +1374,9 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     // Clone current pattern, insert after cursor
+                    if self.refuse_at_pattern_limit() {
+                        return;
+                    }
                     self.core.begin_edit();
                     let src_idx = self.core.song.order[self.matrix_cursor];
                     let cloned = self.core.song.patterns[src_idx].clone();
@@ -1606,6 +1620,14 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &str) {
+        // `:w <path>` saves as; `:w! <path>` may replace another file.
+        if let Some((name, path)) = cmd.split_once(' ') {
+            if matches!(name, "w" | "write" | "w!") && !path.trim().is_empty() {
+                self.mode = Mode::Normal;
+                self.save_as(PathBuf::from(path.trim()), name == "w!");
+                return;
+            }
+        }
         match cmd {
             "p" | "pattern" => {
                 self.open_pattern_matrix();
@@ -1626,8 +1648,8 @@ impl App {
                 self.save();
             }
             "wq" => {
-                self.save();
-                self.should_quit = true;
+                self.mode = Mode::Normal;
+                self.should_quit = self.save();
             }
             "h" | "help" => {
                 self.open_help();

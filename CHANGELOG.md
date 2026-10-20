@@ -4,6 +4,44 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **TUI: Save & Quit quit when the save failed,** then deleted the autosave, losing the song. `S` in the quit prompt and `:wq` now quit only after a successful save; the GUI's Save & Quit likewise closes only after one.
+
+- **A song that had never been saved was written to `./<title>.rtrk`,** overwriting any file of that name. `TrackerCore::save` now returns `Error::NoFilePath`, and `TrackerCore::save_as` sets the path, keeping the old one if the write fails. GUI Save opens Save As. The TUI says to use `:w <path>`, which refuses to replace another file; `:w! <path>` replaces it.
+
+- **Saving after a MIDI import overwrote the previously open song.** The import kept the old `file_path` and left `dirty` false. It now starts an unsaved song.
+
+- **Opening a song discarded unsaved changes without asking.** TUI Ctrl+O, `:open` and `:recent`, and GUI New, Open, Recent and dropping a `.rtrk` now ask first, as quitting does.
+
+- **A small `.rtrk` could demand gigabytes.** `Song::repair` capped each pattern's size but not the pattern count, and every pattern is allocated at its declared size. It now drops patterns past `MAX_PATTERNS` (1024) before allocating, and the editors refuse to add patterns past it.
+
+- **Export of a looping song never finished.** A song ending in `JMP00` loops, and a non-wrapping engine only finishes at the end of the order list, so WAV, FLAC and MIDI export ran until disk or memory gave out. Exports now run the engine with wrapping on and stop after one pass, where a backward jump ends a pass as the end of the order list does, with `MAX_EXPORT_SECONDS` (one hour) as a backstop. The last row also keeps its full length; the render used to stop on its first tick.
+
+- **TUI: non-ASCII names panicked the renderer** where a sample name or track label was cut by bytes. `strip_slice_suffix` had the same bug.
+
+- **Playback rewrote the song's tempo and speed.** `TPO` and `SPD` were written into `song.bpm` and `song.speed`, so the next play started from them and the next save stored them without the song being marked changed. The engine now holds the playing tempo; `TrackerCore::live_tempo` reports it, and the TUI header and GUI transport show it.
+
+- **A `DLY` note played the previous instrument,** and stored its scaled velocity as the track volume, so the next note without a volume was scaled twice. The delayed note now keeps its row's instrument (`ChannelState::delayed_instrument`) and its unscaled velocity.
+
+- **24-bit WAV samples loaded 48 dB too quiet.** hound returns them in +/-2^23, and the conversion scaled them as full-range `i32`.
+
+- **`FundspPad` went silent after 32 notes.** A voice that finished on its own was dropped with its fundsp graph instead of returning it to the pool, so the pool ran dry. Dropping it also freed memory on the audio thread.
+
+- **The sub-oscillator played at the note's pitch.** It halved a phase that wraps at 1, which gives a rectified half-sine at the fundamental with a DC offset of about half its level. It now has its own phase at half the note's frequency.
+
+- **Exports saturate the way playback does.** Live output passes through a soft clip that is linear to 0.8 and saturates smoothly above it. The WAV and FLAC writers hard-clipped at full scale instead, so a mix that sounded fine played back was clipped in the exported file.
+
+- **External MIDI clock plays at the sender's tempo.** An engine tick is one MIDI clock (24 per beat), and clock output sends at that rate, but clock input advanced one tick every `24 / speed` pulses: at speed 6 a row took a beat instead of a quarter, so a slaved song ran four times slow. Each incoming pulse is now one tick. `PlaybackTiming::ext_clock_count` is unused; it stays until 0.3.0 so the public struct does not change.
+
+- **Saving a file from a newer rtrack deleted what this version could not read.** It loads with unknown fields dropped, so saving over it lost them. `TrackerCore::save` now refuses while the song came from such a file, and `TrackerCore::needs_save_as` says so. GUI Save opens Save As. In the TUI, `:w <path>` saves a copy. Save As to the same file is refused as well.
+
+- **The track filter ran away at full resonance.** Its damping reached 0 at resonance 1.0, so it rang forever and grew without bound on input near the cutoff. `SvfCoeffs` now caps resonance at 0.95, the limit voice filters already had, and a non-finite state resets the filter.
+
+### Changed
+
+- **`cargo audit` ignores RUSTSEC-2026-0370/0371/0372.** `zvariant`, `zbus_names` and `zvariant_derive` are unmaintained since their merge into zbus 6. They arrive through zbus 5 from `accesskit_unix` (eframe) and `ashpd` (rfd), whose latest releases still require zbus 5. Ignored rather than removed: removing them means dropping the accessibility bridge or the portal file dialog.
+
 ## [0.2.0]
 
 ### Added

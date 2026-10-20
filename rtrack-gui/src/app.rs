@@ -42,6 +42,8 @@ pub struct RtrackApp {
     // Dialogs
     pub show_song_settings: bool,
     pub show_quit_confirm: bool,
+    /// A New or Open waiting on the unsaved-changes prompt.
+    pub(crate) pending_song_change: Option<crate::menu::PendingSongChange>,
     pub show_track_config: Option<usize>,
     pub show_help: bool,
     pub show_midi_ports: bool,
@@ -114,6 +116,7 @@ impl RtrackApp {
             block_end: None,
             show_song_settings: false,
             show_quit_confirm: false,
+            pending_song_change: None,
             show_track_config: None,
             show_help: false,
             show_midi_ports: false,
@@ -149,7 +152,10 @@ impl RtrackApp {
         }
         let mut notes = Vec::new();
         if report.from_newer_version {
-            notes.push("written by a newer rtrack; some settings may be missing".to_string());
+            notes.push(
+                "written by a newer rtrack; some settings may be missing, so it saves only under a new name"
+                    .to_string(),
+            );
         }
         if !report.repairs.is_empty() {
             notes.push(format!("repaired: {}", report.repairs.join("; ")));
@@ -250,18 +256,7 @@ impl RtrackApp {
 
             if ext == rtrk_ext {
                 // Load as project file
-                match self.core.load_file(path) {
-                    Ok(report) => {
-                        self.reset_cursor_state();
-                        rtrack_core::config::push_recent_file(&mut self.recent_files, path);
-                        rtrack_core::config::save_recent_files(&self.recent_files);
-                        self.status_message = Some(Self::describe_load(&report));
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            Some(format!("Error loading {}: {}", path.display(), e));
-                    }
-                }
+                self.request_song_change(crate::menu::PendingSongChange::Open(path.to_path_buf()));
                 return; // Only load one project file
             }
 

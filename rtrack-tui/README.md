@@ -119,6 +119,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:midi` | MIDI port selector |
 | `:link` | Toggle Ableton Link |
 | `:w` / `:write` | Save |
+| `:w <path>` | Save as; `:w! <path>` replaces an existing file |
 | `:q` / `:quit` | Quit |
 | `:q!` | Force quit (discard changes) |
 | `:wq` | Save and quit |

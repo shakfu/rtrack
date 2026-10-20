@@ -26,7 +26,7 @@ use synth::{BuiltinSynth, SynthParams};
 /// Soft clamp audio sample to [-1, 1] using tanh-style saturation.
 /// Passes near-unity signals through cleanly, gently compresses values above ~0.8.
 #[inline]
-fn soft_clip(x: f32) -> f32 {
+pub(crate) fn soft_clip(x: f32) -> f32 {
     if x.abs() <= 0.8 {
         x
     } else {

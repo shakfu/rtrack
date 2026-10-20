@@ -585,6 +585,9 @@ impl RtrackApp {
             Action::NewPattern if self.phrase_view.is_some() => self.add_phrase_in_view(false),
             Action::ClonePattern if self.phrase_view.is_some() => self.add_phrase_in_view(true),
             Action::NewPattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.edit_order + 1, idx);
@@ -596,6 +599,9 @@ impl RtrackApp {
                 self.end_structural_edit(before);
             }
             Action::ClonePattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.edit_order];
                 let cloned = self.core.song.patterns[src_idx].clone();
@@ -679,6 +685,9 @@ impl RtrackApp {
                 }
             }
             Action::MatrixNewPattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let idx = self.core.song.add_pattern();
                 self.core.song.order.insert(self.matrix_cursor + 1, idx);
@@ -689,6 +698,9 @@ impl RtrackApp {
                 self.end_structural_edit(before);
             }
             Action::MatrixClonePattern => {
+                if self.refuse_at_pattern_limit() {
+                    return;
+                }
                 let before = self.begin_structural_edit();
                 let src_idx = self.core.song.order[self.matrix_cursor];
                 let cloned = self.core.song.patterns[src_idx].clone();
@@ -890,6 +902,15 @@ impl RtrackApp {
     /// new step. Called when a dialog closes.
     pub(crate) fn break_edit_coalescing(&mut self) {
         self.core.history.break_coalescing();
+    }
+
+    /// Say so and return true if the song cannot take another pattern.
+    pub(crate) fn refuse_at_pattern_limit(&mut self) -> bool {
+        let full = self.core.song.at_pattern_limit();
+        if full {
+            self.status_message = Some(format!("Pattern limit reached ({MAX_PATTERNS})"));
+        }
+        full
     }
 
     /// Take the song as it stands, to pair with [`RtrackApp::end_structural_edit`].
@@ -2320,5 +2341,35 @@ mod tests {
         a.try_enter_note('z');
         a.enter_note_off();
         assert_eq!(a.current_pattern_rows(), 16, "falls back to song default");
+    }
+
+    #[test]
+    fn no_pattern_is_added_past_the_limit() {
+        let mut a = app();
+        while !a.core.song.at_pattern_limit() {
+            a.core.song.add_pattern();
+        }
+        let order = a.core.song.order.clone();
+        for action in [
+            Action::NewPattern,
+            Action::ClonePattern,
+            Action::MatrixNewPattern,
+            Action::MatrixClonePattern,
+        ] {
+            a.execute_action(action);
+        }
+        assert_eq!(a.core.song.patterns.len(), MAX_PATTERNS);
+        assert_eq!(a.core.song.order, order);
+    }
+
+    #[test]
+    fn opening_over_unsaved_work_waits_for_an_answer() {
+        let mut a = app();
+        a.core.dirty = true;
+        let title = a.core.song.title.clone();
+        a.request_song_change(crate::menu::PendingSongChange::New);
+        assert!(a.pending_song_change.is_some());
+        assert_eq!(a.core.song.title, title);
+        assert!(a.core.dirty, "nothing was replaced yet");
     }
 }

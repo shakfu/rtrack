@@ -251,8 +251,11 @@ impl ChannelEffects {
     #[inline]
     fn svf_tick(&mut self, l: f32, r: f32) -> (f32, f32) {
         let cutoff = self.params.filter_cutoff.clamp(20.0, 20000.0);
-        let res = self.params.filter_resonance.clamp(0.0, 1.0);
-        let c = SvfCoeffs::new(cutoff, res, self.sample_rate as f32);
+        let c = SvfCoeffs::new(
+            cutoff,
+            self.params.filter_resonance,
+            self.sample_rate as f32,
+        );
         (self.svf_l.tick(&c, l).0, self.svf_r.tick(&c, r).0)
     }
 

@@ -114,6 +114,20 @@ pub const MAX_CHANNELS: usize = 16;
 /// over two hours of music, so nothing musical reaches it.
 pub const MAX_IMPORT_PATTERNS: usize = 1024;
 
+/// Most patterns a song may hold.
+///
+/// A pattern costs its declared rows x channels in memory however little
+/// data the file carries, so an uncapped count lets a small `.rtrk` demand
+/// gigabytes. At the largest pattern shape this is about 42MB of cells.
+pub const MAX_PATTERNS: usize = 1024;
+
+/// Longest offline export, in seconds of rendered audio.
+///
+/// A backstop for an export that would otherwise run until memory or the
+/// WAV size limit gives out. FLAC is encoded from memory at about 20 bytes
+/// per frame, so an hour at 48kHz is already several gigabytes.
+pub const MAX_EXPORT_SECONDS: f64 = 3600.0;
+
 /// Number of channels displayed per track page.
 pub const CHANNELS_PER_PAGE: usize = 4;
 

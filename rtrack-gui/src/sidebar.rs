@@ -81,6 +81,7 @@ impl RtrackApp {
                 .button("D")
                 .on_hover_text("Duplicate current pattern")
                 .clicked()
+                && !self.refuse_at_pattern_limit()
             {
                 let src_pat_idx = self.core.song.order[self.edit_order];
                 let cloned = self.core.song.patterns[src_pat_idx].clone();

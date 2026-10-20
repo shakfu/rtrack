@@ -40,7 +40,8 @@ pub struct LoadReport {
     /// Samples referenced by the song that could not be loaded, as
     /// (name, reason) pairs.
     pub missing_samples: Vec<(String, String)>,
-    /// The file declares a format version this build does not know.
+    /// The file declares a format version this build does not know. The song
+    /// saves only under a new name; see [`TrackerCore::needs_save_as`].
     pub from_newer_version: bool,
 }
 
@@ -136,6 +137,11 @@ pub struct TrackerCore {
     /// no longer be worked out from the song's state.
     autosave_written: Option<PathBuf>,
 
+    /// The song was loaded from a file a newer rtrack wrote. Saving over that
+    /// file would drop what this version could not read, so `save` refuses
+    /// until [`Self::save_as`] gives the song a new file.
+    loaded_from_newer: bool,
+
     /// Audio frame the tick currently being dispatched should sound at.
     /// `None` for anything triggered outside the sequencer (note preview,
     /// live MIDI input), which is applied as soon as the audio thread
@@ -218,6 +224,7 @@ impl TrackerCore {
             midi_learn_pending: None,
             preview_note: None,
             autosave_written: None,
+            loaded_from_newer: false,
             scheduled_frame: None,
             external_channel: [None; 16],
             sent_program: [None; 16],
@@ -349,6 +356,7 @@ impl TrackerCoreBuilder {
             midi_learn_pending: None,
             preview_note: None,
             autosave_written: None,
+            loaded_from_newer: false,
             scheduled_frame: None,
             external_channel: [None; 16],
             sent_program: [None; 16],
@@ -600,6 +608,16 @@ impl TrackerCore {
                 self.song.bpm = new_bpm;
                 self.engine.bpm = new_tempo;
             }
+        }
+    }
+
+    /// Tempo and speed as heard: the engine's while playing, which `TPO`
+    /// and `SPD` change, otherwise the song's.
+    pub fn live_tempo(&self) -> (f64, u8) {
+        if self.playing {
+            (self.engine.bpm, self.engine.speed)
+        } else {
+            (self.song.bpm as f64, self.song.speed)
         }
     }
 
@@ -883,11 +901,11 @@ impl TrackerCore {
                 TrackerEvent::ProgramChange { channel, program } => {
                     self.send_program_change(channel as u8, program);
                 }
-                TrackerEvent::SpeedChanged { speed } => {
-                    self.song.speed = speed;
-                }
+                // The engine holds the playing tempo. Writing it into the
+                // song would make the next play start from it, and the next
+                // save store it, without the song being marked changed.
+                TrackerEvent::SpeedChanged { .. } => {}
                 TrackerEvent::TempoChanged { bpm } => {
-                    self.song.bpm = bpm.round() as u16;
                     if self.link.is_enabled() {
                         self.link.set_tempo(bpm);
                     }
@@ -902,30 +920,22 @@ impl TrackerCore {
     /// Switch between internal and external MIDI clock mode.
     pub fn toggle_clock_mode(&mut self) {
         self.clock_mode = match self.clock_mode {
-            ClockMode::Internal => {
-                self.timing.ext_clock_count = 0;
-                ClockMode::ExternalMidi
-            }
+            ClockMode::Internal => ClockMode::ExternalMidi,
             ClockMode::ExternalMidi => ClockMode::Internal,
         };
     }
 
-    /// Process an incoming external MIDI clock tick (advances playback when in external mode).
+    /// Process an incoming external MIDI clock pulse (advances playback when in external mode).
+    ///
+    /// An engine tick is one MIDI clock: 24 per beat, the rate clock output
+    /// sends at. So each pulse is one tick.
     pub fn handle_external_clock(&mut self) {
         if self.clock_mode != ClockMode::ExternalMidi || !self.playing {
             return;
         }
-
-        self.timing.ext_clock_count += 1;
-
-        let clocks_per_tick = (24u32 / self.engine.speed as u32).max(1);
-        if self.timing.ext_clock_count >= clocks_per_tick {
-            self.timing.ext_clock_count = 0;
-            self.process_tick();
-
-            let spt = self.engine.seconds_per_tick(&self.song);
-            self.timing.playback_elapsed += spt;
-        }
+        self.process_tick();
+        let spt = self.engine.seconds_per_tick(&self.song);
+        self.timing.playback_elapsed += spt;
     }
 
     /// Handle an external MIDI Start message (reset and begin playback).
@@ -936,7 +946,6 @@ impl TrackerCore {
         self.playing = true;
         self.engine.reset(&self.song, 0, 0);
         self.sync_engine_channel_info();
-        self.timing.ext_clock_count = 0;
         self.timing.playback_elapsed = 0.0;
     }
 
@@ -958,7 +967,6 @@ impl TrackerCore {
             return;
         }
         self.playing = true;
-        self.timing.ext_clock_count = 0;
     }
 
     // -----------------------------------------------------------------------
@@ -2141,12 +2149,21 @@ impl TrackerCore {
         }
     }
 
-    /// Save the song. Returns Ok(message) or Err(message).
+    /// Save the song to its file, returning the path written.
+    ///
+    /// A song that has never been saved has no path, and is refused with
+    /// [`Error::NoFilePath`] rather than written to `./<title>.rtrk`, where it
+    /// would overwrite any file of that name. Use [`Self::save_as`].
     pub fn save(&mut self) -> Result<PathBuf> {
-        let path = self.file_path.clone().unwrap_or_else(|| {
-            let name = self.song.title.replace(' ', "_").to_lowercase();
-            PathBuf::from(format!("{}.rtrk", name))
-        });
+        let Some(path) = self.file_path.clone() else {
+            return Err(Error::NoFilePath);
+        };
+        if self.loaded_from_newer {
+            return Err(Error::file(
+                &path,
+                anyhow::anyhow!("written by a newer rtrack; save under a new name to keep it"),
+            ));
+        }
         // Taken before `file_path` moves: a song that had never been saved
         // has its recovery copy in the temp directory, and naming it after
         // the new path would leave that one behind for good.
@@ -2156,6 +2173,32 @@ impl TrackerCore {
         self.dirty = false;
         self.remove_autosave();
         Ok(path)
+    }
+
+    /// Save the song to `path` and make that its file. A failed save leaves
+    /// the previous path in place.
+    pub fn save_as(&mut self, path: PathBuf) -> Result<PathBuf> {
+        let previous = self.file_path.replace(path);
+        let from_newer = self.loaded_from_newer;
+        // Only a different file escapes the newer-version guard. Compared
+        // canonically, so `song.rtrk` and its absolute path are one file.
+        let canonical =
+            |p: &Option<PathBuf>| p.as_ref().map(|p| p.canonicalize().unwrap_or(p.clone()));
+        if canonical(&self.file_path) != canonical(&previous) {
+            self.loaded_from_newer = false;
+        }
+        let result = self.save();
+        if result.is_err() {
+            self.file_path = previous;
+            self.loaded_from_newer = from_newer;
+        }
+        result
+    }
+
+    /// Whether [`Self::save`] needs a new file: the song has none, or it was
+    /// loaded from a newer version's file.
+    pub fn needs_save_as(&self) -> bool {
+        self.file_path.is_none() || self.loaded_from_newer
     }
 
     /// Auto-save to a temporary file if the song is dirty and enough time has
@@ -2324,6 +2367,7 @@ impl TrackerCore {
                 }
 
                 self.file_path = Some(path.to_path_buf());
+                self.loaded_from_newer = from_newer;
                 self.dirty = false;
                 Ok(LoadReport {
                     path: path.to_path_buf(),
@@ -2348,6 +2392,11 @@ impl TrackerCore {
                 self.channels = default_channel_configs(song.channels);
                 self.solo_channel = None;
                 self.song = song;
+                // The import is a new, unsaved song. Keeping the previous
+                // path would let the next save overwrite that file with it.
+                self.file_path = None;
+                self.loaded_from_newer = false;
+                self.dirty = true;
                 Ok(LoadReport {
                     path: path.to_path_buf(),
                     repairs,
@@ -2901,5 +2950,51 @@ mod tests {
         assert_eq!(*core.song.cell(at).unwrap(), Cell::default());
         assert!(core.redo());
         assert_eq!(*core.song.cell(at).unwrap(), vol(3));
+    }
+
+    #[test]
+    fn one_external_clock_pulse_is_one_tick() {
+        // 24 pulses are one beat; at speed 6 a beat is 4 rows, as it is
+        // under the internal clock.
+        let mut core = TrackerCoreBuilder::new()
+            .song_size(1, 16)
+            .headless()
+            .build();
+        core.toggle_clock_mode();
+        core.handle_external_start();
+        for _ in 0..24 {
+            core.handle_external_clock();
+        }
+        assert_eq!(core.engine.row, 4);
+        assert_eq!(core.engine.tick, 0);
+    }
+
+    #[test]
+    fn tempo_effects_change_playback_but_not_the_song() {
+        use crate::tracker::{Cell, Fx, FxCmd, FX_COLUMNS};
+        let mut core = TrackerCoreBuilder::new().song_size(1, 4).headless().build();
+        let mut fx = [None; FX_COLUMNS];
+        fx[0] = Some(Fx::new(FxCmd::Ticks, 3));
+        fx[1] = Some(Fx::new(FxCmd::Tempo, 200));
+        core.song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                fx,
+                ..Cell::default()
+            },
+        );
+        let (bpm, speed) = (core.song.bpm, core.song.speed);
+
+        core.play(0, 0);
+        for _ in 0..4 {
+            core.process_tick();
+        }
+        assert_eq!(core.live_tempo(), (200.0, 3));
+        core.stop();
+
+        assert_eq!((core.song.bpm, core.song.speed), (bpm, speed));
+        assert!(!core.dirty);
     }
 }

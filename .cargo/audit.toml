@@ -6,7 +6,15 @@
 # ignoring everything reports nothing.
 
 [advisories]
-ignore = []
+ignore = [
+    # zvariant, zbus_names and zvariant_derive: merged into zbus 6, flagged
+    # unmaintained. Reached through zbus 5 via eframe -> accesskit_unix and
+    # rfd -> ashpd; the latest of both (accesskit_unix 0.24, ashpd 0.13) still
+    # require zbus 5. Remove once they move to zbus 6.
+    "RUSTSEC-2026-0370",  # zvariant
+    "RUSTSEC-2026-0371",  # zbus_names
+    "RUSTSEC-2026-0372",  # zvariant_derive
+]
 
 # Unmaintained and unsound notices fail the job like vulnerabilities. One that
 # cannot be fixed from here goes in `ignore` with its reason.

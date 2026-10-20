@@ -3,6 +3,10 @@
 
 use super::synth::FilterType;
 
+/// Highest resonance the filter runs at. At 1.0 it is undamped, and a
+/// resonant input then grows without bound.
+pub const MAX_RESONANCE: f32 = 0.95;
+
 /// Coefficients for one cutoff and resonance; compute once while they hold.
 #[derive(Debug, Clone, Copy)]
 pub struct SvfCoeffs {
@@ -13,13 +17,18 @@ pub struct SvfCoeffs {
 }
 
 impl SvfCoeffs {
-    /// `resonance` 0..1 maps to damping `2 - 2 * resonance`; 1 is undamped.
-    /// Callers clamp; only the cutoff is held below Nyquist here, where the
-    /// tangent turns negative.
+    /// `resonance` 0..1 maps to damping `2 - 2 * resonance`, held to
+    /// [`MAX_RESONANCE`]; a NaN is 0. The cutoff is held below Nyquist, where
+    /// the tangent turns negative; callers clamp its lower end.
     pub fn new(cutoff_hz: f32, resonance: f32, sample_rate: f32) -> Self {
         let cutoff = cutoff_hz.min(0.49 * sample_rate);
         let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
-        let k = 2.0 - 2.0 * resonance;
+        let res = if resonance.is_nan() {
+            0.0
+        } else {
+            resonance.clamp(0.0, MAX_RESONANCE)
+        };
+        let k = 2.0 - 2.0 * res;
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
@@ -43,6 +52,11 @@ impl Svf {
         let v2 = self.ic2eq + c.a2 * self.ic1eq + c.a3 * v3;
         self.ic1eq = 2.0 * v1 - self.ic1eq;
         self.ic2eq = 2.0 * v2 - self.ic2eq;
+        // A NaN or infinity on the input would otherwise stay in the state.
+        if !(self.ic1eq.is_finite() && self.ic2eq.is_finite()) {
+            *self = Self::default();
+            return (0.0, 0.0);
+        }
         (v2, v1)
     }
 
@@ -87,6 +101,30 @@ mod tests {
         assert!(gain(FilterType::BandPass, 1000.0) > 0.4);
         assert!(gain(FilterType::BandPass, 100.0) < 0.1);
         assert!(gain(FilterType::BandPass, 10000.0) < 0.1);
+    }
+
+    #[test]
+    fn full_resonance_stays_bounded() {
+        let sr = 44100.0;
+        let c = SvfCoeffs::new(1000.0, 1.0, sr);
+        let mut svf = Svf::default();
+        let mut peak = 0.0f32;
+        for n in 0..(5 * sr as usize) {
+            let x = 0.1 * (std::f32::consts::TAU * 1000.0 * n as f32 / sr).sin();
+            peak = peak.max(svf.tick_kind(&c, FilterType::LowPass, x).abs());
+        }
+        // Q 10 on a 0.1 sine settles near 1. Undamped, it grows without bound.
+        assert!(peak < 2.0, "peak {peak}");
+    }
+
+    #[test]
+    fn the_filter_recovers_from_a_non_finite_input() {
+        let c = SvfCoeffs::new(1000.0, 0.5, 44100.0);
+        let mut svf = Svf::default();
+        svf.tick(&c, f32::NAN);
+        assert!(svf.tick(&c, 0.5).0.is_finite());
+        let nan = SvfCoeffs::new(1000.0, f32::NAN, 44100.0);
+        assert!(svf.tick(&nan, 0.5).0.is_finite());
     }
 
     #[test]

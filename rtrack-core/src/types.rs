@@ -23,7 +23,8 @@ pub struct PlaybackTiming {
     pub clock_tick_accumulator: f64,
     /// Total elapsed playback time (seconds).
     pub playback_elapsed: f64,
-    /// Counter for incoming external MIDI clock ticks.
+    /// Unused since 0.2.1, when each external clock pulse became one tick.
+    /// Kept so the public struct does not change in a patch release.
     pub ext_clock_count: u32,
     /// Last polled Ableton Link beat position.
     pub last_link_beat: f64,

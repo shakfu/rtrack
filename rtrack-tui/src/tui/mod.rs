@@ -132,7 +132,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.status_text),
         ),
         Span::styled(
-            format!("{}bpm", song.bpm),
+            format!("{}bpm", app.core.live_tempo().0.round()),
             Style::default().fg(theme.header_bpm),
         ),
         Span::styled(
@@ -595,6 +595,10 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("Save file", text_style),
         ]),
         Line::from(vec![
+            Span::styled("  :w <path>    ", key_style),
+            Span::styled("Save as (:w! replaces a file)", text_style),
+        ]),
+        Line::from(vec![
             Span::styled("  :q :quit     ", key_style),
             Span::styled("Quit (prompts if unsaved)", text_style),
         ]),
@@ -1013,26 +1017,31 @@ fn draw_table_editor(f: &mut Frame, app: &App, theme: &Theme) {
     f.render_widget(widget, popup_area);
 }
 
-fn draw_quit_confirm(f: &mut Frame, _app: &App, theme: &Theme) {
+fn draw_quit_confirm(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
     let popup_area = centered_rect(44, 5, area);
     f.render_widget(Clear, popup_area);
 
+    let verb = if app.pending_open.is_some() {
+        "Open"
+    } else {
+        "Quit"
+    };
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Unsaved changes! Quit without saving?",
+            format!("  Unsaved changes! {verb} without saving?"),
             Style::default().fg(theme.popup_text),
         )),
         Line::from(Span::styled(
-            "  [Y] Quit  [S] Save & Quit  [Any] Cancel",
+            format!("  [Y] {verb}  [S] Save & {verb}  [Any] Cancel"),
             Style::default().fg(theme.popup_key),
         )),
     ];
 
     let widget = Paragraph::new(lines).block(
         Block::default()
-            .title(" Quit Confirmation ")
+            .title(format!(" {verb} Confirmation "))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
     );
@@ -1499,7 +1508,7 @@ fn draw_pattern_matrix(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             .map(|c| &c.name)
             .filter(|n| !n.is_empty());
         let label = match name {
-            Some(n) => format!("{:>4} ", &n[..n.len().min(4)]),
+            Some(n) => format!("{:>4} ", n.chars().take(4).collect::<String>()),
             None => format!(" Ch{} ", ch + 1),
         };
         write_str(buf, col_x, header_y, inner, &label, header_style);
@@ -1672,6 +1681,36 @@ mod tests {
             }
         }
         lines.join("\n")
+    }
+
+    #[test]
+    fn a_channel_name_with_a_multibyte_char_at_the_cut_draws() {
+        let mut app = make_app();
+        // Sharp s spans bytes 3-4, where the four-char label is cut.
+        app.core.channels[0].name = "Ha\u{df}s".to_string();
+        app.mode = crate::app::Mode::PatternMatrix;
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+    }
+
+    #[test]
+    fn a_sample_name_with_a_multibyte_char_at_the_cut_draws() {
+        let mut app = make_app();
+        let wav = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("examples/data/amen.wav");
+        let bank = std::sync::Arc::make_mut(&mut app.core.sample_bank);
+        bank.load(0, &wav).unwrap();
+        let mut sample = bank.get(0).unwrap().clone();
+        // The panel cuts at 20 bytes; the sharp s spans bytes 19-20.
+        sample.name = format!("{}\u{df}", "a".repeat(19));
+        bank.samples[0] = Some(std::sync::Arc::new(sample));
+        app.core.instruments[0].kind = rtrack_core::InstrumentKind::sample(0);
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|f| sample_editor::draw_sample_panel(f, &app, f.area()))
+            .unwrap();
     }
 
     /// A as in aligned: `[P..]` read as a pattern number from the order list.

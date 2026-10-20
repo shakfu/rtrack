@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{MAX_CHANNELS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
+use crate::constants::{MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
 use super::{Cell, Note, Pattern, Phrase, PhraseLink, PhraseTiming, Table};
 use crate::audio::effects::SendBusParams;
@@ -201,8 +201,8 @@ pub const FORMAT_VERSION: u32 = 2;
 impl SongFile {
     /// True if this file was written by a newer version of rtrack than this
     /// one understands. Such a file is still loaded -- unknown fields are
-    /// ignored -- but the caller should say so rather than silently dropping
-    /// whatever it could not represent.
+    /// ignored -- but the caller should say so, and `TrackerCore` refuses to
+    /// save over it, since that would drop whatever it could not represent.
     pub fn is_from_newer_version(&self) -> bool {
         self.version > FORMAT_VERSION
     }
@@ -411,6 +411,12 @@ impl Song {
             p.conform(p.rows, channels);
         }
         channels
+    }
+
+    /// True when the song holds [`MAX_PATTERNS`] patterns. Editors check
+    /// this before adding one: a song past the cap loses the rest on load.
+    pub fn at_pattern_limit(&self) -> bool {
+        self.patterns.len() >= MAX_PATTERNS
     }
 
     pub fn add_pattern(&mut self) -> usize {
@@ -1095,6 +1101,17 @@ impl Song {
         if self.bpm == 0 {
             self.bpm = 120;
             repairs.push("bpm was 0, set to 120".to_string());
+        }
+
+        // Before the geometry pass below, which allocates every pattern in
+        // full. Order entries naming a dropped pattern are repaired below.
+        if self.patterns.len() > MAX_PATTERNS {
+            repairs.push(format!(
+                "dropped {} patterns past the maximum of {}",
+                self.patterns.len() - MAX_PATTERNS,
+                MAX_PATTERNS
+            ));
+            self.patterns.truncate(MAX_PATTERNS);
         }
 
         // Every pattern must have a geometry inside the editable range that

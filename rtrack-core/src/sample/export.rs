@@ -9,8 +9,11 @@ use super::playback::{NewNoteAction, SamplePlaybackEngine};
 use super::SampleBank;
 use crate::audio::channel_effects::{ChannelEffects, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::{self, EffectsChain};
+use crate::audio::soft_clip;
 use crate::audio::synth::{BuiltinSynth, SynthParams};
-use crate::constants::{DEFAULT_PITCH_BEND_RANGE, PITCH_BEND_CENTER, PITCH_BEND_MAX};
+use crate::constants::{
+    DEFAULT_PITCH_BEND_RANGE, MAX_EXPORT_SECONDS, PITCH_BEND_CENTER, PITCH_BEND_MAX,
+};
 use crate::engine::{TrackerEngine, TrackerEvent};
 use crate::routing::{route, Route};
 use crate::tracker::Song;
@@ -64,8 +67,8 @@ fn write_block<W: std::io::Write + std::io::Seek>(
     right: &[f32],
 ) -> Result<()> {
     for i in 0..left.len() {
-        let l = left[i].clamp(-1.0, 1.0);
-        let r = right[i].clamp(-1.0, 1.0);
+        let l = soft_clip(left[i]);
+        let r = soft_clip(right[i]);
         writer
             .write_sample(l.to_sample::<i16>())
             .context("Failed to write WAV sample")?;
@@ -266,8 +269,7 @@ fn render_song_streaming(
     let per_channel = any_ch_fx || any_send_bus;
     let mut scratch = RenderScratch::new();
 
-    // Drive playback via TrackerEngine (no wrap = stop at end)
-    let mut engine = TrackerEngine::new(song, false);
+    let mut engine = TrackerEngine::new(song, true);
     // The per-track state live playback gives its engine: mute, volume and
     // the default instrument. Solo is a listening aid and is not rendered.
     engine.set_channel_info(
@@ -292,10 +294,18 @@ fn render_song_streaming(
             .map_or((ch & 0x0F) as u8, |c| c.midi_channel & 0x0F)
     };
 
-    while !engine.finished {
+    let mut elapsed = 0.0;
+    while !engine.export_done() {
         // Snapshot timing before tick 0 advances the row
         if engine.tick == 0 {
             frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
+        }
+        elapsed += frames_per_tick as f64 / sr;
+        if elapsed > MAX_EXPORT_SECONDS {
+            anyhow::bail!(
+                "export passed the {} minute limit",
+                MAX_EXPORT_SECONDS / 60.0
+            );
         }
 
         engine.process_tick(song);
@@ -513,8 +523,8 @@ fn render_song(
 fn to_interleaved_i16(left: &[f32], right: &[f32]) -> Vec<i16> {
     let mut samples = Vec::with_capacity(left.len() * 2);
     for i in 0..left.len() {
-        let l = left[i].clamp(-1.0, 1.0);
-        let r = right[i].clamp(-1.0, 1.0);
+        let l = soft_clip(left[i]);
+        let r = soft_clip(right[i]);
         samples.push(l.to_sample::<i16>());
         samples.push(r.to_sample::<i16>());
     }
@@ -578,6 +588,48 @@ fn write_flac(path: &Path, samples_i16: &[i16], sample_rate: u32) -> Result<()> 
 mod tests {
     use super::*;
     use crate::tracker::{Cell, Fx, FxCmd, Note, NoteValue, Song};
+
+    /// Four rows at speed 6 and 120bpm: 24 ticks of 918 frames. With `jump`,
+    /// the last row loops back to the start.
+    fn four_row_song(jump: bool) -> Song {
+        let mut song = Song::new(1, 4);
+        if jump {
+            let mut fx = [None; crate::tracker::FX_COLUMNS];
+            fx[0] = Some(Fx::new(FxCmd::Jump, 0));
+            song.set_cell(
+                0,
+                3,
+                0,
+                Cell {
+                    fx,
+                    ..Cell::default()
+                },
+            );
+        }
+        song
+    }
+
+    #[test]
+    fn an_export_plays_one_full_pass_even_when_the_song_loops() {
+        let body = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+            .len()
+                - 2 * 44100
+        };
+        let pass = 24 * 918;
+        assert_eq!(body(&four_row_song(true)), pass, "backward JMP");
+        assert_eq!(body(&four_row_song(false)), pass, "end of order list");
+    }
 
     #[test]
     fn test_render_empty_song() {
@@ -1312,6 +1364,14 @@ mod tests {
         instruments[0].kind = crate::types::InstrumentKind::sample(3);
         let out = render_one_note(Some(0), &instruments);
         assert!(out.iter().all(|v| *v == 0.0), "a missing sample made sound");
+    }
+
+    #[test]
+    fn exports_saturate_like_live_output_instead_of_clipping_hard() {
+        let samples = to_interleaved_i16(&[0.5, 0.9, 4.0], &[0.5, 0.9, 4.0]);
+        assert_eq!(samples[0], (0.5f32).to_sample::<i16>(), "linear below 0.8");
+        assert!(samples[2] < (0.9f32).to_sample::<i16>(), "0.9 is softened");
+        assert!(samples[4] > 32000, "far over full scale stays near it");
     }
 
     #[test]

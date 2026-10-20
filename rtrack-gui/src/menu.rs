@@ -4,27 +4,21 @@ use rtrack_core::TrackerCore;
 use crate::app::RtrackApp;
 use crate::state::SubColumn;
 
+/// A replacement of the song waiting on the unsaved-changes prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PendingSongChange {
+    New,
+    Open(std::path::PathBuf),
+}
+
 impl RtrackApp {
     pub fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New").clicked() {
-                        let config = rtrack_core::config::load_config();
-                        self.core = TrackerCore::new();
-                        // Re-init audio on the new core with SF2 from config
-                        match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
-                            Ok(engine) => {
-                                self.core.audio = Some(engine);
-                            }
-                            Err(e) => {
-                                eprintln!("Audio warning: {}", e);
-                            }
-                        }
-                        self.reset_cursor_state();
-                        self.clipboard.clear();
-                        self.status_message = Some("New song created".to_string());
                         ui.close();
+                        self.request_song_change(PendingSongChange::New);
                     }
 
                     if ui.button("Open...").clicked() {
@@ -33,21 +27,7 @@ impl RtrackApp {
                             .add_filter("rtrack", &["rtrk"])
                             .pick_file()
                         {
-                            match self.core.load_file(&path) {
-                                Ok(report) => {
-                                    self.reset_cursor_state();
-                                    self.clipboard.clear();
-                                    rtrack_core::config::push_recent_file(
-                                        &mut self.recent_files,
-                                        &path,
-                                    );
-                                    rtrack_core::config::save_recent_files(&self.recent_files);
-                                    self.status_message = Some(Self::describe_load(&report));
-                                }
-                                Err(e) => {
-                                    self.status_message = Some(format!("Load failed: {}", e));
-                                }
-                            }
+                            self.request_song_change(PendingSongChange::Open(path));
                         }
                     }
 
@@ -58,13 +38,7 @@ impl RtrackApp {
 
                     if ui.button("Save As...").clicked() {
                         ui.close();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("rtrack", &["rtrk"])
-                            .save_file()
-                        {
-                            self.core.file_path = Some(path);
-                            self.do_save();
-                        }
+                        self.do_save_as();
                     }
 
                     if ui.button("Load SF2...").clicked() {
@@ -93,18 +67,7 @@ impl RtrackApp {
                                 let label =
                                     path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                                 if ui.button(label).clicked() {
-                                    match self.core.load_file(path) {
-                                        Ok(report) => {
-                                            self.reset_cursor_state();
-                                            self.clipboard.clear();
-                                            self.status_message =
-                                                Some(Self::describe_load(&report));
-                                        }
-                                        Err(e) => {
-                                            self.status_message =
-                                                Some(format!("Load failed: {}", e));
-                                        }
-                                    }
+                                    self.request_song_change(PendingSongChange::Open(path.clone()));
                                     ui.close();
                                 }
                             }
@@ -285,17 +248,86 @@ impl RtrackApp {
         });
     }
 
-    pub fn do_save(&mut self) {
-        match self.core.save() {
+    /// Save the song, asking for a file if it has none or its own may not be
+    /// written. Returns whether it was written.
+    pub fn do_save(&mut self) -> bool {
+        if self.core.needs_save_as() {
+            return self.do_save_as();
+        }
+        let result = self.core.save();
+        self.report_save(result)
+    }
+
+    /// Ask for a file and save the song there. The native dialog confirms
+    /// overwriting an existing file.
+    pub fn do_save_as(&mut self) -> bool {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("rtrack", &["rtrk"])
+            .save_file()
+        else {
+            self.status_message = Some("Save cancelled".to_string());
+            return false;
+        };
+        let result = self.core.save_as(path);
+        self.report_save(result)
+    }
+
+    fn report_save(&mut self, result: rtrack_core::error::Result<std::path::PathBuf>) -> bool {
+        match result {
             Ok(path) => {
                 rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
                 rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(format!("Saved: {}", path.display()));
+                true
             }
             Err(e) => {
                 self.status_message = Some(format!("Save failed: {}", e));
+                false
             }
         }
+    }
+
+    /// Replace the song, asking first if the current one has unsaved
+    /// changes. Every path that replaces the song comes through here.
+    pub(crate) fn request_song_change(&mut self, change: PendingSongChange) {
+        if self.core.dirty {
+            self.pending_song_change = Some(change);
+        } else {
+            self.apply_song_change(change);
+        }
+    }
+
+    /// Replace the song, dropping any unsaved changes.
+    pub(crate) fn apply_song_change(&mut self, change: PendingSongChange) {
+        match change {
+            PendingSongChange::New => {
+                let config = rtrack_core::config::load_config();
+                self.core = TrackerCore::new();
+                // Re-init audio on the new core with SF2 from config
+                match rtrack_core::audio::AudioEngine::new(config.sf2.as_deref()) {
+                    Ok(engine) => {
+                        self.core.audio = Some(engine);
+                    }
+                    Err(e) => {
+                        eprintln!("Audio warning: {}", e);
+                    }
+                }
+                self.status_message = Some("New song created".to_string());
+            }
+            PendingSongChange::Open(path) => match self.core.load_file(&path) {
+                Ok(report) => {
+                    rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+                    rtrack_core::config::save_recent_files(&self.recent_files);
+                    self.status_message = Some(Self::describe_load(&report));
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Error loading {}: {}", path.display(), e));
+                    return;
+                }
+            },
+        }
+        self.reset_cursor_state();
+        self.clipboard.clear();
     }
 
     pub(crate) fn reset_cursor_state(&mut self) {

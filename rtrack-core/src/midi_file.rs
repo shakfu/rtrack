@@ -129,7 +129,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     let ticks_per_subtick = TICKS_PER_BEAT as u32 / 24;
 
     // Run engine to collect per-channel MIDI events as (abs_tick, raw_bytes)
-    let mut engine = TrackerEngine::new(song, false);
+    let mut engine = TrackerEngine::new(song, true);
     let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
     let mut tempo_events: Vec<(u32, f64)> = Vec::new();
     let mut active_notes: Vec<Option<u8>> = vec![None; song.channels];
@@ -138,8 +138,16 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
     // exact position and rounding each step from it stops rounding error
     // from adding up across a song.
     let mut abs_exact: f64 = 0.0;
+    let mut elapsed = 0.0;
 
-    while !engine.finished {
+    while !engine.export_done() {
+        elapsed += engine.seconds_per_tick(song);
+        if elapsed > MAX_EXPORT_SECONDS {
+            bail!(
+                "export passed the {} minute limit",
+                MAX_EXPORT_SECONDS / 60.0
+            );
+        }
         engine.process_tick(song);
         // After tick 0 of a row the engine's sounding row is that row.
         let tick_length = ticks_per_subtick as f64 * engine.groove_factor(song);
@@ -1442,5 +1450,43 @@ mod tests {
 
         let (song, _) = import_midi_with_report(&path).expect("import must not panic");
         assert_eq!(song.patterns.len(), MAX_IMPORT_PATTERNS);
+    }
+
+    #[test]
+    fn a_song_that_loops_with_a_backward_jump_exports_one_pass() {
+        let mut song = Song::new(1, 4);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                ..Cell::default()
+            },
+        );
+        let mut fx = [None; crate::tracker::FX_COLUMNS];
+        fx[0] = Some(Fx::new(FxCmd::Jump, 0));
+        song.set_cell(
+            0,
+            3,
+            0,
+            Cell {
+                fx,
+                ..Cell::default()
+            },
+        );
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("loop.mid");
+        export_midi(&song, &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let note_ons = bytes
+            .windows(3)
+            .filter(|w| w[0] == 0x90 && w[2] > 0)
+            .count();
+        assert_eq!(note_ons, 1);
     }
 }

@@ -518,7 +518,14 @@ fn load_wav(path: &Path) -> Result<Sample> {
             .map(|s| s.map(|v| v.to_sample::<f32>()))
             .collect::<Result<Vec<f32>, _>>()
             .context("Failed to read WAV samples")?,
-        (hound::SampleFormat::Int, 24 | 32) => reader
+        // hound sign-extends 24-bit samples into an i32 without shifting
+        // them up, so they span +/-2^23, not the full i32 range.
+        (hound::SampleFormat::Int, 24) => reader
+            .into_samples::<i32>()
+            .map(|s| s.map(|v| v as f32 / (1 << 23) as f32))
+            .collect::<Result<Vec<f32>, _>>()
+            .context("Failed to read WAV samples")?,
+        (hound::SampleFormat::Int, 32) => reader
             .into_samples::<i32>()
             .map(|s| s.map(|v| v.to_sample::<f32>()))
             .collect::<Result<Vec<f32>, _>>()
@@ -764,14 +771,14 @@ fn to_stereo_frames(samples: &[f32], channels: usize) -> Vec<[f32; 2]> {
 /// numbering describes a division that no longer exists, so `amen_S03`
 /// sliced again is `amen_S00`.. rather than `amen_S03_S00`..
 pub fn strip_slice_suffix(name: &str) -> &str {
+    // Matched on bytes: slicing at `len - 4` unchecked can split a
+    // multibyte char. Four ASCII bytes end on a char boundary.
     let mut s = name;
-    while s.len() >= 4 {
-        let tail = &s[s.len() - 4..];
-        if tail.starts_with("_S") && tail[2..].chars().all(|c| c.is_ascii_digit()) {
-            s = &s[..s.len() - 4];
-        } else {
+    while let [.., b'_', b'S', d1, d2] = s.as_bytes() {
+        if !(d1.is_ascii_digit() && d2.is_ascii_digit()) {
             break;
         }
+        s = &s[..s.len() - 4];
     }
     s
 }
@@ -1521,6 +1528,8 @@ mod tests {
         assert_eq!(strip_slice_suffix("amen_S00_S01"), "amen");
         assert_eq!(strip_slice_suffix("_S01"), "");
         assert_eq!(strip_slice_suffix("kick_Sxx"), "kick_Sxx");
+        assert_eq!(strip_slice_suffix("\u{e9}abc"), "\u{e9}abc");
+        assert_eq!(strip_slice_suffix("\u{e9}_S01"), "\u{e9}");
     }
 
     #[test]
@@ -1703,6 +1712,28 @@ mod tests {
             writer.write_sample((i * 100) as i16).unwrap();
         }
         writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn integer_wavs_load_at_full_scale_at_every_bit_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        for bits in [8u16, 16, 24, 32] {
+            let path = dir.path().join(format!("half_{bits}.wav"));
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 44100,
+                bits_per_sample: bits,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            // Half of full scale, as hound expects each depth's integers.
+            writer.write_sample(1i32 << (bits - 2)).unwrap();
+            writer.finalize().unwrap();
+
+            let sample = load_wav(&path).unwrap();
+            let level = sample.data[0][0];
+            assert!((level - 0.5).abs() < 0.01, "{bits}-bit loaded at {level}");
+        }
     }
 
     #[test]

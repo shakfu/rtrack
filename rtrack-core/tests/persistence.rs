@@ -640,3 +640,116 @@ fn a_sample_path_that_walks_out_of_the_song_directory_is_reported() {
     );
     assert!(reloaded.sample_bank.get(0).is_none());
 }
+
+#[test]
+fn a_file_declaring_too_many_patterns_is_capped_before_allocation() {
+    use rtrack_core::constants::MAX_PATTERNS;
+
+    let path = scratch("pattern_bomb");
+    let patterns = vec![r#"{"rows":256,"channels":16,"data":[]}"#; MAX_PATTERNS * 4].join(",");
+    let json = format!(
+        r#"{{"title":"Bomb","bpm":120,"speed":6,"patterns":[{patterns}],
+            "order":[0, {last}],"channels":16,"rows_per_pattern":64}}"#,
+        last = MAX_PATTERNS * 4 - 1
+    );
+    std::fs::write(&path, json).unwrap();
+
+    let mut core = headless(1, 4);
+    let report = core.load_file(&path).unwrap();
+    assert_eq!(core.song.patterns.len(), MAX_PATTERNS);
+    assert_eq!(
+        core.song.order,
+        vec![0],
+        "an order entry past the cap must go"
+    );
+    assert!(
+        report
+            .repairs
+            .iter()
+            .any(|r| r.contains("patterns past the maximum")),
+        "{:?}",
+        report.repairs
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn importing_midi_starts_an_unsaved_song_rather_than_retargeting_the_open_file() {
+    use rtrack_core::tracker::Song;
+
+    let song_path = scratch("import_keeps_path");
+    let mut core = headless(2, 8);
+    core.file_path = Some(song_path.clone());
+    core.save().unwrap();
+    let saved = std::fs::read(&song_path).unwrap();
+
+    let mid = song_path.with_extension("mid");
+    rtrack_core::midi_file::export_midi(&Song::new(1, 16), &mid).unwrap();
+    core.import_midi_file(&mid).unwrap();
+
+    assert_eq!(
+        core.file_path, None,
+        "the next save would overwrite the old song"
+    );
+    assert!(core.dirty, "the import must count as unsaved work");
+    assert_eq!(std::fs::read(&song_path).unwrap(), saved);
+
+    let _ = std::fs::remove_file(&song_path);
+    let _ = std::fs::remove_file(&mid);
+}
+
+#[test]
+fn an_untitled_song_is_not_saved_to_a_guessed_path() {
+    let mut core = headless(2, 8);
+    core.song.title = "rtrack untitled guard".to_string();
+    let guessed = PathBuf::from("rtrack_untitled_guard.rtrk");
+    assert!(matches!(
+        core.save(),
+        Err(rtrack_core::error::Error::NoFilePath)
+    ));
+    assert!(!guessed.exists());
+}
+
+#[test]
+fn a_failed_save_as_keeps_the_previous_path() {
+    let path = scratch("save_as_keeps_path");
+    let mut core = headless(2, 8);
+    core.save_as(path.clone()).unwrap();
+    let bad = std::env::temp_dir()
+        .join("rtrack_no_such_dir")
+        .join("x.rtrk");
+    assert!(core.save_as(bad).is_err());
+    assert_eq!(core.file_path, Some(path.clone()));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_file_from_a_newer_version_is_not_saved_over() {
+    let path = scratch("future_version_guard");
+    let json = r#"{
+        "version": 9999,
+        "title": "FromTheFuture", "bpm": 120, "speed": 6,
+        "future_field": "this version cannot read it",
+        "patterns": [{"rows": 1, "channels": 1, "data": [[{}]]}],
+        "order": [0], "channels": 1, "rows_per_pattern": 1
+    }"#;
+    std::fs::write(&path, json).unwrap();
+
+    let mut core = headless(4, 16);
+    core.load_file(&path).unwrap();
+    assert!(core.needs_save_as());
+    assert!(core.save().is_err());
+    assert!(
+        core.save_as(path.clone()).is_err(),
+        "Save As to the same file is the same overwrite"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), json);
+
+    let copy = scratch("future_version_copy");
+    core.save_as(copy.clone()).unwrap();
+    assert!(!core.needs_save_as());
+    core.save().unwrap();
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&copy);
+}
