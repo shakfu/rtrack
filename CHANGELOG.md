@@ -140,6 +140,8 @@ All notable changes to rtrack will be documented in this file.
 
 - **The slice preview is computed once per change, not once per redraw.** Both editors ran transient detection on every repaint: 3.8 ms on a 60 s sample, against a 5 ms TUI redraw during playback. `rtrack_core::sample::SlicePlanCache` keeps the planned spans until the sample, its trim or a slice setting changes; a cached call takes 3.3 ns. It holds the sample's buffer, not its address, so a reloaded file at a reused address cannot match. The TUI markers now come from the same plan as slicing, which drops the transient marker at the span start and fixes the equal-slice rounding described under Fixed.
 
+- **`cargo audit` ignores RUSTSEC-2026-0370/0371/0372.** `zvariant`, `zbus_names` and `zvariant_derive` are unmaintained since their merge into zbus 6. They arrive through zbus 5 from `accesskit_unix` (eframe) and `ashpd` (rfd), whose latest releases still require zbus 5. Ignored rather than removed: removing them means dropping the accessibility bridge or the portal file dialog.
+
 - **rtrack-gui: eframe/egui 0.31 -> 0.36; `rust-version` 1.89 -> 1.95.** 0.36 requires Rust 1.95. rtrack-core and rtrack-tui keep 1.89, and the CI msrv job checks both floors. The upgrade clears the last three `cargo audit` findings: quick-xml RUSTSEC-2026-0194/0195, paste and ttf-parser. The `.cargo/audit.toml` ignores are removed.
 
   The renderer stays glow, not wgpu, which eframe made the default in 0.34. This limits the upgrade to API changes and keeps the wgpu dependency tree out. On Wayland compositors without server-side decorations (GNOME), the Adwaita title bar no longer draws the window title. Drawing it pulls in `ab_glyph` and the unmaintained `ttf-parser`.
