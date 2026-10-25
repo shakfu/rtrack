@@ -569,6 +569,7 @@ fn test_sliced_sample_song_round_trips() {
                 loop_enabled: false,
                 loop_start: 0,
                 loop_end: 0,
+                sliced_from: None,
             },
         })
         .collect();

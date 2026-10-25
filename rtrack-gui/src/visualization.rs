@@ -1008,6 +1008,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: Some("/songs/amen.wav".into()),
+            sliced_from: None,
         }
     }
 

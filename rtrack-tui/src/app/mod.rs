@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use rtrack_core::constants::*;
-use rtrack_core::editor::Edit;
 use rtrack_core::midi::MidiEngine;
 
 pub use rtrack_core::{
@@ -226,6 +225,8 @@ pub enum SettingsField {
     HighlightBar,
     Groove,
     Scale,
+    /// Whether `ARP` and table steps count scale degrees.
+    Steps,
 }
 
 impl SettingsField {
@@ -239,13 +240,14 @@ impl SettingsField {
             Self::HighlightBeat => Self::HighlightBar,
             Self::HighlightBar => Self::Groove,
             Self::Groove => Self::Scale,
-            Self::Scale => Self::Title,
+            Self::Scale => Self::Steps,
+            Self::Steps => Self::Title,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Title => Self::Scale,
+            Self::Title => Self::Steps,
             Self::Bpm => Self::Title,
             Self::Speed => Self::Bpm,
             Self::Channels => Self::Speed,
@@ -254,7 +256,17 @@ impl SettingsField {
             Self::HighlightBar => Self::HighlightBeat,
             Self::Groove => Self::HighlightBar,
             Self::Scale => Self::Groove,
+            Self::Steps => Self::Scale,
         }
+    }
+}
+
+/// How the song settings show `Song::scale_steps`.
+pub(crate) fn steps_text(scale_steps: bool) -> &'static str {
+    if scale_steps {
+        "degrees"
+    } else {
+        "semitones"
     }
 }
 
@@ -363,6 +375,27 @@ pub enum SynthField {
 }
 
 impl SynthField {
+    /// The undo control for this field: edits to one field coalesce.
+    pub fn undo_control(self) -> &'static str {
+        match self {
+            Self::Waveform => "synth.waveform",
+            Self::Attack => "synth.attack",
+            Self::Decay => "synth.decay",
+            Self::Sustain => "synth.sustain",
+            Self::Release => "synth.release",
+            Self::Drive => "synth.drive",
+            Self::FilterType => "synth.filter_type",
+            Self::FilterCutoff => "synth.filter_cutoff",
+            Self::FilterResonance => "synth.filter_resonance",
+            Self::FilterEnv => "synth.filter_env",
+            Self::Detune => "synth.detune",
+            Self::SubOsc => "synth.sub_osc",
+            Self::FmRatio => "synth.fm_ratio",
+            Self::FmIndex => "synth.fm_index",
+            Self::PulseWidth => "synth.pulse_width",
+        }
+    }
+
     pub fn next(self) -> Self {
         match self {
             Self::Waveform => Self::Attack,
@@ -423,6 +456,8 @@ pub struct App {
     pub cursor_channel: usize,
     pub cursor_sub: SubColumn,
     pub current_octave: u8,
+    /// Which characters enter notes (`config.toml`'s `piano`).
+    pub piano: rtrack_core::keymap::PianoLayout,
     /// Which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
     pub track_page: usize,
     /// Cursor follows playback position
@@ -488,7 +523,7 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        Self {
+        let mut app = Self {
             core: rtrack_core::TrackerCore::new(),
             mode: Mode::Normal,
             should_quit: false,
@@ -496,6 +531,7 @@ impl App {
             cursor_channel: 0,
             cursor_sub: SubColumn::Note,
             current_octave: 4,
+            piano: rtrack_core::keymap::PianoLayout::default(),
             edit_step: 1,
             show_second_fx: false,
             status_message: None,
@@ -516,7 +552,11 @@ impl App {
             dialogs: DialogState::new(),
             recent_files: rtrack_core::config::load_recent_files(),
             vis: crate::tui::visualization::VisualizationState::new(),
-        }
+        };
+        let (piano, notes) = rtrack_core::config::load_piano_layout();
+        app.piano = piano;
+        app.status_message = notes.into_iter().next();
+        app
     }
 
     // -- Sample loading --
@@ -966,15 +1006,7 @@ impl App {
         source: rtrack_core::editor::EditSource,
         before: rtrack_core::core::SampleSnapshot,
     ) {
-        // A field edit is its own step, so anything the current event had
-        // pending is committed first rather than being swallowed by it.
-        self.core.commit_edit();
-        let after = self.core.snapshot_samples();
-        self.core.history.push_from(
-            source,
-            Edit::Bank(Box::new(rtrack_core::editor::BankEdit { before, after })),
-        );
-        self.core.dirty = true;
+        self.core.record_bank_edit(Some(source), before);
     }
 
     /// End a run of coalescing, so the next edit to the same control starts a
@@ -1174,6 +1206,7 @@ pub(crate) mod tests {
             cursor_channel: 0,
             cursor_sub: SubColumn::Note,
             current_octave: 4,
+            piano: rtrack_core::keymap::PianoLayout::default(),
             edit_step: 1,
             show_second_fx: false,
             status_message: None,
@@ -2923,6 +2956,53 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn synth_edits_undo_one_field_at_a_time() {
+        use rtrack_core::audio::synth::SynthParams;
+        let mut app = make_app();
+        let params = SynthParams::from_patch(0);
+        app.core.instruments[1].kind = rtrack_core::InstrumentKind::Synth(params.clone());
+        app.dialogs.synth_editor_slot = 1;
+        app.dialogs.synth_editor_field = SynthField::FilterCutoff;
+        app.mode = Mode::SynthEditor;
+        let up = || KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let synth = |app: &App| app.core.instruments[1].synth_params().unwrap().clone();
+
+        for _ in 0..3 {
+            app.handle_key(up());
+        }
+        let cutoff = synth(&app).filter_cutoff;
+        assert!((cutoff - params.filter_cutoff - 0.3).abs() < 1e-4);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(up());
+        assert_ne!(synth(&app).filter_resonance, params.filter_resonance);
+
+        assert!(app.core.undo());
+        assert_eq!(synth(&app).filter_resonance, params.filter_resonance);
+        assert_eq!(
+            synth(&app).filter_cutoff,
+            cutoff,
+            "the held key is its own step"
+        );
+        assert!(app.core.undo());
+        assert_eq!(synth(&app), params);
+    }
+
+    #[test]
+    fn clearing_synth_params_is_undoable() {
+        use rtrack_core::audio::synth::SynthParams;
+        let mut app = make_app();
+        let mut params = SynthParams::from_patch(0);
+        params.filter_cutoff = 7.0;
+        app.core.instruments[1].kind = rtrack_core::InstrumentKind::Synth(params.clone());
+        app.dialogs.synth_editor_slot = 1;
+        app.mode = Mode::SynthEditor;
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_ne!(app.core.instruments[1].synth_params(), Some(&params));
+        assert!(app.core.undo());
+        assert_eq!(app.core.instruments[1].synth_params(), Some(&params));
+    }
+
+    #[test]
     fn test_pattern_undo_does_not_disturb_the_sample_bank() {
         // A cell edit records no samples, so undoing it must leave the bank
         // where it is rather than reverting to some earlier snapshot.
@@ -4595,6 +4675,111 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_piano_layout_enters_notes_from_its_own_keys() {
+        use rtrack_core::keymap::PianoLayout;
+        use rtrack_core::tracker::{Note, NoteValue};
+        let note_at = |layout: PianoLayout, c: char| {
+            let mut app = make_app();
+            app.piano = layout;
+            app.mode = Mode::Insert;
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            let pos = app.current_order_position();
+            (app.core.song.cell_at(pos, 0, 0).note, app.current_octave)
+        };
+        let on = |value, octave| Some(Note::On { value, octave });
+        assert_eq!(note_at(PianoLayout::Qwertz, 'y'), (on(NoteValue::C, 4), 4));
+        assert_eq!(note_at(PianoLayout::Qwertz, 'z'), (on(NoteValue::A, 5), 4));
+        // AZERTY's `-` is G#, not octave down.
+        assert_eq!(note_at(PianoLayout::Azerty, '-'), (on(NoteValue::Gs, 5), 4));
+        assert_eq!(note_at(PianoLayout::Azerty, 'a'), (on(NoteValue::C, 5), 4));
+        // On QWERTY `-` still moves the octave.
+        assert_eq!(note_at(PianoLayout::Qwerty, '-'), (None, 3));
+    }
+
+    #[test]
+    fn linking_over_a_tracks_own_cells_says_so() {
+        let mut app = make_app();
+        let pos = app.current_order_position();
+        app.core.song.add_phrase(16);
+        run_command(&mut app, "phrase 0");
+        assert!(!app.status_message.as_deref().unwrap().contains("hides"));
+        app.cursor_channel = 1;
+        for row in [0, 4] {
+            app.core.song.set_cell(
+                pos,
+                row,
+                1,
+                rtrack_core::tracker::Cell {
+                    volume: Some(9),
+                    ..Default::default()
+                },
+            );
+        }
+        run_command(&mut app, "phrase 0");
+        assert!(
+            app.status_message.as_deref().unwrap().contains("hides 2"),
+            "{:?}",
+            app.status_message
+        );
+    }
+
+    #[test]
+    fn pdel_deletes_the_phrase_on_view_and_undoes() {
+        let mut app = make_app();
+        app.core.song.add_phrase(4);
+        app.core.song.add_phrase(4);
+        app.core.song.phrases[1].rows[0].volume = Some(5);
+        run_command(&mut app, "pedit 1");
+        run_command(&mut app, "pdel");
+        assert_eq!(app.core.song.phrases.len(), 1);
+        assert!(app.phrase_view.is_none(), "the deleted phrase was on view");
+
+        run_command(&mut app, "pedit 0");
+        run_command(&mut app, "pdel 5");
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap()
+            .contains("No phrase 05"));
+        assert!(app.phrase_view.is_some());
+
+        app.undo();
+        assert_eq!(app.core.song.phrases.len(), 2);
+        assert_eq!(app.core.song.phrases[1].rows[0].volume, Some(5));
+    }
+
+    #[test]
+    fn deleting_from_the_phrase_list_follows_the_view() {
+        let mut app = make_app();
+        for _ in 0..3 {
+            app.core.song.add_phrase(4);
+        }
+        run_command(&mut app, "pedit 2");
+        run_command(&mut app, "phrases");
+        app.dialogs.phrase_cursor = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.core.song.phrases.len(), 2);
+        assert_eq!(app.phrase_view.map(|v| v.phrase), Some(1));
+    }
+
+    #[test]
+    fn the_steps_setting_switches_scale_steps_with_undo() {
+        let mut app = make_app();
+        assert!(app.core.song.scale_steps);
+        app.mode = Mode::SongSettings;
+        app.dialogs.settings_field = SettingsField::Steps;
+        app.dialogs.settings_edit_buf = "semitones".into();
+        app.settings_apply_field();
+        assert!(!app.core.song.scale_steps);
+        app.dialogs.settings_edit_buf = "sideways".into();
+        app.settings_apply_field();
+        assert!(!app.core.song.scale_steps);
+        assert!(app.status_message.as_deref().unwrap().contains("degrees"));
+        app.undo();
+        assert!(app.core.song.scale_steps);
+    }
+
+    #[test]
     fn linking_to_a_missing_phrase_changes_nothing() {
         let mut app = make_app();
         let depth = app.core.history.undo_depth();
@@ -5333,6 +5518,7 @@ pub(crate) mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         let mut bank = (*app.core.sample_bank).clone();
         bank.samples[0] = Some(Arc::new(sample));
@@ -5394,6 +5580,7 @@ pub(crate) mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         let mut bank = (*app.core.sample_bank).clone();
         bank.samples[0] = Some(Arc::new(sample));
@@ -5684,6 +5871,7 @@ pub(crate) mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
         bank.samples[7] = Some(Arc::new(rtrack_core::sample::Sample {
             name: "test2".to_string(),
@@ -5696,6 +5884,7 @@ pub(crate) mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
 
         let slots = bank.loaded_slots();

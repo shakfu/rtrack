@@ -33,7 +33,8 @@ fn one() -> u8 {
 /// One step of a table.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableRow {
-    /// Semitones added to the note while this row plays.
+    /// Pitch steps added to the note while this row plays: semitones, or
+    /// scale degrees as [`super::Song::step_offset`] counts them.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub transpose: i8,
     /// Volume while this row plays; `None` keeps the current one.

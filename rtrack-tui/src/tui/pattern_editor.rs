@@ -5,6 +5,9 @@ use ratatui::{
     Frame,
 };
 
+use rtrack_core::editor::{phrase_spans, PhraseSpan};
+use rtrack_core::tracker::{PhraseTiming, Sheet};
+
 use super::theme::Theme;
 use crate::app::App;
 pub use crate::app::SubColumn;
@@ -201,6 +204,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     let start_row = focus_row.saturating_sub(center_offset);
 
+    // The gutter left of a linked track marks the phrase's repetitions: `+`
+    // on each one's first row, `|` in its timing's colour on the rest.
+    let shown_rows = start_row..(start_row + visible_rows).min(rows);
+    let spans: Vec<Vec<PhraseSpan>> = match app.sheet() {
+        Sheet::Order(order) => app
+            .visible_channels()
+            .map(|ch| phrase_spans(&app.core.song, order, ch, shown_rows.clone()))
+            .collect(),
+        Sheet::Phrase { .. } => Vec::new(),
+    };
+    let gutter = |ch: usize, row: usize| -> (&'static str, Style) {
+        let span = spans
+            .get(ch - app.visible_channels().start)
+            .and_then(|s| s.iter().find(|s| s.rows.contains(&row)));
+        match span {
+            Some(span) => {
+                let color = match span.timing {
+                    PhraseTiming::Aligned => theme.phrase_aligned,
+                    PhraseTiming::Running => theme.phrase_running,
+                };
+                let first = span.starts && *span.rows.start() == row;
+                (
+                    if first { " + " } else { " | " },
+                    Style::default().fg(color),
+                )
+            }
+            None => (" | ", Style::default().fg(theme.separator)),
+        }
+    };
+
     for screen_y in 0..visible_rows {
         let row_idx = start_row + screen_y;
         if row_idx >= rows {
@@ -232,24 +265,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
         let row_str = format!("{:02X}", row_idx);
         write_str(buf, area.x, y, &row_str, row_num_style);
-        write_str(
-            buf,
-            area.x + ROW_NUM_WIDTH,
-            y,
-            " | ",
-            Style::default().fg(theme.separator),
-        );
 
         let fx_columns = app.fx_columns();
-        let mut x = area.x + ROW_NUM_WIDTH + SEPARATOR_WIDTH;
+        let mut x = area.x + ROW_NUM_WIDTH;
 
         let visible = app.visible_channels();
-        let first_visible = visible.start;
         for ch in visible.clone() {
-            if ch > first_visible {
-                write_str(buf, x, y, " | ", Style::default().fg(theme.separator));
-                x += SEPARATOR_WIDTH;
-            }
+            let (sep, sep_style) = gutter(ch, row_idx);
+            write_str(buf, x, y, sep, sep_style);
+            x += SEPARATOR_WIDTH;
 
             let cell = app.core.song.cell_at(app.sheet(), row_idx, ch);
 

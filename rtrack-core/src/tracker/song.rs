@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{MAX_CHANNELS, MAX_PATTERNS, MAX_ROWS_PER_PATTERN, MIDI_CLOCKS_PER_BEAT};
 
-use super::{Cell, Note, Pattern, Phrase, PhraseLink, PhraseTiming, Table};
+use super::{Cell, Fx, FxCmd, Note, Pattern, Phrase, PhraseLink, PhraseTiming, Table};
 use crate::audio::effects::SendBusParams;
 use crate::audio::synth::SynthParams;
 use crate::fs::write_atomic;
@@ -142,6 +142,9 @@ pub struct SampleRef {
     pub loop_start: usize,
     #[serde(default)]
     pub loop_end: usize,
+    /// The span slicing divided to make this slot; see `Sample::sliced_from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliced_from: Option<(usize, usize)>,
 }
 
 /// Extended song file format that includes instrument, sample, mixer and
@@ -196,7 +199,10 @@ pub struct SampleRefEntry {
 /// Files predating the field deserialize as version 0. Version 2 stores
 /// named effect columns (`Cell.fx`); the reader still accepts the
 /// single-digit effects of versions 0 and 1, so it does not branch on this.
-pub const FORMAT_VERSION: u32 = 2;
+///
+/// Version 3 adds `CUT`, `RES`, `DRV` and `CHD`; a song without them is still
+/// written as version 2 ([`Song::format_version`]), so older builds open it.
+pub const FORMAT_VERSION: u32 = 3;
 
 impl SongFile {
     /// True if this file was written by a newer version of rtrack than this
@@ -212,7 +218,7 @@ impl SongFile {
     /// `SongFile { instruments, ..SongFile::from_song(song) }`.
     pub fn from_song(song: Song) -> Self {
         Self {
-            version: FORMAT_VERSION,
+            version: song.format_version(),
             song,
             instruments: Vec::new(),
             sample_refs: Vec::new(),
@@ -260,12 +266,83 @@ impl SongFile {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_with_notes(path).map(|(file, _)| file)
+    }
+
+    /// [`Self::load`], also returning what it dropped: effects with a name
+    /// this version does not know, from a newer rtrack. Each loads as an
+    /// empty effect; strict parsing would refuse the whole file.
+    pub fn load_with_notes(path: &Path) -> Result<(Self, Vec<String>)> {
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let mut song_file: SongFile =
+        let mut value: serde_json::Value =
             serde_json::from_str(&data).context("Failed to parse song file")?;
+        let mut unknown = std::collections::BTreeSet::new();
+        let dropped = drop_unknown_effects(&mut value, &mut unknown);
+        let mut song_file: SongFile =
+            serde_json::from_value(value).context("Failed to parse song file")?;
         song_file.song.adopt_legacy_swing();
-        Ok(song_file)
+        let notes = (dropped > 0)
+            .then(|| {
+                let names: Vec<_> = unknown.into_iter().collect();
+                format!(
+                    "dropped {dropped} effects this version does not know: {}",
+                    names.join(", ")
+                )
+            })
+            .into_iter()
+            .collect();
+        Ok((song_file, notes))
+    }
+}
+
+/// Replace `v` with none if it is an effect with an unknown name.
+fn drop_if_unknown(
+    v: &mut serde_json::Value,
+    names: &mut std::collections::BTreeSet<String>,
+) -> usize {
+    let serde_json::Value::String(s) = v else {
+        return 0;
+    };
+    let shaped = s.len() == 5 && s.is_ascii() && u8::from_str_radix(&s[3..], 16).is_ok();
+    if !shaped || FxCmd::from_name(&s[..3]).is_some() {
+        return 0;
+    }
+    names.insert(s[..3].to_string());
+    *v = serde_json::Value::Null;
+    1
+}
+
+/// Replace each effect in `value` whose name this version does not know with
+/// none, collecting the names. Returns how many it replaced. A malformed
+/// effect -- wrong length, bad hex -- is left to fail parsing.
+fn drop_unknown_effects(
+    value: &mut serde_json::Value,
+    names: &mut std::collections::BTreeSet<String>,
+) -> usize {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut n = 0;
+            for (key, v) in map.iter_mut() {
+                if key == "fx" {
+                    n += match v {
+                        Value::Array(items) => {
+                            items.iter_mut().map(|v| drop_if_unknown(v, names)).sum()
+                        }
+                        other => drop_if_unknown(other, names),
+                    };
+                } else {
+                    n += drop_unknown_effects(v, names);
+                }
+            }
+            n
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .map(|v| drop_unknown_effects(v, names))
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -303,6 +380,11 @@ pub struct Song {
     /// Scale constraining keyboard note entry. `None` means chromatic entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<ScaleSetting>,
+    /// `ARP` and table pitch steps count degrees of `scale`; false counts
+    /// semitones. Missing from files before it, so they play as written
+    /// (`docs/dev/g10-scale-playback.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scale_steps: bool,
     /// Single-channel row runs that pattern columns link to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub phrases: Vec<Phrase>,
@@ -343,8 +425,49 @@ impl Song {
             legacy_swing: None,
             tempo_map: Vec::new(),
             scale: None,
+            scale_steps: true,
             phrases: Vec::new(),
             tables: Default::default(),
+        }
+    }
+
+    /// The oldest format version that holds this song: 3 if it uses an
+    /// effect added in version 3, else 2. Builds before 0.3.0 fail to load
+    /// an effect they do not know, so this keeps other songs open to them.
+    pub fn format_version(&self) -> u32 {
+        let new = |fx: &Option<Fx>| {
+            matches!(
+                fx,
+                Some(Fx {
+                    cmd: FxCmd::Cutoff | FxCmd::Resonance | FxCmd::Drive | FxCmd::Chord,
+                    ..
+                })
+            )
+        };
+        let cells = self
+            .patterns
+            .iter()
+            .flat_map(|p| p.data.iter().flatten())
+            .chain(self.phrases.iter().flat_map(|ph| ph.rows.iter()));
+        let uses = cells.clone().any(|c| c.fx.iter().any(new))
+            || self
+                .tables
+                .values()
+                .any(|t| t.rows.iter().any(|r| new(&r.fx)));
+        if uses {
+            3
+        } else {
+            2
+        }
+    }
+
+    /// The semitones `steps` pitch steps move `base` by: scale degrees when
+    /// the song has a scale and `scale_steps` is on, semitones otherwise. A
+    /// step past the MIDI range moves nothing.
+    pub fn step_offset(&self, base: u8, steps: i16) -> f64 {
+        match self.scale.filter(|_| self.scale_steps) {
+            Some(scale) if steps != 0 => scale.transpose(base, steps) as f64 - base as f64,
+            _ => steps as f64,
         }
     }
 
@@ -903,14 +1026,25 @@ impl Song {
         true
     }
 
-    /// Remove a column's link, keeping what the grid showed: the phrase
-    /// rows, as on the first pass, become the column's own cells.
+    /// Remove a column's link, keeping what it played: the phrase rows, as
+    /// on the first pass and with the link's transpose applied, become the
+    /// column's own cells.
     pub fn unlink_column(&mut self, order_idx: usize, channel: usize) -> bool {
         let Some(rows) = self.pattern_at(order_idx).map(|p| p.rows) else {
             return false;
         };
+        let transpose = self
+            .pattern_at(order_idx)
+            .and_then(|p| p.link(channel))
+            .map_or(0, |l| l.transpose);
         let shown: Vec<Cell> = (0..rows)
-            .map(|r| *self.cell_at(order_idx, r, channel))
+            .map(|r| {
+                let mut cell = *self.cell_at(order_idx, r, channel);
+                if transpose != 0 {
+                    cell.transpose_note(transpose, self.scale);
+                }
+                cell
+            })
             .collect();
         let Some(p) = self.pattern_at_mut(order_idx) else {
             return false;
@@ -996,6 +1130,64 @@ impl Song {
             ph.rows.remove(at);
             ph.rows.push(Cell::default());
         }
+    }
+
+    /// Delete a phrase. Each column linked to it gets the phrase rows as its
+    /// own cells, transposed as they played, as [`Self::unlink_column`]
+    /// gives them, and later phrases
+    /// move down one number. Returns how many columns were unlinked.
+    pub fn delete_phrase(&mut self, phrase: usize) -> Option<usize> {
+        if phrase >= self.phrases.len() {
+            return None;
+        }
+        let mut unlinked = 0;
+        for pat in 0..self.patterns.len() {
+            for ch in 0..self.patterns[pat].links.len() {
+                if self.patterns[pat].link(ch).map(|l| l.phrase) != Some(phrase) {
+                    continue;
+                }
+                unlinked += 1;
+                // A pattern played at several positions shows its first one.
+                if let Some(pos) = self.order.iter().position(|&p| p == pat) {
+                    self.unlink_column(pos, ch);
+                    continue;
+                }
+                // Outside the order list: rows as an aligned link plays them.
+                let rows = &self.phrases[phrase].rows;
+                let scale = self.scale;
+                let p = &mut self.patterns[pat];
+                let transpose = p.link(ch).map_or(0, |l| l.transpose);
+                p.links[ch] = None;
+                for (r, row) in p.data.iter_mut().enumerate() {
+                    let mut cell = rows.get(r % rows.len().max(1)).copied().unwrap_or_default();
+                    if transpose != 0 {
+                        cell.transpose_note(transpose, scale);
+                    }
+                    row[ch] = cell;
+                }
+            }
+        }
+        self.phrases.remove(phrase);
+        for link in self
+            .patterns
+            .iter_mut()
+            .flat_map(|p| p.links.iter_mut().flatten())
+        {
+            if link.phrase > phrase {
+                link.phrase -= 1;
+            }
+        }
+        Some(unlinked)
+    }
+
+    /// How many non-empty cells a pattern column stores itself. A link hides
+    /// them, and unlinking replaces them with the phrase rows.
+    pub fn own_cells(&self, order_idx: usize, channel: usize) -> usize {
+        self.pattern_at(order_idx)
+            .filter(|p| channel < p.channels)
+            .map_or(0, |p| {
+                p.data.iter().filter(|row| !row[channel].is_empty()).count()
+            })
     }
 
     /// How many pattern columns link to a phrase.
@@ -1289,7 +1481,10 @@ mod tests {
     fn the_scale_survives_a_save_and_an_absent_one_is_not_written() {
         let mut song = Song::new(4, 64);
         let json = serde_json::to_string(&song).unwrap();
-        assert!(!json.contains("scale"), "no scale should write no field");
+        assert!(
+            !json.contains("\"scale\":"),
+            "no scale should write no field"
+        );
         assert_eq!(
             serde_json::from_str::<Song>(&json).unwrap().scale,
             None,
@@ -1459,6 +1654,100 @@ mod tests {
 
         assert_eq!(song.set_channels(0), 1);
         assert_eq!(song.set_channels(99), MAX_CHANNELS);
+    }
+
+    #[test]
+    fn chd_makes_a_song_format_version_3() {
+        let mut song = Song::new(1, 4);
+        assert_eq!(song.format_version(), 2);
+        let mut cell = Cell::default();
+        cell.fx[1] = Some(Fx::new(FxCmd::Chord, 0x47));
+        song.set_cell(0, 0, 0, cell);
+        assert_eq!(song.format_version(), 3);
+    }
+
+    #[test]
+    fn scale_steps_is_on_for_new_songs_and_off_for_older_files() {
+        assert!(Song::new(1, 4).scale_steps);
+        let mut json = serde_json::to_value(Song::new(1, 4)).unwrap();
+        assert_eq!(json["scale_steps"], serde_json::json!(true));
+        // A 0.2.0 file has no such field.
+        json.as_object_mut().unwrap().remove("scale_steps");
+        let old: Song = serde_json::from_value(json).unwrap();
+        assert!(!old.scale_steps);
+        let written = serde_json::to_value(&old).unwrap();
+        assert!(written.get("scale_steps").is_none(), "off is not written");
+    }
+
+    #[test]
+    fn step_offsets_count_degrees_only_with_a_scale_and_scale_steps() {
+        let mut song = Song::new(1, 4);
+        let e4 = 64;
+        assert_eq!(song.step_offset(e4, 2), 2.0);
+        song.scale = Some(ScaleSetting::new(NoteValue::C, crate::theory::Scale::Major));
+        // E, F, G: one semitone, then two.
+        assert_eq!(song.step_offset(e4, 2), 3.0);
+        assert_eq!(song.step_offset(e4, -1), -2.0);
+        assert_eq!(song.step_offset(127, 3), 0.0, "past the MIDI range");
+        song.scale_steps = false;
+        assert_eq!(song.step_offset(e4, 2), 2.0);
+    }
+
+    #[test]
+    fn unlinking_or_deleting_a_transposed_link_keeps_the_notes_it_played() {
+        let note = |s: &Song, pat: usize| s.patterns[pat].data[0][0].note;
+        let mut song = Song::new(1, 2);
+        let p = song.add_phrase(2);
+        song.phrases[p].rows[0].note = Note::from_midi(60);
+        song.link_column(0, 0, p, PhraseTiming::Aligned);
+        song.set_link_transpose(0, 0, 5);
+        let played = song.playback_cell(0, 0, 0, 0).note;
+        assert_eq!(played, Note::from_midi(65));
+
+        let mut unlinked = song.clone();
+        assert!(unlinked.unlink_column(0, 0));
+        assert_eq!(note(&unlinked, 0), played);
+
+        // Delete, with a second pattern outside the order list linked too.
+        let spare = song.add_pattern();
+        song.patterns[spare].links = vec![song.patterns[0].links[0]];
+        song.delete_phrase(p);
+        assert_eq!(note(&song, 0), played);
+        assert_eq!(note(&song, spare), played);
+    }
+
+    #[test]
+    fn deleting_a_phrase_writes_it_out_and_renumbers_later_links() {
+        let mut song = Song::new(3, 4);
+        let a = song.add_phrase(2);
+        let b = song.add_phrase(4);
+        song.phrases[a].rows[0].volume = Some(1);
+        song.phrases[a].rows[1].volume = Some(2);
+        song.phrases[b].rows[3].volume = Some(9);
+        song.link_column(0, 0, a, PhraseTiming::Aligned);
+        song.link_column(0, 1, b, PhraseTiming::Aligned);
+        // A pattern outside the order list links to it as well.
+        let spare = song.add_pattern();
+        song.patterns[spare].links = vec![Some(PhraseLink {
+            phrase: a,
+            transpose: 0,
+            timing: PhraseTiming::Running,
+        })];
+        let shown: Vec<_> = (0..4).map(|r| song.cell_at(0, r, 0).volume).collect();
+
+        assert_eq!(song.delete_phrase(a), Some(2));
+        assert_eq!(song.phrases.len(), 1);
+        let p = song.pattern_at(0).unwrap();
+        assert_eq!(p.link(0), None);
+        let own: Vec<_> = (0..4).map(|r| song.cell_at(0, r, 0).volume).collect();
+        assert_eq!(own, shown, "the column keeps what it showed");
+        assert_eq!(own, [Some(1), Some(2), Some(1), Some(2)]);
+        assert_eq!(p.link(1).map(|l| l.phrase), Some(0), "phrase b moved down");
+        assert_eq!(song.cell_at(0, 3, 1).volume, Some(9));
+        assert_eq!(song.patterns[spare].link(0), None);
+        assert_eq!(song.patterns[spare].data[1][0].volume, Some(2));
+
+        assert_eq!(song.delete_phrase(5), None);
     }
 
     #[test]
@@ -1857,6 +2146,7 @@ mod tests {
                     loop_enabled: false,
                     loop_start: 0,
                     loop_end: 0,
+                    sliced_from: None,
                 },
             }],
             ..SongFile::from_song(song)

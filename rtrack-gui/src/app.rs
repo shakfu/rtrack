@@ -16,6 +16,8 @@ pub struct RtrackApp {
     pub cursor_channel: usize,
     pub cursor_sub: SubColumn,
     pub current_octave: u8,
+    /// Which characters enter notes (`config.toml`'s `piano`).
+    pub piano: rtrack_core::keymap::PianoLayout,
     pub edit_step: usize,
     pub edit_order: usize,
     pub follow_playback: bool,
@@ -103,6 +105,7 @@ impl RtrackApp {
             cursor_channel: 0,
             cursor_sub: SubColumn::Note,
             current_octave: 4,
+            piano: rtrack_core::keymap::PianoLayout::default(),
             edit_step: 1,
             edit_order: 0,
             follow_playback: true,
@@ -220,7 +223,10 @@ impl RtrackApp {
 
         cc.egui_ctx.set_theme(egui::Theme::Dark);
 
+        let (piano, piano_notes) = rtrack_core::config::load_piano_layout();
+        startup_notes.extend(piano_notes);
         let mut app = Self::with_core(core);
+        app.piano = piano;
         app.status_message = startup_notes.last().cloned();
         app
     }

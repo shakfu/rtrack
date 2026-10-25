@@ -31,6 +31,9 @@ pub struct Theme {
     pub cursor_row_bg: Color,
     pub playback_row_bg: Color,
     pub separator: Color,
+    /// The gutter left of a linked track, by the link's timing.
+    pub phrase_aligned: Color,
+    pub phrase_running: Color,
 
     // Order list sidebar
     pub order_current: Color,
@@ -93,6 +96,8 @@ impl Theme {
             cursor_row_bg: Color::Rgb(30, 30, 50),
             playback_row_bg: Color::DarkGray,
             separator: Color::DarkGray,
+            phrase_aligned: Color::Rgb(90, 140, 230),
+            phrase_running: Color::Rgb(230, 150, 60),
 
             order_current: Color::Cyan,
             order_normal: Color::DarkGray,
@@ -149,6 +154,8 @@ impl Theme {
             cursor_row_bg: Color::Rgb(230, 230, 245),
             playback_row_bg: Color::Rgb(220, 220, 220),
             separator: Color::Gray,
+            phrase_aligned: Color::Rgb(40, 90, 200),
+            phrase_running: Color::Rgb(200, 110, 20),
 
             order_current: Color::Blue,
             order_normal: Color::Gray,
@@ -205,6 +212,8 @@ impl Theme {
             cursor_row_bg: Color::Rgb(50, 48, 55),
             playback_row_bg: Color::Rgb(60, 58, 50),
             separator: Color::Rgb(117, 113, 94),
+            phrase_aligned: Color::Rgb(102, 217, 239),
+            phrase_running: Color::Rgb(253, 151, 31),
 
             order_current: Color::Rgb(102, 217, 239),
             order_normal: Color::Rgb(117, 113, 94),

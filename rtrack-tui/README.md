@@ -45,7 +45,7 @@ Upper octave:  q 2 w 3 e r 5 t 6 y 7 u
                C C#D D#E F F#G G#A A#B
 ```
 
-Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to navigate.
+Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to navigate. On a QWERTZ or AZERTY keyboard, set `piano` in `config.toml` (main README, Configuration) so the keys sit in the same places.
 
 ## Keybindings
 
@@ -113,7 +113,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | Command | Action |
 |---------|--------|
 | `:p` / `:pattern` | Open pattern matrix |
-| `:set` / `:settings` | Song settings, including the note-entry scale (`C# dorian`, or `off`) |
+| `:set` / `:settings` | Song settings, including the scale (`C# dorian`, or `off`) and whether `ARP` and table steps follow it (Steps: `degrees` or `semitones`) |
 | `:fx` / `:effects` | Track config / effects editor |
 | `:inst` / `:instruments` | Instrument list |
 | `:midi` | MIDI port selector |
@@ -132,6 +132,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:recent` | Open recent files list (last 3 songs) |
 | `:audio` / `:astat` | Report dropped or rescheduled audio commands |
 | `:pedit [NN]` | Phrase editor: the track's phrase, or phrase `NN` |
+| `:pdel [NN]` | Delete the phrase on view or the track's, or phrase `NN` |
 
 Phrase and table commands (`:phrase`, `:phrases`, `:run`, `:unlink`, `:tr`, `:table`) are listed in the [main README](../README.md).
 
@@ -157,6 +158,9 @@ Phrase and table commands (`:phrase`, `:phrases`, `:run`, `:unlink`, `:tr`, `:ta
 | Tab | Open synth editor for selected instrument |
 | Type chars | Edit instrument name |
 | Backspace | Delete character from name |
+| Ctrl+O | MIDI instrument output: built in, the selected port, then each listed port |
+| Ctrl+Left / Right | MIDI instrument program |
+| Ctrl+Up / Down | MIDI instrument channel: the track's, or 1-16 |
 | Esc / F7 | Close |
 
 ### Sample Editor (Enter on an instrument)

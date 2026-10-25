@@ -367,7 +367,9 @@ fn saved_files_carry_the_format_version() {
     core.save().unwrap();
 
     let file = SongFile::load(&path).unwrap();
-    assert_eq!(file.version, rtrack_core::tracker::FORMAT_VERSION);
+    // The oldest version that holds the song, so older builds can open it.
+    assert_eq!(file.version, file.song.format_version());
+    assert!(file.version >= 2 && file.version <= rtrack_core::tracker::FORMAT_VERSION);
     assert!(!file.is_from_newer_version());
 
     let _ = std::fs::remove_file(&path);
@@ -752,4 +754,80 @@ fn a_file_from_a_newer_version_is_not_saved_over() {
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&copy);
+}
+
+#[test]
+fn scale_steps_survive_a_save_and_files_without_them_load_off() {
+    let path = scratch("scale_steps");
+    let mut core = headless(1, 4);
+    assert!(core.song.scale_steps);
+    core.file_path = Some(path.clone());
+    core.save().unwrap();
+    let mut loaded = headless(1, 4);
+    loaded.load_file(&path).unwrap();
+    assert!(loaded.song.scale_steps);
+
+    // A 0.2.0 file has no field: its ARP steps stay semitones.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let old = text.replace("\"scale_steps\": true,", "");
+    assert_ne!(old, text, "the field was written");
+    std::fs::write(&path, old).unwrap();
+    let mut loaded = headless(1, 4);
+    loaded.load_file(&path).unwrap();
+    assert!(!loaded.song.scale_steps);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_song_with_a_version_3_effect_is_saved_as_version_3() {
+    let path = scratch("format_version_3");
+    let mut core = headless(1, 4);
+    core.file_path = Some(path.clone());
+    core.save().unwrap();
+    let version = |path: &Path| {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        v["version"].as_u64().unwrap()
+    };
+    assert_eq!(version(&path), 2, "older builds still open it");
+
+    let mut cell = Cell::default();
+    cell.fx[0] = Some(Fx::new(FxCmd::Cutoff, 0x40));
+    core.song.set_cell(0, 0, 0, cell);
+    core.save().unwrap();
+    assert_eq!(version(&path), 3);
+    let mut loaded = headless(1, 4);
+    let report = loaded.load_file(&path).unwrap();
+    assert!(report.is_clean(), "{report:?}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn an_effect_from_a_newer_version_loads_as_none_with_a_note() {
+    let path = scratch("unknown_effect");
+    let mut core = headless(1, 4);
+    let mut cell = Cell::default();
+    cell.fx[0] = Some(Fx::new(FxCmd::Arp, 0x37));
+    cell.volume = Some(0x40);
+    core.song.set_cell(0, 0, 0, cell);
+    core.file_path = Some(path.clone());
+    core.save().unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("ARP37"));
+    std::fs::write(&path, text.replace("ARP37", "ZZZ12")).unwrap();
+
+    let mut loaded = headless(1, 4);
+    let report = loaded.load_file(&path).unwrap();
+    assert!(
+        report.repairs.iter().any(|r| r.contains("ZZZ")),
+        "{report:?}"
+    );
+    let cell = loaded.song.cell_at(0, 0, 0);
+    assert_eq!(cell.fx[0], None);
+    assert_eq!(cell.volume, Some(0x40), "the rest of the cell survives");
+
+    // A malformed effect is not a newer one, and still fails.
+    std::fs::write(&path, text.replace("ARP37", "ARPZZ")).unwrap();
+    assert!(headless(1, 4).load_file(&path).is_err());
+    let _ = std::fs::remove_file(&path);
 }

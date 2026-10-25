@@ -3,6 +3,7 @@ pub mod effects;
 pub mod envelope;
 pub mod svf;
 pub mod synth;
+pub mod timbre;
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -108,6 +109,18 @@ pub struct VoiceSnapshot {
     pub active: bool,
 }
 
+/// What a chord note plays on: see [`AudioEngine::add_note`].
+#[derive(Debug, Clone)]
+pub enum AddedVoice {
+    /// The built-in synth with these parameters.
+    Synth(Box<SynthParams>),
+    /// The SF2 on this MIDI channel.
+    Sf2,
+    /// The channel's voice, as `NoteOn` plays it: SF2 if loaded, else the
+    /// built-in synth's program.
+    Channel,
+}
+
 /// Commands sent from the UI thread to the audio thread via lock-free ring buffer.
 enum AudioCommand {
     NoteOn {
@@ -120,6 +133,14 @@ enum AudioCommand {
         note: u8,
         velocity: u8,
         params: Box<SynthParams>,
+    },
+    /// Start a note beside the channel's sounding ones: a chord note, after
+    /// the note-on that cut the channel.
+    AddNote {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        voice: AddedVoice,
     },
     /// Stop one note: on the built-in synth by track (`voice`), on the
     /// SF2 by MIDI channel (`sf2`).
@@ -169,6 +190,12 @@ enum AudioCommand {
     ChannelVolume {
         channel: u8,
         volume: u8,
+    },
+    /// Filter and drive offsets for the built-in synth's and the sample
+    /// engine's voices on a channel, and its next ones.
+    ChannelTimbre {
+        channel: u8,
+        timbre: crate::types::Timbre,
     },
     ToggleEffects,
     SetSampleBank {
@@ -867,6 +894,28 @@ impl AudioEngine {
         }
     }
 
+    /// Start a chord note beside the channel's sounding notes, at `frame` or
+    /// now. Sent after the note-on that starts the chord, at the same frame.
+    pub fn add_note(
+        &mut self,
+        frame: Option<u64>,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        voice: AddedVoice,
+    ) {
+        let cmd = AudioCommand::AddNote {
+            channel,
+            note,
+            velocity,
+            voice,
+        };
+        match frame {
+            Some(frame) => self.send_at(frame, cmd),
+            None => self.send(cmd),
+        }
+    }
+
     /// Schedule a note-on with explicit synth parameters at a specific frame.
     pub fn note_on_with_params_at(
         &mut self,
@@ -994,6 +1043,21 @@ impl AudioEngine {
     /// `frame` or now.
     pub fn channel_pitch(&mut self, frame: Option<u64>, channel: u8, semitones: f32) {
         let cmd = AudioCommand::ChannelPitch { channel, semitones };
+        match frame {
+            Some(frame) => self.send_at(frame, cmd),
+            None => self.send(cmd),
+        }
+    }
+
+    /// Set the filter and drive offsets of the built-in synth's and
+    /// samples' voices on `channel`, at `frame` or now.
+    pub fn channel_timbre(
+        &mut self,
+        frame: Option<u64>,
+        channel: u8,
+        timbre: crate::types::Timbre,
+    ) {
+        let cmd = AudioCommand::ChannelTimbre { channel, timbre };
         match frame {
             Some(frame) => self.send_at(frame, cmd),
             None => self.send(cmd),
@@ -1315,6 +1379,30 @@ fn process_command(
             builtin_synth.note_on_with_params(channel, note, velocity, &params);
             hand_back(Reclaimed::SynthParams(params));
         }
+        AudioCommand::AddNote {
+            channel,
+            note,
+            velocity,
+            voice,
+        } => match voice {
+            AddedVoice::Synth(params) => {
+                builtin_synth.add_note_with_params(channel, note, velocity, &params);
+                hand_back(Reclaimed::SynthParams(params));
+            }
+            AddedVoice::Sf2 => {
+                if let Some(ref mut sf2) = sf2_synth {
+                    sf2.note_on(channel as i32, note as i32, velocity as i32);
+                }
+            }
+            AddedVoice::Channel => {
+                if let Some(ref mut sf2) = sf2_synth {
+                    sf2.note_on(channel as i32, note as i32, velocity as i32);
+                }
+                if !has_sf2 {
+                    builtin_synth.add_note(channel, note, velocity);
+                }
+            }
+        },
         // The built-in synth is stopped with an SF2 loaded too: synth
         // instruments still play on it.
         AudioCommand::NoteOff { voice, sf2, note } => {
@@ -1360,6 +1448,10 @@ fn process_command(
                 let msb = ((value >> 7) & 0x7F) as i32;
                 sf2.process_midi_message(channel as i32, 0xE0, lsb, msb);
             }
+        }
+        AudioCommand::ChannelTimbre { channel, timbre } => {
+            builtin_synth.set_channel_timbre(channel, timbre);
+            sample_engine.set_channel_timbre(channel, timbre);
         }
         AudioCommand::ChannelPitch { channel, semitones } => {
             builtin_synth.set_channel_pitch_offset(channel, semitones);
@@ -1895,6 +1987,7 @@ mod scheduler_tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
         apply(
             &mut state,

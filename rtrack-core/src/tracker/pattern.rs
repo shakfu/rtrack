@@ -276,7 +276,6 @@ impl Cell {
         });
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.note.is_none()
             && self.instrument.is_none()

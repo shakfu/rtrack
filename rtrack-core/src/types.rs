@@ -23,9 +23,6 @@ pub struct PlaybackTiming {
     pub clock_tick_accumulator: f64,
     /// Total elapsed playback time (seconds).
     pub playback_elapsed: f64,
-    /// Unused since 0.2.1, when each external clock pulse became one tick.
-    /// Kept so the public struct does not change in a patch release.
-    pub ext_clock_count: u32,
     /// Last polled Ableton Link beat position.
     pub last_link_beat: f64,
 
@@ -57,7 +54,6 @@ impl PlaybackTiming {
             tick_accumulator: 0.0,
             clock_tick_accumulator: 0.0,
             playback_elapsed: 0.0,
-            ext_clock_count: 0,
             last_link_beat: 0.0,
             next_tick_frame: 0,
             last_clock_frame: 0,
@@ -79,7 +75,6 @@ impl PlaybackTiming {
         self.tick_accumulator = 0.0;
         self.clock_tick_accumulator = 0.0;
         self.playback_elapsed = 0.0;
-        self.ext_clock_count = 0;
         self.last_link_beat = 0.0;
         self.next_tick_frame = 0;
         self.last_clock_frame = 0;
@@ -373,6 +368,50 @@ impl InstrumentKind {
     }
 }
 
+/// Notes a `CHD` adds to a note-on, as MIDI notes; unused slots are `None`
+/// (`docs/dev/g12-chords.md`).
+pub type Chord = [Option<u8>; 4];
+
+/// A channel's offsets from its instrument's filter and drive, set by
+/// `CUT`, `RES` and `DRV` (`docs/dev/g6-modulation.md`). The default
+/// changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Timbre {
+    /// Octaves added to the cutoff.
+    pub cutoff: f32,
+    /// Added to the resonance; the filter clamps the sum.
+    pub resonance: f32,
+    /// Octaves the drive is scaled by, within 1..`SampleFx::MAX_DRIVE`.
+    pub drive: f32,
+}
+
+impl Timbre {
+    /// `CUTxx`: `80` is the instrument's cutoff, each step 1/32 octave.
+    pub fn cutoff_of(param: u8) -> f32 {
+        (param as f32 - 128.0) / 32.0
+    }
+
+    /// `RESxx`: `80` is the instrument's resonance; `00` and `FF` move it
+    /// by the whole range.
+    pub fn resonance_of(param: u8) -> f32 {
+        (param as f32 - 128.0) / 128.0 * crate::audio::svf::MAX_RESONANCE
+    }
+
+    /// `DRVxx`: `80` is the instrument's drive, each step 1/32 octave.
+    pub fn drive_of(param: u8) -> f32 {
+        (param as f32 - 128.0) / 32.0
+    }
+
+    /// `drive` scaled by `self.drive` octaves; 1.0 or less is off.
+    #[inline]
+    pub fn scale_drive(&self, drive: f32) -> f32 {
+        if self.drive == 0.0 {
+            return drive;
+        }
+        (drive.max(1.0) * self.drive.exp2()).min(SampleFx::MAX_DRIVE)
+    }
+}
+
 /// Drive and filter applied to each voice of a sample instrument, before
 /// its envelope (`docs/dev/g5-instrument-fx.md`). Off by default.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -435,9 +474,9 @@ pub enum MidiOutput {
     /// SF2 if one is loaded, else the built-in preset synth.
     #[default]
     Builtin,
-    /// The MIDI port the user selected. Plays as `Builtin` when none is
-    /// selected or the selected one is absent. `port` names a specific port
-    /// instead of the session's; unused until per-instrument ports exist.
+    /// The MIDI port the user selected, or the one `port` names. Plays as
+    /// `Builtin` when that port is not selected or absent
+    /// (`docs/dev/midi-ports.md`).
     External {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         port: Option<String>,
@@ -447,6 +486,44 @@ pub enum MidiOutput {
 impl MidiOutput {
     pub fn is_builtin(&self) -> bool {
         *self == Self::Builtin
+    }
+
+    /// The output after this one in the order the editors step through:
+    /// built in, the selected port, then each of `listed` but rtrack's own
+    /// virtual port, which an instrument reaches as the selected port.
+    pub fn next(&self, listed: &[String]) -> Self {
+        let ports: Vec<&String> = listed
+            .iter()
+            .filter(|p| *p != crate::midi::VIRTUAL_PORT_NAME)
+            .collect();
+        match self {
+            Self::Builtin => Self::External { port: None },
+            Self::External { port: None } => match ports.first() {
+                Some(p) => Self::External {
+                    port: Some((*p).clone()),
+                },
+                None => Self::Builtin,
+            },
+            Self::External { port: Some(name) } => {
+                let at = ports.iter().position(|p| *p == name);
+                match at.and_then(|i| ports.get(i + 1)) {
+                    Some(p) => Self::External {
+                        port: Some((*p).clone()),
+                    },
+                    None => Self::Builtin,
+                }
+            }
+        }
+    }
+
+    /// Where it plays, for a status line: "built in", "the selected MIDI
+    /// port" or "MIDI port 'name'".
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Builtin => "built in".to_string(),
+            Self::External { port: None } => "the selected MIDI port".to_string(),
+            Self::External { port: Some(name) } => format!("MIDI port '{name}'"),
+        }
     }
 }
 
@@ -653,6 +730,36 @@ mod tests {
             }
         ));
         assert!(repairs.is_empty());
+    }
+
+    #[test]
+    fn midi_outputs_step_through_built_in_selected_and_each_port() {
+        let listed: Vec<String> = [crate::midi::VIRTUAL_PORT_NAME, "A 20:0", "B"]
+            .map(String::from)
+            .to_vec();
+        let named = |n: &str| MidiOutput::External {
+            port: Some(n.to_string()),
+        };
+        let mut seen = vec![MidiOutput::Builtin];
+        loop {
+            let next = seen.last().unwrap().next(&listed);
+            if next.is_builtin() {
+                break;
+            }
+            seen.push(next);
+        }
+        assert_eq!(
+            seen,
+            [
+                MidiOutput::Builtin,
+                MidiOutput::External { port: None },
+                named("A 20:0"),
+                named("B"),
+            ],
+            "rtrack's virtual port is reached as the selected one"
+        );
+        // A port no longer listed steps back to built in.
+        assert_eq!(named("Gone").next(&listed), MidiOutput::Builtin);
     }
 
     #[test]

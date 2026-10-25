@@ -18,8 +18,8 @@
 //! and turned into "could not open that file".
 //!
 //! These are hand-picked shapes plus a systematic truncation sweep, not a
-//! fuzzer. A fuzzer would be better and is on the TODO; it needs a nightly
-//! toolchain and `cargo-fuzz`, so it cannot run here or in CI. Every case
+//! fuzzer. The fuzz targets in `fuzz/` (`make fuzz`) need a nightly
+//! toolchain and `cargo-fuzz`, so they do not run here or in CI. Every case
 //! below was a real defect or is the boundary next to one.
 
 use std::path::Path;

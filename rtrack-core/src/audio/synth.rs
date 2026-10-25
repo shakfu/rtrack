@@ -2,11 +2,15 @@
 /// Provides 9 waveform patches (8 manual + 1 fundsp-based), each with per-patch
 /// envelope and filter parameters.
 /// Voice management is manual (one voice per tracker channel, polyphony via channels).
+use std::ops::RangeInclusive;
+
 use fundsp::prelude32::*;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::envelope::{EnvStage, Envelope};
+use crate::audio::timbre::TimbreGlide;
 use crate::constants::{MIDI_MAX_VALUE, SEMITONES_PER_OCTAVE};
+use crate::types::Timbre;
 
 const MAX_VOICES: usize = 32;
 const VOICE_GAIN: f32 = 0.25;
@@ -64,6 +68,13 @@ fn is_no_drive(drive: &f32) -> bool {
 }
 
 impl SynthParams {
+    /// Editable `filter_cutoff`, as a multiple of the note frequency.
+    pub const CUTOFF_RANGE: RangeInclusive<f32> = 0.1..=40.0;
+    /// Editable `filter_resonance`; the filter caps it there.
+    pub const RESONANCE_RANGE: RangeInclusive<f32> = 0.0..=crate::audio::svf::MAX_RESONANCE;
+    /// Editable `filter_env`, in octaves of cutoff at full envelope.
+    pub const FILTER_ENV_RANGE: RangeInclusive<f32> = 0.0..=8.0;
+
     /// Create SynthParams from a preset patch's defaults
     pub fn from_patch(program: u8) -> Self {
         let patch = Patch::from_program(program);
@@ -917,6 +928,9 @@ struct Voice {
     // Drive before the filter, from `SynthParams::drive`; 1.0 is off
     drive: f32,
 
+    // The channel's offsets from `drive` and the filter, smoothed
+    timbre: TimbreGlide,
+
     // Filter
     filter: SvfState,
 
@@ -979,6 +993,7 @@ impl Voice {
                 sample_rate,
             ),
             drive: no_drive(),
+            timbre: TimbreGlide::at(Timbre::default(), sample_rate),
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
             fundsp_unit: None,
@@ -1160,9 +1175,12 @@ impl Voice {
             osc
         };
 
+        let timbre = self.timbre.advance();
+
         // -- Drive -- (NaN is not > 1.0, so a non-number is off)
-        let osc = if self.drive > 1.0 {
-            (osc * self.drive.min(crate::types::SampleFx::MAX_DRIVE)).tanh()
+        let drive = timbre.scale_drive(self.drive);
+        let osc = if drive > 1.0 {
+            (osc * drive.min(crate::types::SampleFx::MAX_DRIVE)).tanh()
         } else {
             osc
         };
@@ -1172,11 +1190,16 @@ impl Voice {
         let cutoff = freq * self.params.filter_cutoff_mul * 2.0_f32.powf(env_mod);
         let vel_mod = 0.5 + 0.5 * self.velocity;
         let final_cutoff = cutoff * vel_mod;
+        let final_cutoff = if timbre.cutoff == 0.0 {
+            final_cutoff
+        } else {
+            final_cutoff * timbre.cutoff.exp2()
+        };
 
         let filtered = self.filter.tick(
             osc,
             final_cutoff,
-            self.params.filter_resonance,
+            self.params.filter_resonance + timbre.resonance,
             sr,
             self.params.filter_type,
         );
@@ -1250,6 +1273,8 @@ pub struct BuiltinSynth {
     voices: Vec<Voice>,
     /// Current program per channel (selects waveform patch)
     programs: [u8; 16],
+    /// Each channel's timbre, which its next voice starts at.
+    timbre: [Timbre; 16],
     /// Pre-built fundsp graphs, one per possible voice. Taken on note-on and
     /// returned when a voice is evicted, so the audio thread never allocates
     /// or frees one.
@@ -1262,6 +1287,7 @@ impl BuiltinSynth {
         Self {
             voices: Vec::with_capacity(MAX_VOICES),
             programs: [0; 16],
+            timbre: [Timbre::default(); 16],
             fundsp_pool: (0..MAX_VOICES)
                 .map(|_| FundspVoice::new(sample_rate as f32))
                 .collect(),
@@ -1272,7 +1298,11 @@ impl BuiltinSynth {
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
         // Kill existing voice on this channel (tracker: one note per channel)
         self.note_off_all_channel(channel);
+        self.add_note(channel, note, velocity);
+    }
 
+    /// Start a note on `channel` beside the ones sounding: a chord note.
+    pub fn add_note(&mut self, channel: u8, note: u8, velocity: u8) {
         let patch = Patch::from_program(self.programs[(channel & 0x0F) as usize]);
         let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         let voice = Voice::new(channel, note, vel, patch, self.sample_rate);
@@ -1289,7 +1319,17 @@ impl BuiltinSynth {
         params: &SynthParams,
     ) {
         self.note_off_all_channel(channel);
+        self.add_note_with_params(channel, note, velocity, params);
+    }
 
+    /// [`Self::add_note`] with user-configured synth parameters.
+    pub fn add_note_with_params(
+        &mut self,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        params: &SynthParams,
+    ) {
         let patch = Patch::from_program(params.waveform);
         let vel = velocity as f32 / MIDI_MAX_VALUE as f32;
         let custom_params = PatchParams {
@@ -1316,7 +1356,21 @@ impl BuiltinSynth {
         self.push_voice(voice);
     }
 
+    /// Move the filter and drive of `channel`'s voices, and of its next ones.
+    pub fn set_channel_timbre(&mut self, channel: u8, timbre: Timbre) {
+        self.timbre[(channel & 0x0F) as usize] = timbre;
+        for voice in &mut self.voices {
+            if voice.active && voice.channel == channel {
+                voice.timbre.set_target(timbre);
+            }
+        }
+    }
+
     fn push_voice(&mut self, mut voice: Voice) {
+        voice.timbre = TimbreGlide::at(
+            self.timbre[(voice.channel & 0x0F) as usize],
+            self.sample_rate,
+        );
         if self.voices.len() >= MAX_VOICES {
             // First try to remove an inactive voice
             if let Some(idx) = self.voices.iter().position(|v| !v.active) {
@@ -1551,6 +1605,22 @@ mod tests {
             synth.render_sample();
         }
         assert_eq!(synth.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn chord_notes_join_the_channel_and_the_next_note_cuts_them() {
+        let mut synth = BuiltinSynth::new(48000.0);
+        synth.note_on(0, 60, 100);
+        synth.add_note(0, 64, 100);
+        synth.add_note_with_params(0, 67, 100, &SynthParams::from_patch(0));
+        assert_eq!(synth.active_voice_count(), 3);
+        synth.note_on(0, 62, 100);
+        let sounding = synth
+            .voices
+            .iter()
+            .filter(|v| v.active && v.envelope.stage != EnvStage::Release)
+            .count();
+        assert_eq!(sounding, 1, "a new note replaces the whole chord");
     }
 
     #[test]

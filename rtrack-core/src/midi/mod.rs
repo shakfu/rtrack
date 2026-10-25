@@ -22,10 +22,48 @@ const MIDI_STOP: u8 = 0xFC;
 /// The name rtrack's own virtual output port is listed under.
 pub const VIRTUAL_PORT_NAME: &str = "RTRACK_MIDI (virtual)";
 
-pub struct MidiEngine {
+/// Where a MIDI message goes: the session port, or a port an instrument
+/// names (`docs/dev/midi-ports.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortId {
+    Session,
+    Named(usize),
+}
+
+/// One output connection and what has been sent on it.
+#[derive(Default)]
+struct Port {
     connection: Option<MidiOutputConnection>,
-    /// Track which notes are currently sounding per channel so we can send note-off
-    active_notes: [Option<u8>; 16],
+    /// The notes sounding on each channel, so they can be stopped: one, or
+    /// a chord's.
+    active_notes: [Vec<u8>; 16],
+    /// The program last sent on each channel.
+    programs: [Option<u8>; 16],
+    /// Every message sent, connected or not, for tests to inspect.
+    #[cfg(test)]
+    sent: Vec<Vec<u8>>,
+}
+
+impl Port {
+    fn open(connection: MidiOutputConnection) -> Self {
+        Self {
+            connection: Some(connection),
+            ..Self::default()
+        }
+    }
+}
+
+/// A port an instrument names, open or absent.
+struct NamedPort {
+    name: String,
+    port: Port,
+    /// Present for routing; in tests, without a connection.
+    present: bool,
+}
+
+pub struct MidiEngine {
+    session: Port,
+    named: Vec<NamedPort>,
     /// Name of the currently connected port
     pub port_name: Option<String>,
     /// Whether to send MIDI clock messages
@@ -37,23 +75,42 @@ pub struct MidiEngine {
     /// Whether the user chose the open port, rather than rtrack opening one
     /// at startup. `External` instruments send only to a chosen port.
     pub user_selected: bool,
-    /// Every message sent, connected or not, for tests to inspect.
-    #[cfg(test)]
-    pub(crate) sent: Vec<Vec<u8>>,
 }
 
 impl MidiEngine {
     pub fn new() -> Self {
         Self {
-            connection: None,
-            active_notes: [None; 16],
+            session: Port::default(),
+            named: Vec::new(),
             port_name: None,
             clock_enabled: false,
             send_error_count: 0,
             last_error: None,
             user_selected: false,
-            #[cfg(test)]
-            sent: Vec::new(),
+        }
+    }
+
+    /// Messages sent on the session port, for tests.
+    #[cfg(test)]
+    pub(crate) fn sent(&self) -> &[Vec<u8>] {
+        &self.session.sent
+    }
+
+    /// Messages sent on named port `name`, for tests.
+    #[cfg(test)]
+    pub(crate) fn sent_to(&self, name: &str) -> &[Vec<u8>] {
+        self.named
+            .iter()
+            .find(|n| n.name == name)
+            .map_or(&[], |n| &n.port.sent)
+    }
+
+    /// Register `name` as present without opening it, for tests.
+    #[cfg(test)]
+    pub(crate) fn add_test_port(&mut self, name: &str) {
+        let id = self.named_port(name);
+        if let PortId::Named(i) = id {
+            self.named[i].present = true;
         }
     }
 }
@@ -64,10 +121,36 @@ impl Default for MidiEngine {
     }
 }
 
+/// The listed port `wanted` names: the same name, or else the same with a
+/// trailing ALSA `" <client>:<port>"` removed from both, since ALSA numbers
+/// a device when it appears and the numbers can change after a replug.
+pub fn match_port_name(wanted: &str, listed: &[String]) -> Option<usize> {
+    fn stripped(name: &str) -> &str {
+        let Some((head, tail)) = name.rsplit_once(' ') else {
+            return name;
+        };
+        let numbered = tail.split_once(':').is_some_and(|(c, p)| {
+            !c.is_empty()
+                && !p.is_empty()
+                && c.bytes().all(|b| b.is_ascii_digit())
+                && p.bytes().all(|b| b.is_ascii_digit())
+        });
+        if numbered {
+            head
+        } else {
+            name
+        }
+    }
+    listed.iter().position(|p| p == wanted).or_else(|| {
+        let wanted = stripped(wanted);
+        listed.iter().position(|p| stripped(p) == wanted)
+    })
+}
+
 impl MidiEngine {
     pub fn disconnect(&mut self) {
-        let _ = self.all_notes_off();
-        self.connection = None;
+        let _ = self.all_notes_off_on(PortId::Session);
+        self.session = Port::default();
         self.port_name = None;
         self.user_selected = false;
     }
@@ -86,15 +169,14 @@ impl MidiEngine {
         }
     }
 
-    /// Connect to the output port listed as `name`, or create the virtual
-    /// port for [`VIRTUAL_PORT_NAME`].
+    /// Connect to the output port listed as `name` (see
+    /// [`match_port_name`]), or create the virtual port for
+    /// [`VIRTUAL_PORT_NAME`].
     pub fn connect_by_name(&mut self, name: &str) -> Result<()> {
         if name == VIRTUAL_PORT_NAME {
             return self.create_virtual_port();
         }
-        let index = Self::list_ports()?
-            .iter()
-            .position(|p| p == name)
+        let index = match_port_name(name, &Self::list_ports()?)
             .with_context(|| format!("MIDI port '{name}' is not present"))?;
         self.connect(index)
     }
@@ -115,22 +197,26 @@ impl MidiEngine {
         Ok(names)
     }
 
-    /// Connect to a MIDI output port by index
-    pub fn connect(&mut self, port_index: usize) -> Result<()> {
-        self.disconnect();
+    /// Open listed port `index`, returning its name and connection.
+    fn open_port(port_index: usize) -> Result<(String, MidiOutputConnection)> {
         let output = MidiOutput::new("rtrack").context("Failed to create MIDI output")?;
         let ports = output.ports();
         let port: &MidiOutputPort = ports.get(port_index).context("Invalid MIDI port index")?;
         let name = output
             .port_name(port)
             .unwrap_or_else(|_| "Unknown".to_string());
-
         let conn = output
             .connect(port, "rtrack-out")
             .map_err(|e| anyhow::anyhow!("Failed to connect to MIDI port '{}': {}", name, e))?;
+        Ok((name, conn))
+    }
 
+    /// Connect to a MIDI output port by index
+    pub fn connect(&mut self, port_index: usize) -> Result<()> {
+        self.disconnect();
+        let (name, conn) = Self::open_port(port_index)?;
         self.port_name = Some(name);
-        self.connection = Some(conn);
+        self.session = Port::open(conn);
         Ok(())
     }
 
@@ -145,7 +231,7 @@ impl MidiEngine {
             .create_virtual("RTRACK_MIDI")
             .map_err(|e| anyhow::anyhow!("Failed to create virtual MIDI port: {}", e))?;
         self.port_name = Some(VIRTUAL_PORT_NAME.to_string());
-        self.connection = Some(conn);
+        self.session = Port::open(conn);
         Ok(())
     }
 
@@ -157,131 +243,271 @@ impl MidiEngine {
     /// Try to connect to the first available port, or do nothing if none available
     pub fn connect_first_available(&mut self) -> Result<bool> {
         self.disconnect();
-        let output = MidiOutput::new("rtrack").context("Failed to create MIDI output")?;
-        let ports = output.ports();
-        if ports.is_empty() {
+        if Self::list_ports()?.is_empty() {
             return Ok(false);
         }
-        let port = &ports[0];
-        let name = output
-            .port_name(port)
-            .unwrap_or_else(|_| "Unknown".to_string());
-        let conn = output
-            .connect(port, "rtrack-out")
-            .map_err(|e| anyhow::anyhow!("Failed to connect: {}", e))?;
+        let (name, conn) = Self::open_port(0)?;
         self.port_name = Some(name);
-        self.connection = Some(conn);
+        self.session = Port::open(conn);
         Ok(true)
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connection.is_some()
+        self.session.connection.is_some()
     }
+
+    // -- Named ports --
+
+    /// The id of the port an instrument names, opening it on first use.
+    /// An absent port keeps its id and is retried by
+    /// [`Self::retry_named_ports`].
+    pub fn named_port(&mut self, name: &str) -> PortId {
+        if let Some(i) = self.named.iter().position(|n| n.name == name) {
+            return PortId::Named(i);
+        }
+        self.named.push(NamedPort {
+            name: name.to_string(),
+            port: Port::default(),
+            present: false,
+        });
+        let i = self.named.len() - 1;
+        self.try_open_named(i, None);
+        PortId::Named(i)
+    }
+
+    /// Whether a message to `id` reaches a port: the session port when the
+    /// user selected it, a named port when it is open.
+    pub fn is_present(&self, id: PortId) -> bool {
+        match id {
+            PortId::Session => self.user_selected,
+            PortId::Named(i) => self.named.get(i).is_some_and(|n| n.present),
+        }
+    }
+
+    /// The name a port id stands for; the session port's is its open port.
+    pub fn name_of(&self, id: PortId) -> Option<&str> {
+        match id {
+            PortId::Session => self.port_name.as_deref(),
+            PortId::Named(i) => self.named.get(i).map(|n| n.name.as_str()),
+        }
+    }
+
+    /// Try again to open every named port that is absent.
+    pub fn retry_named_ports(&mut self) {
+        if self.named.iter().all(|n| n.present) {
+            return;
+        }
+        let listed = Self::list_ports().ok();
+        for i in 0..self.named.len() {
+            if !self.named[i].present {
+                self.try_open_named(i, listed.as_deref());
+            }
+        }
+    }
+
+    fn try_open_named(&mut self, i: usize, listed: Option<&[String]>) {
+        let name = &self.named[i].name;
+        // rtrack's own virtual port is the session's; see the design doc.
+        if name == VIRTUAL_PORT_NAME {
+            return;
+        }
+        let owned;
+        let listed = match listed {
+            Some(l) => l,
+            None => match Self::list_ports() {
+                Ok(l) => {
+                    owned = l;
+                    &owned
+                }
+                Err(_) => return,
+            },
+        };
+        let Some(index) = match_port_name(name, listed) else {
+            return;
+        };
+        if let Ok((_, conn)) = Self::open_port(index) {
+            self.named[i].port = Port::open(conn);
+            self.named[i].present = true;
+        }
+    }
+
+    fn port_mut(&mut self, id: PortId) -> Option<&mut Port> {
+        match id {
+            PortId::Session => Some(&mut self.session),
+            PortId::Named(i) => self.named.get_mut(i).map(|n| &mut n.port),
+        }
+    }
+
+    // -- Sending --
 
     /// Send a MIDI note-on message
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) -> Result<()> {
+        self.note_on_to(PortId::Session, channel, note, velocity)
+    }
+
+    pub fn note_on_to(&mut self, port: PortId, channel: u8, note: u8, velocity: u8) -> Result<()> {
+        // Turn off any previously active notes on this channel
+        self.channel_note_off_to(port, channel)?;
+        self.add_note_to(port, channel, note, velocity)
+    }
+
+    /// Start a note beside the channel's sounding ones: a chord note.
+    pub fn add_note_to(&mut self, port: PortId, channel: u8, note: u8, velocity: u8) -> Result<()> {
         let ch = channel & 0x0F;
-        // Turn off any previously active note on this channel
-        if let Some(prev_note) = self.active_notes[ch as usize] {
-            self.send(&[MIDI_NOTE_OFF | ch, prev_note, 0])?;
+        if let Some(p) = self.port_mut(port) {
+            p.active_notes[ch as usize].push(note);
         }
-        self.active_notes[ch as usize] = Some(note);
-        self.send(&[MIDI_NOTE_ON | ch, note, velocity])
+        self.send(port, &[MIDI_NOTE_ON | ch, note, velocity])
     }
 
     /// Send a MIDI note-off message
     #[allow(dead_code)]
     pub fn note_off(&mut self, channel: u8, note: u8) -> Result<()> {
+        self.note_off_to(PortId::Session, channel, note)
+    }
+
+    pub fn note_off_to(&mut self, port: PortId, channel: u8, note: u8) -> Result<()> {
         let ch = channel & 0x0F;
-        self.active_notes[ch as usize] = None;
-        self.send(&[MIDI_NOTE_OFF | ch, note, 0])
+        if let Some(p) = self.port_mut(port) {
+            p.active_notes[ch as usize].retain(|&n| n != note);
+        }
+        self.send(port, &[MIDI_NOTE_OFF | ch, note, 0])
     }
 
     /// Send note-off for the active note on a channel
     pub fn channel_note_off(&mut self, channel: u8) -> Result<()> {
-        let ch = (channel & 0x0F) as usize;
-        if let Some(note) = self.active_notes[ch] {
-            self.active_notes[ch] = None;
-            self.send(&[MIDI_NOTE_OFF | channel & 0x0F, note, 0])?;
+        self.channel_note_off_to(PortId::Session, channel)
+    }
+
+    pub fn channel_note_off_to(&mut self, port: PortId, channel: u8) -> Result<()> {
+        let ch = channel & 0x0F;
+        let notes = self
+            .port_mut(port)
+            .map(|p| std::mem::take(&mut p.active_notes[ch as usize]))
+            .unwrap_or_default();
+        for note in notes {
+            self.send(port, &[MIDI_NOTE_OFF | ch, note, 0])?;
         }
         Ok(())
     }
 
     /// Send a MIDI Control Change message
     pub fn send_cc(&mut self, channel: u8, controller: u8, value: u8) -> Result<()> {
+        self.send_cc_to(PortId::Session, channel, controller, value)
+    }
+
+    pub fn send_cc_to(
+        &mut self,
+        port: PortId,
+        channel: u8,
+        controller: u8,
+        value: u8,
+    ) -> Result<()> {
         let ch = channel & 0x0F;
-        self.send(&[MIDI_CC | ch, controller & 0x7F, value & 0x7F])
+        self.send(port, &[MIDI_CC | ch, controller & 0x7F, value & 0x7F])
     }
 
     /// Send a MIDI Program Change message
     pub fn program_change(&mut self, channel: u8, program: u8) -> Result<()> {
+        self.program_change_to(PortId::Session, channel, program)
+    }
+
+    pub fn program_change_to(&mut self, port: PortId, channel: u8, program: u8) -> Result<()> {
         let ch = channel & 0x0F;
-        self.send(&[MIDI_PROGRAM_CHANGE | ch, program & 0x7F])
+        let program = program & 0x7F;
+        if let Some(p) = self.port_mut(port) {
+            p.programs[ch as usize] = Some(program);
+        }
+        self.send(port, &[MIDI_PROGRAM_CHANGE | ch, program])
+    }
+
+    /// Send a program change only if the channel's last one differs.
+    pub fn program_if_changed(&mut self, port: PortId, channel: u8, program: u8) -> Result<()> {
+        let last = self
+            .port_mut(port)
+            .and_then(|p| p.programs[(channel & 0x0F) as usize]);
+        if last == Some(program & 0x7F) {
+            return Ok(());
+        }
+        self.program_change_to(port, channel, program)
     }
 
     /// Send a MIDI Pitch Bend message. Value is 14-bit: 0x2000 = center (no bend).
     pub fn pitch_bend(&mut self, channel: u8, value: u16) -> Result<()> {
+        self.pitch_bend_to(PortId::Session, channel, value)
+    }
+
+    pub fn pitch_bend_to(&mut self, port: PortId, channel: u8, value: u16) -> Result<()> {
         let ch = channel & 0x0F;
         let lsb = (value & 0x7F) as u8;
         let msb = ((value >> 7) & 0x7F) as u8;
-        self.send(&[MIDI_PITCH_BEND | ch, lsb, msb])
+        self.send(port, &[MIDI_PITCH_BEND | ch, lsb, msb])
+    }
+
+    /// Send a transport message to every open port, if clock is on.
+    fn send_transport(&mut self, message: u8) -> Result<()> {
+        if !self.clock_enabled {
+            return Ok(());
+        }
+        let mut result = self.send(PortId::Session, &[message]);
+        for i in 0..self.named.len() {
+            if self.named[i].present {
+                result = result.and(self.send(PortId::Named(i), &[message]));
+            }
+        }
+        result
     }
 
     /// Send MIDI clock tick (0xF8) - should be sent 24 times per beat
     pub fn send_clock(&mut self) -> Result<()> {
-        if self.clock_enabled {
-            self.send(&[MIDI_CLOCK])
-        } else {
-            Ok(())
-        }
+        self.send_transport(MIDI_CLOCK)
     }
 
     /// Send MIDI Start message (0xFA)
     pub fn send_start(&mut self) -> Result<()> {
-        if self.clock_enabled {
-            self.send(&[MIDI_START])
-        } else {
-            Ok(())
-        }
+        self.send_transport(MIDI_START)
     }
 
     /// Send MIDI Stop message (0xFC)
     pub fn send_stop(&mut self) -> Result<()> {
-        if self.clock_enabled {
-            self.send(&[MIDI_STOP])
-        } else {
-            Ok(())
-        }
+        self.send_transport(MIDI_STOP)
     }
 
-    /// Kill all active notes (panic)
+    /// Kill all active notes (panic), on every port.
     pub fn all_notes_off(&mut self) -> Result<()> {
+        let mut result = self.all_notes_off_on(PortId::Session);
+        for i in 0..self.named.len() {
+            result = result.and(self.all_notes_off_on(PortId::Named(i)));
+        }
+        result
+    }
+
+    fn all_notes_off_on(&mut self, port: PortId) -> Result<()> {
         for ch in 0..16u8 {
-            if let Some(note) = self.active_notes[ch as usize] {
-                self.send(&[MIDI_NOTE_OFF | ch, note, 0])?;
-                self.active_notes[ch as usize] = None;
-            }
+            self.channel_note_off_to(port, ch)?;
         }
         Ok(())
     }
 
-    fn send(&mut self, message: &[u8]) -> Result<()> {
+    fn send(&mut self, port: PortId, message: &[u8]) -> Result<()> {
+        let Some(p) = self.port_mut(port) else {
+            return Ok(());
+        };
         #[cfg(test)]
-        self.sent.push(message.to_vec());
-        if let Some(conn) = &mut self.connection {
-            match conn.send(message) {
-                Ok(()) => {
-                    self.send_error_count = 0;
-                    Ok(())
-                }
-                Err(e) => {
-                    self.send_error_count += 1;
-                    self.last_error = Some(format!("MIDI: {}", e));
-                    Err(anyhow::anyhow!("MIDI send error: {}", e))
-                }
+        p.sent.push(message.to_vec());
+        let Some(conn) = &mut p.connection else {
+            return Ok(());
+        };
+        match conn.send(message) {
+            Ok(()) => {
+                self.send_error_count = 0;
+                Ok(())
             }
-        } else {
-            Ok(())
+            Err(e) => {
+                self.send_error_count += 1;
+                self.last_error = Some(format!("MIDI: {}", e));
+                Err(anyhow::anyhow!("MIDI send error: {}", e))
+            }
         }
     }
 }
@@ -544,7 +770,32 @@ mod tests {
     fn test_midi_engine_new() {
         let engine = MidiEngine::new();
         assert!(!engine.is_connected());
-        assert!(engine.active_notes.iter().all(|n| n.is_none()));
+        assert!(engine.session.active_notes.iter().all(|n| n.is_empty()));
+    }
+
+    #[test]
+    fn port_names_match_exactly_then_without_alsa_numbers() {
+        let listed: Vec<String> = [
+            "Midi Through:Midi Through Port-0 14:0",
+            "USB MIDI:USB MIDI MIDI 1 24:0",
+            "IAC Driver Bus 1",
+            "2- Scarlett 2i4 USB",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(match_port_name("IAC Driver Bus 1", &listed), Some(2));
+        assert_eq!(match_port_name("2- Scarlett 2i4 USB", &listed), Some(3));
+        // Replugged: the client number moved from 20 to 24.
+        assert_eq!(
+            match_port_name("USB MIDI:USB MIDI MIDI 1 20:0", &listed),
+            Some(1)
+        );
+        assert_eq!(
+            match_port_name("USB MIDI:USB MIDI MIDI 2 20:0", &listed),
+            None
+        );
+        // A name ending in a word with a colon is not numbered.
+        assert_eq!(match_port_name("Synth a:b", &["Synth".to_string()]), None);
     }
 
     #[test]
@@ -560,20 +811,20 @@ mod tests {
     fn test_active_note_tracking() {
         let mut engine = MidiEngine::new();
         engine.note_on(0, 60, 100).unwrap();
-        assert_eq!(engine.active_notes[0], Some(60));
+        assert_eq!(engine.session.active_notes[0], [60]);
 
         engine.note_off(0, 60).unwrap();
-        assert_eq!(engine.active_notes[0], None);
+        assert!(engine.session.active_notes[0].is_empty());
     }
 
     #[test]
     fn test_channel_note_off() {
         let mut engine = MidiEngine::new();
         engine.note_on(2, 64, 80).unwrap();
-        assert_eq!(engine.active_notes[2], Some(64));
+        assert_eq!(engine.session.active_notes[2], [64]);
 
         engine.channel_note_off(2).unwrap();
-        assert_eq!(engine.active_notes[2], None);
+        assert!(engine.session.active_notes[2].is_empty());
 
         // Calling again should be fine
         engine.channel_note_off(2).unwrap();

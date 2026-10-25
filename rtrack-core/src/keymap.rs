@@ -53,9 +53,66 @@ pub fn piano_key(c: char) -> Option<(NoteValue, u8)> {
 /// Resolve a key press to an absolute octave, or `None` if the key is not a
 /// piano key or the result would exceed [`MAX_ENTRY_OCTAVE`].
 pub fn piano_key_at_octave(c: char, current_octave: u8) -> Option<(NoteValue, u8)> {
-    let (value, offset) = piano_key(c)?;
-    let octave = current_octave.checked_add(offset)?;
-    (octave <= MAX_ENTRY_OCTAVE).then_some((value, octave))
+    PianoLayout::Qwerty.piano_key_at_octave(c, current_octave)
+}
+
+/// A keyboard layout for note entry: which characters sit where QWERTY's
+/// piano keys are (`docs/dev/keybindings.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PianoLayout {
+    #[default]
+    Qwerty,
+    /// German: `z` and `y` swapped.
+    Qwertz,
+    /// French: the letters of the top-left keys move, and the number row
+    /// types `\u{e9} " ( - \u{e8}` unshifted where QWERTY types `2 3 5 6 7`.
+    Azerty,
+}
+
+impl PianoLayout {
+    pub const ALL: [Self; 3] = [Self::Qwerty, Self::Qwertz, Self::Azerty];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Qwerty => "qwerty",
+            Self::Qwertz => "qwertz",
+            Self::Azerty => "azerty",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|l| l.name() == name)
+    }
+
+    /// The character at each QWERTY piano position: the lower row, C to B,
+    /// then the upper row.
+    fn keys(self) -> [char; 24] {
+        let rows = match self {
+            Self::Qwerty => "zsxdcvgbhnjmq2w3er5t6y7u",
+            Self::Qwertz => "ysxdcvgbhnjmq2w3er5t6z7u",
+            Self::Azerty => "wsxdcvgbhnj,a\u{e9}z\"er(t-y\u{e8}u",
+        };
+        let mut keys = ['\0'; 24];
+        for (slot, c) in keys.iter_mut().zip(rows.chars()) {
+            *slot = c;
+        }
+        keys
+    }
+
+    /// [`piano_key`] in this layout.
+    pub fn piano_key(self, c: char) -> Option<(NoteValue, u8)> {
+        let at = self.keys().iter().position(|&k| k == c)?;
+        // The QWERTY character at that position gives the note.
+        piano_key(PianoLayout::Qwerty.keys()[at])
+    }
+
+    /// [`piano_key_at_octave`] in this layout.
+    pub fn piano_key_at_octave(self, c: char, current_octave: u8) -> Option<(NoteValue, u8)> {
+        let (value, offset) = self.piano_key(c)?;
+        let octave = current_octave.checked_add(offset)?;
+        (octave <= MAX_ENTRY_OCTAVE).then_some((value, octave))
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +164,29 @@ mod tests {
         for c in ['k', 'l', 'p', '1', '4', '8', '9', '0', ' ', 'Z'] {
             assert_eq!(piano_key(c), None, "'{c}' should not be a piano key");
         }
+    }
+
+    #[test]
+    fn every_layout_puts_the_same_notes_at_the_same_positions() {
+        let qwerty = PianoLayout::Qwerty.keys();
+        for layout in PianoLayout::ALL {
+            let keys = layout.keys();
+            let mut seen = std::collections::HashSet::new();
+            for (key, at) in keys.iter().zip(qwerty) {
+                assert!(seen.insert(*key), "{layout:?} maps '{key}' twice");
+                assert_eq!(layout.piano_key(*key), piano_key(at), "{layout:?} '{key}'");
+            }
+            assert_eq!(PianoLayout::from_name(layout.name()), Some(layout));
+        }
+        assert_eq!(PianoLayout::Qwertz.piano_key('y'), Some((NoteValue::C, 0)));
+        assert_eq!(PianoLayout::Qwertz.piano_key('z'), Some((NoteValue::A, 1)));
+        assert_eq!(PianoLayout::Azerty.piano_key('-'), Some((NoteValue::Gs, 1)));
+        assert_eq!(PianoLayout::Azerty.piano_key('m'), None);
+        assert_eq!(
+            PianoLayout::from_name(" QWERTZ "),
+            Some(PianoLayout::Qwertz)
+        );
+        assert_eq!(PianoLayout::from_name("dvorak"), None);
     }
 
     #[test]

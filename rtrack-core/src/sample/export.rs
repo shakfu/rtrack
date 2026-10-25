@@ -270,20 +270,9 @@ fn render_song_streaming(
     let mut scratch = RenderScratch::new();
 
     let mut engine = TrackerEngine::new(song, true);
-    // The per-track state live playback gives its engine: mute, volume and
-    // the default instrument. Solo is a listening aid and is not rendered.
-    engine.set_channel_info(
-        channels
-            .iter()
-            .map(|c| crate::engine::ChannelInfo {
-                audible: !c.muted,
-                volume_scale: c.volume,
-                default_instrument: c.default_instrument,
-            })
-            .collect(),
-    );
+    engine.set_channel_info(crate::engine::ChannelInfo::for_export(channels));
     let num_channels = song.channels.max(1);
-    let mut active_notes: Vec<Option<u8>> = vec![None; num_channels];
+    let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); num_channels];
     let mut frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
 
     // The built-in synth, samples and track effects play by track; the SF2
@@ -320,17 +309,19 @@ fn render_song_streaming(
                     velocity,
                     instrument,
                     sample_offset,
+                    chord,
                 } => {
                     let voice = (*channel & 0x0F) as u8;
                     let sf2_ch = sf2_channel(*channel);
-                    // Turn off previous note on this channel
-                    if let Some(prev) = active_notes.get(*channel).copied().flatten() {
+                    // Turn off the previous notes on this channel
+                    while active_notes.len() <= *channel {
+                        active_notes.push(Vec::new());
+                    }
+                    for prev in std::mem::take(&mut active_notes[*channel]) {
                         synth.note_off(voice, prev);
                         sample_engine.note_off(voice, prev);
                     }
-                    while active_notes.len() <= *channel {
-                        active_notes.push(None);
-                    }
+                    let extras = || chord.iter().flatten().copied();
                     let inst = instruments.get(instrument.unwrap_or(0) as usize);
                     // `Some(program)` for a built-in voice; `Some(None)` keeps
                     // the channel's current program.
@@ -348,11 +339,27 @@ fn render_song_streaming(
                                     *sample_offset,
                                     &fx,
                                 );
+                                for n in extras() {
+                                    sample_engine.note_on_with_offset(
+                                        sample_idx,
+                                        n,
+                                        *velocity,
+                                        voice,
+                                        sample,
+                                        sr,
+                                        NewNoteAction::Continue,
+                                        *sample_offset,
+                                        &fx,
+                                    );
+                                }
                             }
                             None
                         }
                         Route::Synth(sp) => {
                             synth.note_on_with_params(voice, *midi_note, *velocity, sp);
+                            for n in extras() {
+                                synth.add_note_with_params(voice, n, *velocity, sp);
+                            }
                             None
                         }
                         // No MIDI port here, so an external voice plays built in.
@@ -372,30 +379,38 @@ fn render_song_streaming(
                             }
                             sf2.note_off_all_channel(ch, false);
                             sf2.note_on(ch, *midi_note as i32, *velocity as i32);
+                            for n in extras() {
+                                sf2.note_on(ch, n as i32, *velocity as i32);
+                            }
                         }
-                        (Some(Some(program)), None) => synth.note_on_with_params(
-                            voice,
-                            *midi_note,
-                            *velocity,
-                            &SynthParams::from_patch(program),
-                        ),
-                        (Some(None), None) => synth.note_on(voice, *midi_note, *velocity),
+                        (Some(Some(program)), None) => {
+                            let params = SynthParams::from_patch(program);
+                            synth.note_on_with_params(voice, *midi_note, *velocity, &params);
+                            for n in extras() {
+                                synth.add_note_with_params(voice, n, *velocity, &params);
+                            }
+                        }
+                        (Some(None), None) => {
+                            synth.note_on(voice, *midi_note, *velocity);
+                            for n in extras() {
+                                synth.add_note(voice, n, *velocity);
+                            }
+                        }
                         (None, _) => {}
                     }
-                    active_notes[*channel] = Some(*midi_note);
+                    active_notes[*channel] = std::iter::once(*midi_note).chain(extras()).collect();
                 }
                 TrackerEvent::NoteOff { channel } => {
                     let voice = (*channel & 0x0F) as u8;
                     let sf2_ch = sf2_channel(*channel);
-                    if let Some(prev) = active_notes.get(*channel).copied().flatten() {
-                        synth.note_off(voice, prev);
-                        sample_engine.note_off(voice, prev);
+                    if let Some(notes) = active_notes.get_mut(*channel) {
+                        for prev in std::mem::take(notes) {
+                            synth.note_off(voice, prev);
+                            sample_engine.note_off(voice, prev);
+                        }
                     }
                     if let Some(sf2) = sf2.as_mut() {
                         sf2.note_off_all_channel(sf2_ch as i32, false);
-                    }
-                    if *channel < active_notes.len() {
-                        active_notes[*channel] = None;
                     }
                 }
                 TrackerEvent::PitchBend {
@@ -434,6 +449,26 @@ fn render_song_streaming(
                     if let Some(sf2) = sf2.as_mut() {
                         sf2.process_midi_message(sf2_ch as i32, 0xB0, 7, *volume as i32);
                     }
+                }
+                // As live (`AudioCommand::SendCC`), a CC reaches only the SF2.
+                TrackerEvent::MidiCC {
+                    channel,
+                    controller,
+                    value,
+                } => {
+                    if let Some(sf2) = sf2.as_mut() {
+                        sf2.process_midi_message(
+                            sf2_channel(*channel) as i32,
+                            0xB0,
+                            *controller as i32,
+                            *value as i32,
+                        );
+                    }
+                }
+                TrackerEvent::Timbre { channel, timbre } => {
+                    let voice = (*channel & 0x0F) as u8;
+                    synth.set_channel_timbre(voice, *timbre);
+                    sample_engine.set_channel_timbre(voice, *timbre);
                 }
                 TrackerEvent::ProgramChange { channel, program } => {
                     let voice = (*channel & 0x0F) as u8;
@@ -720,6 +755,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
 
         let instruments: Vec<Instrument> = {
@@ -781,6 +817,7 @@ mod tests {
                 loop_start: 0,
                 loop_end: 0,
                 source_path: None,
+                sliced_from: None,
             }));
             let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
             instruments[0].kind = crate::types::InstrumentKind::sample(0);
@@ -805,6 +842,134 @@ mod tests {
     }
 
     /// A sample instrument's filter and drive shape its render.
+    #[test]
+    fn cut_moves_a_filtered_sample_and_leaves_an_unfiltered_one() {
+        use crate::types::{InstrumentKind, SampleFx, VoiceFilter};
+        // A 2205 Hz square: an 8 kHz low-pass keeps its edges, 500 Hz rounds
+        // them. (A Nyquist buzz would not do: the bilinear filter has a zero
+        // there at any cutoff.)
+        let data: Vec<[f32; 2]> = (0..22050)
+            .map(|n| {
+                let v = if n % 20 < 10 { 0.05 } else { -0.05 };
+                [v, v]
+            })
+            .collect();
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(std::sync::Arc::new(super::super::Sample {
+            name: "buzz".into(),
+            data: data.into(),
+            sample_rate: 44100.0,
+            base_note: 60,
+            trim_start: 0,
+            trim_end: 0,
+            loop_enabled: false,
+            loop_start: 0,
+            loop_end: 0,
+            source_path: None,
+            sliced_from: None,
+        }));
+        let render = |fx: SampleFx, cut: Option<u8>| {
+            let mut song = Song::new(1, 4);
+            let mut fxs = [None; crate::tracker::FX_COLUMNS];
+            fxs[0] = cut.map(|p| Fx::new(FxCmd::Cutoff, p));
+            song.set_cell(
+                0,
+                0,
+                0,
+                Cell {
+                    note: Note::from_midi(60),
+                    instrument: Some(0),
+                    fx: fxs,
+                    ..Cell::default()
+                },
+            );
+            let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
+            instruments[0].kind = InstrumentKind::Sample { slot: 0, fx };
+            render_song(&song, &bank, &instruments, None, &[], &[], 44100)
+                .unwrap()
+                .0
+        };
+        let roughness = |x: &[f32]| {
+            x[2000..8000]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .sum::<f32>()
+        };
+        let filtered = SampleFx {
+            filter: Some(VoiceFilter {
+                cutoff_hz: 8000.0,
+                ..VoiceFilter::default()
+            }),
+            ..SampleFx::default()
+        };
+        let open = roughness(&render(filtered, None));
+        let closed = roughness(&render(filtered, Some(0x00)));
+        assert!(
+            closed < open / 3.0,
+            "CUT00 closes the filter: {closed} vs {open}"
+        );
+        assert!(
+            render(filtered, Some(0x80)) == render(filtered, None),
+            "CUT80 is the instrument's own cutoff"
+        );
+        let plain = SampleFx::default();
+        assert!(
+            render(plain, Some(0x00)) == render(plain, None),
+            "a sample with no filter has none to move"
+        );
+    }
+
+    #[test]
+    fn cut_closes_a_synth_notes_filter_in_render() {
+        let roughness = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0[2000..20000]
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .sum::<f32>()
+        };
+        let plain = roughness(&one_note_song(None));
+        let closed = roughness(&one_note_song(Some(Fx::new(FxCmd::Cutoff, 0x00))));
+        assert!(closed < plain / 2.0, "CUT00: {closed} vs {plain}");
+    }
+
+    #[test]
+    fn drv_drives_a_synth_note_in_render() {
+        // RMS over peak: drive squares the wave, raising it towards 1.
+        let fullness = |song: &Song| {
+            let left = render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0;
+            let x = &left[2000..20000];
+            let rms = (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+            rms / x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        let plain = fullness(&one_note_song(None));
+        let driven = fullness(&one_note_song(Some(Fx::new(FxCmd::Drive, 0xFF))));
+        // Measured 0.28 -> 0.49.
+        assert!(
+            driven > plain * 1.4,
+            "DRVFF drives the voice: {driven} vs {plain}"
+        );
+    }
+
     #[test]
     fn a_sample_instruments_filter_and_drive_reach_the_render() {
         let mut song = Song::new(1, 4);
@@ -837,6 +1002,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
         let render = |fx: crate::types::SampleFx| {
             let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
@@ -1121,6 +1287,211 @@ mod tests {
 
     fn default_instruments() -> Vec<Instrument> {
         (0..256).map(Instrument::for_slot).collect()
+    }
+
+    /// A one-preset SoundFont: a looped 441 Hz square wave on every key.
+    fn tiny_sound_font() -> Arc<SoundFont> {
+        fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut out = id.to_vec();
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(body);
+            out
+        }
+        fn list(kind: &[u8; 4], chunks: &[Vec<u8>]) -> Vec<u8> {
+            let mut body = kind.to_vec();
+            chunks.iter().for_each(|c| body.extend_from_slice(c));
+            chunk(b"LIST", &body)
+        }
+        fn name(n: &str) -> Vec<u8> {
+            let mut out = n.as_bytes().to_vec();
+            out.resize(20, 0);
+            out
+        }
+        let le16 = |v: u16| v.to_le_bytes().to_vec();
+        let le32 = |v: u32| v.to_le_bytes().to_vec();
+
+        // 10 cycles of 100 frames, then the 46 zero frames SF2 requires.
+        let frames = 1000u32;
+        let mut smpl = Vec::new();
+        for i in 0..frames {
+            let v: i16 = if i % 100 < 50 { 16000 } else { -16000 };
+            smpl.extend_from_slice(&v.to_le_bytes());
+        }
+        smpl.resize(smpl.len() + 46 * 2, 0);
+
+        let phdr = |n: &str, bag: u16| {
+            [
+                name(n),
+                le16(0),
+                le16(0),
+                le16(bag),
+                le32(0),
+                le32(0),
+                le32(0),
+            ]
+            .concat()
+        };
+        let inst = |n: &str, bag: u16| [name(n), le16(bag)].concat();
+        let shdr = |n: &str, start: u32, end: u32, l0: u32, l1: u32, kind: u16| {
+            [
+                name(n),
+                le32(start),
+                le32(end),
+                le32(l0),
+                le32(l1),
+                le32(44100),
+                vec![69, 0],
+                le16(0),
+                le16(kind),
+            ]
+            .concat()
+        };
+        let pdta = list(
+            b"pdta",
+            &[
+                chunk(b"phdr", &[phdr("square", 0), phdr("EOP", 1)].concat()),
+                chunk(b"pbag", &[le16(0), le16(0), le16(1), le16(0)].concat()),
+                chunk(b"pmod", &[0; 10]),
+                // instrument = 0
+                chunk(b"pgen", &[le16(41), le16(0), le16(0), le16(0)].concat()),
+                chunk(b"inst", &[inst("square", 0), inst("EOI", 1)].concat()),
+                chunk(b"ibag", &[le16(0), le16(0), le16(2), le16(0)].concat()),
+                chunk(b"imod", &[0; 10]),
+                // sampleModes = loop, then sampleID = 0
+                chunk(
+                    b"igen",
+                    &[le16(54), le16(1), le16(53), le16(0), le16(0), le16(0)].concat(),
+                ),
+                chunk(
+                    b"shdr",
+                    &[
+                        shdr("square", 0, frames, 100, 900, 1),
+                        shdr("EOS", 0, 0, 0, 0, 0),
+                    ]
+                    .concat(),
+                ),
+            ],
+        );
+        let mut body = b"sfbk".to_vec();
+        body.extend(list(b"INFO", &[chunk(b"ifil", &[2, 0, 1, 0])]));
+        body.extend(list(b"sdta", &[chunk(b"smpl", &smpl)]));
+        body.extend(pdta);
+        let bytes = chunk(b"RIFF", &body);
+        Arc::new(SoundFont::new(&mut bytes.as_slice()).expect("tiny SoundFont parses"))
+    }
+
+    /// Sum of squares of the left channel of a render.
+    fn energy(song: &Song, font: Option<&Arc<SoundFont>>) -> f64 {
+        let (left, _) = render_song(
+            song,
+            &SampleBank::new(),
+            &default_instruments(),
+            font,
+            &[],
+            &[],
+            44100,
+        )
+        .unwrap();
+        left.iter().map(|&x| (x as f64) * (x as f64)).sum()
+    }
+
+    fn one_note_song(fx: Option<Fx>) -> Song {
+        let mut song = Song::new(1, 4);
+        let mut fxs = [None; crate::tracker::FX_COLUMNS];
+        fxs[0] = fx;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(69),
+                fx: fxs,
+                ..Cell::default()
+            },
+        );
+        song
+    }
+
+    #[test]
+    fn render_counts_arp_steps_in_scale_degrees() {
+        use crate::theory::{Scale, ScaleSetting};
+        let render = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+        };
+        let mut degrees = one_note_song(Some(Fx::new(FxCmd::Arp, 0x24)));
+        // The note is A4: A major puts its degrees 2 and 4 at +4 and +7.
+        degrees.scale = Some(ScaleSetting::new(NoteValue::A, Scale::Major));
+        let semitones = one_note_song(Some(Fx::new(FxCmd::Arp, 0x47)));
+        // Not assert_eq: a mismatch would print two whole renders.
+        assert!(
+            render(&degrees) == render(&semitones),
+            "ARP24 in A major is ARP47"
+        );
+    }
+
+    #[test]
+    fn a_chord_renders_louder_than_its_root_on_a_sound_font() {
+        let font = tiny_sound_font();
+        let root = energy(&one_note_song(None), Some(&font));
+        // A fifth and an octave: in phase often enough to add up.
+        let chord = energy(
+            &one_note_song(Some(Fx::new(FxCmd::Chord, 0x7C))),
+            Some(&font),
+        );
+        assert!(chord > root * 1.5, "{chord} vs {root}");
+    }
+
+    #[test]
+    fn a_chord_renders_on_the_built_in_synth() {
+        let render = |song: &Song| {
+            render_song(
+                song,
+                &SampleBank::new(),
+                &default_instruments(),
+                None,
+                &[],
+                &[],
+                44100,
+            )
+            .unwrap()
+            .0
+        };
+        let root = render(&one_note_song(None));
+        let chord = render(&one_note_song(Some(Fx::new(FxCmd::Chord, 0x47))));
+        let rms = |x: &[f32]| (x[2000..20000].iter().map(|v| v * v).sum::<f32>()).sqrt();
+        assert!(
+            rms(&chord) > rms(&root) * 1.3,
+            "{} vs {}",
+            rms(&chord),
+            rms(&root)
+        );
+    }
+
+    #[test]
+    fn a_loaded_sound_font_plays_in_render() {
+        let font = tiny_sound_font();
+        assert!(energy(&one_note_song(None), Some(&font)) > 1.0);
+        assert_eq!(energy(&Song::new(1, 4), Some(&font)), 0.0);
+    }
+
+    #[test]
+    fn a_pattern_cc_reaches_the_sound_font_in_render() {
+        let font = tiny_sound_font();
+        let plain = energy(&one_note_song(None), Some(&font));
+        // CC 11 (expression) at 0 silences the SF2 voice.
+        let muted = energy(&one_note_song(Some(Fx::new(FxCmd::Cc(11), 0))), Some(&font));
+        assert!(plain > 1.0);
+        assert!(muted < plain * 1e-3, "muted {muted}, plain {plain}");
     }
 
     #[test]

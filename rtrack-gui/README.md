@@ -34,7 +34,8 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
   - Slices land in consecutive slots from the target. Slicing over instruments it did not itself create stops and says what is in the way, with a "Slice anyway" button; either way the result can be undone
 - **Pattern matrix** -- full-screen view of order list with per-channel data indicators, pattern assignment, repeat counts; create, clone, duplicate, and remove order entries
 - **Track config dialog** -- per-channel name, type, MIDI channel, default instrument, volume, pan; effects chain (filter, distortion, chorus, delay, reverb) with per-parameter sliders; MIDI learn/unlearn for all effect parameters
-- **Song settings dialog** -- title, BPM, speed, beat/bar highlight intervals, swing, note-entry scale, rows per pattern, channel count
+- **Song settings dialog** -- title, BPM, speed, beat/bar highlight intervals, groove, scale and whether `ARP` and table steps follow it, rows per pattern, channel count
+- **MIDI instrument output** -- built in, the selected port, or a named port, per instrument; undoable
 - **MIDI ports dialog** -- output/input port selection, virtual port creation, clock source (Internal/External MIDI), MIDI clock output toggle, refresh
 - **Help dialog** -- categorized keyboard shortcut reference
 - **Drag-and-drop** -- drop `.rtrk` files to open songs, drop WAV/AIFF files to load into sample slots (targets instrument editor selection or first empty slot)
@@ -85,7 +86,7 @@ Drop `.rtrk` files onto the window to open them, or drop WAV/AIFF files to load 
 | Key | Action |
 |-----|--------|
 | z s x d c v g b h n j m | Notes C C# D D# E F F# G G# A A# B (lower octave) |
-| q 2 w 3 e r 5 t 6 y 7 u | Notes C C# D D# E F F# G G# A A# B (upper octave) |
+| q 2 w 3 e r 5 t 6 y 7 u | Notes C C# D D# E F F# G G# A A# B (upper octave); `piano` in `config.toml` moves them for QWERTZ or AZERTY |
 | = (equals) | Note off (`===`) |
 | 0-9, a-f | Hex digit (instrument/volume/effect columns) |
 | Delete | Clear cell |

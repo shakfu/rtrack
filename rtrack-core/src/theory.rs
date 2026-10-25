@@ -5,8 +5,11 @@
 //! rotated to the song's root by [`ScaleSetting::mask`].
 //!
 //! Nothing in this module quantizes by itself. Snapping is applied at note
-//! entry by the frontends via [`crate::tracker::Song::snap_entry`]; the engine,
-//! file loader, MIDI input and clipboard paste all stay unquantized.
+//! entry by the frontends via [`crate::tracker::Song::snap_entry`]; the file
+//! loader, MIDI input and clipboard paste stay unquantized. At playback a
+//! link's transpose, and `ARP` and table steps with `Song::scale_steps`, count
+//! degrees ([`crate::tracker::Song::step_offset`]); written notes are never
+//! snapped.
 
 use serde::{Deserialize, Serialize};
 

@@ -120,75 +120,108 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let secs = (app.core.timing.playback_elapsed % 60.0) as u32;
     let centis = ((app.core.timing.playback_elapsed.fract()) * 100.0) as u32;
 
-    let mut spans = vec![
-        Span::styled(
-            " rtrack  ",
-            Style::default()
-                .fg(theme.header_title)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{}  ", title_display),
-            Style::default().fg(theme.status_text),
-        ),
-        Span::styled(
-            format!("{}bpm", app.core.live_tempo().0.round()),
-            Style::default().fg(theme.header_bpm),
-        ),
-        Span::styled(
-            if app.core.is_playing() {
-                " \u{25B6}"
-            } else {
-                " \u{25A0}"
-            },
-            if app.core.is_playing() {
-                Style::default().fg(theme.header_title)
-            } else {
+    // Each part with the order it is dropped in when the header does not
+    // fit: 1 first, 0 never. The title (`TITLE`) is shortened instead.
+    const TITLE: u8 = u8::MAX;
+    let mut parts: Vec<(u8, Span)> = vec![
+        (
+            1,
+            Span::styled(
+                " rtrack ",
                 Style::default()
-            },
+                    .fg(theme.header_title)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ),
-        Span::styled(
-            " \u{25CF}",
-            if app.core.recording {
-                Style::default()
-                    .fg(theme.mode_insert)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.status_hint)
-            },
+        (
+            TITLE,
+            Span::styled(
+                format!(" {}  ", title_display),
+                Style::default().fg(theme.status_text),
+            ),
         ),
-        Span::styled(
-            format!(" {:02}:{:02}:{:02}  ", mins, secs, centis),
-            Style::default().fg(theme.header_bpm),
+        (
+            0,
+            Span::styled(
+                format!("{}bpm", app.core.live_tempo().0.round()),
+                Style::default().fg(theme.header_bpm),
+            ),
         ),
-        Span::styled(
-            match app.phrase_view {
-                Some(view) => format!(
-                    "Phrase:{:02X}/{:02X} {} rows, {} uses  ",
-                    view.phrase,
-                    song.phrases.len().saturating_sub(1),
-                    song.rows_at(app.sheet()),
-                    song.phrase_uses(view.phrase)
-                ),
-                None => format!(
-                    "P:{:02X}/{:02X}  ",
-                    pattern_num,
-                    song.current_pattern_count() - 1
-                ),
-            },
-            Style::default().fg(theme.header_position),
+        (
+            0,
+            Span::styled(
+                if app.core.is_playing() {
+                    " \u{25B6}"
+                } else {
+                    " \u{25A0}"
+                },
+                if app.core.is_playing() {
+                    Style::default().fg(theme.header_title)
+                } else {
+                    Style::default()
+                },
+            ),
         ),
-        Span::styled(
-            format!("Oct:{}  ", app.current_octave),
-            Style::default().fg(theme.header_octave),
+        (
+            0,
+            Span::styled(
+                " \u{25CF}",
+                if app.core.recording {
+                    Style::default()
+                        .fg(theme.mode_insert)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.status_hint)
+                },
+            ),
         ),
-        Span::styled(
-            format!("Stp:{}  ", app.edit_step),
-            Style::default().fg(theme.header_octave),
+        (
+            4,
+            Span::styled(
+                format!(" {:02}:{:02}:{:02}", mins, secs, centis),
+                Style::default().fg(theme.header_bpm),
+            ),
         ),
-        Span::styled(
-            format!("Ch:{}/{}", app.cursor_channel + 1, app.core.song.channels),
-            Style::default().fg(theme.header_octave),
+        (
+            0,
+            Span::styled(
+                match app.phrase_view {
+                    Some(view) => format!(
+                        "  Phrase:{:02X}/{:02X} {} rows, {} uses",
+                        view.phrase,
+                        song.phrases.len().saturating_sub(1),
+                        song.rows_at(app.sheet()),
+                        song.phrase_uses(view.phrase)
+                    ),
+                    None => format!(
+                        "  P:{:02X}/{:02X}",
+                        pattern_num,
+                        song.current_pattern_count() - 1
+                    ),
+                },
+                Style::default().fg(theme.header_position),
+            ),
+        ),
+        (
+            3,
+            Span::styled(
+                format!("  Oct:{}", app.current_octave),
+                Style::default().fg(theme.header_octave),
+            ),
+        ),
+        (
+            2,
+            Span::styled(
+                format!("  Stp:{}", app.edit_step),
+                Style::default().fg(theme.header_octave),
+            ),
+        ),
+        (
+            0,
+            Span::styled(
+                format!("  Ch:{}/{}", app.cursor_channel + 1, app.core.song.channels),
+                Style::default().fg(theme.header_octave),
+            ),
         ),
     ];
     if app.core.link.is_enabled() {
@@ -200,15 +233,58 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         } else {
             Style::default().fg(theme.status_hint)
         };
-        spans.push(Span::styled(format!("  Link:{}", peers), style));
+        parts.push((5, Span::styled(format!("  Link:{}", peers), style)));
     }
-
+    let spans = fit_header(parts, TITLE, area.width as usize);
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(theme.header_border));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+/// Fit header parts into `width` columns: drop parts by rank, lowest
+/// first, then shorten the part ranked `title` with "...", then drop it.
+/// Rank 0 is kept.
+fn fit_header(mut parts: Vec<(u8, Span<'_>)>, title: u8, width: usize) -> Vec<Span<'_>> {
+    let used = |parts: &[(u8, Span)]| parts.iter().map(|(_, s)| s.width()).sum::<usize>();
+    while used(&parts) > width {
+        let droppable = parts
+            .iter()
+            .enumerate()
+            .filter(|(_, (rank, _))| *rank != 0 && *rank != title)
+            .min_by_key(|(_, (rank, _))| *rank)
+            .map(|(i, _)| i);
+        match droppable {
+            Some(i) => {
+                parts.remove(i);
+            }
+            None => break,
+        }
+    }
+    let over = used(&parts).saturating_sub(width);
+    if over > 0 {
+        if let Some((_, span)) = parts.iter_mut().find(|(rank, _)| *rank == title) {
+            // " name  " keeps its leading space and gains "..." in place of
+            // its tail; char by char, so a multi-byte name cuts cleanly.
+            let text = span.content.trim_end().to_string();
+            let keep = span.width().saturating_sub(over + 5);
+            let mut short = String::new();
+            for c in text.chars() {
+                if Span::raw(format!("{short}{c}")).width() > keep.max(2) {
+                    break;
+                }
+                short.push(c);
+            }
+            span.content = format!("{short}...  ").into();
+        }
+        // Even shortened it does not fit: the tempo and position matter more.
+        if used(&parts) > width {
+            parts.retain(|(rank, _)| *rank != title);
+        }
+    }
+    parts.into_iter().map(|(_, s)| s).collect()
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
@@ -446,7 +522,10 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         ]),
         Line::from(vec![
             Span::styled("  Shift+Up/Dn  ", key_style),
-            Span::styled("Transpose note(s) up/down semitone", text_style),
+            Span::styled(
+                "Transpose note(s) a semitone, or a scale degree",
+                text_style,
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Ctrl+I       ", key_style),
@@ -672,6 +751,13 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  :pdel [NN]   ", key_style),
+            Span::styled(
+                "Delete the phrase on view, or NN; its tracks keep its rows",
+                text_style,
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  :fx2         ", key_style),
             Span::styled("Show the second effect column", text_style),
         ]),
@@ -716,7 +802,9 @@ fn draw_help(f: &mut Frame, app: &App, theme: &Theme) {
     let total_lines = all_lines.len();
 
     let area = f.area();
-    let popup_width = 54u16;
+    // As wide as the widest line, so none is cut where the terminal allows.
+    let widest = all_lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
+    let popup_width = (widest + 2).min(area.width.saturating_sub(4));
     // Show as many lines as fit, with borders
     let max_content_height = area.height.saturating_sub(4);
     let content_height = (total_lines as u16).min(max_content_height);
@@ -755,7 +843,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
     use crate::app::SettingsField;
 
     let area = f.area();
-    let popup_area = centered_rect(42, 13, area);
+    let popup_area = centered_rect(42, 14, area);
 
     f.render_widget(Clear, popup_area);
 
@@ -769,6 +857,7 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
         (SettingsField::HighlightBar, "Bar Hilight"),
         (SettingsField::Groove, "Groove"),
         (SettingsField::Scale, "Scale"),
+        (SettingsField::Steps, "Steps"),
     ];
 
     let lines: Vec<Line> = fields
@@ -791,6 +880,9 @@ fn draw_song_settings(f: &mut Frame, app: &App, theme: &Theme) {
                         Some(sc) => sc.display(),
                         None => "off".to_string(),
                     },
+                    SettingsField::Steps => {
+                        crate::app::steps_text(app.core.song.scale_steps).to_string()
+                    }
                 }
             };
             let label_style = Style::default().fg(theme.settings_label);
@@ -851,8 +943,14 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
                     channel,
                     output,
                 } if has_data => {
-                    if !output.is_builtin() {
-                        tags.push_str(" [EXT]");
+                    match output {
+                        rtrack_core::MidiOutput::Builtin => {}
+                        rtrack_core::MidiOutput::External { port: None } => tags.push_str(" [EXT]"),
+                        // The port's name, cut on a character boundary.
+                        rtrack_core::MidiOutput::External { port: Some(name) } => {
+                            let short: String = name.chars().take(12).collect();
+                            tags.push_str(&format!(" [EXT:{short}]"));
+                        }
                     }
                     tags.push_str(&format!(" [PRG:{:02X}]", program));
                     if let Some(c) = channel {
@@ -888,7 +986,7 @@ fn draw_instrument_list(f: &mut Frame, app: &App, theme: &Theme) {
 
 fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
     let area = f.area();
-    let popup_width = 50.min(area.width.saturating_sub(4));
+    let popup_width = 60.min(area.width.saturating_sub(4));
     let popup_area = centered_rect(popup_width, 20, area);
     f.render_widget(Clear, popup_area);
 
@@ -927,9 +1025,9 @@ fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
         Block::default()
             .title(" Phrases ")
             .title_bottom(if app.phrase_view.is_some() {
-                " Esc:close Type:name ^<>:length Enter:show "
+                " Esc:close Type:name ^<>:length Del:delete Enter:show "
             } else {
-                " Esc:close Type:name ^<>:length Enter:link track "
+                " Esc:close Type:name ^<>:length Del:delete Enter:link "
             })
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.popup_border)),
@@ -940,7 +1038,7 @@ fn draw_phrase_list(f: &mut Frame, app: &App, theme: &Theme) {
 fn draw_table_editor(f: &mut Frame, app: &App, theme: &Theme) {
     use crate::app::TableField;
     let area = f.area();
-    let popup_area = centered_rect(44.min(area.width.saturating_sub(4)), 24, area);
+    let popup_area = centered_rect(50.min(area.width.saturating_sub(4)), 24, area);
     f.render_widget(Clear, popup_area);
 
     let number = app.dialogs.table_number;
@@ -1683,6 +1781,201 @@ mod tests {
         lines.join("\n")
     }
 
+    /// [`popup_snapshot`] with the box-drawing characters as ASCII, so the
+    /// expected text in a test is plain.
+    fn ascii_popup(app: &App) -> String {
+        popup_snapshot(app)
+            .chars()
+            .map(|c| match c {
+                '\u{250c}' | '\u{2510}' | '\u{2514}' | '\u{2518}' => '+',
+                '\u{2500}' => '-',
+                '\u{2502}' => '|',
+                c => c,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_quit_prompt_renders() {
+        let mut app = make_app();
+        app.mode = Mode::QuitConfirm;
+        let expected = "\
++ Quit Confirmation -----------------------+
+|                                          |
+|  Unsaved changes! Quit without saving?   |
+|  [Y] Quit  [S] Save & Quit  [Any] Cancel |
++------------------------------------------+";
+        assert_eq!(ascii_popup(&app), expected);
+    }
+
+    #[test]
+    fn the_synth_editor_renders_every_field_and_its_keys() {
+        let mut app = make_app();
+        app.core.instruments[1].kind = rtrack_core::InstrumentKind::Synth(
+            rtrack_core::audio::synth::SynthParams::from_patch(0),
+        );
+        app.dialogs.synth_editor_slot = 1;
+        app.mode = Mode::SynthEditor;
+        let expected = "\
++ Synth Editor - 01 --- ------------------------------+
+|                                                     |
+|> Waveform      0 (Saw)                              |
+|  Attack        0.005s                               |
+|  Decay         0.100s                               |
+|  Sustain       0.70                                 |
+|  Release       0.150s                               |
+|  Drive         off                                  |
+|  Filter Type   LP                                   |
+|  Filter Cut    4.0x                                 |
+|  Filter Res    0.30                                 |
+|  Filter Env    2.0 oct                              |
+|  Detune        8.0 cents                            |
+|  Sub Osc       0.00                                 |
+|  FM Ratio      0.0                                  |
+|  FM Index      0.0                                  |
+|  Pulse Width   0.25                                 |
+|                                                     |
+|  Tab: next  Up/Down: +/-1  Left/Right: +/-10        |
+|  Del: clear  Esc: close                             |
++-----------------------------------------------------+";
+        assert_eq!(ascii_popup(&app), expected);
+    }
+
+    #[test]
+    fn the_instrument_list_renders_names_kinds_and_keys() {
+        let mut app = make_app();
+        app.core.instruments[1].kind = rtrack_core::InstrumentKind::Synth(
+            rtrack_core::audio::synth::SynthParams::from_patch(0),
+        );
+        app.core.instruments[1].name = "lead".into();
+        app.open_instrument_list();
+        let shot = ascii_popup(&app);
+        let lines: Vec<&str> = shot.lines().collect();
+        assert_eq!(
+            lines[..3],
+            [
+                "+ Instruments -----------------------------------+",
+                "| 00 ---                                         |",
+                "| 01 lead [Saw]                                  |"
+            ]
+        );
+        assert_eq!(
+            lines.last(),
+            Some(&"+ Esc:close  Type:name  Enter:sample  Tab:synth -+")
+        );
+    }
+
+    #[test]
+    fn the_phrase_list_renders_with_its_whole_key_line() {
+        use rtrack_core::tracker::PhraseTiming;
+        let mut app = make_app();
+        let p = app.core.song.add_phrase(8);
+        app.core.song.phrases[p].name = "bass".into();
+        app.core.song.link_column(0, 0, p, PhraseTiming::Aligned);
+        app.open_phrase_list();
+        let shot = ascii_popup(&app);
+        let lines: Vec<&str> = shot.lines().collect();
+        assert_eq!(
+            lines[..2],
+            [
+                "+ Phrases -------------------------------------------------+",
+                "| 00 bass  8 rows, 1 uses                                  |"
+            ]
+        );
+        assert_eq!(
+            lines.last(),
+            Some(&"+ Esc:close Type:name ^<>:length Del:delete Enter:link ----+")
+        );
+    }
+
+    #[test]
+    fn the_table_editor_renders_a_new_table_with_its_whole_key_line() {
+        let mut app = make_app();
+        app.open_table_editor(Some(1));
+        let shot = ascii_popup(&app);
+        let lines: Vec<&str> = shot.lines().collect();
+        assert_eq!(
+            lines[..4],
+            [
+                "+ Table 01 --------------------------------------+",
+                "|  Not created yet: editing creates it           |",
+                "|      pitch  vol  effect                        |",
+                "|   0    +0   --   -----                         |"
+            ]
+        );
+        assert_eq!(
+            lines.last(),
+            Some(&"+ +/-:adjust ^<>:rows []:ticks l:loop =:fx Esc --+")
+        );
+    }
+
+    #[test]
+    fn the_pattern_grid_renders_a_cell() {
+        use rtrack_core::tracker::{Cell, Note, NoteValue};
+        let mut app = make_app();
+        app.core.song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Some(Note::On {
+                    value: NoteValue::C,
+                    octave: 4,
+                }),
+                instrument: Some(1),
+                volume: Some(0x40),
+                ..Cell::default()
+            },
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let line = |y: u16| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert_eq!(line(2), "    | 1          [---]   | 2          [---]   | 3          [---]   | 4          [---]               ");
+        assert_eq!(line(3), "00  | C-4  01  40  ----- | ---  --  --  ----- | ---  --  --  ----- | ---  --  --  -----             ");
+        assert_eq!(line(4), "01  | ---  --  --  ----- | ---  --  --  ----- | ---  --  --  ----- | ---  --  --  -----             ");
+    }
+
+    #[test]
+    fn no_help_line_is_cut_on_a_wide_terminal() {
+        let theme = theme::Theme::dark();
+        let lines = build_help_lines(&theme);
+        let widest = lines.iter().map(|l| l.width()).max().unwrap();
+        let mut app = make_app();
+        app.mode = Mode::Help;
+        let mut terminal = Terminal::new(TestBackend::new(140, 200)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        assert!(
+            widest + 2 <= 136,
+            "the help is wider than this test's terminal"
+        );
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(screen.contains(text.trim_end()), "cut: {text:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_sample_slot_names_real_ways_to_load_one() {
+        let mut app = make_app();
+        app.core.instruments[0].kind = rtrack_core::InstrumentKind::sample(0);
+        app.open_sample_editor();
+        let shot = ascii_popup(&app);
+        assert!(
+            shot.contains(":load") && shot.contains("--sample <slot>:<file>"),
+            "{shot}"
+        );
+    }
+
     #[test]
     fn a_channel_name_with_a_multibyte_char_at_the_cut_draws() {
         let mut app = make_app();
@@ -1734,6 +2027,80 @@ mod tests {
         );
     }
 
+    /// The header's first line at `width` columns.
+    fn header_at(app: &App, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal
+            .draw(|f| draw_header(f, app, f.area(), &theme::Theme::dark()))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect::<String>()
+    }
+
+    #[test]
+    fn a_wide_header_shows_everything() {
+        let app = make_app();
+        let line = header_at(&app, 100);
+        assert!(line.starts_with(" rtrack  Untitled  120bpm"), "{line:?}");
+        for part in ["00:00:00", "P:00/00", "Oct:4", "Stp:1", "Ch:1/4"] {
+            assert!(line.contains(part), "{part} missing: {line:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_header_keeps_tempo_position_and_track() {
+        let mut app = make_app();
+        app.core.song.title = "A very long song title that cannot fit".into();
+        for width in [60, 40, 30] {
+            let line = header_at(&app, width);
+            for part in ["bpm", "P:00/00", "Ch:1/4"] {
+                assert!(line.contains(part), "{part} missing at {width}: {line:?}");
+            }
+            assert!(!line.contains("rtrack"), "the label goes first: {line:?}");
+        }
+        let line = header_at(&app, 40);
+        assert!(line.contains("..."), "the title is shortened: {line:?}");
+    }
+
+    #[test]
+    fn a_multibyte_title_shortens_cleanly() {
+        let mut app = make_app();
+        app.core.song.title = "\u{30C6}\u{30B9}\u{30C8}\u{66F2}\u{306E}\u{540D}\u{524D}".repeat(4);
+        for width in [20, 34, 50] {
+            header_at(&app, width);
+        }
+    }
+
+    #[test]
+    fn a_linked_tracks_gutter_marks_each_repetition() {
+        use rtrack_core::tracker::PhraseTiming;
+        let mut app = make_app();
+        app.core.song.add_phrase(3);
+        app.core.song.link_column(0, 1, 0, PhraseTiming::Aligned);
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let lines: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        // Rows 00-07: the separator before track 2 is the gutter.
+        let gutter: String = (0..8)
+            .map(|r| {
+                let line = lines
+                    .iter()
+                    .find(|l| l.trim_start().starts_with(&format!("{r:02X} ")))
+                    .unwrap_or_else(|| panic!("row {r:02X} not drawn"));
+                let seps: Vec<char> = line
+                    .char_indices()
+                    .filter(|&(_, c)| c == '|' || c == '+')
+                    .map(|(_, c)| c)
+                    .collect();
+                seps[1]
+            })
+            .collect();
+        assert_eq!(gutter, "+||+||+|", "{}", lines.join("\n"));
+    }
+
     #[test]
     fn the_phrase_view_draws_one_column_named_for_the_phrase() {
         let mut app = make_app();
@@ -1780,6 +2147,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
         app.core.sample_bank = std::sync::Arc::new(bank);
         app.core.instruments[0].kind = rtrack_core::InstrumentKind::sample(0);
@@ -1806,6 +2174,7 @@ mod tests {
 │  Bar Hilight   16                      │
 │  Groove        off                     │
 │  Scale         off                     │
+│  Steps         degrees                 │
 │                                        │
 │                                        │
 └ Tab:next  Enter/Esc:close ─────────────┘";

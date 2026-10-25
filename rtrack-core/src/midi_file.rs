@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use crate::constants::*;
 use crate::engine::{TrackerEngine, TrackerEvent};
 use crate::tracker::{Cell, Fx, FxCmd, Note, NoteValue, Pattern, Song, TempoPoint};
+use crate::types::ChannelConfig;
 
 /// Events collected during MIDI import
 #[derive(Debug, Clone)]
@@ -124,15 +125,32 @@ fn pitch_bend_from_offset(offset: f64) -> u16 {
 /// - 3xx tone portamento -> pitch bend
 /// - 4xy vibrato -> pitch bend
 /// - 5xy volume slide -> CC 7
+///
+/// Track N goes out on MIDI channel N mod 16; [`export_midi_with_channels`]
+/// uses each track's configured channel.
 pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
+    export_midi_with_channels(song, &[], path)
+}
+
+/// [`export_midi`], with each track's `ChannelConfig` applied as render
+/// applies it: its MIDI channel, mute, volume and default instrument. A
+/// track without a config uses its index mod 16 and plays as configured by
+/// default.
+pub fn export_midi_with_channels(
+    song: &Song,
+    channels: &[ChannelConfig],
+    path: &Path,
+) -> Result<()> {
+    let midi_channel = |ch: usize| channels.get(ch).map_or(ch as u8, |c| c.midi_channel) & 0x0F;
     let num_tracks = song.channels as u16 + 1;
     let ticks_per_subtick = TICKS_PER_BEAT as u32 / 24;
 
     // Run engine to collect per-channel MIDI events as (abs_tick, raw_bytes)
     let mut engine = TrackerEngine::new(song, true);
+    engine.set_channel_info(crate::engine::ChannelInfo::for_export(channels));
     let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
     let mut tempo_events: Vec<(u32, f64)> = Vec::new();
-    let mut active_notes: Vec<Option<u8>> = vec![None; song.channels];
+    let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); song.channels];
     let mut abs_tick: u32 = 0;
     // The groove stretches ticks by fractions of a file tick; keeping the
     // exact position and rounding each step from it stops rounding error
@@ -159,14 +177,15 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     channel,
                     midi_note,
                     velocity,
+                    chord,
                     ..
                 } => {
                     if *channel >= song.channels {
                         continue;
                     }
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let midi_ch = midi_channel(*channel);
                     // Note off previous
-                    if let Some(prev) = active_notes[*channel].take() {
+                    for prev in std::mem::take(&mut active_notes[*channel]) {
                         channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
                     }
                     // Reset pitch bend
@@ -181,17 +200,21 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     ));
                     // Note on
                     let vel = (*velocity).min(0x7F);
-                    channel_events[*channel]
-                        .push((abs_tick, vec![0x90 | midi_ch, *midi_note, vel]));
-                    active_notes[*channel] = Some(*midi_note);
+                    for note in std::iter::once(*midi_note).chain(chord.iter().flatten().copied()) {
+                        channel_events[*channel].push((abs_tick, vec![0x90 | midi_ch, note, vel]));
+                        active_notes[*channel].push(note);
+                    }
                 }
                 TrackerEvent::NoteOff { channel } => {
                     if *channel >= song.channels {
                         continue;
                     }
-                    let midi_ch = (*channel & 0x0F) as u8;
-                    if let Some(prev) = active_notes[*channel].take() {
+                    let midi_ch = midi_channel(*channel);
+                    let notes = std::mem::take(&mut active_notes[*channel]);
+                    for &prev in &notes {
                         channel_events[*channel].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+                    }
+                    if !notes.is_empty() {
                         let center = PITCH_BEND_CENTER;
                         channel_events[*channel].push((
                             abs_tick,
@@ -210,7 +233,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     if *channel >= song.channels {
                         continue;
                     }
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let midi_ch = midi_channel(*channel);
                     let value = pitch_bend_from_offset(*semitone_offset).min(PITCH_BEND_MAX);
                     channel_events[*channel].push((
                         abs_tick,
@@ -225,7 +248,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     if *channel >= song.channels {
                         continue;
                     }
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let midi_ch = midi_channel(*channel);
                     channel_events[*channel]
                         .push((abs_tick, vec![0xB0 | midi_ch, 7, *volume & 0x7F]));
                 }
@@ -237,7 +260,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     if *channel >= song.channels {
                         continue;
                     }
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let midi_ch = midi_channel(*channel);
                     channel_events[*channel].push((
                         abs_tick,
                         vec![0xB0 | midi_ch, *controller & 0x7F, *value & 0x7F],
@@ -247,7 +270,7 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
                     if *channel >= song.channels {
                         continue;
                     }
-                    let midi_ch = (*channel & 0x0F) as u8;
+                    let midi_ch = midi_channel(*channel);
                     channel_events[*channel]
                         .push((abs_tick, vec![0xC0 | midi_ch, *program & 0x7F]));
                 }
@@ -264,9 +287,12 @@ pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
 
     // Final note-offs
     for ch in 0..song.channels {
-        if let Some(prev) = active_notes[ch].take() {
-            let midi_ch = (ch & 0x0F) as u8;
+        let notes = std::mem::take(&mut active_notes[ch]);
+        let midi_ch = midi_channel(ch);
+        for &prev in &notes {
             channel_events[ch].push((abs_tick, vec![0x80 | midi_ch, prev, 0x00]));
+        }
+        if !notes.is_empty() {
             let center = PITCH_BEND_CENTER;
             channel_events[ch].push((
                 abs_tick,
@@ -708,6 +734,7 @@ pub fn import_midi_with_report(path: &Path) -> Result<(Song, Vec<String>)> {
         legacy_swing: None,
         tempo_map,
         scale: None,
+        scale_steps: true,
         phrases: Vec::new(),
         tables: Default::default(),
     };
@@ -1075,6 +1102,13 @@ mod tests {
 
     /// Absolute ticks of the note-ons in an exported file, across tracks.
     fn note_on_ticks(bytes: &[u8]) -> Vec<u32> {
+        let mut out: Vec<u32> = note_ons(bytes).into_iter().map(|(t, _)| t).collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// `(absolute tick, MIDI channel)` of each note-on, in file order.
+    fn note_ons(bytes: &[u8]) -> Vec<(u32, u8)> {
         let mut out = Vec::new();
         let mut pos = 14; // past MThd
         while pos + 8 <= bytes.len() {
@@ -1098,7 +1132,7 @@ mod tests {
                     s if s & 0xF0 == 0xC0 || s & 0xF0 == 0xD0 => p += 1,
                     s => {
                         if s & 0xF0 == 0x90 && bytes[p + 1] > 0 {
-                            out.push(tick);
+                            out.push((tick, s & 0x0F));
                         }
                         p += 2;
                     }
@@ -1106,8 +1140,152 @@ mod tests {
             }
             pos = end;
         }
-        out.sort_unstable();
         out
+    }
+
+    #[test]
+    fn export_writes_every_note_of_a_chord_and_ends_them_together() {
+        let mut song = Song::new(1, 4);
+        let mut fx = [None; crate::tracker::FX_COLUMNS];
+        fx[0] = Some(Fx::new(FxCmd::Chord, 0x47));
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(60),
+                fx,
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            2,
+            0,
+            Cell {
+                note: Some(Note::Off),
+                ..Cell::default()
+            },
+        );
+        let path = std::env::temp_dir().join("rtrack_export_chord.mid");
+        export_midi(&song, &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(note_ons(&bytes), [(0, 0), (0, 0), (0, 0)]);
+        for note in [60, 64, 67] {
+            assert!(
+                bytes.windows(3).any(|w| w == [0x90, note, 100]),
+                "note-on {note}"
+            );
+            assert!(
+                bytes.windows(3).any(|w| w == [0x80, note, 0]),
+                "note-off {note}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_applies_track_mute_and_volume() {
+        let mut song = Song::new(2, 4);
+        for ch in 0..2 {
+            song.set_cell(
+                0,
+                0,
+                ch,
+                Cell {
+                    note: Note::from_midi(60),
+                    volume: Some(100),
+                    ..Cell::default()
+                },
+            );
+        }
+        let mut channels = vec![ChannelConfig::new(0), ChannelConfig::new(1)];
+        channels[0].volume = 0.5;
+        channels[1].muted = true;
+        let path = std::env::temp_dir().join("rtrack_export_mute_volume.mid");
+        export_midi_with_channels(&song, &channels, &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            note_ons(&bytes),
+            [(0, 0)],
+            "the muted track exports nothing"
+        );
+        // Note-on velocity: the byte after the note number of `0x90 60`.
+        let at = bytes.windows(2).position(|w| w == [0x90, 60]).unwrap();
+        assert_eq!(bytes[at + 2], 50, "track volume 0.5 halves velocity 100");
+    }
+
+    #[test]
+    fn export_counts_arp_steps_in_scale_degrees() {
+        use crate::theory::{Scale, ScaleSetting};
+        let song_with = |param: u8| {
+            let mut song = Song::new(1, 4);
+            let mut fx = [None; crate::tracker::FX_COLUMNS];
+            fx[0] = Some(Fx::new(FxCmd::Arp, param));
+            song.set_cell(
+                0,
+                0,
+                0,
+                Cell {
+                    note: Note::from_midi(60),
+                    fx,
+                    ..Cell::default()
+                },
+            );
+            song
+        };
+        let bytes = |song: &Song, name: &str| {
+            let path = std::env::temp_dir().join(name);
+            export_midi(song, &path).unwrap();
+            let out = std::fs::read(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            out
+        };
+        let mut degrees = song_with(0x24);
+        degrees.scale = Some(ScaleSetting::new(NoteValue::C, Scale::Major));
+        assert_eq!(
+            bytes(&degrees, "rtrack_arp_degrees.mid"),
+            bytes(&song_with(0x47), "rtrack_arp_semitones.mid"),
+            "ARP24 in C major is ARP47"
+        );
+    }
+
+    #[test]
+    fn export_sends_each_track_on_its_configured_midi_channel() {
+        let mut song = Song::new(2, 4);
+        for (ch, note) in [(0, 60), (1, 64)] {
+            song.set_cell(
+                0,
+                0,
+                ch,
+                Cell {
+                    note: Note::from_midi(note),
+                    ..Cell::default()
+                },
+            );
+        }
+        let path = std::env::temp_dir().join("rtrack_export_channels.mid");
+        export_midi_with_channels(
+            &song,
+            &[ChannelConfig::new(5), ChannelConfig::new(9)],
+            &path,
+        )
+        .unwrap();
+        let mut channels: Vec<u8> = note_ons(&std::fs::read(&path).unwrap())
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        export_midi(&song, &path).unwrap();
+        let mut by_index: Vec<u8> = note_ons(&std::fs::read(&path).unwrap())
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        let _ = std::fs::remove_file(&path);
+        channels.sort_unstable();
+        by_index.sort_unstable();
+        assert_eq!(channels, vec![5, 9]);
+        assert_eq!(by_index, vec![0, 1]);
     }
 
     #[test]

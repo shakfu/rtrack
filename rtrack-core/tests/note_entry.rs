@@ -102,6 +102,7 @@ fn a_looping_sample_preview_is_still_stopped_by_the_timeout() {
         loop_start: 0,
         loop_end: 1000,
         source_path: None,
+        sliced_from: None,
     };
     bank.samples[0] = Some(Arc::new(sample));
     core.sample_bank = Arc::new(bank);

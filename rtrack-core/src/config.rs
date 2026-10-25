@@ -54,6 +54,31 @@ pub fn load_config_verbose() -> (Config, Vec<String>) {
     }
 }
 
+/// The note-entry layout `config.toml` names as `piano = "qwertz"`, with a
+/// warning if it names none rtrack knows. Read apart from [`Config`] so that
+/// struct, built by callers, keeps its fields.
+pub fn load_piano_layout() -> (crate::keymap::PianoLayout, Vec<String>) {
+    let text = config_path().and_then(|p| std::fs::read_to_string(p).ok());
+    piano_layout_from(text.as_deref())
+}
+
+fn piano_layout_from(text: Option<&str>) -> (crate::keymap::PianoLayout, Vec<String>) {
+    use crate::keymap::PianoLayout;
+    let value = text.and_then(|t| t.parse::<toml::Table>().ok());
+    let Some(piano) = value.as_ref().and_then(|v| v.get("piano")) else {
+        return (PianoLayout::default(), Vec::new());
+    };
+    match piano.as_str().and_then(PianoLayout::from_name) {
+        Some(layout) => (layout, Vec::new()),
+        None => (
+            PianoLayout::default(),
+            vec![format!(
+                "piano = {piano} is not a layout (qwerty, qwertz, azerty); using qwerty"
+            )],
+        ),
+    }
+}
+
 /// Return the config file path: `$XDG_CONFIG_HOME/rtrack/config.toml`
 /// or `~/.config/rtrack/config.toml`.
 fn config_path() -> Option<PathBuf> {
@@ -175,6 +200,19 @@ pub fn push_recent_file(recent: &mut Vec<PathBuf>, path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_piano_layout_is_read_with_a_warning_for_an_unknown_name() {
+        use crate::keymap::PianoLayout;
+        assert_eq!(piano_layout_from(None), (PianoLayout::Qwerty, vec![]));
+        assert_eq!(
+            piano_layout_from(Some("sf2 = \"a.sf2\"\npiano = \"AZERTY\"")),
+            (PianoLayout::Azerty, vec![])
+        );
+        let (layout, notes) = piano_layout_from(Some("piano = \"dvorak\""));
+        assert_eq!(layout, PianoLayout::Qwerty);
+        assert!(notes[0].contains("dvorak"), "{notes:?}");
+    }
 
     #[test]
     fn the_selected_midi_port_round_trips() {

@@ -402,7 +402,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Load a sample with: rtrack --load-sample <slot> <file.wav>",
+            "  Load one with :load, or start with --sample <slot>:<file>",
             Style::default().fg(Color::DarkGray),
         )));
         lines.push(Line::from(""));
@@ -686,6 +686,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         app.dialogs.sample_slice_count = 7;
         app.dialogs.sample_editor_field = SampleField::SliceCount;
@@ -716,6 +717,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         let lines = render_waveform_colored(&sample, 100, 4, &[], &[], &[]);
         assert_eq!(loop_columns(&lines), vec![50, 75]);

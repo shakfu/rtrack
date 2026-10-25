@@ -30,6 +30,12 @@ pub enum FxCmd {
     Tempo,
     /// Play table `xx` for the row's note, or restart it on the sounding one.
     Table,
+    /// Instrument cutoff, resonance and drive, relative to the instrument.
+    Cutoff,
+    Resonance,
+    Drive,
+    /// Add notes `x` and `y` steps above the row's note.
+    Chord,
     /// MIDI CC to the controller it holds.
     Cc(u8),
 }
@@ -37,7 +43,7 @@ pub enum FxCmd {
 /// Every command with a fixed name, paired with it. `Cc` is spelled `Cnn`.
 ///
 /// No name may match `C[0-9A-F]{2}`, which `Cc` uses.
-const NAMES: [(FxCmd, &str); 16] = [
+const NAMES: [(FxCmd, &str); 20] = [
     (FxCmd::Arp, "ARP"),
     (FxCmd::PitchUp, "PUP"),
     (FxCmd::PitchDown, "PDN"),
@@ -54,6 +60,10 @@ const NAMES: [(FxCmd, &str); 16] = [
     (FxCmd::Ticks, "TIC"),
     (FxCmd::Tempo, "TPO"),
     (FxCmd::Table, "TBL"),
+    (FxCmd::Cutoff, "CUT"),
+    (FxCmd::Resonance, "RES"),
+    (FxCmd::Drive, "DRV"),
+    (FxCmd::Chord, "CHD"),
 ];
 
 impl FxCmd {

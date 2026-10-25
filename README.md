@@ -164,7 +164,7 @@ Each cell has two effect columns, and both play. The second is shown where the p
 
 | Command | Key | Name | Description |
 |---------|-----|------|-------------|
-| `ARPxy` | `0` | Arpeggio | Cycle note, note+x, note+y semitones each tick |
+| `ARPxy` | `0` | Arpeggio | Cycle note, note+x, note+y steps each tick: semitones, or scale degrees (see Scale) |
 | `PUPxx` | `1` | Portamento up | Slide pitch up by xx per tick |
 | `PDNxx` | `2` | Portamento down | Slide pitch down by xx per tick |
 | `PSLxx` | `3` | Tone portamento | Glide toward target note at speed xx |
@@ -181,14 +181,22 @@ Each cell has two effect columns, and both play. The second is shown where the p
 | `TICxx` | `F` | Ticks per row | Set speed; the key gives `TIC` below 20 |
 | `TPOxx` | `F` | Tempo | Set BPM; the key gives `TPO` from 20 |
 | `TBLxx` | -- | Table | Play table xx for the row's note; with no note, restart it on the sounding note |
+| `CUTxx` | -- | Cutoff | Move the instrument's filter cutoff by (xx-80)/32 octaves: 80 is its own, 00 -4, FF +4 |
+| `RESxx` | -- | Resonance | Move the instrument's resonance; 80 is its own |
+| `DRVxx` | -- | Drive | Scale the instrument's drive by 2^((xx-80)/32); 80 is its own |
+| `CHDxy` | -- | Chord | Add notes x and y steps above the row's note, counted as `ARP` counts them; 0 adds none |
 
 Songs saved before format version 2 stored the key digit; they convert on load.
+
+`CHD` plays a chord on one track: `CHD47` on C plays C E G, and a second `CHD` in the other column adds two more notes, up to five. With a scale and Steps on, `CHD24` plays the same triad in C major. The notes share the track's pitch, volume and filter, so `ARP`, slides and `CUT` move the chord as a block, and the next note or a note-off ends all of them. `CHD` needs a note on its row and is ignored in a table. Previews play the row's note alone.
+
+`CUT`, `RES` and `DRV` move the filter and drive of built-in synth and sample instruments, gliding over about 5 ms. A value lasts on the track until the next command of its kind or a note of another instrument. A sample with its filter off has no cutoff to move. They do not reach a SoundFont or MIDI out, which have no filter here; `Cnn` sends a CC instead. A song using them, or `CHD`, is saved as format version 3, which rtrack 0.2.0 cannot open.
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 
 `OFS` needs a note on the same row and affects samples only. The offset is a fraction of the slice's trimmed span, not ProTracker's fixed 256-frame steps, so one value marks the same point in slices of any length. A looping sample started past its loop end wraps into the loop.
 
-`CHA` and `RND` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `RND` varies only `ARP`, `PUP`, `PDN`, `PVB` and `VSL`; it ignores structural ones, where a random parameter would scramble playback rather than colour it.
+`CHA` and `RND` draw from a generator seeded the same way on every playback, so a song sounds the same each time it runs and an offline render matches the editor. `RND` varies only `ARP`, `PUP`, `PDN`, `PVB`, `VSL`, `CUT`, `RES` and `DRV`; it ignores structural ones, where a random parameter would scramble playback rather than colour it.
 
 ### Phrases
 
@@ -199,7 +207,7 @@ A phrase is a single-track run of 1-256 rows that any track of any pattern can p
 
 A link can transpose its phrase at playback: by scale degrees when the song has a scale, by semitones otherwise, as Shift+Up/Down moves notes. One riff can then play under several chords. The grid shows the phrase as stored.
 
-The grid shows a running phrase as it plays the first time playback reaches the pattern. A linked track's header shows `[Ann]` (aligned) or `[Rnn]` (running). In the GUI, a faint box marks each repetition of a linked phrase: blue for aligned, orange for running (View > Phrase borders).
+The grid shows a running phrase as it plays the first time playback reaches the pattern. A linked track's header shows `[Ann]` (aligned) or `[Rnn]` (running). In the GUI, a faint box marks each repetition of a linked phrase: blue for aligned, orange for running (View > Phrase borders). In the TUI, the separator left of the track is coloured the same way and shows `+` where each repetition starts.
 
 | TUI | GUI | |
 |-|-|-|
@@ -207,8 +215,9 @@ The grid shows a running phrase as it plays the first time playback reaches the 
 | `:phrase NN` | Phrases > Link track | Link the track to phrase `NN` |
 | `:run` | Phrases > Runs across patterns | Switch between aligned and running |
 | `:tr N` | Phrases > Transpose | Transpose the linked phrase at playback by N steps |
-| `:unlink` | Phrases > Unlink | Make the phrase rows the track's own cells again |
+| `:unlink` | Phrases > Unlink | Make the phrase rows the track's own cells again, transposed as they played |
 | `:phrases` | Phrases window | Rename and resize phrases |
+| `:pdel [NN]`, Delete in `:phrases` | Phrases > Delete | Delete the phrase on view or the track's, or phrase `NN`; tracks linked to it keep its rows |
 | F5, `:pedit [NN]` | F5, View > Phrase Editor, Phrases > Edit | Show the track's phrase, or phrase `NN`, in the grid |
 
 Inserting or deleting a row changes the pattern's own cells, not a linked phrase.
@@ -224,9 +233,9 @@ F5 shows a phrase in the grid in place of the pattern: the phrase the cursor's t
 
 ### Tables
 
-A table is a short sequence of 1-16 rows that runs under each note, one row every 1-16 ticks. A row can shift the pitch in semitones, set the volume, and carry one of `ARP`, `PUP`, `PDN`, `PVB`, `VSL`, `Cnn` or `PRG`. It restarts with each note, loops from a chosen row or holds its last, and stops at note-off. Instrument N plays table N; `TBLxx` plays table xx instead.
+A table is a short sequence of 1-16 rows that runs under each note, one row every 1-16 ticks. A row can shift the pitch in steps (semitones, or scale degrees as `ARP` counts them), set the volume, and carry one of `ARP`, `PUP`, `PDN`, `PVB`, `VSL`, `CUT`, `RES`, `DRV`, `Cnn` or `PRG`. It restarts with each note, loops from a chosen row or holds its last, and stops at note-off. Instrument N plays table N; `TBLxx` plays table xx instead.
 
-`ARP37` is a table of three rows: 0, +3, +7. A table can also hold longer or uneven arpeggios, a volume decay, or a filter CC stepping with the note (CCs reach MIDI out and a SoundFont, not built-in instruments). Pitch moves by pitch bend, as `ARP` does, so an external MIDI synth needs a bend range wide enough for the largest step. Tables play during playback and render, not while previewing notes.
+`ARP37` is a table of three rows: 0, +3, +7. A table can also hold longer or uneven arpeggios, a volume decay, a filter sweep with `CUT`, or a filter CC stepping with the note (CCs reach MIDI out and a SoundFont, not built-in instruments). Pitch moves by pitch bend, as `ARP` does, so an external MIDI synth needs a bend range wide enough for the largest step. Tables play during playback and render, not while previewing notes.
 
 TUI: `:table` opens the table of the instrument under the cursor, `:table NN` table NN. Up/Down and Left/Right move; `+`/`-` adjust; hex digits type a volume or effect; `=` names an effect; Ctrl+Left/Right change the row count; `[`/`]` the ticks per row; `l` loops from the current row. `:tname` renames, `:tdel` deletes. GUI: View > Tables.
 
@@ -236,7 +245,7 @@ TUI: `:table` opens the table of the instrument under the cursor, `:table NN` ta
 
 - Sample loading from WAV/AIFF files with pitch-shifted playback (cubic hermite interpolation)
 
-- Sample slicing: equal segments or transient detection (log-energy onset detection against a local average, configurable sensitivity). Either divides the whole sample -- so changing the count re-derives from it -- or subdivides a single slice, selected with the Divide control. Slices land in consecutive slots; slicing over instruments it did not create asks first, and is undoable
+- Sample slicing: equal segments or transient detection (log-energy onset detection against a local average, configurable sensitivity). Either divides the sample -- its trim if you trimmed it, else the whole file, and changing the count re-derives from the same audio -- or subdivides a single slice, selected with the Divide control. Slices land in consecutive slots; slicing over instruments it did not create asks first, and is undoable
 
 - Up to 32 simultaneous voices with ADSR envelopes. A voice that is stolen, or that reaches the end of a one-shot, fades over a few milliseconds rather than stopping dead -- a slice ends at an arbitrary frame, so cutting it leaves an audible step
 
@@ -288,6 +297,8 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 
 - Per-channel MIDI channel mapping
 
+- Per-instrument output port: a MIDI instrument plays built in, on the selected port, or on a port it names, so two devices can play from one song. TUI: Ctrl+O in the instrument list (F7); GUI: Output in the instrument editor. A named port that is absent plays built in, says so once, and is tried again when playback starts. Clock, start and stop reach every open port
+
 ### Sync
 
 - [Ableton Link](https://www.ableton.com/en/link/): bidirectional BPM and transport sync with Link-enabled apps
@@ -297,6 +308,8 @@ The optional `samples.json` can set BPM, base notes, and loop points:
 ### Timing & Groove
 
 - **Groove**: relative row lengths that repeat by pattern row, set in song settings: `67 33` swings, `55 45 52 48` pushes and pulls over four rows, `off` is straight, and one number `s` means `s 100-s`. A groove cycle lasts as long as the same rows played straight, so the tempo holds. Live playback, render and MIDI export all follow it
+
+- **Scale**: set in song settings, as a root and one of 26 scales, or `off`. It snaps keyboard entry and makes Shift+Up/Down and link transpose move by degree. With Steps on (`degrees`), `ARP` and table steps count degrees too: in C major `ARP24` plays C E G. Written notes are never snapped. Steps is on for new songs and off for songs saved before it existed, so their arpeggios play as written
 
 - **Tempo automation**: BPM changes via `TPO` effect or `tempo_map` in the song file
 
@@ -395,20 +408,24 @@ rtrack reads optional settings from `~/.config/rtrack/config.toml` (or `$XDG_CON
 ```toml
 sf2 = "/path/to/soundfont.sf2"
 sample_dir = "/path/to/samples"
+piano = "qwertz"   # note-entry layout: qwerty (default), qwertz, azerty
 ```
+
+`piano` moves the note keys to the same positions on a German or French keyboard: on QWERTZ the low C is `y`, on AZERTY it is `w` and the black keys of the upper row are e-acute, `"`, `(`, `-` and e-grave, the unshifted number row. In Insert mode on the note column a layout's note key wins, so on AZERTY `-` enters a note there and changes the octave elsewhere. An unknown name falls back to QWERTY and says so.
 
 CLI flags (`--sf2`, `--sample-dir`) override config values. Missing or malformed config files are silently ignored.
 
-The MIDI output port you select is remembered in `midi_out.json` in the same directory and reopened at startup. Until you select one, instruments routed to external MIDI play the built-in sound.
+The MIDI output port you select is remembered in `midi_out.json` in the same directory and reopened at startup. Until you select one, instruments routed to the selected port play the built-in sound. On Linux a port name ends in ALSA's client and port numbers, which can change when a device is replugged; a saved name that no longer matches exactly matches with those numbers ignored.
 
 ## Build
 
 ```sh
 make build            # compile all crates
-make test             # run all tests (874 tests across workspace)
+make test             # run all tests across the workspace
 make fmt              # format code
 make clippy           # lint with clippy
 make lint             # fmt + clippy
+make fuzz             # fuzz the file parsers (nightly + cargo-fuzz; FUZZ_SECS=60 each)
 ```
 
 ## Architecture

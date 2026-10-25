@@ -1,16 +1,16 @@
 # TODO
 
-## Resume here (state at 2026-10-15)
+## Resume here (state at 2026-10-25)
 
-0.2.0 is cut: G1-G3 phrases and the phrase editor (`docs/dev/phrase-editor.md`), G2 link transpose, G4+G8 format, G5 instrument drive and filter, G7 tables, G9 groove, MIDI channel keying, live/render fixes. Design records: `docs/dev/g1-g3-sequencing.md`, `g4-g8-format.md`, `g5-instrument-fx.md`, `g7-tables.md`, `g9-groove.md`, `phrase-editor.md`; G2 is in `design-gaps.md`. 874 tests pass; `make ci` is clean.
+0.2.0 is cut: G1-G3 phrases and the phrase editor (`docs/dev/phrase-editor.md`), G2 link transpose, G4+G8 format, G5 instrument drive and filter, G7 tables, G9 groove, MIDI channel keying, live/render fixes. Design records: `docs/dev/g1-g3-sequencing.md`, `g4-g8-format.md`, `g5-instrument-fx.md`, `g7-tables.md`, `g9-groove.md`, `phrase-editor.md`; G2 is in `design-gaps.md`. 874 tests passed at 0.2.0; 976 pass now, and `make ci` is clean.
 
 `FORMAT_VERSION` 2 is released with 0.2.0. G10's drum opt-out should be an optional field that 0.2.0 ignores, so it needs no version 3.
 
 Next, in order:
 
-1. Quick fixes: GUI synth sliders (Medium), render `Cnn`, MIDI export channels (High).
-2. G10.
-3. G6.
+1. Use step 1 of G6; decide whether step 2 (mod slots) is needed.
+
+Done in 0.3.0 (CHANGELOG): the quick fixes (GUI synth sliders, render `Cnn`, MIDI export channels), SF2 render tests, synth undo, phrase delete, the link-over-cells notice, TUI phrase borders, the examples' `swing` field, core gesture undo (`TrackerCore::record_song_edit`/`record_bank_edit`), G10 (`docs/dev/g10-scale-playback.md`), G6 step 1 (`docs/dev/g6-modulation.md`), per-instrument MIDI ports (`docs/dev/midi-ports.md`), and G12 `CHD` chords (`docs/dev/g12-chords.md`).
 
 Workflow used for each gap: write `docs/dev/gN-*.md` with options, a recommendation and decisions; ask; implement; mark the doc implemented; update design-gaps.md, README, CHANGELOG and this file.
 
@@ -20,53 +20,21 @@ Workflow used for each gap: write `docs/dev/gN-*.md` with options, a recommendat
 
 ### Design gaps (`docs/dev/design-gaps.md`; G1-G3 placed second, ahead of the doc order, after the reuse-and-polymeter answer)
 
-- [ ] G4 + G8 follow-ups (`docs/dev/g4-g8-format.md`): SF2 output in render is untested (no SoundFont in the repo); `MidiOutput::External { port }` is read but per-instrument ports are not implemented
-
-- [ ] MIDI export assigns MIDI channels by track index (`channel & 0x0F`), not by each track's `ChannelConfig::midi_channel`: `export_midi` takes only the `Song`. Live playback and render use the configured channel, so an exported song can put tracks on other channels than it plays on
-
-- [ ] Render ignores pattern `Cnn`: `render_song` has no `MidiCC` arm (`sample/export.rs`), so CC changes reach a loaded SoundFont live but not in render
-
 - [ ] G3: per-track play position. Reuse and polymeter are done (phrases, `docs/dev/g1-g3-sequencing.md`); a per-track position is still needed for per-track launch (G11) and per-channel section lengths, neither currently a goal (`docs/dev/g1-g3-sequencing.md`)
 
-- [ ] G10: quantise transpose, arpeggio and pitch commands to `Song.scale` at playback, inside the engine so render matches. Needs a per-instrument opt-out for drums, which G2 did not add (`docs/dev/design-gaps.md` G2, G10)
-
-- [ ] G6: two mod slots per instrument (AHD, ADSR, LFO, tracking), tempo-synced, no slot-to-slot modulation at first. G5 is done; pattern commands for instrument cutoff, resonance and drive (`CUT`/`RES`/`DRV`) were deferred here (`docs/dev/design-gaps.md` G6, `docs/dev/g5-instrument-fx.md`)
+- [ ] G6 step 2: two mod slots per instrument (AHD, ADSR, LFO, tracking) on the timbre path step 1 built. Designed in `docs/dev/g6-modulation.md`; build it if tables with `CUT`/`RES`/`DRV` turn out not to be enough
 
 - [ ] G11: live launch. Pattern queueing quantised to pattern end works with one global position; per-track cueing needs G3 option 1 (`docs/dev/design-gaps.md` G11)
 
-- [ ] G12: more than one note per channel. Chord command (`CHD`) after G8; note columns only if chordal writing becomes a priority. Overlaps the Chord type item under Ambitious (`docs/dev/design-gaps.md` G12)
-
 ## Medium
-
-### Architecture & Quality
-
-- [ ] GUI synth Cutoff slider runs 0-1 and is labelled 20 Hz-20 kHz, but `SynthParams.filter_cutoff` is a multiple of the note frequency (TUI: 0.1-40; presets use 1.5-20). Moving it in the GUI pins the cutoff at or below the note's fundamental. Resonance (0-1, engine clamps 0.95) and Env Amt (-1..1, TUI 0-8) disagree the same way
-
-- [ ] Synth parameter edits record no undo, in either editor
-
-- [ ] Unused phrases cannot be deleted. Deleting renumbers every link; tracks linked to the deleted phrase need its rows copied in, as unlink does (`docs/dev/phrase-editor.md`)
-
-- [ ] Linking a track to an existing phrase hides the track's own notes, and unlinking overwrites them with the phrase rows. Only undo recovers them. Proposed: say so in the status line when linking over notes
-
-- [ ] TUI has no phrase borders (GUI View > Phrase borders): a character grid cannot draw thin boxes between rows; a gutter marker or a per-repetition tint would
-
-- [ ] The 10 hand-written example songs in `examples/` still contain `"swing": 50`. It loads as no groove; the field is obsolete. The 4 generated by `cargo xtask regen-examples` (sliced-amen, sample-offset, polymeter, tables) are clean
-
-- [ ] Gesture undo still pushes to `TrackerCore::history` from the frontends: GUI boundary drags, `record_settings_edit` and `end_structural_edit`, and the TUI's `record_sample_field_edit`. Two recording styles beside `begin_edit`/`commit_edit`; a core transaction API keyed by `EditSource` would make one
 
 ## Low
 
 ### TUI - Low Priority (nice-to-have or high effort)
 
-- [ ] Header truncation handling on narrow terminals
+- [ ] Keybinding customization, step 2: one action list, `[keys]` overrides in `config.toml`, help generated from the bindings (`docs/dev/keybindings.md`). Step 1, piano layouts for QWERTZ and AZERTY, is done
 
-- [ ] Keybinding customization (config file with tracker presets)
-
-- [ ] UI snapshot tests (ratatui TestBackend) -- the song settings dialog is covered in `rtrack-tui/src/tui/mod.rs`; the pattern grid and the other dialogs are not
-
-- [ ] Fuzz testing (`cargo-fuzz`, needs nightly) for the MIDI, AIFF and `.rtrk` parsers. `rtrack-core/tests/hostile_input.rs` is the stable-toolchain stand-in and runs in CI: hand-picked malformed shapes plus truncation and byte-flip sweeps over all four formats. It found nothing the hand audit had not, but the hand audit found four allocation bugs in two sittings, so the yield is not exhausted
-
-- [ ] Decide whether slicing should respect a trim the user set by hand. `SliceRange::Source` ignores it and divides the whole file, which is right for a slice (whose span is a slicing artifact) and wrong for a sample someone trimmed to the part they wanted. Telling the two apart needs provenance on `Sample` -- the span a slot was cut out of -- persisted in `.rtrk`, not just a range argument. `SliceRange::Span` is the workaround in the meantime: it divides exactly the trimmed region.
+- [ ] UI snapshot tests (ratatui TestBackend) -- covered in `rtrack-tui/src/tui/mod.rs`: song settings, quit prompt, synth editor, instrument list, phrase list, table editor, an empty sample slot, help (no line cut), the pattern grid's cells and phrase gutter, and the header at several widths. Not covered: track config, a loaded sample in the sample editor, and the file browser, recent files and MIDI port selector, whose contents depend on the machine
 
 ### Ambitious (significant effort, transformative)
 
@@ -78,4 +46,4 @@ Workflow used for each gap: write `docs/dev/gN-*.md` with options, a recommendat
 
 - [ ] Live granular editing / waveform scrubbing
 
-- [ ] Chord type -- a note that sounds several pitches at once, as a third kind of sound source alongside samples and single monophonic notes. A tracker channel is one voice, and the engine now enforces it: a pattern note-off stops the whole channel, per-channel effect state holds a single `porta_target`/`vibrato_phase`/`pitch_offset`, and a pattern row has one note per channel. Polyphony therefore has to live inside the note rather than in overlapping notes on a channel. Open questions: how a chord is entered and shown in a pattern cell, whether its voices share the channel's effect state or each track their own, and how it is stored in `.rtrk` and written to MIDI export. Live MIDI chord entry is the same problem one layer up -- `TrackerCore::preview_note` is a single `Option<PreviewNote>` that stops the previous note before starting the next, so a keyboard chord cannot currently be captured either.
+- [ ] Chord type -- `CHD` (G12, `docs/dev/g12-chords.md`) now plays a chord per row, sharing the track's pitch and effect state. What remains is the rest of this item: chord notes shown and edited in the cell, voices with their own effect state, and live MIDI chord capture. Original note: a note that sounds several pitches at once, as a third kind of sound source alongside samples and single monophonic notes. A tracker channel is one voice, and the engine now enforces it: a pattern note-off stops the whole channel, per-channel effect state holds a single `porta_target`/`vibrato_phase`/`pitch_offset`, and a pattern row has one note per channel. Polyphony therefore has to live inside the note rather than in overlapping notes on a channel. Open questions: how a chord is entered and shown in a pattern cell, whether its voices share the channel's effect state or each track their own, and how it is stored in `.rtrk` and written to MIDI export. Live MIDI chord entry is the same problem one layer up -- `TrackerCore::preview_note` is a single `Option<PreviewNote>` that stops the previous note before starting the next, so a keyboard chord cannot currently be captured either.

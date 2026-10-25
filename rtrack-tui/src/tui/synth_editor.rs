@@ -9,7 +9,7 @@ use rtrack_core::audio::synth::{FilterType, Patch};
 
 /// Draw the synth editor popup
 pub fn draw_synth_editor(f: &mut Frame, app: &App) {
-    let area = centered_rect(55, 20, f.area());
+    let area = centered_rect(55, 21, f.area());
     f.render_widget(Clear, area);
 
     let slot = app.dialogs.synth_editor_slot;
@@ -142,8 +142,13 @@ pub fn draw_synth_editor(f: &mut Frame, app: &App) {
         }
 
         lines.push(Line::from(""));
+        // Two lines: one is wider than the popup.
         lines.push(Line::from(Span::styled(
-            "  Tab: next  Up/Down: +/-1  Left/Right: +/-10  Del: clear  Esc: close",
+            "  Tab: next  Up/Down: +/-1  Left/Right: +/-10",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Del: clear  Esc: close",
             Style::default().fg(Color::DarkGray),
         )));
     } else {

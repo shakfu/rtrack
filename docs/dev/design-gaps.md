@@ -177,6 +177,8 @@ Consequence: G3 option 1 (per-channel order lists over single-channel patterns) 
 
 ## G6. No general modulation
 
+**Step 1 done (2026-10-25):** `CUT`, `RES` and `DRV` on a per-tick timbre path that tables also drive ([g6-modulation.md](g6-modulation.md)). Mod slots (option 1) are designed there and not built.
+
 **Current.** `SynthParams` has ADSR and `filter_env`. Pattern effects provide vibrato (`4xy`), slides (`1xx`, `2xx`, `5xy`) and arpeggio (`0xy`). There is no LFO or modulation routing. `SampleRef` has no envelope fields.
 
 **Consequence.** Evolving timbres need dense effect-column data or MIDI CC automation to external gear.
@@ -259,6 +261,8 @@ Consequence: G3 option 1 (per-channel order lists over single-channel patterns) 
 
 ## G10. Scale affects entry only
 
+**Done (2026-10-25).** Option 1, without the opt-out: [g10-scale-playback.md](g10-scale-playback.md). With `Song.scale_steps` on, `ARP` and table steps count degrees through `Song::step_offset`. Written notes are never snapped, so only hand-written steps move by degree, and each targets one track or instrument.
+
 **Current.** `Song.scale: Option<ScaleSetting>` constrains keyboard entry and transpose. Playback ignores it.
 
 **Consequence.** Transposed or randomised notes can leave the scale. The `0xy` arpeggio counts semitones, not scale steps.
@@ -286,6 +290,8 @@ Consequence: G3 option 1 (per-channel order lists over single-channel patterns) 
 **Recommendation.** Option 2 if live use is a goal. Otherwise defer.
 
 ## G12. One note per channel
+
+**Done (2026-10-25).** Option 2: `CHD` ([g12-chords.md](g12-chords.md)). Note columns (option 1) were not built.
 
 **Current.** A pattern-row note cuts the channel's voice (`NewNoteAction::Cut` in `route_note_on`). `MAX_CHANNELS` is 16. Chords need one channel per voice.
 

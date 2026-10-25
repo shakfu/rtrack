@@ -189,6 +189,7 @@
   "rows_per_pattern": 32,
   "highlight_beat": 4,
   "highlight_bar": 16,
+  "scale_steps": true,
   "instruments": [
     {
       "slot": 0,
@@ -265,7 +266,11 @@
       "trim_end": 15120,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 1,
@@ -276,7 +281,11 @@
       "trim_end": 30240,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 2,
@@ -287,7 +296,11 @@
       "trim_end": 45360,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 3,
@@ -298,7 +311,11 @@
       "trim_end": 60480,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 4,
@@ -309,7 +326,11 @@
       "trim_end": 75600,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 5,
@@ -320,7 +341,11 @@
       "trim_end": 90720,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 6,
@@ -331,7 +356,11 @@
       "trim_end": 105840,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     },
     {
       "slot": 7,
@@ -342,7 +371,11 @@
       "trim_end": 120960,
       "loop_enabled": false,
       "loop_start": 0,
-      "loop_end": 0
+      "loop_end": 0,
+      "sliced_from": [
+        0,
+        120960
+      ]
     }
   ],
   "channels_config": [

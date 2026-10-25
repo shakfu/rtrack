@@ -199,6 +199,7 @@
   "rows_per_pattern": 16,
   "highlight_beat": 4,
   "highlight_bar": 16,
+  "scale_steps": true,
   "tables": [
     {
       "slot": 10,

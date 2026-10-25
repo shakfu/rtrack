@@ -34,5 +34,5 @@ The frontends edit through these accessors already. Pointing them at a `Sheet` g
 ## Decisions
 
 1. **Swap the grid, or a separate window.** Swap: it reuses every edit (above). A window would show the pattern alongside, which the swap does not.
-2. **Delete a phrase.** Deferred. It renumbers every link, and tracks linked to the deleted phrase need its rows copied in, as unlink does.
+2. **Delete a phrase.** Done after 0.2.0: `Song::delete_phrase` renumbers later links and copies the rows into each linked track, as unlink does. A pattern outside the order list takes them as an aligned link shows them. The view follows a renumbered phrase and closes on the deleted one (`PhraseView::phrase_deleted`).
 3. **Row insert and delete keep the length.** The GUI's pattern insert grows the pattern and the TUI's keeps it; the phrase operations live in core and keep it, so both frontends agree.

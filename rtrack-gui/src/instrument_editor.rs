@@ -258,6 +258,7 @@ impl RtrackApp {
             Some(p) => p,
             None => return, // type was just changed away from Synth
         };
+        let was = params.clone();
 
         let mut changed = false;
 
@@ -395,12 +396,9 @@ impl RtrackApp {
                 ui.label("Cutoff:");
                 if ui
                     .add(
-                        egui::Slider::new(&mut params.filter_cutoff, 0.0..=1.0).custom_formatter(
-                            |v, _| {
-                                let hz = 20.0 * (1000.0_f64).powf(v);
-                                format!("{:.0} Hz", hz)
-                            },
-                        ),
+                        egui::Slider::new(&mut params.filter_cutoff, SynthParams::CUTOFF_RANGE)
+                            .logarithmic(true)
+                            .suffix("x note"),
                     )
                     .changed()
                 {
@@ -410,7 +408,10 @@ impl RtrackApp {
 
                 ui.label("Resonance:");
                 if ui
-                    .add(egui::Slider::new(&mut params.filter_resonance, 0.0..=1.0))
+                    .add(egui::Slider::new(
+                        &mut params.filter_resonance,
+                        SynthParams::RESONANCE_RANGE,
+                    ))
                     .changed()
                 {
                     changed = true;
@@ -418,7 +419,10 @@ impl RtrackApp {
 
                 ui.label("Env Amt:");
                 if ui
-                    .add(egui::Slider::new(&mut params.filter_env, -1.0..=1.0))
+                    .add(egui::Slider::new(
+                        &mut params.filter_env,
+                        SynthParams::FILTER_ENV_RANGE,
+                    ))
                     .changed()
                 {
                     changed = true;
@@ -488,8 +492,23 @@ impl RtrackApp {
                 ui.end_row();
             });
 
-        if changed {
-            self.core.dirty = true;
+        if !changed {
+            // A slider clamps an out-of-range value just by being drawn.
+            *params = was;
+        } else if *params != was {
+            // As for sample fx: snapshot only on a change.
+            let now = std::mem::replace(params, was);
+            let before = self.core.snapshot_samples();
+            if let Some(params) = self.core.instruments[idx].synth_params_mut() {
+                *params = now;
+            }
+            self.core.record_bank_edit(
+                Some(rtrack_core::editor::EditSource::new(
+                    "instrument.synth",
+                    idx,
+                )),
+                before,
+            );
         }
     }
 
@@ -813,14 +832,13 @@ impl RtrackApp {
             self.set_sample_fx(idx, was);
             let before = self.core.snapshot_samples();
             self.set_sample_fx(idx, now);
-            self.core.history.push_from(
-                rtrack_core::editor::EditSource::new("instrument.sample_fx", idx),
-                rtrack_core::editor::Edit::Bank(Box::new(rtrack_core::editor::BankEdit {
-                    before,
-                    after: self.core.snapshot_samples(),
-                })),
+            self.core.record_bank_edit(
+                Some(rtrack_core::editor::EditSource::new(
+                    "instrument.sample_fx",
+                    idx,
+                )),
+                before,
             );
-            self.core.dirty = true;
         }
     }
 
@@ -836,6 +854,7 @@ impl RtrackApp {
 
     fn draw_midi_params(&mut self, ui: &mut egui::Ui, idx: usize) {
         ui.heading("MIDI Program");
+        let was = self.core.instruments[idx].kind.clone();
         let InstrumentKind::Midi {
             program,
             channel,
@@ -861,13 +880,33 @@ impl RtrackApp {
 
         ui.horizontal(|ui| {
             ui.label("Output:");
-            changed |= ui
-                .radio_value(output, MidiOutput::Builtin, "Built in")
-                .changed();
-            changed |= ui
-                .radio_value(output, MidiOutput::External { port: None }, "MIDI port")
-                .on_hover_text("The port selected in MIDI Ports. Plays built in until one is.")
-                .changed();
+            let label = |o: &MidiOutput| match o {
+                MidiOutput::Builtin => "Built in".to_string(),
+                MidiOutput::External { port: None } => "Selected port".to_string(),
+                MidiOutput::External { port: Some(name) } => name.clone(),
+            };
+            egui::ComboBox::from_id_salt(format!("midi_output_{idx}"))
+                .selected_text(label(output))
+                .show_ui(ui, |ui| {
+                    // Listed only while open, so a closed box costs nothing.
+                    let listed = rtrack_core::midi::MidiEngine::list_ports().unwrap_or_default();
+                    let mut choice = MidiOutput::Builtin;
+                    loop {
+                        let on = *output == choice;
+                        if ui.selectable_label(on, label(&choice)).clicked() && !on {
+                            *output = choice.clone();
+                            changed = true;
+                        }
+                        choice = choice.next(&listed);
+                        if choice.is_builtin() {
+                            break;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Selected port: the one chosen in MIDI Ports. A named port plays built in while it is absent.",
+                );
         });
 
         // 0 is the track's own channel; 1-16 override it.
@@ -888,7 +927,14 @@ impl RtrackApp {
         }
 
         if changed {
-            self.core.dirty = true;
+            // As for synth params: snapshot the old kind, then record.
+            let now = std::mem::replace(&mut self.core.instruments[idx].kind, was);
+            let before = self.core.snapshot_samples();
+            self.core.instruments[idx].kind = now;
+            self.core.record_bank_edit(
+                Some(rtrack_core::editor::EditSource::new("instrument.midi", idx)),
+                before,
+            );
         }
     }
 
@@ -931,9 +977,7 @@ impl RtrackApp {
         }
         if edit.finished {
             if let Some((before, true)) = self.boundary_drag.take() {
-                self.core
-                    .history
-                    .push_bank(before, self.core.snapshot_samples());
+                self.core.record_bank_edit(None, before);
             }
         }
     }
@@ -957,10 +1001,7 @@ impl RtrackApp {
         if let Some(ref mut audio) = self.core.audio {
             audio.set_sample_bank(Arc::clone(&self.core.sample_bank));
         }
-        self.core
-            .history
-            .push_bank(before, self.core.snapshot_samples());
-        self.core.dirty = true;
+        self.core.record_bank_edit(None, before);
         self.status_message = Some(format!("Loop snapped to zero crossings: {start}..{end}"));
     }
 
@@ -1020,10 +1061,8 @@ impl RtrackApp {
             .slice_sample(slot, count, sensitivity, use_transients, range, overwrite)
         {
             Ok(created) => {
-                self.core.dirty = true;
                 self.vis.slice_blocked = None;
-                let after = self.core.snapshot_samples();
-                self.core.history.push_bank(before, after);
+                self.core.record_bank_edit(None, before);
                 let what = match range {
                     SliceRange::Source => "sample",
                     SliceRange::Span => "slice",
@@ -1109,6 +1148,66 @@ mod tests {
         }
         assert_eq!(app.core.history.undo_depth(), depth);
         assert!(!app.core.dirty);
+    }
+
+    fn draw_synth(app: &mut RtrackApp, slot: usize) {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.draw_synth_params(ui, slot)
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn drawing_the_synth_panel_leaves_its_values_alone() {
+        let mut app = RtrackApp::headless(4, 16);
+        let mut params = SynthParams::from_patch(0);
+        // Outside the sliders' ranges, which clamp when drawn.
+        params.filter_env = -0.5;
+        params.attack = 0.0;
+        params.filter_cutoff = 12.0;
+        app.core.instruments[1].kind = InstrumentKind::Synth(params.clone());
+        let depth = app.core.history.undo_depth();
+        for _ in 0..3 {
+            draw_synth(&mut app, 1);
+        }
+        assert_eq!(app.core.instruments[1].synth_params(), Some(&params));
+        assert_eq!(app.core.history.undo_depth(), depth);
+        assert!(!app.core.dirty);
+    }
+
+    #[test]
+    fn drawing_the_midi_panel_records_nothing() {
+        let mut app = RtrackApp::headless(4, 16);
+        app.core.instruments[1].kind = InstrumentKind::Midi {
+            program: 5,
+            channel: Some(3),
+            output: MidiOutput::External {
+                port: Some("Synth B".into()),
+            },
+        };
+        let kind = app.core.instruments[1].kind.clone();
+        let depth = app.core.history.undo_depth();
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.draw_midi_params(ui, 1));
+            out.textures_delta.clear();
+        }
+        assert_eq!(app.core.instruments[1].kind, kind);
+        assert_eq!(app.core.history.undo_depth(), depth);
+        assert!(!app.core.dirty);
+    }
+
+    #[test]
+    fn the_gui_cutoff_slider_spans_the_engines_range() {
+        // Presets run 1.5x-20x; the old 0-1 range pinned them under 1x.
+        for program in 0..Patch::count() {
+            let cutoff = SynthParams::from_patch(program).filter_cutoff;
+            assert!(
+                SynthParams::CUTOFF_RANGE.contains(&cutoff),
+                "{program}: {cutoff}"
+            );
+        }
     }
 
     fn span(app: &RtrackApp, slot: usize) -> (usize, usize) {

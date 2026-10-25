@@ -1,4 +1,4 @@
-.PHONY: build run gui test test-unit test-integration fmt fmt-check clippy doc lint ci clean \
+.PHONY: build run gui test test-unit test-integration fmt fmt-check clippy doc lint ci clean fuzz \
        regen-examples check-examples \
        publish-dry publish publish-core publish-tui publish-gui
 
@@ -46,6 +46,17 @@ regen-examples:
 # Verify the generated examples are current, without writing.
 check-examples:
 	cargo xtask regen-examples --check
+
+# Fuzz the file parsers, FUZZ_SECS seconds each. Needs a nightly toolchain
+# and cargo-fuzz, so CI does not run it. Seeds: fuzz/seeds and examples/.
+FUZZ_SECS ?= 60
+fuzz:
+	cd fuzz && for t in rtrk midi wav aiff; do \
+		mkdir -p corpus/$$t && \
+		seeds=seeds/$$t; [ $$t = rtrk ] && seeds=../examples; \
+		cargo +nightly fuzz run $$t corpus/$$t $$seeds -- \
+			-max_total_time=$(FUZZ_SECS) -rss_limit_mb=2048 -max_len=262144 || exit 1; \
+	done
 
 # What CI runs.
 ci: fmt-check clippy doc test check-examples

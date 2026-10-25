@@ -6,6 +6,7 @@
 
 use crate::constants::*;
 use crate::tracker::{Fx, FxCmd, Note, Song, FX_COLUMNS};
+use crate::types::{Chord, Timbre};
 
 // ---------------------------------------------------------------------------
 // Channel state
@@ -34,11 +35,16 @@ pub struct ChannelState {
     pub delayed_table: Option<u8>,
     /// The instrument a `DEL` note plays: its row's, not the previous note's.
     pub delayed_instrument: Option<u8>,
+    /// The chord a `DEL` note plays.
+    pub delayed_chord: Chord,
     /// Last continuous effect written in each column, with the parameter as
     /// written. `RND` varies that parameter rather than the last randomized
     /// one, so repeated `RND` rows deviate from the written value instead of
     /// random-walking away from it.
     pub last_continuous: [Option<Fx>; FX_COLUMNS],
+    /// Offsets from the instrument's filter and drive, from `CUT`, `RES`
+    /// and `DRV`. Kept until changed or a note of another instrument.
+    pub timbre: Timbre,
 }
 
 impl Default for ChannelState {
@@ -56,7 +62,9 @@ impl Default for ChannelState {
             table: None,
             delayed_table: None,
             delayed_instrument: None,
+            delayed_chord: [None; 4],
             last_continuous: [None; FX_COLUMNS],
+            timbre: Timbre::default(),
         }
     }
 }
@@ -106,6 +114,9 @@ pub enum TrackerEvent {
         /// `9xx`: start a sample `xx`/256 of the way into its played span.
         /// 0 for every other note, and ignored by synths and MIDI.
         sample_offset: u8,
+        /// Notes sounding with `midi_note`, from `CHD`, already resolved
+        /// through the scale.
+        chord: Chord,
     },
     /// Note off on a channel.
     NoteOff { channel: usize },
@@ -124,6 +135,8 @@ pub enum TrackerEvent {
     },
     /// Program change (Exx effect).
     ProgramChange { channel: usize, program: u8 },
+    /// The channel's filter and drive offsets changed (`CUT`, `RES`, `DRV`).
+    Timbre { channel: usize, timbre: Timbre },
     /// Speed changed (Fxx < 0x20).
     SpeedChanged { speed: u8 },
     /// Tempo changed (Fxx >= 0x20, or tempo automation).
@@ -146,6 +159,21 @@ pub struct ChannelInfo {
     pub volume_scale: f32,
     /// Instrument for a note on this channel that names none.
     pub default_instrument: Option<u8>,
+}
+
+impl ChannelInfo {
+    /// The state an export gives each track: mute, volume and default
+    /// instrument as configured. Solo is a listening aid and is not exported.
+    pub fn for_export(channels: &[crate::types::ChannelConfig]) -> Vec<Self> {
+        channels
+            .iter()
+            .map(|c| Self {
+                audible: !c.muted,
+                volume_scale: c.volume,
+                default_instrument: c.default_instrument,
+            })
+            .collect()
+    }
 }
 
 impl Default for ChannelInfo {
@@ -213,17 +241,49 @@ pub struct TrackerEngine {
     rng: u64,
 }
 
+/// The notes the `CHD`s among `fx` add to `base`: each nonzero step, counted
+/// as `ARP` counts it. A note outside the MIDI range, or one already
+/// sounding, is dropped.
+fn chord_of(song: &Song, base: u8, fx: &[Option<Fx>; FX_COLUMNS]) -> Chord {
+    let mut chord = [None; 4];
+    let mut len = 0;
+    let steps = fx
+        .iter()
+        .flatten()
+        .filter(|f| f.cmd == FxCmd::Chord)
+        .flat_map(|f| [f.param >> 4, f.param & 0x0F]);
+    for step in steps.filter(|&s| s != 0) {
+        let note = base as f64 + song.step_offset(base, step as i16);
+        if !(0.0..=MIDI_MAX_NOTE as f64).contains(&note) {
+            continue;
+        }
+        let note = note as u8;
+        if note != base && !chord[..len].contains(&Some(note)) && len < chord.len() {
+            chord[len] = Some(note);
+            len += 1;
+        }
+    }
+    chord
+}
+
 /// Fixed PRNG seed. See `TrackerEngine::rng`.
 const RNG_SEED: u64 = 0x2545_F491_4F6C_DD1D;
 
-/// Effects whose parameter `8xx` may vary: the ones read on every tick, where
-/// a changed parameter alters the sound rather than the song structure. A
-/// randomized position jump or pattern break would scramble playback, and a
-/// randomized program change would pick an unrelated instrument.
+/// Effects whose parameter `RND` may vary: the ones where a changed
+/// parameter alters the sound rather than the song structure. A randomized
+/// position jump or pattern break would scramble playback, and a randomized
+/// program change would pick an unrelated instrument.
 fn is_continuous(effect: FxCmd) -> bool {
     matches!(
         effect,
-        FxCmd::Arp | FxCmd::PitchUp | FxCmd::PitchDown | FxCmd::Vibrato | FxCmd::VolSlide
+        FxCmd::Arp
+            | FxCmd::PitchUp
+            | FxCmd::PitchDown
+            | FxCmd::Vibrato
+            | FxCmd::VolSlide
+            | FxCmd::Cutoff
+            | FxCmd::Resonance
+            | FxCmd::Drive
     )
 }
 
@@ -570,7 +630,17 @@ impl TrackerEngine {
                     }
                 }
                 self.channel_states[ch].fx = fx;
+                self.apply_timbre_fx(ch, fx.iter().flatten().copied());
                 continue;
+            }
+
+            // A note of another instrument starts from that instrument's
+            // own filter and drive.
+            if matches!(note, Some(Note::On { .. }))
+                && !is_tone_porta
+                && instrument != self.channel_states[ch].active_instrument
+            {
+                self.set_timbre(ch, Timbre::default());
             }
 
             // Clear previous delayed note
@@ -595,6 +665,7 @@ impl TrackerEngine {
                             self.channel_states[ch].delay_tick = delay;
                             self.channel_states[ch].delayed_table = table;
                             self.channel_states[ch].delayed_instrument = instrument;
+                            self.channel_states[ch].delayed_chord = chord_of(song, midi_note, &fx);
                         } else {
                             let vel = volume.unwrap_or(self.channel_states[ch].volume);
                             let scaled_vel = self.scale_velocity(ch, vel);
@@ -611,6 +682,7 @@ impl TrackerEngine {
                                 velocity: scaled_vel,
                                 instrument,
                                 sample_offset,
+                                chord: chord_of(song, midi_note, &fx),
                             });
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].active_instrument = instrument;
@@ -649,6 +721,7 @@ impl TrackerEngine {
             self.channel_states[ch].fx = fx;
 
             // Tick-0 immediate effects, from every column
+            self.apply_timbre_fx(ch, fx.iter().flatten().copied());
             for Fx { cmd, param } in fx.iter().flatten().copied() {
                 match cmd {
                     FxCmd::Cc(controller) => self.emit(TrackerEvent::MidiCC {
@@ -670,7 +743,11 @@ impl TrackerEngine {
             if let Some(step) = self.advance_table(ch, song) {
                 self.apply_table_row_start(ch, &step);
                 if step.transpose != 0 || step.previous_transpose != 0 {
-                    let offset = self.channel_states[ch].pitch_offset + step.transpose as f64;
+                    let steps = step.transpose as i16;
+                    let shift = self.channel_states[ch]
+                        .note
+                        .map_or(steps as f64, |n| song.step_offset(n, steps));
+                    let offset = self.channel_states[ch].pitch_offset + shift;
                     self.emit(TrackerEvent::PitchBend {
                         channel: ch,
                         semitone_offset: offset,
@@ -755,6 +832,7 @@ impl TrackerEngine {
                                 semitone_offset: 0.0,
                             });
                             let instrument = self.channel_states[ch].delayed_instrument.take();
+                            let chord = std::mem::take(&mut self.channel_states[ch].delayed_chord);
                             let velocity = self.scale_velocity(ch, vel);
                             self.events.push(TrackerEvent::NoteOn {
                                 channel: ch,
@@ -762,6 +840,7 @@ impl TrackerEngine {
                                 velocity,
                                 instrument,
                                 sample_offset: offset,
+                                chord,
                             });
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].active_instrument = instrument;
@@ -789,7 +868,7 @@ impl TrackerEngine {
             if let Some(step) = &step {
                 self.apply_table_row_start(ch, step);
                 columns[FX_COLUMNS] = step.fx;
-                modulation += step.transpose as f64;
+                modulation += song.step_offset(base_note, step.transpose as i16);
                 bend |= step.transpose != 0 || step.previous_transpose != 0;
             }
             for (col, f) in columns.iter().enumerate() {
@@ -799,13 +878,12 @@ impl TrackerEngine {
                 let state = &mut self.channel_states[ch];
                 match cmd {
                     FxCmd::Arp if param != 0 => {
-                        let x = (param >> 4) as f64;
-                        let y = (param & 0x0F) as f64;
-                        modulation += match self.tick % 3 {
-                            0 => 0.0,
-                            1 => x,
-                            _ => y,
+                        let steps = match self.tick % 3 {
+                            0 => 0,
+                            1 => param >> 4,
+                            _ => param & 0x0F,
                         };
+                        modulation += song.step_offset(base_note, steps as i16);
                         bend = true;
                     }
                     FxCmd::PitchUp => {
@@ -947,7 +1025,32 @@ impl TrackerEngine {
                 channel: ch,
                 program: param,
             }),
-            _ => {}
+            fx => self.apply_timbre_fx(ch, fx),
+        }
+    }
+
+    /// Apply the `CUT`, `RES` and `DRV` among `fx` to channel `ch`.
+    fn apply_timbre_fx(&mut self, ch: usize, fx: impl IntoIterator<Item = Fx>) {
+        let mut timbre = self.channel_states[ch].timbre;
+        for Fx { cmd, param } in fx {
+            match cmd {
+                FxCmd::Cutoff => timbre.cutoff = Timbre::cutoff_of(param),
+                FxCmd::Resonance => timbre.resonance = Timbre::resonance_of(param),
+                FxCmd::Drive => timbre.drive = Timbre::drive_of(param),
+                _ => {}
+            }
+        }
+        self.set_timbre(ch, timbre);
+    }
+
+    /// Set channel `ch`'s timbre, emitting it if it changed.
+    fn set_timbre(&mut self, ch: usize, timbre: Timbre) {
+        if self.channel_states[ch].timbre != timbre {
+            self.channel_states[ch].timbre = timbre;
+            self.emit(TrackerEvent::Timbre {
+                channel: ch,
+                timbre,
+            });
         }
     }
 
@@ -963,6 +1066,7 @@ impl TrackerEngine {
 mod tests {
     use super::*;
     use crate::tracker::{Cell, Fx, Note, NoteValue, Song};
+    use crate::types::Timbre;
 
     fn make_song() -> Song {
         Song::new(2, 16)
@@ -1999,6 +2103,294 @@ mod tests {
             bends_of(&with_table)[1..],
             [vec![4.0], vec![7.0], vec![0.0], vec![4.0], vec![7.0]]
         );
+    }
+
+    fn timbres(events: &[TrackerEvent]) -> Vec<Timbre> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TrackerEvent::Timbre { timbre, .. } => Some(*timbre),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Two notes of instrument 1, the second with `second_instrument`; the
+    /// first row carries `fx`.
+    fn two_notes(fx: Fx, second_instrument: u8) -> Song {
+        let mut song = Song::new(1, 2);
+        song.speed = 1;
+        for (row, inst) in [(0, 1), (1, second_instrument)] {
+            song.set_cell(
+                0,
+                row,
+                0,
+                Cell {
+                    note: c4(),
+                    instrument: Some(inst),
+                    fx: [(row == 0).then_some(fx), None],
+                    ..Cell::default()
+                },
+            );
+        }
+        song
+    }
+
+    #[test]
+    fn cut_res_and_drv_set_the_channels_timbre() {
+        for (cmd, expect) in [
+            (
+                FxCmd::Cutoff,
+                Timbre {
+                    cutoff: 1.0,
+                    ..Timbre::default()
+                },
+            ),
+            (
+                FxCmd::Resonance,
+                Timbre {
+                    resonance: 0.25 * crate::audio::svf::MAX_RESONANCE,
+                    ..Timbre::default()
+                },
+            ),
+            (
+                FxCmd::Drive,
+                Timbre {
+                    drive: 1.0,
+                    ..Timbre::default()
+                },
+            ),
+        ] {
+            let song = two_notes(Fx::new(cmd, 0xA0), 1);
+            let ticks = run_ticks(&song, 2);
+            assert_eq!(timbres(&ticks[0]), [expect], "{cmd:?}");
+            assert!(
+                timbres(&ticks[1]).is_empty(),
+                "{cmd:?} lasts into the next note"
+            );
+        }
+    }
+
+    #[test]
+    fn a_note_of_another_instrument_resets_the_timbre() {
+        let song = two_notes(Fx::new(FxCmd::Cutoff, 0x00), 2);
+        let ticks = run_ticks(&song, 2);
+        assert_eq!(timbres(&ticks[1]), [Timbre::default()]);
+    }
+
+    #[test]
+    fn a_table_row_steps_the_cutoff() {
+        let mut song = table_song(1, [None, None]);
+        let mut t = table(&[0, 0], 1, Some(0));
+        t.rows[1].fx = Some(Fx::new(FxCmd::Cutoff, 0x40));
+        song.tables.insert(1, t);
+        let ticks = run_ticks(&song, 4);
+        let cut = Timbre {
+            cutoff: -2.0,
+            ..Timbre::default()
+        };
+        assert_eq!(timbres(&ticks[1]), [cut], "row 1 starts on tick 1");
+        assert!(
+            timbres(&ticks[2]).is_empty(),
+            "row 0 has no CUT, so it holds"
+        );
+    }
+
+    #[test]
+    fn rnd_varies_a_cut() {
+        let mut song = Song::new(1, 2);
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: c4(),
+                fx: [Some(Fx::new(FxCmd::Cutoff, 0x80)), None],
+                ..Cell::default()
+            },
+        );
+        song.set_cell(
+            0,
+            1,
+            0,
+            Cell {
+                fx: [Some(Fx::new(FxCmd::Random, 0x40)), None],
+                ..Cell::default()
+            },
+        );
+        let mut engine = TrackerEngine::new(&song, false);
+        engine.process_tick(&song);
+        engine.process_tick(&song);
+        assert_eq!(
+            engine.channel_states[0].fx[0].map(|f| f.cmd),
+            Some(FxCmd::Cutoff)
+        );
+    }
+
+    /// The chord of the first note-on in a song whose row 0 has `note` and
+    /// effects `fx`.
+    fn chord_for(
+        note: u8,
+        fx: [Option<Fx>; FX_COLUMNS],
+        scale_song: Option<Song>,
+    ) -> Option<Chord> {
+        let mut song = scale_song.unwrap_or_else(|| Song::new(1, 2));
+        song.speed = 1;
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(note),
+                fx,
+                ..Cell::default()
+            },
+        );
+        run_ticks(&song, 3)
+            .concat()
+            .into_iter()
+            .find_map(|e| match e {
+                TrackerEvent::NoteOn { chord, .. } => Some(chord),
+                _ => None,
+            })
+    }
+
+    fn chd(param: u8) -> Option<Fx> {
+        Some(Fx::new(FxCmd::Chord, param))
+    }
+
+    #[test]
+    fn chd_adds_notes_to_the_rows_note() {
+        assert_eq!(
+            chord_for(60, [chd(0x47), None], None),
+            Some([Some(64), Some(67), None, None])
+        );
+        assert_eq!(
+            chord_for(60, [chd(0x47), chd(0xC0)], None),
+            Some([Some(64), Some(67), Some(72), None]),
+            "the second column adds more"
+        );
+        assert_eq!(
+            chord_for(60, [chd(0x44), chd(0x07)], None),
+            Some([Some(64), Some(67), None, None]),
+            "a repeated note sounds once"
+        );
+        assert_eq!(
+            chord_for(120, [chd(0x7F), None], None),
+            Some([Some(127), None, None, None]),
+            "a note past 127 is dropped"
+        );
+        assert_eq!(chord_for(60, [None, None], None), Some([None; 4]));
+    }
+
+    #[test]
+    fn chd_steps_count_scale_degrees_as_arp_does() {
+        let c_major = in_c_major(Song::new(1, 2));
+        assert_eq!(
+            chord_for(60, [chd(0x24), None], Some(c_major)),
+            Some([Some(64), Some(67), None, None])
+        );
+    }
+
+    #[test]
+    fn a_delayed_note_keeps_its_chord() {
+        // Six ticks a row, so a one-tick delay sounds within the row.
+        let song = one_row(
+            6,
+            Cell {
+                note: c4(),
+                fx: [chd(0x47), Some(Fx::new(FxCmd::Delay, 1))],
+                ..Cell::default()
+            },
+        );
+        let ticks = run_ticks(&song, 3);
+        let chords: Vec<(usize, Chord)> = ticks
+            .iter()
+            .enumerate()
+            .flat_map(|(t, events)| {
+                events.iter().filter_map(move |e| match e {
+                    TrackerEvent::NoteOn { chord, .. } => Some((t, *chord)),
+                    _ => None,
+                })
+            })
+            .collect();
+        // `c4()` is MIDI 48 here: +4 and +7 are 52 and 55.
+        assert_eq!(chords, [(1, [Some(52), Some(55), None, None])]);
+    }
+
+    #[test]
+    fn chd_in_a_table_row_is_ignored() {
+        let mut song = table_song(1, [None, None]);
+        let mut t = table(&[0, 0], 1, Some(0));
+        t.rows[1].fx = chd(0x47);
+        song.tables.insert(1, t);
+        let note_ons = run_ticks(&song, 4)
+            .concat()
+            .into_iter()
+            .filter(|e| matches!(e, TrackerEvent::NoteOn { .. }))
+            .count();
+        assert_eq!(note_ons, 1, "the table retriggers nothing");
+    }
+
+    #[test]
+    fn chd_without_a_note_plays_nothing() {
+        let mut song = Song::new(1, 2);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                fx: [chd(0x47), None],
+                ..Cell::default()
+            },
+        );
+        assert!(!run_ticks(&song, 6)
+            .concat()
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::NoteOn { .. })));
+    }
+
+    fn in_c_major(mut song: Song) -> Song {
+        use crate::theory::{Scale, ScaleSetting};
+        song.scale = Some(ScaleSetting::new(NoteValue::C, Scale::Major));
+        song
+    }
+
+    #[test]
+    fn with_a_scale_arp_and_table_steps_count_degrees() {
+        let bends_of = |song: &Song| -> Vec<Vec<f64>> {
+            run_ticks(song, 4).iter().map(|e| bends(e)).collect()
+        };
+        let mut with_arp = in_c_major(table_song(2, [Some(Fx::new(FxCmd::Arp, 0x24)), None]));
+        with_arp.tables.clear();
+        // C E G: degrees 2 and 4 of C major are 4 and 7 semitones up.
+        assert_eq!(bends_of(&with_arp)[1..], [vec![4.0], vec![7.0], vec![0.0]]);
+
+        let mut with_table = in_c_major(table_song(1, [None, None]));
+        with_table.tables.insert(1, table(&[0, 2, 4], 1, Some(0)));
+        assert_eq!(bends_of(&with_table), bends_of(&with_arp));
+
+        with_arp.scale_steps = false;
+        assert_eq!(bends_of(&with_arp)[1..], [vec![2.0], vec![4.0], vec![0.0]]);
+    }
+
+    #[test]
+    fn a_tables_first_degree_step_bends_on_the_notes_tick() {
+        let mut song = in_c_major(table_song(1, [None, None]));
+        song.tables.insert(1, table(&[2], 1, None));
+        assert_eq!(bends(&run_ticks(&song, 1)[0]).last(), Some(&4.0));
+    }
+
+    #[test]
+    fn a_chromatic_scale_steps_by_semitones() {
+        use crate::theory::{Scale, ScaleSetting};
+        let mut song = table_song(2, [Some(Fx::new(FxCmd::Arp, 0x47)), None]);
+        song.tables.clear();
+        let plain: Vec<_> = run_ticks(&song, 4).iter().map(|e| bends(e)).collect();
+        song.scale = Some(ScaleSetting::new(NoteValue::D, Scale::Chromatic));
+        let chromatic: Vec<_> = run_ticks(&song, 4).iter().map(|e| bends(e)).collect();
+        assert_eq!(plain, chromatic);
     }
 
     #[test]

@@ -4,7 +4,59 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Added
+
+- **Note entry on QWERTZ and AZERTY keyboards.** `piano = "qwertz"` or `"azerty"` in `config.toml` puts the note keys at the QWERTY positions, in both frontends. On AZERTY `-` is a note key, so in Insert mode on the note column it enters a note rather than lowering the octave. Rebinding the other keys is designed in `docs/dev/keybindings.md` and not built.
+
+- **`CHD` plays a chord on one track.** `CHDxy` adds notes `x` and `y` steps above the row's note, counted as `ARP` counts them, so `CHD47` on C, or `CHD24` in C major with Steps on, plays C E G. Both effect columns together give up to five notes. The chord shares the track's pitch bend, volume and filter, and the next note or a note-off ends all of it. It plays live, in render on the built-in synth, samples and a SoundFont, on MIDI out, and in MIDI export. A song using it is saved as format version 3.
+
+  A command rather than note columns, which would show each note in the grid but change cells, both grids, entry, paste, undo and MIDI import. The engine expands the chord, so render and MIDI export match live playback. Design: `docs/dev/g12-chords.md`.
+
+- **A MIDI instrument can name its own output port,** so two hardware synths can play from one song. TUI: Ctrl+O in the instrument list steps through built in, the selected port and each listed port. GUI: the Output box in the instrument editor, whose edits are now undoable. A track's note-offs, bends and CCs follow its last note to that port. An absent port plays built in, is reported once, and is tried again when playback starts. Clock, start and stop go to every open port. The name is stored in the existing `port` field, so the format does not change; rtrack 0.2.0 reads the field and sends to its selected port. Design: `docs/dev/midi-ports.md`.
+
+  A port name is stored per song rather than mapped per machine through logical outputs, which would keep songs portable at the cost of a mapping dialog; a song opened elsewhere plays its named ports built in until they are present.
+
+- **`CUT`, `RES` and `DRV` move an instrument's filter cutoff, resonance and drive** on built-in synth and sample instruments, relative to the instrument: `80` is its own value, and `CUTxx` moves the cutoff by `(xx - 80) / 32` octaves. A table row can carry them, so a table sweeps the filter. Voices glide to each new value over about 5 ms, since the engine sets them once per tick. A value lasts on the track until the next command of its kind or a note of another instrument. Live playback and render follow them; SoundFont and MIDI output have no filter to move.
+
+  Computed in the engine, as the other effects are, rather than in each voice: render and MIDI export then match live playback, and tempo sync costs nothing. Previews do not play them, as they do not play tables. Mod slots per instrument, the rest of G6, are designed in `docs/dev/g6-modulation.md` and not built.
+
+- **Effects from a newer rtrack load as empty,** with a note naming them, instead of failing the whole file. A song that uses `CUT`, `RES` or `DRV` is saved as format version 3; any other song is still saved as version 2. rtrack 0.2.0 cannot open a version 3 file: it reads the whole file at once and rejects the unknown effect.
+
+- **`ARP` and table steps follow the song's scale.** With a scale and the new Steps setting on, they count scale degrees, as link transpose and Shift+Up/Down already did: in C major `ARP24` plays C E G. Written notes are never snapped. Live playback, render and MIDI export all follow it. TUI: song settings > Steps, `degrees` or `semitones`. GUI: song settings > Steps.
+
+  Steps is saved as `scale_steps`. It is on for new songs and off when missing, so a 0.2.0 song keeps the arpeggios it was written with. rtrack 0.2.0 ignores the field and plays semitones. There is no per-instrument opt-out: only `ARP`, table steps and link transpose move by degree, and each is written for one track or instrument. Design: `docs/dev/g10-scale-playback.md`.
+
+- **Delete a phrase.** TUI: `:pdel` deletes the phrase on view or the cursor track's, `:pdel NN` phrase NN, and Delete in the `:phrases` list the one under the cursor. GUI: Phrases > Delete. Tracks linked to it keep its rows as their own cells, as unlink gives them, and later phrases move down one number. Undoable.
+
+- **TUI: phrase borders.** The separator left of a linked track shows `+` on the first row of each repetition of its phrase, and is blue for aligned links and orange for running ones. A character grid cannot draw the GUI's thin boxes between rows.
+
+- **Linking over a track's own cells says so.** Linking a track to an existing phrase hides its cells, and unlinking replaces them with the phrase rows. The status line now gives the number hidden.
+
+- **Synth parameter edits are undoable,** in both editors. A held key or a slider drag is one step.
+
 ### Fixed
+
+- **Slicing a trimmed sample divided the whole file.** The whole-sample divide now cuts the trim when you set one, and each slice records the span it was cut from (`Sample::sliced_from`), so changing the count re-derives from the same audio, as before. A slice from an older file, named `_Snn`, is taken as cut from the whole file, as it was. Recording the span rather than a sliced flag keeps the trim on the second pass. Design: `docs/dev/slice-provenance.md`.
+
+- **TUI: a narrow terminal cut the header from the right,** dropping the pattern position and track first, and a long title pushed everything off. The header now drops the `rtrack` label, step, octave, clock and Link peer count in that order, then shortens the title, then drops it; tempo, transport, position and track stay.
+
+- **TUI: text was cut off in five popups.** The phrase list lost `Enter:link`, the table editor `Esc`, the synth editor most of its key line, and the help popup, 54 columns wide, the end of many lines. The phrase list and table editor are wider, the synth editor's keys take two lines, and the help is as wide as its widest line (75 columns) where the terminal allows.
+
+- **TUI: an empty sample slot named a flag that does not exist,** `--load-sample <slot> <file.wav>`. It now names `:load` and `--sample <slot>:<file>`.
+
+- **A replugged MIDI device on Linux was not reopened at startup.** ALSA port names end in client and port numbers assigned when the device appears, and the saved name had to match exactly. A name that does not match exactly now matches with those numbers ignored, for the selected port and for ports instruments name.
+
+- **MIDI export ignored track mute, volume and default instrument,** which render and live playback apply. A muted track exported its notes, and track volume did not scale velocity. `export_midi_with_channels` now applies them; `ChannelInfo::for_export` gives render and export the same per-track state.
+
+- **Unlinking a transposed phrase link, or deleting its phrase, changed the track's notes.** The track kept the phrase rows as stored and dropped the transpose, so it played them untransposed. It now keeps them transposed, as they played.
+
+- **MIDI export ignored each track's MIDI channel.** It sent track N on channel N mod 16, while live playback and render use `ChannelConfig::midi_channel`. `TrackerCore::export_midi_to_default` now uses the configured channels, through the new `midi_file::export_midi_with_channels`; `export_midi` keeps its signature and the old mapping.
+
+- **Render dropped pattern `Cnn`.** A CC reached a loaded SoundFont live but not in WAV or FLAC export. Render now sends it to the SoundFont on the track's MIDI channel, as live playback does. SoundFont render is now tested, with a SoundFont built in the test.
+
+- **GUI synth Cutoff, Resonance and Env Amt sliders used the wrong ranges.** Cutoff ran 0-1 and was labelled in Hz, but the engine reads it as a multiple of the note frequency (presets use 1.5-20). An egui slider clamps a value outside its range when drawn, so showing the panel moved a preset's cutoff to the note's fundamental or below. The ranges now come from `SynthParams::CUTOFF_RANGE`, `RESONANCE_RANGE` and `FILTER_ENV_RANGE`, which the TUI uses too. Drawing the panel no longer changes any value.
 
 - **TUI: Save & Quit quit when the save failed,** then deleted the autosave, losing the song. `S` in the quit prompt and `:wq` now quit only after a successful save; the GUI's Save & Quit likewise closes only after one.
 
@@ -32,13 +84,21 @@ All notable changes to rtrack will be documented in this file.
 
 - **Exports saturate the way playback does.** Live output passes through a soft clip that is linear to 0.8 and saturates smoothly above it. The WAV and FLAC writers hard-clipped at full scale instead, so a mix that sounded fine played back was clipped in the exported file.
 
-- **External MIDI clock plays at the sender's tempo.** An engine tick is one MIDI clock (24 per beat), and clock output sends at that rate, but clock input advanced one tick every `24 / speed` pulses: at speed 6 a row took a beat instead of a quarter, so a slaved song ran four times slow. Each incoming pulse is now one tick. `PlaybackTiming::ext_clock_count` is unused; it stays until 0.3.0 so the public struct does not change.
+- **External MIDI clock plays at the sender's tempo.** An engine tick is one MIDI clock (24 per beat), and clock output sends at that rate, but clock input advanced one tick every `24 / speed` pulses: at speed 6 a row took a beat instead of a quarter, so a slaved song ran four times slow. Each incoming pulse is now one tick, and `PlaybackTiming::ext_clock_count`, which counted pulses, is removed.
 
 - **Saving a file from a newer rtrack deleted what this version could not read.** It loads with unknown fields dropped, so saving over it lost them. `TrackerCore::save` now refuses while the song came from such a file, and `TrackerCore::needs_save_as` says so. GUI Save opens Save As. In the TUI, `:w <path>` saves a copy. Save As to the same file is refused as well.
 
 - **The track filter ran away at full resonance.** Its damping reached 0 at resonance 1.0, so it rang forever and grew without bound on input near the cutoff. `SvfCoeffs` now caps resonance at 0.95, the limit voice filters already had, and a non-finite state resets the filter.
 
 ### Changed
+
+- **Version 0.3.0 across the workspace, including the internal `rtrack-core` pins.** A minor bump: `rtrack-core`'s public API changed. `TrackerEvent` gains `Timbre` and `NoteOn.chord`, `Route::External` gains `port`, `ChannelState` gains fields, and `Sample` and `SampleRef` gain `sliced_from`; code that matches these exhaustively or builds them with struct literals needs updating. rtrack 0.2.0 cannot open a song that uses `CUT`, `RES`, `DRV` or `CHD` (format version 3).
+
+- **Fuzz targets for the `.rtrk`, MIDI, WAV and AIFF parsers,** in `fuzz/`, run by `make fuzz` (`FUZZ_SECS` seconds each; needs nightly and `cargo-fuzz`, so CI does not run it). Each target writes its input to a temp file and calls the loader the editor uses; the song target skips loading the samples a file names, since those could be any local file. Two minutes per target, 3.07 million runs in all, found nothing.
+
+- **`TrackerCore::record_song_edit` and `record_bank_edit` record a frontend's gesture as an undo step,** keyed by an optional `EditSource` so a drag folds into one step. Both frontends' slider, drag and dialog edits now go through them instead of pushing to `TrackerCore::history` directly. `phrase_spans` moved from the GUI to `rtrack_core::editor` so the TUI can use it.
+
+- **The ten hand-written examples no longer contain the obsolete `"swing"` field.**
 
 - **`cargo audit` ignores RUSTSEC-2026-0370/0371/0372.** `zvariant`, `zbus_names` and `zvariant_derive` are unmaintained since their merge into zbus 6. They arrive through zbus 5 from `accesskit_unix` (eframe) and `ashpd` (rfd), whose latest releases still require zbus 5. Ignored rather than removed: removing them means dropping the accessibility bridge or the portal file dialog.
 

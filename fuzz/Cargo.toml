@@ -1,0 +1,45 @@
+[package]
+name = "rtrack-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rtrack-core = { path = "../rtrack-core" }
+
+# Its own workspace, so the nightly-only fuzz build stays out of the
+# stable workspace and CI.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "rtrk"
+path = "fuzz_targets/rtrk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "midi"
+path = "fuzz_targets/midi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wav"
+path = "fuzz_targets/wav.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "aiff"
+path = "fuzz_targets/aiff.rs"
+test = false
+doc = false
+bench = false

@@ -2,10 +2,11 @@ use super::{Sample, SampleBank};
 use crate::audio::envelope::Envelope;
 use crate::audio::svf::{Svf, SvfCoeffs};
 use crate::audio::synth::FilterType;
+use crate::audio::timbre::TimbreGlide;
 use crate::constants::{
     MIDI_MAX_VALUE, SAMPLE_DECLICK_SECS, SAMPLE_INAUDIBLE_LEVEL, SEMITONES_PER_OCTAVE,
 };
-use crate::types::SampleFx;
+use crate::types::{SampleFx, Timbre};
 
 /// Type alias for backward compatibility (previously a separate struct)
 pub type SampleEnvelope = Envelope;
@@ -27,41 +28,97 @@ pub enum NewNoteAction {
 }
 
 /// A voice's drive and filter, set up from its instrument's [`SampleFx`]
-/// at note-on. Values from a file are clamped here, where they reach audio.
-#[derive(Debug, Clone, Copy, Default)]
+/// at note-on and moved by its channel's [`Timbre`]. Values from a file are
+/// clamped here, where they reach audio.
+#[derive(Debug, Clone, Copy)]
 pub struct VoiceFx {
-    drive: Option<f32>,
-    filter: Option<(FilterType, SvfCoeffs)>,
+    /// The instrument's drive; 1.0 or less is off.
+    drive: f32,
+    /// Kind, the instrument's cutoff and resonance, and the coefficients
+    /// for them under `applied`.
+    filter: Option<(FilterType, f32, f32, SvfCoeffs)>,
     svf: [Svf; 2],
+    glide: TimbreGlide,
+    /// The timbre `drive` and the coefficients were last worked out for.
+    applied: Timbre,
+    /// Frames since the coefficients were last worked out.
+    frame: u8,
+    output_rate: f32,
 }
+
+/// Frames between coefficient updates while a timbre glides.
+const TIMBRE_UPDATE_FRAMES: u8 = 16;
 
 impl VoiceFx {
     pub fn new(fx: &SampleFx, output_rate: f64) -> Self {
+        Self::with_timbre(fx, output_rate, Timbre::default())
+    }
+
+    /// [`Self::new`], starting at the channel's `timbre`.
+    pub fn with_timbre(fx: &SampleFx, output_rate: f64, timbre: Timbre) -> Self {
+        let rate = output_rate as f32;
         // `NaN > 1.0` is false, so a non-number is off.
-        let drive = (fx.drive > 1.0).then(|| fx.drive.min(SampleFx::MAX_DRIVE));
+        let drive = if fx.drive > 1.0 {
+            fx.drive.min(SampleFx::MAX_DRIVE)
+        } else {
+            1.0
+        };
         let filter = fx.filter.map(|f| {
             let finite = |v: f32, or: f32| if v.is_finite() { v } else { or };
             let cutoff = finite(f.cutoff_hz, 20000.0).clamp(20.0, 20000.0);
+            let resonance = finite(f.resonance, 0.0);
             (
                 f.kind,
-                SvfCoeffs::new(cutoff, f.resonance, output_rate as f32),
+                cutoff,
+                resonance,
+                Self::coeffs(cutoff, resonance, timbre, rate),
             )
         });
         Self {
             drive,
             filter,
             svf: [Svf::default(); 2],
+            glide: TimbreGlide::at(timbre, rate),
+            applied: timbre,
+            frame: 0,
+            output_rate: rate,
         }
+    }
+
+    fn coeffs(cutoff: f32, resonance: f32, timbre: Timbre, rate: f32) -> SvfCoeffs {
+        let cutoff = if timbre.cutoff == 0.0 {
+            cutoff
+        } else {
+            (cutoff * timbre.cutoff.exp2()).clamp(20.0, 20000.0)
+        };
+        SvfCoeffs::new(cutoff, resonance + timbre.resonance, rate)
+    }
+
+    /// Glide towards `timbre`.
+    pub fn set_timbre(&mut self, timbre: Timbre) {
+        self.glide.set_target(timbre);
     }
 
     /// Drive, then filter, one stereo frame.
     #[inline]
     fn process(&mut self, mut l: f32, mut r: f32) -> (f32, f32) {
-        if let Some(drive) = self.drive {
+        let timbre = self.glide.advance();
+        if timbre != self.applied {
+            self.frame += 1;
+            if self.frame >= TIMBRE_UPDATE_FRAMES || self.glide.settled() {
+                self.frame = 0;
+                self.applied = timbre;
+                if let Some((_, cutoff, resonance, c)) = &mut self.filter {
+                    *c = Self::coeffs(*cutoff, *resonance, timbre, self.output_rate);
+                }
+            }
+        }
+        let drive = self.applied.scale_drive(self.drive);
+        if drive > 1.0 {
             l = (l * drive).tanh();
             r = (r * drive).tanh();
         }
-        if let Some((kind, c)) = &self.filter {
+        if let Some((kind, _, _, c)) = &self.filter {
             l = self.svf[0].tick_kind(c, *kind, l);
             r = self.svf[1].tick_kind(c, *kind, r);
         }
@@ -234,6 +291,8 @@ fn render_voice(
 pub struct SamplePlaybackEngine {
     pub voices: Vec<SampleVoice>,
     pub max_voices: usize,
+    /// Each channel's timbre, which its next voice starts at.
+    timbre: [Timbre; 16],
 }
 
 impl SamplePlaybackEngine {
@@ -241,6 +300,17 @@ impl SamplePlaybackEngine {
         Self {
             voices: Vec::with_capacity(max_voices),
             max_voices,
+            timbre: [Timbre::default(); 16],
+        }
+    }
+
+    /// Move the filter and drive of `channel`'s voices, and of its next ones.
+    pub fn set_channel_timbre(&mut self, channel: u8, timbre: Timbre) {
+        self.timbre[(channel & 0x0F) as usize] = timbre;
+        for voice in &mut self.voices {
+            if voice.active && voice.channel == channel {
+                voice.fx.set_timbre(timbre);
+            }
         }
     }
 
@@ -325,7 +395,7 @@ impl SamplePlaybackEngine {
             active: true,
             envelope: Envelope::sample_default(output_rate as f32),
             looped: false,
-            fx: VoiceFx::new(fx, output_rate),
+            fx: VoiceFx::with_timbre(fx, output_rate, self.timbre[(channel & 0x0F) as usize]),
         });
     }
 
@@ -518,6 +588,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }
     }
 
@@ -711,6 +782,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
 
         let sample = bank.get(0).unwrap();
@@ -741,6 +813,7 @@ mod tests {
             loop_start: 2,
             loop_end: 8,
             source_path: None,
+            sliced_from: None,
         }));
 
         let sample = bank.get(0).unwrap();
@@ -1016,6 +1089,7 @@ mod tests {
             loop_start: 0,
             loop_end: 1000,
             source_path: None,
+            sliced_from: None,
         }));
         let sample = bank.get(0).unwrap();
         let mut engine = SamplePlaybackEngine::new(16);

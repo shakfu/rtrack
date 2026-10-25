@@ -18,10 +18,14 @@ pub enum Route<'a> {
     /// The channel's current voice: SF2 if loaded, else the built-in synth
     /// with the channel's current program.
     ChannelVoice,
-    /// The selected MIDI port only, on `channel` when the instrument
-    /// overrides the track's. Without a selected port, as in offline render,
-    /// it plays as `Preset` with the same program.
-    External { program: u8, channel: Option<u8> },
+    /// The selected MIDI port, or the port named by `port`, only; on
+    /// `channel` when the instrument overrides the track's. Without that
+    /// port, as in offline render, it plays as `Preset` with the same program.
+    External {
+        program: u8,
+        channel: Option<u8>,
+        port: Option<&'a str>,
+    },
     /// Nothing: a sample instrument whose sample is not loaded.
     Silent,
 }
@@ -45,10 +49,11 @@ pub fn route<'a>(inst: Option<&'a Instrument>, explicit: bool, bank: &SampleBank
         InstrumentKind::Midi {
             program,
             channel,
-            output: MidiOutput::External { .. },
+            output: MidiOutput::External { port },
         } => Route::External {
             program: *program,
             channel: *channel,
+            port: port.as_deref(),
         },
         InstrumentKind::Midi { program, .. } => Route::Preset(*program),
     }
@@ -73,6 +78,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }));
         bank
     }
@@ -113,7 +119,8 @@ mod tests {
             route(Some(&external), true, &bank),
             Route::External {
                 program: 0,
-                channel: None
+                channel: None,
+                port: None
             }
         );
     }

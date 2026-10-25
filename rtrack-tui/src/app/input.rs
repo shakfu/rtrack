@@ -7,7 +7,7 @@ use super::{App, Mode, SampleField, SettingsField, SubColumn};
 use rtrack_core::constants::*;
 use rtrack_core::theory::ScaleSetting;
 use rtrack_core::tracker::{Fx, Note, Song};
-use rtrack_core::{InstrumentKind, MidiOutput};
+use rtrack_core::InstrumentKind;
 
 impl App {
     // -- Song settings dialog --
@@ -40,6 +40,7 @@ impl App {
                 Some(sc) => sc.display(),
                 None => "off".to_string(),
             },
+            SettingsField::Steps => super::steps_text(self.core.song.scale_steps).to_string(),
         }
     }
 
@@ -133,6 +134,25 @@ impl App {
                     ));
                 }
             },
+            SettingsField::Steps => {
+                let text = self.dialogs.settings_edit_buf.trim().to_ascii_lowercase();
+                let degrees = match text.as_str() {
+                    "d" | "deg" | "degrees" => Some(true),
+                    "s" | "semi" | "semitones" => Some(false),
+                    _ => None,
+                };
+                match degrees {
+                    Some(d) if d != self.core.song.scale_steps => {
+                        self.core.begin_edit();
+                        self.core.song.scale_steps = d;
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.status_message =
+                            Some(format!("Steps: \"degrees\" or \"semitones\", not {text}"))
+                    }
+                }
+            }
         }
     }
 
@@ -399,6 +419,11 @@ impl App {
                 self.mode = Mode::Normal;
                 self.link_cursor_column(Some(cursor));
             }
+            KeyCode::Delete if cursor < count => {
+                self.delete_phrase(cursor);
+                let count = self.core.song.phrases.len();
+                self.dialogs.phrase_cursor = cursor.min(count.saturating_sub(1));
+            }
             KeyCode::Char(c) if cursor < count && !ctrl => {
                 self.core.begin_edit();
                 self.core.song.phrases[cursor].name.push(c);
@@ -504,17 +529,45 @@ impl App {
             .pattern_at(pos)
             .and_then(|p| p.link(ch))
             .map_or(PhraseTiming::Aligned, |l| l.timing);
+        // A new phrase copies the cells, so only an existing one hides them.
+        let hidden = phrase.map_or(0, |_| self.core.song.own_cells(pos, ch));
         self.core.begin_edit();
         let linked = match phrase {
             Some(i) => self.core.song.link_column(pos, ch, i, timing).then_some(i),
             None => self.core.song.link_new_phrase(pos, ch, timing),
         };
         self.status_message = Some(match linked {
+            Some(i) if hidden > 0 => format!(
+                "Track {} plays phrase {i:02X}; it hides {hidden} of the track's own cells, \
+                 which :unlink replaces (undo restores them)",
+                ch + 1
+            ),
             Some(i) => format!("Track {} plays phrase {i:02X}", ch + 1),
             None => {
                 self.core.cancel_edit();
                 "No such phrase".to_string()
             }
+        });
+    }
+
+    /// Delete phrase `phrase`; tracks linked to it keep its rows.
+    fn delete_phrase(&mut self, phrase: usize) {
+        self.core.begin_edit();
+        let Some(unlinked) = self.core.song.delete_phrase(phrase) else {
+            self.core.cancel_edit();
+            self.status_message = Some(format!("No phrase {phrase:02X}"));
+            return;
+        };
+        if let Some(mut view) = self.phrase_view {
+            if view.phrase_deleted(phrase) {
+                self.phrase_view = Some(view);
+            } else {
+                self.close_phrase_view();
+            }
+        }
+        self.status_message = Some(match unlinked {
+            0 => format!("Deleted phrase {phrase:02X}"),
+            n => format!("Deleted phrase {phrase:02X}; {n} linked tracks keep its rows"),
         });
     }
 
@@ -585,7 +638,7 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::F(7) => self.close_instrument_list(),
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.edit_midi_instrument(MidiEdit::ToggleOutput);
+                self.edit_midi_instrument(MidiEdit::NextOutput);
             }
             KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let step = if key.code == KeyCode::Left { -1 } else { 1 };
@@ -656,17 +709,10 @@ impl App {
             return;
         };
         self.status_message = Some(match edit {
-            MidiEdit::ToggleOutput => {
-                *output = if output.is_builtin() {
-                    MidiOutput::External { port: None }
-                } else {
-                    MidiOutput::Builtin
-                };
-                if output.is_builtin() {
-                    "Plays built in".to_string()
-                } else {
-                    "Plays on the selected MIDI port".to_string()
-                }
+            MidiEdit::NextOutput => {
+                let listed = rtrack_core::midi::MidiEngine::list_ports().unwrap_or_default();
+                *output = output.next(&listed);
+                format!("Plays {}", output.describe())
             }
             MidiEdit::Program(step) => {
                 *program = (*program as i32 + step).rem_euclid(128) as u8;
@@ -971,9 +1017,11 @@ impl App {
             }
             KeyCode::Tab => {
                 self.dialogs.synth_editor_field = self.dialogs.synth_editor_field.next();
+                self.break_edit_coalescing();
             }
             KeyCode::BackTab => {
                 self.dialogs.synth_editor_field = self.dialogs.synth_editor_field.prev();
+                self.break_edit_coalescing();
             }
             KeyCode::Up => {
                 self.adjust_synth_field(slot, 1);
@@ -989,8 +1037,9 @@ impl App {
             }
             KeyCode::Delete => {
                 // Clear custom synth params (revert to the slot's preset)
+                let before = self.core.snapshot_samples();
                 self.core.instruments[slot].kind = rtrack_core::InstrumentKind::default_for(slot);
-                self.core.dirty = true;
+                self.core.record_bank_edit(None, before);
                 self.status_message = Some("Synth params cleared (using preset)".to_string());
                 self.mode = self.prev_mode;
             }
@@ -1002,6 +1051,9 @@ impl App {
         use crate::app::SynthField;
         use rtrack_core::audio::synth::Patch;
 
+        let before = self.core.snapshot_samples();
+        let field = self.dialogs.synth_editor_field;
+        let was = self.core.instruments[slot].synth_params().cloned();
         if let Some(params) = self.core.instruments[slot].synth_params_mut() {
             match self.dialogs.synth_editor_field {
                 SynthField::Waveform => {
@@ -1025,15 +1077,19 @@ impl App {
                         .clamp(1.0, rtrack_core::SampleFx::MAX_DRIVE);
                 }
                 SynthField::FilterCutoff => {
+                    let r = rtrack_core::audio::synth::SynthParams::CUTOFF_RANGE;
                     params.filter_cutoff =
-                        (params.filter_cutoff + delta as f32 * 0.1).clamp(0.1, 40.0);
+                        (params.filter_cutoff + delta as f32 * 0.1).clamp(*r.start(), *r.end());
                 }
                 SynthField::FilterResonance => {
+                    let r = rtrack_core::audio::synth::SynthParams::RESONANCE_RANGE;
                     params.filter_resonance =
-                        (params.filter_resonance + delta as f32 * 0.01).clamp(0.0, 0.95);
+                        (params.filter_resonance + delta as f32 * 0.01).clamp(*r.start(), *r.end());
                 }
                 SynthField::FilterEnv => {
-                    params.filter_env = (params.filter_env + delta as f32 * 0.1).clamp(0.0, 8.0);
+                    let r = rtrack_core::audio::synth::SynthParams::FILTER_ENV_RANGE;
+                    params.filter_env =
+                        (params.filter_env + delta as f32 * 0.1).clamp(*r.start(), *r.end());
                 }
                 SynthField::Detune => {
                     params.detune = (params.detune + delta as f32 * 0.1).clamp(0.0, 50.0);
@@ -1063,6 +1119,12 @@ impl App {
                         (params.pulse_width + delta as f32 * 0.01).clamp(0.05, 0.95);
                 }
             }
+        }
+        if self.core.instruments[slot].synth_params() != was.as_ref() {
+            self.record_sample_field_edit(
+                rtrack_core::editor::EditSource::new(field.undo_control(), slot),
+                before,
+            );
         }
     }
 
@@ -1767,6 +1829,29 @@ impl App {
                 self.mode = self.prev_mode;
                 self.unlink_cursor_column();
             }
+            "pdel" => {
+                self.mode = Mode::Normal;
+                let shown = self.phrase_view.map(|v| v.phrase).or_else(|| {
+                    let pos = self.current_order_position();
+                    let link = self.core.song.pattern_at(pos)?.link(self.cursor_channel);
+                    link.map(|l| l.phrase)
+                });
+                match shown {
+                    Some(i) => self.delete_phrase(i),
+                    None => {
+                        self.status_message =
+                            Some("No phrase on view or linked here; use :pdel NN".to_string())
+                    }
+                }
+            }
+            _ if cmd.starts_with("pdel ") => {
+                self.mode = Mode::Normal;
+                let arg = cmd["pdel ".len()..].trim();
+                match usize::from_str_radix(arg, 16) {
+                    Ok(i) => self.delete_phrase(i),
+                    Err(_) => self.status_message = Some(format!("Not a phrase number: {arg}")),
+                }
+            }
             "run" => {
                 self.mode = self.prev_mode;
                 self.toggle_cursor_link_timing();
@@ -2338,6 +2423,17 @@ impl App {
     }
 
     fn handle_insert_key(&mut self, key: KeyEvent) {
+        // A piano key comes first on the note column, so a layout whose
+        // keys include `-` (AZERTY) enters a note rather than an octave.
+        if let KeyCode::Char(c) = key.code {
+            let plain = !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+            if plain && self.cursor_sub == SubColumn::Note && self.piano.piano_key(c).is_some() {
+                self.try_enter_note(c);
+                return;
+            }
+        }
         if self.handle_common_key(key) {
             return;
         }
@@ -2424,9 +2520,7 @@ impl App {
     }
 
     fn try_enter_note(&mut self, c: char) {
-        let Some((value, octave)) =
-            rtrack_core::keymap::piano_key_at_octave(c, self.current_octave)
-        else {
+        let Some((value, octave)) = self.piano.piano_key_at_octave(c, self.current_octave) else {
             return;
         };
         let note = self.core.song.snap_entry(Note::On { value, octave });
@@ -2818,7 +2912,8 @@ impl App {
 
 /// A change [`App::edit_midi_instrument`] makes.
 enum MidiEdit {
-    ToggleOutput,
+    /// Built in, the selected port, then each listed port.
+    NextOutput,
     Program(i32),
     Channel(i32),
 }

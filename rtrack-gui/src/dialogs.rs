@@ -278,7 +278,7 @@ impl RtrackApp {
                     ui.label("No phrases yet.");
                 }
                 let shown = self.phrase_view.map(|v| v.phrase);
-                egui::Grid::new("phrase_grid").num_columns(6).show(ui, |ui| {
+                egui::Grid::new("phrase_grid").num_columns(7).show(ui, |ui| {
                     for i in 0..self.core.song.phrases.len() {
                         // The number the track headers show, marked when
                         // it is the cursor track's phrase or the one on view.
@@ -312,6 +312,13 @@ impl RtrackApp {
                         }
                         if ui.button("Link track").clicked() {
                             action = Some(PhraseAction::Link(i));
+                        }
+                        if ui
+                            .button("Delete")
+                            .on_hover_text("Tracks linked to it keep its rows as their own cells")
+                            .clicked()
+                        {
+                            action = Some(PhraseAction::Delete(i));
                         }
                         ui.end_row();
                     }
@@ -349,7 +356,14 @@ impl RtrackApp {
                 self.core.song.link_new_phrase(pos, ch, timing);
             }
             PhraseAction::Link(i) => {
-                self.core.song.link_column(pos, ch, i, timing);
+                let hidden = self.core.song.own_cells(pos, ch);
+                if self.core.song.link_column(pos, ch, i, timing) && hidden > 0 {
+                    self.status_message = Some(format!(
+                        "Track {} plays phrase {i:02X}; it hides {hidden} of the track's own \
+                         cells, which Unlink replaces (undo restores them)",
+                        ch + 1
+                    ));
+                }
             }
             PhraseAction::Unlink => {
                 self.core.song.unlink_column(pos, ch);
@@ -374,6 +388,22 @@ impl RtrackApp {
                 self.core.song.resize_phrase(i, len);
                 self.clamp_cursor_to_song();
                 return self.record_settings_edit("phrase length", before);
+            }
+            PhraseAction::Delete(i) => {
+                let Some(unlinked) = self.core.song.delete_phrase(i) else {
+                    return;
+                };
+                if let Some(mut view) = self.phrase_view {
+                    if view.phrase_deleted(i) {
+                        self.phrase_view = Some(view);
+                    } else {
+                        self.close_phrase_view();
+                    }
+                }
+                self.status_message = Some(match unlinked {
+                    0 => format!("Deleted phrase {i:02X}"),
+                    n => format!("Deleted phrase {i:02X}; {n} linked tracks keep its rows"),
+                });
             }
             PhraseAction::Show(_)
             | PhraseAction::Step(_)
@@ -616,6 +646,21 @@ impl RtrackApp {
                                 self.record_settings_edit("song.scale", before);
                             }
                         });
+                        ui.end_row();
+
+                        ui.label("Steps:");
+                        let mut degrees = self.core.song.scale_steps;
+                        let toggle = ui
+                            .add_enabled(
+                                self.core.song.scale.is_some(),
+                                egui::Checkbox::new(&mut degrees, "ARP and table steps follow the scale"),
+                            )
+                            .on_hover_text("On: ARP24 in C major plays C E G. Off: semitones, ARP47.");
+                        if toggle.changed() {
+                            let before = self.core.song.clone();
+                            self.core.song.scale_steps = degrees;
+                            self.record_settings_edit("song.scale_steps", before);
+                        }
                         ui.end_row();
 
                         // Rows per pattern (current pattern)
@@ -1373,6 +1418,8 @@ pub(crate) enum PhraseAction {
     Transpose(i8),
     Rename(usize, String),
     Resize(usize, usize),
+    /// Delete phrase n; tracks linked to it keep its rows.
+    Delete(usize),
     /// Show phrase n in the grid.
     Show(usize),
     /// Show the next (true) or previous phrase.

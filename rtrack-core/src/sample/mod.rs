@@ -17,12 +17,11 @@ use dasp::Sample as DaspSample;
 /// slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliceRange {
-    /// The whole buffer, ignoring the slot's current span. Applying this
-    /// repeatedly at different counts always divides the same audio, which
-    /// is what a slice-count control needs.
-    ///
-    /// Note that this also ignores a trim the user set by hand on an
-    /// unsliced sample; see `Span` for the other reading.
+    /// What slicing divided to make this slot (`Sample::sliced_from`), or
+    /// the slot's span if slicing did not make it: a trimmed sample divides
+    /// its trim, an untrimmed one the whole file. Applying this repeatedly at
+    /// different counts always divides the same audio, which is what a
+    /// slice-count control needs.
     Source,
     /// The slot's own span, so subdividing a slice nests inside it.
     Span,
@@ -67,6 +66,10 @@ pub struct Sample {
     pub loop_end: usize,
     /// Original file path this sample was loaded from (for saving/reloading)
     pub source_path: Option<String>,
+    /// The span slicing divided to make this slot, if slicing made it.
+    /// `SliceRange::Source` divides it again, so a new count cuts the same
+    /// audio (`docs/dev/slice-provenance.md`).
+    pub sliced_from: Option<(usize, usize)>,
 }
 
 impl Sample {
@@ -104,7 +107,12 @@ impl Sample {
     /// The frame range a slicing operation covers, per [`SliceRange`].
     pub fn slice_bounds(&self, range: SliceRange) -> (usize, usize) {
         match range {
-            SliceRange::Source => (0, self.data.len()),
+            // What slicing divided before, or else the span: the whole file
+            // unless the user trimmed it.
+            SliceRange::Source => match self.sliced_from {
+                Some((start, end)) => (start.min(self.data.len()), end.min(self.data.len())),
+                None => (self.trim_start, self.end()),
+            },
             SliceRange::Span => (self.trim_start, self.end()),
         }
     }
@@ -555,6 +563,7 @@ fn load_wav(path: &Path) -> Result<Sample> {
         loop_start: 0,
         loop_end: 0,
         source_path: Some(source),
+        sliced_from: None,
     })
 }
 
@@ -730,6 +739,7 @@ fn load_aiff(path: &Path) -> Result<Sample> {
         loop_start: 0,
         loop_end: 0,
         source_path: Some(source),
+        sliced_from: None,
     })
 }
 
@@ -837,6 +847,7 @@ pub fn slice_equal(sample: &Sample, num_slices: usize, range: SliceRange) -> Vec
                 loop_start: 0,
                 loop_end: 0,
                 source_path: sample.source_path.clone(),
+                sliced_from: Some((start, end)),
             }
         })
         .collect()
@@ -1005,6 +1016,7 @@ struct PlanKey {
     data: Arc<[[f32; 2]]>,
     trim_start: usize,
     end: usize,
+    sliced_from: Option<(usize, usize)>,
     sample_rate: u64,
     count: usize,
     sensitivity: u32,
@@ -1015,8 +1027,17 @@ struct PlanKey {
 impl PlanKey {
     fn same_as(&self, other: &PlanKey) -> bool {
         Arc::ptr_eq(&self.data, &other.data)
-            && (self.trim_start, self.end, self.sample_rate)
-                == (other.trim_start, other.end, other.sample_rate)
+            && (
+                self.trim_start,
+                self.end,
+                self.sliced_from,
+                self.sample_rate,
+            ) == (
+                other.trim_start,
+                other.end,
+                other.sliced_from,
+                other.sample_rate,
+            )
             && (
                 self.count,
                 self.sensitivity,
@@ -1045,6 +1066,7 @@ impl SlicePlanCache {
             data: Arc::clone(&sample.data),
             trim_start: sample.trim_start,
             end: sample.end(),
+            sliced_from: sample.sliced_from,
             sample_rate: sample.sample_rate.to_bits(),
             count,
             sensitivity: sensitivity.to_bits(),
@@ -1069,7 +1091,7 @@ pub fn slice_at_points(sample: &Sample, points: &[usize], range: SliceRange) -> 
     if points.is_empty() {
         return Vec::new();
     }
-    let (_, end) = sample.slice_bounds(range);
+    let (start, end) = sample.slice_bounds(range);
     let base_name = slice_base_name(sample, range);
     let mut slices = Vec::with_capacity(points.len());
     for (i, &p) in points.iter().enumerate() {
@@ -1094,6 +1116,7 @@ pub fn slice_at_points(sample: &Sample, points: &[usize], range: SliceRange) -> 
             loop_start: 0,
             loop_end: 0,
             source_path: sample.source_path.clone(),
+            sliced_from: Some((start, end)),
         });
     }
     slices
@@ -1122,6 +1145,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }
     }
 
@@ -1452,6 +1476,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         assert_eq!(sample.end(), 100);
         assert_eq!(sample.len(), 100);
@@ -1470,10 +1495,12 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         assert_eq!(sample.end(), 50);
     }
 
+    /// A slice cut from the whole of a `len`-frame file, as slicing makes it.
     fn slice_of(len: usize, trim_start: usize, trim_end: usize) -> Sample {
         Sample {
             name: "slice".into(),
@@ -1486,7 +1513,43 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: Some((0, len)),
         }
+    }
+
+    #[test]
+    fn a_hand_trimmed_sample_slices_inside_its_trim_and_reslices_the_same_audio() {
+        let trimmed = Sample {
+            sliced_from: None,
+            ..slice_of(1000, 400, 700)
+        };
+        assert_eq!(trimmed.slice_bounds(SliceRange::Source), (400, 700));
+        let pieces = slice_equal(&trimmed, 3, SliceRange::Source);
+        assert_eq!((pieces[0].trim_start, pieces[2].end()), (400, 700));
+        assert!(pieces.iter().all(|p| p.sliced_from == Some((400, 700))));
+
+        // A new count from the first slice divides the same trim again.
+        let again = slice_equal(&pieces[0], 2, SliceRange::Source);
+        assert_eq!((again[0].trim_start, again[1].end()), (400, 700));
+        // A slice divided by `Span` re-slices inside itself.
+        let inner = slice_equal(&pieces[0], 2, SliceRange::Span);
+        assert_eq!(inner[0].sliced_from, Some((400, 500)));
+        let inner_again = slice_equal(&inner[0], 4, SliceRange::Source);
+        assert_eq!(
+            (inner_again[0].trim_start, inner_again[3].end()),
+            (400, 500)
+        );
+    }
+
+    #[test]
+    fn transient_slices_record_what_they_divided() {
+        let trimmed = Sample {
+            sliced_from: None,
+            ..slice_of(1000, 100, 900)
+        };
+        let pieces = slice_at_points(&trimmed, &[100, 500], SliceRange::Source);
+        assert_eq!(pieces.len(), 2);
+        assert!(pieces.iter().all(|p| p.sliced_from == Some((100, 900))));
     }
 
     #[test]
@@ -1637,6 +1700,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         assert_eq!(sample.frame_at(0), [1.0, -1.0]);
         assert_eq!(sample.frame_at(1), [0.0, 0.0]); // out of bounds = silence
@@ -1917,6 +1981,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         }
     }
 
@@ -2003,6 +2068,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         let points = detect_transients(&sample, 0.5);
         assert_eq!(points.len(), 1); // just the start
@@ -2032,6 +2098,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         let points = detect_transients(&sample, 0.5);
         // Should detect at least the initial point and the two bursts
@@ -2066,6 +2133,7 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             source_path: None,
+            sliced_from: None,
         };
         let low = detect_transients(&sample, 0.2);
         let high = detect_transients(&sample, 0.9);

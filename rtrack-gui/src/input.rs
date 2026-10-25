@@ -4,7 +4,7 @@ use rtrack_core::midi::MidiInputEvent;
 use rtrack_core::tracker::{Cell, Fx, Note, Sheet};
 
 use crate::app::RtrackApp;
-use crate::history::{CellEdit, Edit};
+use crate::history::CellEdit;
 use crate::state::{Mode, SubColumn};
 
 impl RtrackApp {
@@ -114,8 +114,9 @@ impl RtrackApp {
                 actions.push(Action::TransposeDown);
             }
 
-            // Octave
-            if input.key_pressed(Key::Minus) {
+            // Octave, unless the layout enters a note with `-` (AZERTY)
+            let entering = self.mode == Mode::Insert && self.cursor_sub == SubColumn::Note;
+            if input.key_pressed(Key::Minus) && !(entering && self.piano.piano_key('-').is_some()) {
                 actions.push(Action::OctaveDown);
             }
             if input.key_pressed(Key::Plus) || (shift && input.key_pressed(Key::Equals)) {
@@ -888,14 +889,10 @@ impl RtrackApp {
         control: &'static str,
         before: rtrack_core::tracker::Song,
     ) {
-        self.core.history.push_from(
-            rtrack_core::editor::EditSource::new(control, 0),
-            Edit::Structure(Box::new(rtrack_core::editor::StructureEdit {
-                before,
-                after: self.core.song.clone(),
-            })),
+        self.core.record_song_edit(
+            Some(rtrack_core::editor::EditSource::new(control, 0)),
+            before,
         );
-        self.core.dirty = true;
     }
 
     /// End a run of coalescing, so the next edit to the same control starts a
@@ -926,10 +923,7 @@ impl RtrackApp {
     /// Record a structural change against the song `begin_structural_edit`
     /// returned.
     pub(crate) fn end_structural_edit(&mut self, before: rtrack_core::tracker::Song) {
-        self.core
-            .history
-            .push_structure(before, self.core.song.clone());
-        self.core.dirty = true;
+        self.core.record_song_edit(None, before);
     }
 
     /// Bring the cursor and the visible channel window inside the song.
@@ -1084,9 +1078,7 @@ impl RtrackApp {
     }
 
     fn try_enter_note(&mut self, c: char) {
-        let Some((value, octave)) =
-            rtrack_core::keymap::piano_key_at_octave(c, self.current_octave)
-        else {
+        let Some((value, octave)) = self.piano.piano_key_at_octave(c, self.current_octave) else {
             return;
         };
         let note = self.core.song.snap_entry(Note::On { value, octave });
@@ -2047,6 +2039,66 @@ mod tests {
         assert_eq!(link(&a), None);
         a.apply_undo();
         assert!(link(&a).is_some());
+    }
+
+    #[test]
+    fn deleting_a_linked_phrase_keeps_its_rows_and_undoes() {
+        use crate::dialogs::PhraseAction;
+        let mut a = app();
+        a.apply_phrase_action(PhraseAction::LinkNew);
+        a.core.song.phrases[0].rows[2].volume = Some(4);
+        a.open_phrase_view(Some(0));
+
+        a.apply_phrase_action(PhraseAction::Delete(0));
+        assert!(a.core.song.phrases.is_empty());
+        assert!(a.phrase_view.is_none());
+        let pos = a.edit_order;
+        assert_eq!(a.core.song.pattern_at(pos).unwrap().link(0), None);
+        assert_eq!(a.core.song.cell_at(pos, 2, 0).volume, Some(4));
+
+        a.apply_undo();
+        assert_eq!(a.core.song.phrases.len(), 1);
+        assert!(a.core.song.pattern_at(pos).unwrap().link(0).is_some());
+    }
+
+    #[test]
+    fn an_azerty_minus_enters_a_note_not_an_octave() {
+        use rtrack_core::keymap::PianoLayout;
+        let press_minus = |a: &mut RtrackApp| {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                events: vec![
+                    egui::Event::Key {
+                        key: Key::Minus,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::Text("-".into()),
+                ],
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| a.process_keys(ui.ctx()))
+                .drop_without_applying_deltas();
+        };
+        let mut a = app();
+        a.mode = Mode::Insert;
+        a.piano = PianoLayout::Azerty;
+        press_minus(&mut a);
+        assert_eq!(a.current_octave, 4);
+        assert_eq!(
+            a.core.song.cell_at(a.edit_order, 0, 0).note,
+            Some(Note::On {
+                value: NoteValue::Gs,
+                octave: 5
+            })
+        );
+
+        let mut a = app();
+        a.mode = Mode::Insert;
+        press_minus(&mut a);
+        assert_eq!(a.current_octave, 3, "QWERTY keeps - for the octave");
     }
 
     /// Run one egui pass in which `focus` is drawn and given keyboard focus,

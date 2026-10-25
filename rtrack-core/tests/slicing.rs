@@ -612,3 +612,110 @@ fn a_slice_set_starts_at_its_first_contiguous_slice() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_hand_trim_is_sliced_kept_through_a_save_and_resliced_the_same() {
+    let (dir, wav) = workspace_with_amen("hand_trim");
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    let len = core.sample_bank.get(0).unwrap().len();
+    let (start, end) = (len / 4, len / 2);
+    let mut bank = (*core.sample_bank).clone();
+    let s = std::sync::Arc::make_mut(bank.samples[0].as_mut().unwrap());
+    s.trim_start = start;
+    s.trim_end = end;
+    core.sample_bank = std::sync::Arc::new(bank);
+
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    let outer = |core: &rtrack_core::core::TrackerCore, n: usize| {
+        (
+            core.sample_bank.get(0).unwrap().trim_start,
+            core.sample_bank.get(n - 1).unwrap().end(),
+        )
+    };
+    assert_eq!(outer(&core, 4), (start, end), "the trim, not the file");
+
+    let song = dir.join("song.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+    let mut loaded = TrackerCoreBuilder::new().headless().build();
+    let report = loaded.load_file(&song).unwrap();
+    assert!(report.repairs.is_empty(), "{report:?}");
+    assert_eq!(
+        loaded.sample_bank.get(2).unwrap().sliced_from,
+        Some((start, end))
+    );
+
+    // A new count after reloading divides the same audio.
+    loaded
+        .slice_sample(0, 3, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    assert_eq!(outer(&loaded, 3), (start, end));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_sliced_range_outside_the_audio_is_dropped_on_load() {
+    let (dir, wav) = workspace_with_amen("bad_sliced_from");
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    core.slice_sample(0, 2, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    let song = dir.join("song.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+
+    let text = std::fs::read_to_string(&song).unwrap();
+    let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    json["sample_refs"][0]["sliced_from"] = serde_json::json!([900_000_000, 900_000_001]);
+    std::fs::write(&song, json.to_string()).unwrap();
+
+    let mut loaded = TrackerCoreBuilder::new().headless().build();
+    let report = loaded.load_file(&song).unwrap();
+    assert!(
+        report.repairs.iter().any(|r| r.contains("sliced range")),
+        "{report:?}"
+    );
+    assert_eq!(loaded.sample_bank.get(0).unwrap().sliced_from, None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn slices_from_a_file_before_the_field_still_reslice_the_whole_sample() {
+    let (dir, wav) = workspace_with_amen("legacy_sliced_from");
+    let mut core = TrackerCoreBuilder::new()
+        .song_size(1, 32)
+        .headless()
+        .build();
+    core.load_sample(0, &wav).unwrap();
+    let len = core.sample_bank.get(0).unwrap().len();
+    core.slice_sample(0, 4, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    let song = dir.join("song.rtrk");
+    core.file_path = Some(song.clone());
+    core.save().unwrap();
+
+    // As 0.2.0 wrote it: no `sliced_from`.
+    let text = std::fs::read_to_string(&song).unwrap();
+    let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for r in json["sample_refs"].as_array_mut().unwrap() {
+        r.as_object_mut().unwrap().remove("sliced_from");
+    }
+    std::fs::write(&song, json.to_string()).unwrap();
+
+    let mut loaded = TrackerCoreBuilder::new().headless().build();
+    loaded.load_file(&song).unwrap();
+    loaded
+        .slice_sample(0, 2, 0.5, false, SliceRange::Source, SliceOverwrite::Allow)
+        .unwrap();
+    assert_eq!(loaded.sample_bank.get(0).unwrap().trim_start, 0);
+    assert_eq!(loaded.sample_bank.get(1).unwrap().end(), len);
+    let _ = std::fs::remove_dir_all(&dir);
+}
