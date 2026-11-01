@@ -4,7 +4,7 @@ Lets an instrument's filter, drive, pitch and volume move during a note: by patt
 
 Status: step 1 implemented 2026-10-25, with the proposal for decisions 1-7: engine per tick, step 1 first, values last until changed, lenient load with version 3. Step 2 (mod slots) is designed below and not built.
 
-Step 2 implemented in the `dev` merge: two slots per instrument, envelope or LFO, adding to volume, pitch, cutoff or drive. The tracking source is not built.
+Step 2 implemented in the `dev` merge: two slots per instrument, envelope or LFO, adding to volume, pitch, cutoff or drive. The tracking source is not built. Pan was added later as a fifth destination.
 
 ## Current state
 
@@ -162,6 +162,5 @@ pub enum TrackSource { Note, Velocity }
 ## Not in scope
 
 - Slot-to-slot modulation (M8 has it, per design-gaps; not verified here).
-- Pan as a destination: built-in voices are mono and pan is a track setting.
 - Modulation on previews.
 - FM index, pulse width and sub-oscillator as destinations. Each is one more `Timbre` field if wanted.

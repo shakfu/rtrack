@@ -10,15 +10,15 @@ Workflow used for each gap: write `docs/dev/gN-*.md` with options, a recommendat
 
 ## Roadmap (2026-11-01)
 
-What remains to make rtrack expressive, ranked by musical payoff per unit of work. The sequencing layer (phrases, tables, groove, scale degrees, chords, mod slots) is ahead of the sound and performance layers. Items 1-3 of step 1 are done; see CHANGELOG, Unreleased.
+What remains to make rtrack expressive, ranked by musical payoff per unit of work. The sequencing layer (phrases, tables, groove, scale degrees, chords, mod slots) is ahead of the sound and performance layers. Step 1 is done; see CHANGELOG, Unreleased.
 
 1. Per-note expression, each one `FxCmd` plus engine, render and export:
    - [x] `RET` retrigger: rolls and stutters, which tables cannot do
    - [x] `PAN` command and a heard track pan (`ChannelConfig.pan` was never applied)
    - [x] Sample amplitude envelope (`SampleFx::env`)
-   - [ ] Fine pitch / detune: `PUP`/`PDN` step 1/16 semitone per tick, so a static detune needs a one-tick slide. Microtuning is G10 option 3
-   - [ ] Reverse and ping-pong sample loops. `SampleRef` has one forward loop
-   - [ ] Pan slide, or `Pan` as a mod slot destination
+   - [x] `DET` detune. Microtuning is still G10 option 3
+   - [x] Reverse and ping-pong sample loops
+   - [x] `Pan` as a mod slot destination, in place of a pan slide command
 2. Sound sources:
    - [ ] Mod slot tracking source: velocity and key to any destination (`docs/dev/g6-modulation.md`). The synth has no velocity-to-filter either
    - [ ] A second synth architecture (FM or wavetable). fundsp is already a dependency

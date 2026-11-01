@@ -574,6 +574,7 @@ fn test_sliced_sample_song_round_trips() {
                 trim_start: slice_bounds[i].0,
                 trim_end: slice_bounds[i].1,
                 loop_enabled: false,
+                loop_mode: Default::default(),
                 loop_start: 0,
                 loop_end: 0,
                 sliced_from: None,
@@ -639,4 +640,79 @@ fn ch_config(
     let mut cfg = rtrack_core::ChannelConfig::new(0);
     cfg.effects_params = effects;
     cfg
+}
+
+// -- Headless loads --
+
+/// Run the binary with its config inside `home`, so a load does not touch the
+/// user's recent files.
+fn rtrack(home: &std::path::Path, args: &[&std::ffi::OsStr]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_rtrack"))
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .args(args)
+        .output()
+        .expect("run rtrack")
+}
+
+#[test]
+fn render_fails_on_a_song_it_cannot_load_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let corrupt = dir.path().join("corrupt.rtrk");
+    std::fs::write(&corrupt, "not a song").unwrap();
+    let output = dir.path().join("out.wav");
+    for song in [dir.path().join("missing.rtrk"), corrupt] {
+        let run = rtrack(
+            dir.path(),
+            &[
+                "--render".as_ref(),
+                song.as_os_str(),
+                "-o".as_ref(),
+                output.as_os_str(),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert_eq!(run.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains(&*song.to_string_lossy()), "{stderr}");
+        assert!(!stderr.contains("Done."), "{stderr}");
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn play_fails_on_a_missing_song() {
+    let dir = tempfile::tempdir().unwrap();
+    let song = dir.path().join("missing.rtrk");
+    let run = rtrack(dir.path(), &["--play".as_ref(), song.as_os_str()]);
+    assert_eq!(run.status.code(), Some(1));
+}
+
+#[test]
+fn render_warns_of_a_missing_sample_and_still_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    let song = dir.path().join("song.rtrk");
+    let mut file: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/drumloops.rtrk"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    file["sample_refs"].as_array_mut().unwrap().truncate(1);
+    file["sample_refs"][0]["path"] = "gone.wav".into();
+    std::fs::write(&song, file.to_string()).unwrap();
+    let output = dir.path().join("out.wav");
+    let run = rtrack(
+        dir.path(),
+        &[
+            "--render".as_ref(),
+            song.as_os_str(),
+            "-o".as_ref(),
+            output.as_os_str(),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert!(stderr.contains("missing samples"), "{stderr}");
+    assert!(output.exists());
 }

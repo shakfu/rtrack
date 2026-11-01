@@ -1089,7 +1089,21 @@ impl App {
                         (sample.base_note as i64 + delta).clamp(0, MIDI_MAX_NOTE as i64) as u8;
                 }
                 SampleField::LoopEnabled => {
-                    sample.loop_enabled = !sample.loop_enabled;
+                    // Off, then each mode, in the direction of the key.
+                    use rtrack_core::types::LoopMode;
+                    let states = LoopMode::ALL.len() as i64 + 1;
+                    let at = if sample.loop_enabled {
+                        LoopMode::ALL
+                            .iter()
+                            .position(|m| *m == sample.loop_mode)
+                            .unwrap_or(0) as i64
+                            + 1
+                    } else {
+                        0
+                    };
+                    let next = (at + delta.signum()).rem_euclid(states) as usize;
+                    sample.loop_enabled = next > 0;
+                    sample.loop_mode = LoopMode::ALL[next.saturating_sub(1)];
                 }
                 SampleField::TrimStart
                 | SampleField::TrimEnd

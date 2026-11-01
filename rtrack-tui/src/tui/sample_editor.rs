@@ -179,7 +179,12 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             (
                 SampleField::LoopEnabled,
                 "Loop",
-                (if sample.loop_enabled { "ON" } else { "OFF" }).to_string(),
+                (if sample.loop_enabled {
+                    sample.loop_mode.name()
+                } else {
+                    "off"
+                })
+                .to_string(),
             ),
             (
                 SampleField::LoopStart,
@@ -723,6 +728,7 @@ mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,
@@ -754,6 +760,7 @@ mod tests {
             trim_start: 500,
             trim_end: 750,
             loop_enabled: true,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,

@@ -26,7 +26,21 @@ Merges `dev`, with 0.3.0 as the base. Where the branches built the same thing, 0
 
 - **Sample instruments can have an ADSR envelope** (`SampleFx::env`, `AmpEnv`), in seconds, in place of the fixed 2 ms attack and 50 ms release. TUI: the Envelope, Attack, Decay, Sustain and Release fields of the sample editor. GUI: the instrument editor's Drive, Filter and Envelope panel. Saved only when set, so a song without one keeps its format version.
 
+- **`DETxx` detunes a track** by `(xx - 80) / 128` semitones until the next `DET`, for a static offset without a one-tick slide. `RND` varies it, and a table row can carry it. Format version 4.
+
+- **Sample loops can play in reverse or ping-pong** (`Sample::loop_mode`). Reverse plays through to the loop end, then repeats backwards. TUI: the Loop field cycles off and each mode. GUI: beside the Loop checkbox. Saved only when not forward, as format version 4. `samples.json` has no field for it.
+
+- **`Pan` is a mod slot destination,** `amount` `PAN` steps at full, around the last `PAN` or the track's own pan. An LFO gives autopan and an envelope a sweep. Voices now glide to a new pan over about 5 ms, as they do for `CUT`, because a pan moved every tick otherwise steps audibly.
+
 ### Fixed
+
+- **`--render` and `--play` carried on when the song failed to load.** The failure went to a status line no screen showed, so a missing or corrupt file wrote a silent WAV and printed `Done.`. Both now exit 1 and name the file, and write nothing. A load that drops or repairs something, such as a missing sample, prints a note and continues.
+
+- **A mod slot's pitch missed the note it started on.** The offset was added to the bend sent before the note-on, and a new voice starts unbent, so a slot with no attack played unbent until its value next changed. `RET` lost an earlier slide the same way.
+
+- **A song with a sample envelope saved at a format version older builds could overwrite.** The version check saw mod slots only, so 0.3.0 could save over the file and drop the envelope.
+
+- **`PAN` on a muted track was lost,** so unmuting left the old pan until the next `PAN`.
 
 - **A track's pan was stored and shown but never heard.** `ChannelConfig.pan` reached no mixer. It now pans the built-in synth's and samples' voices, is sent as CC 10 at the start of a MIDI export, and the GUI slider applies it as it moves. The TUI track config has no pan field; `PAN` in the pattern sets it.
 

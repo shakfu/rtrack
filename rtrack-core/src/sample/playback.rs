@@ -2,11 +2,11 @@ use super::{Sample, SampleBank};
 use crate::audio::envelope::Envelope;
 use crate::audio::svf::{Svf, SvfCoeffs};
 use crate::audio::synth::FilterType;
-use crate::audio::timbre::TimbreGlide;
+use crate::audio::timbre::{PanGlide, TimbreGlide};
 use crate::constants::{
     MIDI_MAX_VALUE, SAMPLE_DECLICK_SECS, SAMPLE_INAUDIBLE_LEVEL, SEMITONES_PER_OCTAVE,
 };
-use crate::types::{SampleFx, Timbre};
+use crate::types::{LoopMode, SampleFx, Timbre};
 
 /// Type alias for backward compatibility (previously a separate struct)
 pub type SampleEnvelope = Envelope;
@@ -146,7 +146,10 @@ pub struct SampleVoice {
     /// least once. Until then, the frame before the loop start is audio that
     /// really did play just before it.
     pub looped: bool,
+    /// Whether a reverse or ping-pong loop is reading backwards.
+    pub reversed: bool,
     pub fx: VoiceFx,
+    pan: PanGlide,
 }
 
 impl SampleVoice {
@@ -185,6 +188,29 @@ fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     ((a * t + b) * t + c) * t + d
 }
 
+/// The frame the interpolator reads for index `i` of a looping voice: what
+/// plays next in the voice's direction, not the audio past the loop's ends.
+#[inline]
+fn loop_frame(i: isize, looped: bool, mode: LoopMode, start: usize, end: usize) -> usize {
+    let (first, len) = (start as isize, end as isize - start as isize);
+    if i < first && !looped {
+        return i.max(0) as usize; // audio that really plays before the loop
+    }
+    if (first..first + len).contains(&i) {
+        return i as usize;
+    }
+    if mode == LoopMode::Forward || (mode == LoopMode::Reverse && looped) {
+        return (first + (i - first).rem_euclid(len)) as usize;
+    }
+    // Reflected about the first and last frames, where the voice turns.
+    let period = 2 * (len - 1);
+    if period == 0 {
+        return start;
+    }
+    let t = (i - first).rem_euclid(period);
+    (first + if t < len { t } else { period - t }) as usize
+}
+
 /// Render one voice into `left`/`right` over `range`, mixing additively.
 ///
 /// Shared by [`SamplePlaybackEngine::render`] and
@@ -196,14 +222,18 @@ fn render_voice(
     left: &mut [f32],
     right: &mut [f32],
     range: std::ops::Range<usize>,
-    (gain_l, gain_r): (f32, f32),
+    pan: f32,
 ) {
     let end = sample.end() as f64;
     let loop_start = sample.effective_loop_start() as f64;
     let loop_end = sample.effective_loop_end() as f64;
     let looping = sample.loop_enabled && loop_end > loop_start;
     let (loop_start_frame, loop_end_frame) = (loop_start as usize, loop_end as usize);
-    let loop_len = loop_end_frame.saturating_sub(loop_start_frame).max(1);
+    let mode = sample.loop_mode;
+    // The loop or its mode may have been edited under a backwards voice.
+    if !looping || mode == LoopMode::Forward {
+        voice.reversed = false;
+    }
 
     // Length of the tail fade, in source frames. A voice reading at twice
     // the rate covers twice as many frames in the same amount of time, so
@@ -235,23 +265,19 @@ fn render_voice(
         let idx = pos as usize;
         let frac = (pos - idx as f64) as f32;
 
-        // Inside a loop the frame after `loop_end - 1` is `loop_start`, so
-        // the interpolator reads across the seam, not into the audio past it.
-        let ahead = |i: usize| {
-            if looping && i >= loop_end_frame {
-                sample.frame_at(loop_start_frame + (i - loop_end_frame) % loop_len)
+        let looped = voice.looped;
+        let read = |i: isize| {
+            sample.frame_at(if looping {
+                loop_frame(i, looped, mode, loop_start_frame, loop_end_frame)
             } else {
-                sample.frame_at(i)
-            }
+                i.max(0) as usize
+            })
         };
-        let fm1 = if looping && voice.looped && idx == loop_start_frame {
-            sample.frame_at(loop_end_frame - 1)
-        } else {
-            sample.frame_at(idx.saturating_sub(1))
-        };
-        let f0 = ahead(idx);
-        let f1 = ahead(idx + 1);
-        let f2 = ahead(idx + 2);
+        let at = idx as isize;
+        let fm1 = read(at - 1);
+        let f0 = read(at);
+        let f1 = read(at + 1);
+        let f2 = read(at + 2);
 
         let l = cubic_hermite(fm1[0], f0[0], f1[0], f2[0], frac);
         let r = cubic_hermite(fm1[1], f0[1], f1[1], f2[1], frac);
@@ -265,22 +291,56 @@ fn render_voice(
             env_level * (((end - pos) / declick).clamp(0.0, 1.0) as f32)
         };
 
+        let (gain_l, gain_r) = voice.pan.gains(pan);
         left[i] += l * voice.velocity * gain * gain_l;
         right[i] += r * voice.velocity * gain * gain_r;
 
         // Advance position
-        voice.position += voice.rate;
+        voice.position += if voice.reversed {
+            -voice.rate
+        } else {
+            voice.rate
+        };
 
         // Handle loop or end
         if looping {
-            if voice.position >= loop_end {
-                // Wrap modulo the loop length rather than subtracting it
-                // once: a voice pitched up far enough to cover the whole
-                // loop in a single frame would otherwise walk past the loop
-                // end and never come back.
-                let len = loop_end - loop_start;
-                voice.position = loop_start + (voice.position - loop_start).rem_euclid(len);
-                voice.looped = true;
+            // Modulo the loop length rather than subtracting it once: a voice
+            // pitched up far enough to cover the whole loop in a single frame
+            // would otherwise walk past the loop end and never come back.
+            let len = loop_end - loop_start;
+            let wrap = |p: f64| loop_start + (p - loop_start).rem_euclid(len);
+            let last = loop_end - 1.0;
+            match mode {
+                LoopMode::Forward => {
+                    if voice.position >= loop_end {
+                        voice.position = wrap(voice.position);
+                        voice.looped = true;
+                    }
+                }
+                LoopMode::Reverse => {
+                    if !voice.reversed && voice.position > last {
+                        voice.position = 2.0 * last - voice.position;
+                        voice.reversed = true;
+                        voice.looped = true;
+                    }
+                    if voice.reversed && voice.position < loop_start {
+                        voice.position = wrap(voice.position);
+                    }
+                }
+                LoopMode::PingPong => {
+                    if voice.position > last || (voice.reversed && voice.position < loop_start) {
+                        let span = last - loop_start;
+                        let period = 2.0 * span;
+                        let t = if period > 0.0 {
+                            (voice.position - loop_start).rem_euclid(period)
+                        } else {
+                            0.0
+                        };
+                        voice.position = loop_start + if t <= span { t } else { period - t };
+                        voice.reversed ^= t > span;
+                        voice.looped = true;
+                    }
+                }
             }
         } else if voice.position >= end {
             voice.active = false;
@@ -409,6 +469,8 @@ impl SamplePlaybackEngine {
                 None => Envelope::sample_default(output_rate as f32),
             },
             looped: false,
+            reversed: false,
+            pan: PanGlide::at(self.pan[(channel & 0x0F) as usize], output_rate as f32),
             fx: VoiceFx::with_timbre(fx, output_rate, self.timbre[(channel & 0x0F) as usize]),
         });
     }
@@ -523,8 +585,8 @@ impl SamplePlaybackEngine {
                     continue;
                 }
             };
-            let gains = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
-            render_voice(voice, sample, left, right, 0..frames, gains);
+            let pan = self.pan[(voice.channel & 0x0F) as usize];
+            render_voice(voice, sample, left, right, 0..frames, pan);
         }
     }
 
@@ -565,14 +627,14 @@ impl SamplePlaybackEngine {
                     continue;
                 }
             };
-            let gains = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
+            let pan = self.pan[(voice.channel & 0x0F) as usize];
             render_voice(
                 voice,
                 sample,
                 &mut channel_left[ch],
                 &mut channel_right[ch],
                 range.clone(),
-                gains,
+                pan,
             );
         }
     }
@@ -585,6 +647,12 @@ mod tests {
     use crate::sample::Sample;
     use crate::types::AmpEnv;
     use std::sync::Arc;
+
+    fn bank_with(sample: Sample) -> SampleBank {
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(sample));
+        bank
+    }
 
     fn make_test_sample() -> Sample {
         // 10-frame sine-ish sample at 44100 Hz
@@ -603,6 +671,7 @@ mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,
@@ -637,6 +706,7 @@ mod tests {
             data: data.into(),
             trim_start: 100,
             loop_enabled: true,
+            loop_mode: Default::default(),
             loop_start: 100,
             loop_end: 500,
             ..make_test_sample()
@@ -798,6 +868,7 @@ mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,
@@ -829,6 +900,7 @@ mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: true,
+            loop_mode: Default::default(),
             loop_start: 2,
             loop_end: 8,
             source_path: None,
@@ -1105,6 +1177,7 @@ mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: true,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 1000,
             source_path: None,
@@ -1136,6 +1209,123 @@ mod tests {
             "Expected silence after full release, but tail_energy={}",
             tail_energy
         );
+    }
+
+    /// A ramp sample with `mode` looping over frames 10..20, read at one frame
+    /// per output frame. Returns the voice's position after each frame.
+    fn loop_positions(mode: LoopMode, frames: usize) -> Vec<f64> {
+        let mut smp = make_test_sample();
+        smp.loop_enabled = true;
+        smp.loop_mode = mode;
+        smp.loop_start = 10;
+        smp.loop_end = 20;
+        smp.base_note = 60;
+        let bank = bank_with(smp);
+        let mut engine = SamplePlaybackEngine::new(8);
+        let rate = bank.get(0).unwrap().sample_rate;
+        engine.note_on(
+            0,
+            60,
+            100,
+            0,
+            bank.get(0).unwrap(),
+            rate,
+            NewNoteAction::Cut,
+        );
+        let (mut l, mut r) = ([0.0], [0.0]);
+        (0..frames)
+            .map(|_| {
+                engine.render(&bank, &mut l, &mut r);
+                engine.voices[0].position
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_ping_pong_loop_turns_at_both_ends() {
+        let p = loop_positions(LoopMode::PingPong, 40);
+        // Frame 19 is the last; position 19 is reached after 19 steps.
+        assert_eq!(p[18], 19.0);
+        assert_eq!(p[19], 18.0);
+        assert_eq!(p[27], 10.0);
+        assert_eq!(p[28], 11.0);
+    }
+
+    #[test]
+    fn a_reverse_loop_plays_through_then_repeats_backwards() {
+        let p = loop_positions(LoopMode::Reverse, 40);
+        assert_eq!(p[18], 19.0);
+        assert_eq!(p[19], 18.0);
+        assert_eq!(p[27], 10.0);
+        assert_eq!(p[28], 19.0, "wraps to the top, still going down");
+        assert_eq!(p[29], 18.0);
+    }
+
+    #[test]
+    fn a_fast_voice_stays_inside_every_loop_mode() {
+        for mode in LoopMode::ALL {
+            let mut smp = make_test_sample();
+            smp.loop_enabled = true;
+            smp.loop_mode = mode;
+            smp.loop_start = 10;
+            smp.loop_end = 13;
+            let bank = bank_with(smp);
+            let mut engine = SamplePlaybackEngine::new(8);
+            let s = bank.get(0).unwrap();
+            engine.note_on(0, 127, 100, 0, s, 1000.0, NewNoteAction::Cut);
+            let (mut l, mut r) = ([0.0], [0.0]);
+            for _ in 0..500 {
+                engine.render(&bank, &mut l, &mut r);
+                let pos = engine.voices[0].position;
+                assert!((0.0..13.0).contains(&pos), "{mode:?} at {pos}");
+                assert!(l[0].is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn a_ping_pong_turn_does_not_step_the_output() {
+        let mut smp = make_test_sample();
+        let wave: Vec<[f32; 2]> = (0..4000).map(|i| [(i as f32 * 0.03).sin(); 2]).collect();
+        smp.data = wave.into();
+        smp.loop_enabled = true;
+        smp.loop_mode = LoopMode::PingPong;
+        smp.loop_start = 1000;
+        smp.loop_end = 1317; // not a zero crossing or a whole cycle
+        let bank = bank_with(smp);
+        let mut engine = SamplePlaybackEngine::new(8);
+        let s = bank.get(0).unwrap();
+        engine.note_on(
+            0,
+            60,
+            127,
+            0,
+            s,
+            s.sample_rate * 2f64.powf(-0.77 / 12.0),
+            NewNoteAction::Cut,
+        );
+        let (mut l, mut r) = (vec![0.0; 6000], vec![0.0; 6000]);
+        engine.render(&bank, &mut l, &mut r);
+        let jump = l[1000..]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(jump < 0.06, "largest step {jump}");
+    }
+
+    #[test]
+    fn panning_a_sounding_voice_glides() {
+        let bank = make_test_bank();
+        let mut engine = SamplePlaybackEngine::new(8);
+        let s = bank.get(0).unwrap();
+        engine.note_on(0, 60, 100, 0, s, 44100.0, NewNoteAction::Cut);
+        engine.set_channel_pan(0, 1.0);
+        let gain = engine.voices[0].pan.gains(1.0).0;
+        assert!(gain > 0.9, "one frame moves a little: {gain}");
+        for _ in 0..4000 {
+            engine.voices[0].pan.gains(1.0);
+        }
+        assert_eq!(engine.voices[0].pan.gains(1.0).0, 0.0);
     }
 
     #[test]

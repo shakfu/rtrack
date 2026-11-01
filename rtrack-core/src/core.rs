@@ -570,6 +570,7 @@ impl TrackerCore {
         if let Some(ref mut audio) = self.audio {
             audio.channel_pan(None, ch as u8, pan);
         }
+        self.sync_engine_channel_info();
         self.dirty = true;
     }
 
@@ -670,6 +671,7 @@ impl TrackerCore {
                 audible: self.is_channel_audible(i),
                 volume_scale: ch.volume,
                 default_instrument: ch.default_instrument,
+                pan: ch.pan,
             })
             .collect();
         self.engine.set_channel_info(infos);
@@ -2321,6 +2323,7 @@ impl TrackerCore {
                             trim_start: sample.trim_start,
                             trim_end: sample.trim_end,
                             loop_enabled: sample.loop_enabled,
+                            loop_mode: sample.loop_mode,
                             loop_start: sample.loop_start,
                             loop_end: sample.loop_end,
                             sliced_from: sample.sliced_from,
@@ -2331,11 +2334,16 @@ impl TrackerCore {
             .collect();
 
         SongFile {
-            // Mod slots live on instruments, which the song does not see.
-            version: if self
-                .instruments
+            // Mod slots, envelopes and loop modes live outside the song.
+            version: if self.instruments.iter().any(|i| {
+                i.mods.iter().any(Option::is_some)
+                    || matches!(&i.kind, InstrumentKind::Sample { fx, .. } if fx.env.is_some())
+            }) || self
+                .sample_bank
+                .samples
                 .iter()
-                .any(|i| i.mods.iter().any(Option::is_some))
+                .flatten()
+                .any(|s| !s.loop_mode.is_forward())
             {
                 FORMAT_VERSION
             } else {
@@ -2555,6 +2563,7 @@ impl TrackerCore {
                             sample.trim_start = entry.sample_ref.trim_start.min(frames);
                             sample.trim_end = entry.sample_ref.trim_end.min(frames);
                             sample.loop_enabled = entry.sample_ref.loop_enabled;
+                            sample.loop_mode = entry.sample_ref.loop_mode;
                             sample.loop_start = entry.sample_ref.loop_start.min(frames);
                             sample.loop_end = entry.sample_ref.loop_end.min(frames);
                             // Clamped like the span; an empty one is dropped.

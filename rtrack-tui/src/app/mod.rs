@@ -1005,23 +1005,45 @@ impl App {
 
     /// Open a song, dropping any unsaved changes.
     pub(crate) fn load_file_discarding(&mut self, path: PathBuf) {
-        match self.core.load_file(&path) {
+        match self.try_load_file(path) {
             Ok(report) => {
-                self.cursor_row = 0;
-                self.cursor_channel = 0;
-                self.cursor_sub = SubColumn::Note;
-                self.edit_order = 0;
-                self.track_page = 0;
-                self.block_anchor = None;
-                self.phrase_view = None;
-                rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
-                rtrack_core::config::save_recent_files(&self.recent_files);
                 self.status_message = Some(Self::describe_load("Loaded", &report));
             }
             Err(e) => {
                 self.status_message = Some(format!("Load failed: {}", e));
             }
         }
+    }
+
+    /// Open a song, dropping any unsaved changes, and report what happened.
+    fn try_load_file(
+        &mut self,
+        path: PathBuf,
+    ) -> rtrack_core::error::Result<rtrack_core::core::LoadReport> {
+        let report = self.core.load_file(&path)?;
+        self.cursor_row = 0;
+        self.cursor_channel = 0;
+        self.cursor_sub = SubColumn::Note;
+        self.edit_order = 0;
+        self.track_page = 0;
+        self.block_anchor = None;
+        self.phrase_view = None;
+        rtrack_core::config::push_recent_file(&mut self.recent_files, &path);
+        rtrack_core::config::save_recent_files(&self.recent_files);
+        Ok(report)
+    }
+
+    /// Open a song or MIDI file for a run with no screen. Returns the error,
+    /// or a note for stderr if the load had to change or drop anything.
+    pub fn load_headless(&mut self, path: PathBuf) -> rtrack_core::error::Result<Option<String>> {
+        let is_midi = path.extension().is_some_and(|e| e == "mid" || e == "midi");
+        let (verb, report) = if is_midi {
+            self.core.begin_edit();
+            ("Imported", self.core.import_midi_file(&path)?)
+        } else {
+            ("Loaded", self.try_load_file(path)?)
+        };
+        Ok((!report.is_clean()).then(|| Self::describe_load(verb, &report)))
     }
 
     // -- Undo/Redo --
@@ -2746,6 +2768,30 @@ pub(crate) mod tests {
         let mut app = make_app();
         app.core.load_sample(0, &wav).unwrap();
         (app, dir)
+    }
+
+    #[test]
+    fn the_loop_field_cycles_off_and_each_mode() {
+        use rtrack_core::types::LoopMode;
+        let (mut app, _dir) = app_with_amen();
+        app.dialogs.sample_editor_field = SampleField::LoopEnabled;
+        let state = |app: &App| {
+            let s = app.core.sample_bank.get(0).unwrap();
+            (s.loop_enabled, s.loop_mode)
+        };
+        app.mode = Mode::SampleEditor;
+        app.dialogs.sample_editor_slot = 0;
+        let right = |app: &mut App| app.handle_key(KeyEvent::from(KeyCode::Right));
+        right(&mut app);
+        assert_eq!(state(&app), (true, LoopMode::Forward));
+        right(&mut app);
+        assert_eq!(state(&app), (true, LoopMode::Reverse));
+        right(&mut app);
+        assert_eq!(state(&app), (true, LoopMode::PingPong));
+        right(&mut app);
+        assert!(!state(&app).0);
+        app.handle_key(KeyEvent::from(KeyCode::Left));
+        assert_eq!(state(&app), (true, LoopMode::PingPong));
     }
 
     /// Enable looping on `slot` over `start..end`.
@@ -5550,6 +5596,7 @@ pub(crate) mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,
@@ -5612,6 +5659,7 @@ pub(crate) mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,
@@ -5904,6 +5952,7 @@ pub(crate) mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,
@@ -5917,6 +5966,7 @@ pub(crate) mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,

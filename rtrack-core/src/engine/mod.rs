@@ -7,7 +7,7 @@
 use crate::constants::*;
 use crate::modulation::{ModOffsets, ModSlot, MOD_SLOTS};
 use crate::tracker::{Fx, FxCmd, Note, Song, FX_COLUMNS};
-use crate::types::{Chord, Timbre};
+use crate::types::{ChannelConfig, Chord, Timbre};
 
 // ---------------------------------------------------------------------------
 // Channel state
@@ -57,6 +57,10 @@ pub struct ChannelState {
     /// The sounding note's sample offset and chord, for `RET` to replay.
     pub sample_offset: u8,
     pub chord: Chord,
+    /// Semitones from `DET`, kept until the next `DET`.
+    pub detune: f64,
+    /// The last `PAN` without `mods`; `None` is the track's own pan.
+    pub pan: Option<u8>,
 }
 
 impl Default for ChannelState {
@@ -83,6 +87,8 @@ impl Default for ChannelState {
             base_bend: 0.0,
             sample_offset: 0,
             chord: [None; 4],
+            detune: 0.0,
+            pan: None,
         }
     }
 }
@@ -278,6 +284,9 @@ pub struct ChannelInfo {
     pub volume_scale: f32,
     /// Instrument for a note on this channel that names none.
     pub default_instrument: Option<u8>,
+    /// The track's own pan, -1 left to 1 right, which mod slots move until a
+    /// `PAN` replaces it.
+    pub pan: f32,
 }
 
 impl ChannelInfo {
@@ -290,6 +299,7 @@ impl ChannelInfo {
                 audible: !c.muted,
                 volume_scale: c.volume,
                 default_instrument: c.default_instrument,
+                pan: c.pan,
             })
             .collect()
     }
@@ -301,6 +311,7 @@ impl Default for ChannelInfo {
             audible: true,
             volume_scale: 1.0,
             default_instrument: None,
+            pan: 0.0,
         }
     }
 }
@@ -395,6 +406,11 @@ fn modulated_volume(volume: u8, offset: f64) -> u8 {
         .clamp(0.0, MIDI_MAX_VALUE as f64) as u8
 }
 
+/// `pan` with a mod slot's offset, within the `PAN` range.
+fn modulated_pan(pan: u8, offset: f64) -> u8 {
+    (pan as f64 + offset).round().clamp(0.0, 255.0) as u8
+}
+
 /// Fixed PRNG seed. See `TrackerEngine::rng`.
 const RNG_SEED: u64 = 0x2545_F491_4F6C_DD1D;
 
@@ -414,6 +430,7 @@ fn is_continuous(effect: FxCmd) -> bool {
             | FxCmd::Resonance
             | FxCmd::Drive
             | FxCmd::Retrig
+            | FxCmd::Detune
     )
 }
 
@@ -761,6 +778,7 @@ impl TrackerEngine {
                 }
                 self.channel_states[ch].fx = fx;
                 self.apply_timbre_fx(ch, fx.iter().flatten().copied());
+                self.apply_track_fx(ch, fx.iter().flatten().copied());
                 continue;
             }
 
@@ -876,13 +894,10 @@ impl TrackerEngine {
                         channel: ch,
                         program: param,
                     }),
-                    FxCmd::Pan => self.emit(TrackerEvent::Pan {
-                        channel: ch,
-                        pan: param,
-                    }),
                     _ => {}
                 }
             }
+            self.apply_track_fx(ch, fx.iter().flatten().copied());
 
             // The table's row on this tick. Continuous effects wait for
             // tick 1, as in the effect columns; its pitch applies now, so a
@@ -1097,7 +1112,8 @@ impl TrackerEngine {
                     chord: state.chord,
                 });
             }
-            if bend {
+            // A new voice starts unbent, so a retrigger restates the bend.
+            if bend || retrig {
                 self.events.push(TrackerEvent::PitchBend {
                     channel: ch,
                     semitone_offset: self.channel_states[ch].pitch_offset + modulation,
@@ -1152,14 +1168,16 @@ impl TrackerEngine {
                 .filter(|_| state.note.is_some())
                 .unwrap_or_default();
             let tick = state.mod_tick;
+            let state_detune = state.detune;
             let (old, restart) = (state.mods, self.note_started(ch));
             let tick = if restart { 0 } else { tick };
-            let now = ModOffsets::at(&slots, tick);
+            let mut now = ModOffsets::at(&slots, tick);
+            now.pitch += state_detune;
+            self.note_base(ch);
             let state = &mut self.channel_states[ch];
             state.mod_tick = tick + 1;
             state.mods = now;
             if now == ModOffsets::default() && old == now {
-                self.note_base_bend(ch);
                 continue;
             }
             if self.channel_audible(ch) {
@@ -1175,25 +1193,27 @@ impl TrackerEngine {
             .any(|e| matches!(e, TrackerEvent::NoteOn { channel, .. } if *channel == ch))
     }
 
-    /// Remember the last unmodulated bend `ch` emitted this tick.
-    fn note_base_bend(&mut self, ch: usize) {
-        let last = self.events.iter().rev().find_map(|e| match e {
-            TrackerEvent::PitchBend {
-                channel,
-                semitone_offset,
-            } if *channel == ch => Some(*semitone_offset),
-            _ => None,
-        });
-        if let Some(bend) = last {
-            self.channel_states[ch].base_bend = bend;
+    /// Remember the last unmodulated bend and pan `ch` emitted this tick.
+    fn note_base(&mut self, ch: usize) {
+        for event in &self.events {
+            match event {
+                TrackerEvent::PitchBend {
+                    channel,
+                    semitone_offset,
+                } if *channel == ch => self.channel_states[ch].base_bend = *semitone_offset,
+                TrackerEvent::Pan { channel, pan } if *channel == ch => {
+                    self.channel_states[ch].pan = Some(*pan);
+                }
+                _ => {}
+            }
         }
     }
 
     /// Add `now` to this tick's events on `ch`, adding events for what moved
     /// from `old` without one.
     fn apply_mods(&mut self, ch: usize, old: ModOffsets, now: ModOffsets) {
-        self.note_base_bend(ch);
-        let (mut bent, mut voiced, mut shaded) = (false, false, false);
+        let (mut bent, mut voiced, mut shaded, mut panned) = (false, false, false, false);
+        let started = self.note_started(ch);
         let timbre = self.channel_states[ch].timbre;
         for event in &mut self.events {
             match event {
@@ -1212,10 +1232,15 @@ impl TrackerEngine {
                     *timbre = now.apply_to(*timbre);
                     shaded = true;
                 }
+                TrackerEvent::Pan { channel, pan } if *channel == ch => {
+                    *pan = modulated_pan(*pan, now.pan);
+                    panned = true;
+                }
                 _ => {}
             }
         }
-        if !bent && now.pitch != old.pitch {
+        // A note's own bend comes before it, and a new voice starts unbent.
+        if (!bent && now.pitch != old.pitch) || (started && now.pitch != 0.0) {
             self.events.push(TrackerEvent::PitchBend {
                 channel: ch,
                 semitone_offset: self.channel_states[ch].base_bend + now.pitch,
@@ -1225,6 +1250,16 @@ impl TrackerEngine {
             self.events.push(TrackerEvent::VolumeChange {
                 channel: ch,
                 volume: modulated_volume(self.channel_states[ch].volume, now.volume),
+            });
+        }
+        if !panned && now.pan != old.pan {
+            let own = self.channel_info.get(ch).map_or(0.0, |ci| ci.pan);
+            let base = self.channel_states[ch]
+                .pan
+                .unwrap_or_else(|| ChannelConfig::pan_param(own));
+            self.events.push(TrackerEvent::Pan {
+                channel: ch,
+                pan: modulated_pan(base, now.pan),
             });
         }
         if !shaded && (now.cutoff != old.cutoff || now.drive != old.drive) {
@@ -1322,14 +1357,26 @@ impl TrackerEngine {
                 cmd: FxCmd::Kill,
                 param,
             }) => self.channel_states[ch].cut_in = Some(param),
-            Some(Fx {
-                cmd: FxCmd::Pan,
-                param,
-            }) => self.emit(TrackerEvent::Pan {
-                channel: ch,
-                pan: param,
-            }),
-            fx => self.apply_timbre_fx(ch, fx),
+            fx => {
+                self.apply_timbre_fx(ch, fx);
+                self.apply_track_fx(ch, fx);
+            }
+        }
+    }
+
+    /// Apply the `PAN` and `DET` among `fx` to channel `ch`.
+    fn apply_track_fx(&mut self, ch: usize, fx: impl IntoIterator<Item = Fx>) {
+        for Fx { cmd, param } in fx {
+            match cmd {
+                FxCmd::Pan => self.emit(TrackerEvent::Pan {
+                    channel: ch,
+                    pan: param,
+                }),
+                FxCmd::Detune => {
+                    self.channel_states[ch].detune = (param as f64 - 128.0) / 128.0;
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2140,6 +2187,7 @@ mod tests {
             audible: true,
             volume_scale: 0.5,
             default_instrument: None,
+            pan: 0.0,
         }]);
         let ons = note_ons(&song, &mut engine, 8);
         assert_eq!(ons.iter().map(|o| o.1).collect::<Vec<_>>(), vec![50, 50]);
@@ -3005,6 +3053,7 @@ mod tests {
             FxCmd::Drive,
             FxCmd::Retrig,
             FxCmd::Pan,
+            FxCmd::Detune,
         ] {
             assert!(Table::allows(cmd), "{cmd:?}");
         }
@@ -3125,6 +3174,112 @@ mod tests {
             engine.process_tick(&song);
         }
         assert_eq!(cutoff(engine.process_tick(&song)), Some(0.0));
+    }
+
+    // -- Detune and pan modulation --
+
+    #[test]
+    fn detune_follows_the_note_on_and_lasts_until_changed() {
+        let mut song = make_song();
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Detune, 0xC0));
+        let plain = Cell {
+            note: Some(Note::On {
+                value: NoteValue::C,
+                octave: 4,
+            }),
+            ..Cell::default()
+        };
+        song.patterns[0].data[1][0] = plain;
+        let mut engine = TrackerEngine::new(&song, true);
+        for row in 0..2 {
+            let events = engine.process_tick(&song).to_vec();
+            let on = events
+                .iter()
+                .position(|e| matches!(e, TrackerEvent::NoteOn { .. }))
+                .unwrap();
+            assert_eq!(bends(&events[on..]), vec![0.5], "row {row}");
+            for _ in 1..song.speed {
+                engine.process_tick(&song);
+            }
+        }
+    }
+
+    #[test]
+    fn a_retrigger_keeps_an_earlier_slide() {
+        let mut song = make_song();
+        let mut cell = c4_with(Fx::new(FxCmd::PitchUp, 0x10));
+        cell.fx[1] = Some(Fx::new(FxCmd::Retrig, 0x02));
+        song.patterns[0].data[0][0] = cell;
+        let mut engine = TrackerEngine::new(&song, true);
+        engine.process_tick(&song);
+        engine.process_tick(&song);
+        let events = engine.process_tick(&song).to_vec();
+        let on = events
+            .iter()
+            .position(|e| matches!(e, TrackerEvent::NoteOn { .. }))
+            .unwrap();
+        assert_eq!(bends(&events[on..]), vec![2.0]);
+    }
+
+    #[test]
+    fn a_pan_lfo_moves_around_the_tracks_pan_and_returns_to_it() {
+        use crate::modulation::{LfoShape, ModDest, ModSource};
+        let mut song = make_song();
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Kill, 3));
+        let mut engine = TrackerEngine::new(&song, true);
+        engine.set_instrument_mods(vec![[
+            Some(ModSlot {
+                source: ModSource::Lfo {
+                    shape: LfoShape::Square,
+                    period: 2,
+                },
+                dest: ModDest::Pan,
+                amount: 64,
+            }),
+            None,
+        ]]);
+        engine.update_channel_info(
+            0,
+            ChannelInfo {
+                default_instrument: Some(0),
+                pan: -0.5,
+                ..ChannelInfo::default()
+            },
+        );
+        let pans = |events: &[TrackerEvent]| -> Vec<u8> {
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    TrackerEvent::Pan { pan, .. } => Some(*pan),
+                    _ => None,
+                })
+                .collect()
+        };
+        // 0x40 is the track's pan; the slot adds and subtracts 64.
+        assert_eq!(pans(engine.process_tick(&song)), vec![0x80]);
+        assert_eq!(pans(engine.process_tick(&song)), vec![0x00]);
+        assert_eq!(pans(engine.process_tick(&song)), vec![0x80]);
+        // `KIL03` ends the note here, so the track's pan comes back.
+        assert_eq!(pans(engine.process_tick(&song)), vec![0x40]);
+    }
+
+    #[test]
+    fn a_pan_on_a_muted_track_is_not_lost() {
+        let mut song = make_song();
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Pan, 0x10));
+        let mut engine = TrackerEngine::new(&song, true);
+        engine.update_channel_info(
+            0,
+            ChannelInfo {
+                audible: false,
+                ..ChannelInfo::default()
+            },
+        );
+        let events = engine.process_tick(&song).to_vec();
+        assert!(events.contains(&TrackerEvent::Pan {
+            channel: 0,
+            pan: 0x10
+        }));
     }
 
     // -- Retrigger and pan --

@@ -99,6 +99,7 @@ fn a_looping_sample_preview_is_still_stopped_by_the_timeout() {
         trim_start: 0,
         trim_end: 0,
         loop_enabled: true,
+        loop_mode: Default::default(),
         loop_start: 0,
         loop_end: 1000,
         source_path: None,

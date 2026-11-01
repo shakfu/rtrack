@@ -112,14 +112,17 @@ pub enum ModDest {
     Cutoff,
     /// The instrument's drive, `amount / 16` octaves at full.
     Drive,
+    /// Pan, `amount` `PAN` steps (`00` to `FF`) at full.
+    Pan,
 }
 
 impl ModDest {
-    pub const ALL: [ModDest; 4] = [
+    pub const ALL: [ModDest; 5] = [
         ModDest::Volume,
         ModDest::Pitch,
         ModDest::Cutoff,
         ModDest::Drive,
+        ModDest::Pan,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +131,7 @@ impl ModDest {
             ModDest::Pitch => "pitch",
             ModDest::Cutoff => "cutoff",
             ModDest::Drive => "drive",
+            ModDest::Pan => "pan",
         }
     }
 }
@@ -166,6 +170,8 @@ pub struct ModOffsets {
     pub cutoff: f64,
     /// Octaves the drive is scaled by.
     pub drive: f64,
+    /// `PAN` steps.
+    pub pan: f64,
 }
 
 impl ModOffsets {
@@ -188,6 +194,7 @@ impl ModOffsets {
                 ModDest::Pitch => out.pitch += v / 8.0,
                 ModDest::Cutoff => out.cutoff += v / 16.0,
                 ModDest::Drive => out.drive += v / 16.0,
+                ModDest::Pan => out.pan += v,
             }
         }
         out

@@ -6,6 +6,35 @@ use crate::types::Timbre;
 /// Seconds a voice takes to reach about 63% of a new timbre.
 const GLIDE_SECS: f32 = 0.005;
 
+/// A voice's pan, moving towards its channel's latest one over the same time,
+/// so a pan moved every tick does not step.
+#[derive(Debug, Clone, Copy)]
+pub struct PanGlide {
+    current: f32,
+    coeff: f32,
+}
+
+impl PanGlide {
+    pub fn at(pan: f32, sample_rate: f32) -> Self {
+        Self {
+            current: pan,
+            coeff: 1.0 - (-1.0 / (GLIDE_SECS * sample_rate)).exp(),
+        }
+    }
+
+    /// Advance one frame towards `target` and return the left and right gains.
+    #[inline]
+    pub fn gains(&mut self, target: f32) -> (f32, f32) {
+        if self.current != target {
+            self.current += (target - self.current) * self.coeff;
+            if (target - self.current).abs() < 1e-4 {
+                self.current = target;
+            }
+        }
+        crate::audio::pan_gains(self.current)
+    }
+}
+
 /// A voice's timbre, moving towards its channel's latest one.
 #[derive(Debug, Clone, Copy)]
 pub struct TimbreGlide {

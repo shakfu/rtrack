@@ -75,6 +75,7 @@ mod tests {
             trim_start: 0,
             trim_end: 0,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: None,

@@ -861,6 +861,53 @@ fn mod_slots_round_trip_and_mark_the_file_version_4() {
 }
 
 #[test]
+fn a_loop_mode_round_trips_and_marks_the_file_version_4() {
+    use rtrack_core::types::LoopMode;
+    let path = scratch("loop_mode");
+    let wav = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/data/amen.wav");
+    let mut core = headless(2, 16);
+    core.load_sample(0, &wav).unwrap();
+    core.file_path = Some(path.clone());
+    let plain = core.build_song_file(&path);
+    assert_eq!(plain.version, plain.song.format_version());
+    assert!(!serde_json::to_string(&plain).unwrap().contains("loop_mode"));
+
+    let mut bank = (*core.sample_bank).clone();
+    let s = std::sync::Arc::make_mut(bank.samples[0].as_mut().unwrap());
+    s.loop_enabled = true;
+    s.loop_mode = LoopMode::PingPong;
+    core.sample_bank = std::sync::Arc::new(bank);
+    core.save().unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let file: SongFile = serde_json::from_str(&text).unwrap();
+    assert_eq!(file.version, 4);
+
+    let mut reloaded = headless(2, 16);
+    reloaded.load_file(&path).unwrap();
+    assert_eq!(
+        reloaded.sample_bank.get(0).unwrap().loop_mode,
+        LoopMode::PingPong
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_sample_envelope_marks_the_file_version_4() {
+    use rtrack_core::types::{AmpEnv, InstrumentKind, SampleFx};
+    let path = scratch("sample_env");
+    let mut core = headless(2, 16);
+    core.instruments[0].kind = InstrumentKind::Sample {
+        slot: 0,
+        fx: SampleFx {
+            env: Some(AmpEnv::default()),
+            ..SampleFx::default()
+        },
+    };
+    assert_eq!(core.build_song_file(&path).version, 4);
+}
+
+#[test]
 fn kil_marks_the_file_version_4_and_other_songs_keep_their_version() {
     let mut song = rtrack_core::tracker::Song::new(1, 4);
     assert_eq!(song.format_version(), 2);

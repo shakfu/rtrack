@@ -8,7 +8,7 @@ use fundsp::prelude32::*;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::envelope::{EnvStage, Envelope};
-use crate::audio::timbre::TimbreGlide;
+use crate::audio::timbre::{PanGlide, TimbreGlide};
 use crate::constants::{MIDI_MAX_VALUE, SEMITONES_PER_OCTAVE};
 use crate::types::Timbre;
 
@@ -931,6 +931,9 @@ struct Voice {
     // The channel's offsets from `drive` and the filter, smoothed
     timbre: TimbreGlide,
 
+    // The channel's pan, smoothed
+    pan: PanGlide,
+
     // Filter
     filter: SvfState,
 
@@ -994,6 +997,7 @@ impl Voice {
             ),
             drive: no_drive(),
             timbre: TimbreGlide::at(Timbre::default(), sample_rate),
+            pan: PanGlide::at(0.0, sample_rate),
             filter: SvfState::new(),
             noise: NoiseGen::new(note as u32 * 7919 + channel as u32 * 104729),
             fundsp_unit: None,
@@ -1375,6 +1379,7 @@ impl BuiltinSynth {
     }
 
     fn push_voice(&mut self, mut voice: Voice) {
+        voice.pan = PanGlide::at(self.pan[(voice.channel & 0x0F) as usize], self.sample_rate);
         voice.timbre = TimbreGlide::at(
             self.timbre[(voice.channel & 0x0F) as usize],
             self.sample_rate,
@@ -1499,7 +1504,7 @@ impl BuiltinSynth {
                 continue;
             }
             let (l, r) = voice.tick();
-            let (gl, gr) = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
+            let (gl, gr) = voice.pan.gains(self.pan[(voice.channel & 0x0F) as usize]);
             left += l * gl;
             right += r * gr;
         }
@@ -1519,7 +1524,7 @@ impl BuiltinSynth {
                 continue;
             }
             let (l, r) = voice.tick();
-            let (gl, gr) = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
+            let (gl, gr) = voice.pan.gains(self.pan[(voice.channel & 0x0F) as usize]);
             let ch = std::cmp::min(voice.channel as usize, channel_out.len().saturating_sub(1));
             channel_out[ch][0] += l * gl;
             channel_out[ch][1] += r * gr;

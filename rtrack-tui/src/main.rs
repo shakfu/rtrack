@@ -151,12 +151,14 @@ fn install_panic_hook() {
 }
 
 /// Build the app, returning it with any problem starting audio: no engine at
-/// all, or an engine without the configured SoundFont.
+/// all, or an engine without the configured SoundFont. With `headless`, a song
+/// that fails to load is an error, since no screen would show the failure.
 fn setup_app(
     sf2_path: Option<PathBuf>,
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
     file: Option<PathBuf>,
+    headless: bool,
 ) -> Result<(App, Option<String>)> {
     let mut app = App::new();
 
@@ -172,7 +174,11 @@ fn setup_app(
 
     // Load song file first, since it resets sample bank and instruments
     if let Some(path) = file {
-        if path.extension().is_some_and(|e| e == "mid" || e == "midi") {
+        if headless {
+            if let Some(note) = app.load_headless(path)? {
+                eprintln!("{note}");
+            }
+        } else if path.extension().is_some_and(|e| e == "mid" || e == "midi") {
             app.import_midi_file(path);
         } else {
             app.load_file(path);
@@ -220,7 +226,7 @@ fn run_render(
         .as_deref()
         .map(rtrack_core::audio::load_sound_font)
         .transpose()?;
-    let (app, _) = setup_app(sf2_path, samples, sample_dir, file)?;
+    let (app, _) = setup_app(sf2_path, samples, sample_dir, file, true)?;
     let sound_font = sound_font.or_else(|| app.core.sound_font().cloned());
 
     let ext = output
@@ -285,7 +291,7 @@ fn run_headless(
     sample_dir: Option<PathBuf>,
     loops: u32,
 ) -> Result<()> {
-    let (mut app, audio_problem) = setup_app(sf2_path, samples, sample_dir, file)?;
+    let (mut app, audio_problem) = setup_app(sf2_path, samples, sample_dir, file, true)?;
     // No TUI screen in this mode, so stderr is safe and the only place to say.
     if let Some(problem) = audio_problem {
         eprintln!("{problem}");
@@ -329,7 +335,7 @@ fn run_app(
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
 ) -> Result<()> {
-    let (mut app, _) = setup_app(sf2_path, samples, sample_dir, file)?;
+    let (mut app, _) = setup_app(sf2_path, samples, sample_dir, file, false)?;
 
     loop {
         terminal.draw(|f| tui::draw(f, &app))?;

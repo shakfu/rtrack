@@ -666,6 +666,7 @@ impl RtrackApp {
                     s.duration(),
                     s.base_note,
                     s.loop_enabled,
+                    s.loop_mode,
                     s.loop_start,
                     s.loop_end,
                     s.effective_loop_start(),
@@ -681,6 +682,7 @@ impl RtrackApp {
                 duration,
                 init_base_note,
                 init_loop_enabled,
+                init_loop_mode,
                 init_loop_start,
                 init_loop_end,
                 played_loop_start,
@@ -776,6 +778,7 @@ impl RtrackApp {
 
                 let mut base_note = init_base_note;
                 let mut loop_enabled = init_loop_enabled;
+                let mut loop_mode = init_loop_mode;
                 let mut loop_start = init_loop_start;
                 let mut loop_end_val = init_loop_end;
                 let mut trim_start = init_trim_start;
@@ -801,9 +804,22 @@ impl RtrackApp {
                         });
 
                         ui.label("Loop:");
-                        if ui.checkbox(&mut loop_enabled, "").changed() {
-                            changed = true;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut loop_enabled, "").changed() {
+                                changed = true;
+                            }
+                            if loop_enabled {
+                                egui::ComboBox::from_id_salt(format!("loop_mode_{}", idx))
+                                    .selected_text(loop_mode.name())
+                                    .show_ui(ui, |ui| {
+                                        for m in rtrack_core::types::LoopMode::ALL {
+                                            changed |= ui
+                                                .selectable_value(&mut loop_mode, m, m.name())
+                                                .changed();
+                                        }
+                                    });
+                            }
+                        });
                         ui.end_row();
 
                         ui.label("Trim Start:");
@@ -865,6 +881,7 @@ impl RtrackApp {
                         let s = std::sync::Arc::make_mut(arc);
                         s.base_note = base_note;
                         s.loop_enabled = loop_enabled;
+                        s.loop_mode = loop_mode;
                         s.loop_start = loop_start;
                         s.loop_end = loop_end_val;
                         s.trim_start = trim_start;

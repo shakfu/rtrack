@@ -1005,6 +1005,7 @@ mod tests {
             trim_start: start,
             trim_end: end,
             loop_enabled: false,
+            loop_mode: Default::default(),
             loop_start: 0,
             loop_end: 0,
             source_path: Some("/songs/amen.wav".into()),

@@ -249,6 +249,11 @@ impl ChannelConfig {
         (param as f32 - 128.0) / 128.0
     }
 
+    /// The `PAN` parameter nearest `pan`.
+    pub fn pan_param(pan: f32) -> u8 {
+        (pan * 128.0 + 128.0).round().clamp(0.0, 255.0) as u8
+    }
+
     /// `pan` as MIDI CC 10, 0 left, 64 centre, 127 right.
     pub fn pan_cc(pan: f32) -> u8 {
         ((pan + 1.0) * 63.5).round().clamp(0.0, 127.0) as u8
@@ -449,6 +454,34 @@ impl Default for SampleFx {
             filter: None,
             env: None,
         }
+    }
+}
+
+/// How a sample's loop plays once the voice reaches its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopMode {
+    #[default]
+    Forward,
+    /// Turns at the loop end, then repeats backwards.
+    Reverse,
+    /// Turns at each end.
+    PingPong,
+}
+
+impl LoopMode {
+    pub const ALL: [LoopMode; 3] = [LoopMode::Forward, LoopMode::Reverse, LoopMode::PingPong];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopMode::Forward => "forward",
+            LoopMode::Reverse => "reverse",
+            LoopMode::PingPong => "ping-pong",
+        }
+    }
+
+    pub fn is_forward(&self) -> bool {
+        *self == LoopMode::Forward
     }
 }
 

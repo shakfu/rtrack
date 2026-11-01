@@ -11,7 +11,7 @@ use crate::audio::synth::SynthParams;
 use crate::fs::write_atomic;
 use crate::modulation::{ModSlot, MOD_SLOTS};
 use crate::theory::ScaleSetting;
-use crate::types::{ChannelConfig, Instrument, InstrumentKind, MidiCcMapping};
+use crate::types::{ChannelConfig, Instrument, InstrumentKind, LoopMode, MidiCcMapping};
 
 /// Where a cell is stored: in a pattern, or in a phrase a pattern column
 /// links to. Undo records edits by this, so an edit to a phrase undoes
@@ -147,6 +147,8 @@ pub struct SampleRef {
     pub trim_end: usize,
     #[serde(default)]
     pub loop_enabled: bool,
+    #[serde(default, skip_serializing_if = "LoopMode::is_forward")]
+    pub loop_mode: LoopMode,
     #[serde(default)]
     pub loop_start: usize,
     #[serde(default)]
@@ -212,8 +214,8 @@ pub struct SampleRefEntry {
 /// Version 3 adds `CUT`, `RES`, `DRV` and `CHD`; a song without them is still
 /// written as version 2 ([`Song::format_version`]), so older builds open it.
 ///
-/// Version 4 adds `KIL`, `RET`, `PAN`, instrument mod slots and sample
-/// envelopes. 0.3.0 reads them as absent,
+/// Version 4 adds `KIL`, `RET`, `PAN`, `DET`, instrument mod slots, sample
+/// envelopes and loop modes. 0.3.0 reads them as absent,
 /// and the version makes it refuse to save over such a file.
 pub const FORMAT_VERSION: u32 = 4;
 
@@ -445,12 +447,12 @@ impl Song {
     }
 
     /// The oldest format version that holds this song's effects: 4 for
-    /// `KIL`, `RET` or `PAN`, 3 for `CUT`, `RES`, `DRV` or `CHD`, else 2. Builds before 0.3.0
+    /// `KIL`, `RET`, `PAN` or `DET`, 3 for `CUT`, `RES`, `DRV` or `CHD`, else 2. Builds before 0.3.0
     /// fail to load an effect they do not know, so this keeps other songs
     /// open to them.
     pub fn format_version(&self) -> u32 {
         let version = |fx: &Option<Fx>| match fx.map(|f| f.cmd) {
-            Some(FxCmd::Kill | FxCmd::Retrig | FxCmd::Pan) => 4,
+            Some(FxCmd::Kill | FxCmd::Retrig | FxCmd::Pan | FxCmd::Detune) => 4,
             Some(FxCmd::Cutoff | FxCmd::Resonance | FxCmd::Drive | FxCmd::Chord) => 3,
             _ => 2,
         };
@@ -2157,6 +2159,7 @@ mod tests {
                     trim_start: 0,
                     trim_end: 0,
                     loop_enabled: false,
+                    loop_mode: Default::default(),
                     loop_start: 0,
                     loop_end: 0,
                     sliced_from: None,
