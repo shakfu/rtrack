@@ -244,6 +244,18 @@ fn default_channel_volume() -> f32 {
 }
 
 impl ChannelConfig {
+    /// The pan a `PAN` parameter sets: `00` left, `80` centre, `FF` right.
+    pub fn pan_of(param: u8) -> f32 {
+        (param as f32 - 128.0) / 128.0
+    }
+
+    /// `pan` as MIDI CC 10, 0 left, 64 centre, 127 right.
+    pub fn pan_cc(pan: f32) -> u8 {
+        ((pan + 1.0) * 63.5).round().clamp(0.0, 127.0) as u8
+    }
+}
+
+impl ChannelConfig {
     /// Create a new channel config with defaults for the given MIDI channel.
     pub fn new(midi_channel: u8) -> Self {
         Self {
@@ -415,8 +427,8 @@ impl Timbre {
     }
 }
 
-/// Drive and filter applied to each voice of a sample instrument, before
-/// its envelope (`docs/dev/g5-instrument-fx.md`). Off by default.
+/// Drive, filter and envelope of each voice of a sample instrument
+/// (`docs/dev/g5-instrument-fx.md`). Off by default.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SampleFx {
     /// `tanh` drive gain; 1.0 is off.
@@ -424,6 +436,10 @@ pub struct SampleFx {
     pub drive: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<VoiceFilter>,
+    /// Amplitude envelope; `None` is the default 2 ms attack and 50 ms
+    /// release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<AmpEnv>,
 }
 
 impl Default for SampleFx {
@@ -431,8 +447,35 @@ impl Default for SampleFx {
         Self {
             drive: Self::no_drive(),
             filter: None,
+            env: None,
         }
     }
+}
+
+/// A sample instrument's amplitude envelope, in seconds and a 0..1 sustain.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AmpEnv {
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+}
+
+impl Default for AmpEnv {
+    /// What a sample plays with when it has no envelope of its own.
+    fn default() -> Self {
+        Self {
+            attack: 0.002,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.05,
+        }
+    }
+}
+
+impl AmpEnv {
+    /// Longest attack, decay or release, in seconds.
+    pub const MAX_SECONDS: f32 = 10.0;
 }
 
 impl SampleFx {
@@ -916,6 +959,7 @@ mod tests {
             r#"{"type":"sample","slot":2}"#
         );
         let fx = SampleFx {
+            env: None,
             drive: 4.0,
             filter: Some(VoiceFilter {
                 kind: crate::audio::synth::FilterType::HighPass,
@@ -935,6 +979,7 @@ mod tests {
             drive_only,
             InstrumentKind::Sample {
                 fx: SampleFx {
+                    env: None,
                     drive: 3.0,
                     filter: None
                 },
@@ -946,6 +991,7 @@ mod tests {
     #[test]
     fn replacing_an_instruments_sample_keeps_its_drive_and_filter() {
         let fx = SampleFx {
+            env: None,
             drive: 2.0,
             filter: Some(VoiceFilter::default()),
         };
@@ -987,5 +1033,31 @@ mod tests {
             std::fs::canonicalize(&resolved).expect("canonical"),
             std::fs::canonicalize(&far).expect("canonical")
         );
+    }
+
+    #[test]
+    fn pan_parameters_map_to_the_stereo_field_and_cc_10() {
+        assert_eq!(ChannelConfig::pan_of(0x80), 0.0);
+        assert_eq!(ChannelConfig::pan_of(0x00), -1.0);
+        assert_eq!(ChannelConfig::pan_cc(0.0), 64);
+        assert_eq!(ChannelConfig::pan_cc(-1.0), 0);
+        assert_eq!(ChannelConfig::pan_cc(1.0), 127);
+    }
+
+    #[test]
+    fn a_sample_envelope_round_trips_and_is_omitted_by_default() {
+        let fx = SampleFx {
+            env: Some(AmpEnv {
+                attack: 0.1,
+                ..AmpEnv::default()
+            }),
+            ..SampleFx::default()
+        };
+        let text = serde_json::to_string(&fx).unwrap();
+        assert!(text.contains("\"env\""), "{text}");
+        assert_eq!(serde_json::from_str::<SampleFx>(&text).unwrap(), fx);
+        assert!(!serde_json::to_string(&SampleFx::default())
+            .unwrap()
+            .contains("env"));
     }
 }

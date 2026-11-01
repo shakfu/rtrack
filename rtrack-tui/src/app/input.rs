@@ -870,9 +870,9 @@ impl App {
         }
     }
 
-    /// Change instrument `slot`'s drive or filter, as one undoable step per
-    /// run of key presses. Up/Down step finely, Left/Right by 10; cutoff
-    /// moves in semitones.
+    /// Change instrument `slot`'s drive, filter or envelope, as one undoable
+    /// step per run of key presses. Up/Down step finely, Left/Right by 10;
+    /// cutoff moves in semitones, times in 5 ms.
     fn adjust_sample_fx(&mut self, slot: usize, field: SampleField, delta: i64) {
         use rtrack_core::audio::synth::FilterType;
         use rtrack_core::{InstrumentKind, VoiceFilter};
@@ -912,6 +912,34 @@ impl App {
             }
             (SampleField::Resonance, Some(f)) => {
                 f.resonance = (f.resonance + delta as f32 * 0.01).clamp(0.0, 0.95);
+            }
+            (SampleField::Envelope, _) => {
+                fx.env = match fx.env {
+                    None => Some(rtrack_core::AmpEnv::default()),
+                    Some(_) => None,
+                };
+            }
+            (
+                SampleField::Attack
+                | SampleField::Decay
+                | SampleField::Sustain
+                | SampleField::Release,
+                _,
+            ) => {
+                let Some(env) = fx.env.as_mut() else {
+                    self.status_message =
+                        Some("Envelope is default; Right on Envelope sets one".into());
+                    return;
+                };
+                let secs = |v: f32| {
+                    (v + delta as f32 * 0.005).clamp(0.0, rtrack_core::AmpEnv::MAX_SECONDS)
+                };
+                match field {
+                    SampleField::Attack => env.attack = secs(env.attack),
+                    SampleField::Decay => env.decay = secs(env.decay),
+                    SampleField::Release => env.release = secs(env.release),
+                    _ => env.sustain = (env.sustain + delta as f32 * 0.01).clamp(0.0, 1.0),
+                }
             }
             _ => {
                 self.status_message = Some("Filter is off".to_string());
@@ -968,7 +996,12 @@ impl App {
             field @ (SampleField::Drive
             | SampleField::Filter
             | SampleField::Cutoff
-            | SampleField::Resonance) => {
+            | SampleField::Resonance
+            | SampleField::Envelope
+            | SampleField::Attack
+            | SampleField::Decay
+            | SampleField::Sustain
+            | SampleField::Release) => {
                 self.adjust_sample_fx(slot, field, delta);
                 return;
             }
@@ -1070,7 +1103,12 @@ impl App {
                 | SampleField::Drive
                 | SampleField::Filter
                 | SampleField::Cutoff
-                | SampleField::Resonance => unreachable!(),
+                | SampleField::Resonance
+                | SampleField::Envelope
+                | SampleField::Attack
+                | SampleField::Decay
+                | SampleField::Sustain
+                | SampleField::Release => unreachable!(),
             }
             self.core.sample_bank = Arc::new(bank);
             if let Some(ref mut audio) = self.core.audio {

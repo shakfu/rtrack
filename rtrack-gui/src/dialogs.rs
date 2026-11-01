@@ -871,10 +871,10 @@ impl RtrackApp {
 
                         // Pan
                         ui.label("Pan:");
-                        ui.add(egui::Slider::new(
-                            &mut self.core.channels[ch_idx].pan,
-                            -1.0..=1.0,
-                        ));
+                        let mut pan = self.core.channels[ch_idx].pan;
+                        if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0)).changed() {
+                            self.core.set_channel_pan(ch_idx, pan);
+                        }
                         ui.end_row();
                     });
 

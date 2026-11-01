@@ -18,7 +18,17 @@ Merges `dev`, with 0.3.0 as the base. Where the branches built the same thing, 0
 
 - **TUI: `u` undoes in Normal mode.** In Insert mode it stays a note key.
 
+- **`RETxy` retriggers the note** every `y` ticks for the rest of its row, `x * 8` velocity steps quieter each time, for rolls and stutters. The drop stays in the track volume, as `VSL`'s does. A table row can carry it; a retrigger restarts the instrument's mod slots, as a note does, but not its table. Format version 4.
+
+- **`PANxx` pans a track** from the pattern or a table row: `00` left, `80` centre, `FF` right, until the next `PAN`. It reaches the built-in synth and samples, a SoundFont and MIDI out as CC 10, and render and MIDI export, which also write the track's own pan. Format version 4.
+
+  A balance law rather than constant power: the centre is unity on both sides, so a song without `PAN` sounds as it did.
+
+- **Sample instruments can have an ADSR envelope** (`SampleFx::env`, `AmpEnv`), in seconds, in place of the fixed 2 ms attack and 50 ms release. TUI: the Envelope, Attack, Decay, Sustain and Release fields of the sample editor. GUI: the instrument editor's Drive, Filter and Envelope panel. Saved only when set, so a song without one keeps its format version.
+
 ### Fixed
+
+- **A track's pan was stored and shown but never heard.** `ChannelConfig.pan` reached no mixer. It now pans the built-in synth's and samples' voices, is sent as CC 10 at the start of a MIDI export, and the GUI slider applies it as it moves. The TUI track config has no pan field; `PAN` in the pattern sets it.
 
 - **Tables refused `CUT`, `RES` and `DRV`,** which 0.3.0 documents them as carrying. `Table::allows` omitted them, so the editor rejected them and loading dropped them from a table. The engine already played them.
 

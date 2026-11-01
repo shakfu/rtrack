@@ -54,6 +54,9 @@ pub struct ChannelState {
     pub mods: ModOffsets,
     /// Last bend without `mods`, to re-emit when only `mods` moves.
     pub base_bend: f64,
+    /// The sounding note's sample offset and chord, for `RET` to replay.
+    pub sample_offset: u8,
+    pub chord: Chord,
 }
 
 impl Default for ChannelState {
@@ -78,6 +81,8 @@ impl Default for ChannelState {
             mod_tick: 0,
             mods: ModOffsets::default(),
             base_bend: 0.0,
+            sample_offset: 0,
+            chord: [None; 4],
         }
     }
 }
@@ -249,6 +254,8 @@ pub enum TrackerEvent {
     ProgramChange { channel: usize, program: u8 },
     /// The channel's filter and drive offsets changed (`CUT`, `RES`, `DRV`).
     Timbre { channel: usize, timbre: Timbre },
+    /// `PAN`: the channel's pan, `00` left, `80` centre, `FF` right.
+    Pan { channel: usize, pan: u8 },
     /// Speed changed (Fxx < 0x20).
     SpeedChanged { speed: u8 },
     /// Tempo changed (Fxx >= 0x20, or tempo automation).
@@ -406,6 +413,7 @@ fn is_continuous(effect: FxCmd) -> bool {
             | FxCmd::Cutoff
             | FxCmd::Resonance
             | FxCmd::Drive
+            | FxCmd::Retrig
     )
 }
 
@@ -798,14 +806,17 @@ impl TrackerEngine {
                                 channel: ch,
                                 semitone_offset: 0.0,
                             });
+                            let chord = chord_of(song, midi_note, &fx);
                             self.emit(TrackerEvent::NoteOn {
                                 channel: ch,
                                 midi_note,
                                 velocity: scaled_vel,
                                 instrument,
                                 sample_offset,
-                                chord: chord_of(song, midi_note, &fx),
+                                chord,
                             });
+                            self.channel_states[ch].sample_offset = sample_offset;
+                            self.channel_states[ch].chord = chord;
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].active_instrument = instrument;
                             self.channel_states[ch].volume = vel; // store unscaled
@@ -864,6 +875,10 @@ impl TrackerEngine {
                     FxCmd::Program => self.emit(TrackerEvent::ProgramChange {
                         channel: ch,
                         program: param,
+                    }),
+                    FxCmd::Pan => self.emit(TrackerEvent::Pan {
+                        channel: ch,
+                        pan: param,
                     }),
                     _ => {}
                 }
@@ -974,6 +989,8 @@ impl TrackerEngine {
                                 sample_offset: offset,
                                 chord,
                             });
+                            self.channel_states[ch].sample_offset = offset;
+                            self.channel_states[ch].chord = chord;
                             self.channel_states[ch].note = Some(midi_note);
                             self.channel_states[ch].active_instrument = instrument;
                             self.channel_states[ch].volume = vel; // store unscaled
@@ -993,6 +1010,7 @@ impl TrackerEngine {
             let mut bend = false;
             let mut modulation = 0.0;
             let mut volume_changed = false;
+            let mut retrig = false;
             // The table's effect runs as a third column.
             let step = self.advance_table(ch, song);
             let mut columns = [None; FX_COLUMNS + 1];
@@ -1056,8 +1074,28 @@ impl TrackerEngine {
                             (state.volume as i16 + delta).clamp(0, MIDI_MAX_VALUE as i16) as u8;
                         volume_changed = true;
                     }
+                    // `RETxy`: every `y` ticks, `x * 8` steps quieter. The
+                    // drop stays in the track volume, as `VSL`'s does.
+                    FxCmd::Retrig
+                        if param & 0x0F != 0 && self.tick.is_multiple_of(param & 0x0F) =>
+                    {
+                        state.volume = state.volume.saturating_sub((param >> 4) * 8);
+                        retrig = true;
+                    }
                     _ => {}
                 }
+            }
+            if retrig {
+                let state = &self.channel_states[ch];
+                let velocity = self.scale_velocity(ch, state.volume);
+                self.events.push(TrackerEvent::NoteOn {
+                    channel: ch,
+                    midi_note: base_note,
+                    velocity,
+                    instrument: state.active_instrument,
+                    sample_offset: state.sample_offset,
+                    chord: state.chord,
+                });
             }
             if bend {
                 self.events.push(TrackerEvent::PitchBend {
@@ -1284,6 +1322,13 @@ impl TrackerEngine {
                 cmd: FxCmd::Kill,
                 param,
             }) => self.channel_states[ch].cut_in = Some(param),
+            Some(Fx {
+                cmd: FxCmd::Pan,
+                param,
+            }) => self.emit(TrackerEvent::Pan {
+                channel: ch,
+                pan: param,
+            }),
             fx => self.apply_timbre_fx(ch, fx),
         }
     }
@@ -2953,7 +2998,14 @@ mod tests {
     #[test]
     fn tables_accept_cut_and_the_timbre_commands() {
         use crate::tracker::Table;
-        for cmd in [FxCmd::Kill, FxCmd::Cutoff, FxCmd::Resonance, FxCmd::Drive] {
+        for cmd in [
+            FxCmd::Kill,
+            FxCmd::Cutoff,
+            FxCmd::Resonance,
+            FxCmd::Drive,
+            FxCmd::Retrig,
+            FxCmd::Pan,
+        ] {
             assert!(Table::allows(cmd), "{cmd:?}");
         }
     }
@@ -3073,5 +3125,59 @@ mod tests {
             engine.process_tick(&song);
         }
         assert_eq!(cutoff(engine.process_tick(&song)), Some(0.0));
+    }
+
+    // -- Retrigger and pan --
+
+    #[test]
+    fn ret_retriggers_every_y_ticks_and_fades_by_x() {
+        // Two rows: a song ends after its last row's tick 0.
+        let mut song = Song::new(1, 2);
+        song.speed = 6;
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Retrig, 0x13));
+        let mut engine = TrackerEngine::new(&song, false);
+        let mut ons = Vec::new();
+        for tick in 0..6 {
+            for e in engine.process_tick(&song) {
+                if let TrackerEvent::NoteOn { velocity, .. } = e {
+                    ons.push((tick, *velocity));
+                }
+            }
+        }
+        assert_eq!(ons, vec![(0, 100), (3, 92)]);
+    }
+
+    #[test]
+    fn ret_replays_the_notes_chord_and_offset() {
+        let mut song = Song::new(1, 2);
+        song.speed = 4;
+        let mut cell = c4_with(Fx::new(FxCmd::Retrig, 0x02));
+        cell.fx[1] = Some(Fx::new(FxCmd::Chord, 0x47));
+        song.patterns[0].data[0][0] = cell;
+        let mut engine = TrackerEngine::new(&song, false);
+        let chords: Vec<Chord> = (0..4)
+            .flat_map(|_| {
+                engine
+                    .process_tick(&song)
+                    .iter()
+                    .filter_map(|e| match e {
+                        TrackerEvent::NoteOn { chord, .. } => Some(*chord),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(chords.len(), 2);
+        assert_eq!(chords[0], chords[1]);
+        assert_eq!(chords[1][..2], [Some(52), Some(55)], "C4 is 48 here");
+    }
+
+    #[test]
+    fn pan_emits_the_tracks_pan() {
+        let mut song = Song::new(1, 1);
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Pan, 0x00));
+        let mut engine = TrackerEngine::new(&song, false);
+        let events = engine.process_tick(&song).to_vec();
+        assert!(events.contains(&TrackerEvent::Pan { channel: 0, pan: 0 }));
     }
 }

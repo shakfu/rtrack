@@ -196,6 +196,7 @@ fn render_voice(
     left: &mut [f32],
     right: &mut [f32],
     range: std::ops::Range<usize>,
+    (gain_l, gain_r): (f32, f32),
 ) {
     let end = sample.end() as f64;
     let loop_start = sample.effective_loop_start() as f64;
@@ -264,8 +265,8 @@ fn render_voice(
             env_level * (((end - pos) / declick).clamp(0.0, 1.0) as f32)
         };
 
-        left[i] += l * voice.velocity * gain;
-        right[i] += r * voice.velocity * gain;
+        left[i] += l * voice.velocity * gain * gain_l;
+        right[i] += r * voice.velocity * gain * gain_r;
 
         // Advance position
         voice.position += voice.rate;
@@ -293,6 +294,8 @@ pub struct SamplePlaybackEngine {
     pub max_voices: usize,
     /// Each channel's timbre, which its next voice starts at.
     timbre: [Timbre; 16],
+    /// Each channel's pan, -1 left to 1 right.
+    pan: [f32; 16],
 }
 
 impl SamplePlaybackEngine {
@@ -301,7 +304,13 @@ impl SamplePlaybackEngine {
             voices: Vec::with_capacity(max_voices),
             max_voices,
             timbre: [Timbre::default(); 16],
+            pan: [0.0; 16],
         }
+    }
+
+    /// Pan `channel`'s voices, -1 left to 1 right.
+    pub fn set_channel_pan(&mut self, channel: u8, pan: f32) {
+        self.pan[(channel & 0x0F) as usize] = pan;
     }
 
     /// Move the filter and drive of `channel`'s voices, and of its next ones.
@@ -393,7 +402,12 @@ impl SamplePlaybackEngine {
             channel,
             note,
             active: true,
-            envelope: Envelope::sample_default(output_rate as f32),
+            envelope: match fx.env {
+                Some(e) => {
+                    Envelope::new(e.attack, e.decay, e.sustain, e.release, output_rate as f32)
+                }
+                None => Envelope::sample_default(output_rate as f32),
+            },
             looped: false,
             fx: VoiceFx::with_timbre(fx, output_rate, self.timbre[(channel & 0x0F) as usize]),
         });
@@ -509,7 +523,8 @@ impl SamplePlaybackEngine {
                     continue;
                 }
             };
-            render_voice(voice, sample, left, right, 0..frames);
+            let gains = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
+            render_voice(voice, sample, left, right, 0..frames, gains);
         }
     }
 
@@ -550,12 +565,14 @@ impl SamplePlaybackEngine {
                     continue;
                 }
             };
+            let gains = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
             render_voice(
                 voice,
                 sample,
                 &mut channel_left[ch],
                 &mut channel_right[ch],
                 range.clone(),
+                gains,
             );
         }
     }
@@ -566,6 +583,7 @@ mod tests {
     use super::*;
     use crate::audio::envelope::EnvStage;
     use crate::sample::Sample;
+    use crate::types::AmpEnv;
     use std::sync::Arc;
 
     fn make_test_sample() -> Sample {
@@ -647,6 +665,7 @@ mod tests {
     #[test]
     fn hostile_voice_fx_values_render_finite_audio() {
         let fx = SampleFx {
+            env: None,
             drive: f32::INFINITY,
             filter: Some(crate::types::VoiceFilter {
                 kind: FilterType::BandPass,
@@ -1117,5 +1136,56 @@ mod tests {
             "Expected silence after full release, but tail_energy={}",
             tail_energy
         );
+    }
+
+    #[test]
+    fn a_hard_left_pan_silences_the_right_side() {
+        let bank = make_test_bank();
+        let mut engine = SamplePlaybackEngine::new(8);
+        engine.set_channel_pan(0, -1.0);
+        engine.note_on(
+            0,
+            60,
+            100,
+            0,
+            bank.get(0).unwrap(),
+            44100.0,
+            NewNoteAction::Cut,
+        );
+        let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+        engine.render(&bank, &mut l, &mut r);
+        assert!(l.iter().any(|v| v.abs() > 0.0), "left is silent");
+        assert!(r.iter().all(|v| *v == 0.0), "right still sounds");
+    }
+
+    #[test]
+    fn a_sample_envelope_releases_at_its_own_rate() {
+        // Looping, so the voice ends by its envelope and not by running out.
+        let mut smp = make_test_sample();
+        smp.loop_enabled = true;
+        smp.loop_end = smp.data.len();
+        let mut bank = SampleBank::new();
+        bank.samples[0] = Some(Arc::new(smp));
+        let sample = bank.get(0).unwrap();
+        let sounding_after_release = |env: Option<AmpEnv>| {
+            let mut engine = SamplePlaybackEngine::new(8);
+            let fx = SampleFx {
+                env,
+                ..SampleFx::default()
+            };
+            engine.note_on_with_offset(0, 60, 100, 0, sample, 44100.0, NewNoteAction::Cut, 0, &fx);
+            // Past the attack, then release; a release from level 0 ends at once.
+            let (mut l, mut r) = (vec![0.0; 22050], vec![0.0; 22050]);
+            engine.render(&bank, &mut l[..1000], &mut r[..1000]);
+            engine.note_off(0, 60);
+            // 0.5 s: past the default 50 ms release, inside a 2 s one.
+            engine.render(&bank, &mut l, &mut r);
+            engine.voices.iter().any(|v| v.active)
+        };
+        assert!(!sounding_after_release(None));
+        assert!(sounding_after_release(Some(AmpEnv {
+            release: 2.0,
+            ..AmpEnv::default()
+        })));
     }
 }

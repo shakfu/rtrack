@@ -161,6 +161,14 @@ pub fn export_midi_with_channels(
     let mut abs_exact: f64 = 0.0;
     let mut clock = ExportClock::new(length);
 
+    // A track's pan, where it has one, as CC 10 before its first note.
+    for (ch, cfg) in channels.iter().enumerate().take(song.channels) {
+        if cfg.pan != 0.0 {
+            let midi_ch = midi_channel(ch);
+            channel_events[ch].push((0, vec![0xB0 | midi_ch, 10, ChannelConfig::pan_cc(cfg.pan)]));
+        }
+    }
+
     while !clock.done(&engine)? {
         clock.advance(engine.seconds_per_tick(song));
         engine.process_tick(song);
@@ -273,6 +281,14 @@ pub fn export_midi_with_channels(
                 }
                 TrackerEvent::TempoChanged { bpm } => {
                     tempo_events.push((abs_tick, *bpm));
+                }
+                TrackerEvent::Pan { channel, pan } => {
+                    if *channel >= song.channels {
+                        continue;
+                    }
+                    let midi_ch = midi_channel(*channel);
+                    let cc = ChannelConfig::pan_cc(ChannelConfig::pan_of(*pan));
+                    channel_events[*channel].push((abs_tick, vec![0xB0 | midi_ch, 10, cc]));
                 }
                 _ => {} // RowAdvanced, SpeedChanged, GenerationAdvanced
             }
@@ -1285,6 +1301,30 @@ mod tests {
         by_index.sort_unstable();
         assert_eq!(channels, vec![5, 9]);
         assert_eq!(by_index, vec![0, 1]);
+    }
+
+    #[test]
+    fn pan_exports_as_cc_10() {
+        let mut song = Song::new(1, 1);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(60),
+                fx: [Some(Fx::new(FxCmd::Pan, 0xFF)), None],
+                ..Cell::default()
+            },
+        );
+        let path = std::env::temp_dir().join("rtrack_export_pan.mid");
+        let mut cfg = ChannelConfig::new(0);
+        cfg.pan = -1.0;
+        export_midi_with_channels(&song, &[cfg], &[], &path, ExportLength::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let has = |cc: [u8; 3]| bytes.windows(3).any(|w| w == cc);
+        assert!(has([0xB0, 10, 0]), "the track's own pan");
+        assert!(has([0xB0, 10, 127]), "the PAN command");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -273,6 +273,10 @@ fn render_song_streaming(
     let mut engine = TrackerEngine::new(song, true);
     engine.set_channel_info(crate::engine::ChannelInfo::for_export(channels));
     engine.set_instrument_mods(instruments.iter().map(|i| i.mods).collect());
+    for (ch, cfg) in channels.iter().enumerate().take(16) {
+        synth.set_channel_pan(ch as u8, cfg.pan);
+        sample_engine.set_channel_pan(ch as u8, cfg.pan);
+    }
     let num_channels = song.channels.max(1);
     let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); num_channels];
     let mut frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
@@ -465,6 +469,16 @@ fn render_song_streaming(
                     let voice = (*channel & 0x0F) as u8;
                     synth.set_channel_timbre(voice, *timbre);
                     sample_engine.set_channel_timbre(voice, *timbre);
+                }
+                TrackerEvent::Pan { channel, pan } => {
+                    let voice = (*channel & 0x0F) as u8;
+                    let pan = ChannelConfig::pan_of(*pan);
+                    synth.set_channel_pan(voice, pan);
+                    sample_engine.set_channel_pan(voice, pan);
+                    if let Some(sf2) = sf2.as_mut() {
+                        let cc = ChannelConfig::pan_cc(pan) as i32;
+                        sf2.process_midi_message(sf2_channel(*channel) as i32, 0xB0, 10, cc);
+                    }
                 }
                 TrackerEvent::ProgramChange { channel, program } => {
                     let voice = (*channel & 0x0F) as u8;
@@ -946,6 +960,7 @@ mod tests {
                 .sum::<f32>()
         };
         let filtered = SampleFx {
+            env: None,
             filter: Some(VoiceFilter {
                 cutoff_hz: 8000.0,
                 ..VoiceFilter::default()
@@ -1085,6 +1100,7 @@ mod tests {
 
         let plain = render(crate::types::SampleFx::default());
         let low_pass = render(crate::types::SampleFx {
+            env: None,
             filter: Some(crate::types::VoiceFilter {
                 cutoff_hz: 500.0,
                 ..crate::types::VoiceFilter::default()
@@ -1092,6 +1108,7 @@ mod tests {
             ..crate::types::SampleFx::default()
         });
         let driven = render(crate::types::SampleFx {
+            env: None,
             drive: 20.0,
             ..crate::types::SampleFx::default()
         });

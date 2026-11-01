@@ -224,8 +224,8 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             ]));
         }
 
-        // Instrument section: the drive and filter of the instrument in this
-        // slot, which apply to every note it plays.
+        // Instrument section: the drive, filter and envelope of the
+        // instrument in this slot, which apply to every note it plays.
         lines.push(Line::from(Span::styled(
             "  -- Instrument --",
             Style::default().fg(Color::DarkGray),
@@ -235,6 +235,7 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             _ => None,
         };
         let filter = fx.and_then(|fx| fx.filter);
+        let env = fx.and_then(|fx| fx.env);
         let dash = || "-".to_string();
         let fx_fields: Vec<(SampleField, &str, String)> = vec![
             (
@@ -272,8 +273,39 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
                 "Resonance",
                 filter.map_or_else(dash, |f| format!("{:.2}", f.resonance)),
             ),
+            (
+                SampleField::Envelope,
+                "Envelope",
+                match (fx, env) {
+                    (None, _) => dash(),
+                    (Some(_), None) => "default".to_string(),
+                    (Some(_), Some(_)) => "ADSR".to_string(),
+                },
+            ),
+            (
+                SampleField::Attack,
+                "Attack",
+                env.map_or_else(dash, |e| format!("{:.0} ms", e.attack * 1000.0)),
+            ),
+            (
+                SampleField::Decay,
+                "Decay",
+                env.map_or_else(dash, |e| format!("{:.0} ms", e.decay * 1000.0)),
+            ),
+            (
+                SampleField::Sustain,
+                "Sustain",
+                env.map_or_else(dash, |e| format!("{:.2}", e.sustain)),
+            ),
+            (
+                SampleField::Release,
+                "Release",
+                env.map_or_else(dash, |e| format!("{:.0} ms", e.release * 1000.0)),
+            ),
         ];
-        for (field, label, value) in &fx_fields {
+        // Two columns, drive and filter beside the envelope, so the popup
+        // keeps its height.
+        let cell = |(field, label, value): &(SampleField, &str, String)| {
             let is_active = *field == app.dialogs.sample_editor_field;
             let marker = if is_active { "> " } else { "  " };
             let label_style = if is_active {
@@ -283,11 +315,20 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             } else {
                 Style::default().fg(Color::Cyan)
             };
-            lines.push(Line::from(vec![
+            vec![
                 Span::styled(marker, label_style),
                 Span::styled(format!("{:<12}", label), label_style),
-                Span::styled(value.clone(), Style::default().fg(Color::White)),
-            ]));
+                Span::styled(format!("{:<14}", value), Style::default().fg(Color::White)),
+            ]
+        };
+        let (left_col, right_col) = fx_fields.split_at(4);
+        for (row, right) in right_col.iter().enumerate() {
+            let mut spans = match left_col.get(row) {
+                Some(f) => cell(f),
+                None => vec![Span::raw(" ".repeat(28))],
+            };
+            spans.extend(cell(right));
+            lines.push(Line::from(spans));
         }
 
         // Slice section
@@ -351,9 +392,8 @@ pub fn draw_sample_editor(f: &mut Frame, app: &App) {
             ]));
         }
 
-        lines.push(Line::from(""));
-
-        // Waveform preview with voice positions and slice boundaries
+        // Waveform preview with voice positions and slice boundaries. No
+        // blank line above it: the envelope row took that one.
         let waveform_width = (inner.width as usize).saturating_sub(4);
         if waveform_width > 10 {
             lines.push(Line::from(Span::styled(

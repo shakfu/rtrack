@@ -291,6 +291,11 @@ pub enum SampleField {
     Filter,
     Cutoff,
     Resonance,
+    Envelope,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
     SliceCount,
     SliceSensitivity,
     SliceRange,
@@ -315,6 +320,11 @@ impl SampleField {
             Self::Filter => "instrument.filter",
             Self::Cutoff => "instrument.cutoff",
             Self::Resonance => "instrument.resonance",
+            Self::Envelope => "instrument.envelope",
+            Self::Attack => "instrument.attack",
+            Self::Decay => "instrument.decay",
+            Self::Sustain => "instrument.sustain",
+            Self::Release => "instrument.release",
             Self::SliceCount => "sample.slice_count",
             Self::SliceSensitivity => "sample.slice_sensitivity",
             Self::SliceRange => "sample.slice_range",
@@ -334,7 +344,12 @@ impl SampleField {
             Self::Drive => Self::Filter,
             Self::Filter => Self::Cutoff,
             Self::Cutoff => Self::Resonance,
-            Self::Resonance => Self::SliceCount,
+            Self::Resonance => Self::Envelope,
+            Self::Envelope => Self::Attack,
+            Self::Attack => Self::Decay,
+            Self::Decay => Self::Sustain,
+            Self::Sustain => Self::Release,
+            Self::Release => Self::SliceCount,
             Self::SliceCount => Self::SliceSensitivity,
             Self::SliceSensitivity => Self::SliceRange,
             Self::SliceRange => Self::SliceEqual,
@@ -355,7 +370,12 @@ impl SampleField {
             Self::Filter => Self::Drive,
             Self::Cutoff => Self::Filter,
             Self::Resonance => Self::Cutoff,
-            Self::SliceCount => Self::Resonance,
+            Self::Envelope => Self::Resonance,
+            Self::Attack => Self::Envelope,
+            Self::Decay => Self::Attack,
+            Self::Sustain => Self::Decay,
+            Self::Release => Self::Sustain,
+            Self::SliceCount => Self::Release,
             Self::SliceSensitivity => Self::SliceCount,
             Self::SliceRange => Self::SliceSensitivity,
             Self::SliceEqual => Self::SliceRange,
@@ -6014,5 +6034,25 @@ pub(crate) mod tests {
                 period: 24
             }
         );
+    }
+
+    #[test]
+    fn test_sample_editor_envelope_field_sets_an_adsr_and_steps_its_release() {
+        let (mut app, _dir) = app_on_slice_two(SampleField::Envelope);
+        app.core.instruments[2].kind = rtrack_core::InstrumentKind::sample(2);
+        let env = |app: &App| match &app.core.instruments[2].kind {
+            rtrack_core::InstrumentKind::Sample { fx, .. } => fx.env,
+            _ => None,
+        };
+        assert_eq!(env(&app), None);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(env(&app), Some(rtrack_core::AmpEnv::default()));
+        app.dialogs.sample_editor_field = SampleField::Release;
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        let release = env(&app).unwrap().release;
+        assert!((release - 0.1).abs() < 1e-6, "{release}");
+        app.core.commit_edit();
+        assert!(app.core.undo());
+        assert_eq!(env(&app).unwrap().release, 0.05);
     }
 }

@@ -38,6 +38,11 @@ pub enum FxCmd {
     Chord,
     /// End the track's note `xx` ticks after the row starts.
     Kill,
+    /// Retrigger the note every `y` ticks, `x * 8` velocity steps quieter
+    /// each time.
+    Retrig,
+    /// Set the track's pan: `00` left, `80` centre, `FF` right.
+    Pan,
     /// MIDI CC to the controller it holds.
     Cc(u8),
 }
@@ -45,7 +50,7 @@ pub enum FxCmd {
 /// Every command with a fixed name, paired with it. `Cc` is spelled `Cnn`.
 ///
 /// No name may match `C[0-9A-F]{2}`, which `Cc` uses.
-const NAMES: [(FxCmd, &str); 21] = [
+const NAMES: [(FxCmd, &str); 23] = [
     (FxCmd::Arp, "ARP"),
     (FxCmd::PitchUp, "PUP"),
     (FxCmd::PitchDown, "PDN"),
@@ -67,6 +72,8 @@ const NAMES: [(FxCmd, &str); 21] = [
     (FxCmd::Drive, "DRV"),
     (FxCmd::Chord, "CHD"),
     (FxCmd::Kill, "KIL"),
+    (FxCmd::Retrig, "RET"),
+    (FxCmd::Pan, "PAN"),
 ];
 
 impl FxCmd {
@@ -94,6 +101,8 @@ impl FxCmd {
             Self::Drive => "instrument drive: 80 is its own",
             Self::Chord => "chord: add notes x and y steps up",
             Self::Kill => "end the note after xx ticks",
+            Self::Retrig => "retrigger every y ticks, x*8 quieter each",
+            Self::Pan => "pan: 00 left, 80 centre, FF right",
             Self::Cc(_) => "send MIDI CC value xx",
         }
     }

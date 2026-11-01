@@ -187,6 +187,8 @@ Each cell has two effect columns, and both play. The second is shown where the p
 | `DRVxx` | -- | Drive | Scale the instrument's drive by 2^((xx-80)/32); 80 is its own |
 | `CHDxy` | -- | Chord | Add notes x and y steps above the row's note, counted as `ARP` counts them; 0 adds none |
 | `KILxx` | -- | Note cut | End the note xx ticks after the row starts |
+| `RETxy` | -- | Retrigger | Replay the note every y ticks, x*8 velocity steps quieter each time |
+| `PANxx` | -- | Pan | Pan the track: 00 left, 80 centre, FF right |
 
 Songs saved before format version 2 stored the key digit; they convert on load.
 
@@ -194,7 +196,7 @@ Songs saved before format version 2 stored the key digit; they convert on load.
 
 `CUT`, `RES` and `DRV` move the filter and drive of built-in synth and sample instruments, gliding over about 5 ms. A value lasts on the track until the next command of its kind or a note of another instrument. A sample with its filter off has no cutoff to move. They do not reach a SoundFont or MIDI out, which have no filter here; `Cnn` sends a CC instead. A song using them, or `CHD`, is saved as format version 3, which rtrack 0.2.0 cannot open.
 
-`KILxx` ends the note xx ticks after its row starts. Each instrument also has two modulation slots, an envelope or LFO timed in ticks, adding to volume, pitch, cutoff or drive. A song using either is saved as format version 4; rtrack 0.3.0 opens it without them and refuses to save over it.
+`KILxx` ends the note xx ticks after its row starts. `RETxy` replays it every y ticks for the rest of the row, `x*8` velocity steps quieter each time, so `RET03` is a roll and `RET22` a fading one; the drop stays in the track volume, as `VSL`'s does. `PANxx` pans the track until the next `PAN`; the track's own pan, set in its config, is where playback starts. Pan reaches the built-in synth, samples, a SoundFont and MIDI out (CC 10). Each instrument also has two modulation slots, an envelope or LFO timed in ticks, adding to volume, pitch, cutoff or drive, and a sample instrument can have its own ADSR envelope in place of the default 2 ms attack and 50 ms release. A song using any of these is saved as format version 4; rtrack 0.3.0 opens it without them and refuses to save over it.
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 

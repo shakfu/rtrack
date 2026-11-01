@@ -499,6 +499,7 @@ impl TrackerCore {
                 audio.set_channel_effects(ch as u8, &cfg.effects_params);
             }
         }
+        self.push_all_channel_pans();
     }
 
     /// Push every send bus's parameters to the audio engine.
@@ -547,12 +548,36 @@ impl TrackerCore {
         }
     }
 
-    /// Return every channel's voices to their instruments' filter and drive,
-    /// as a reset engine assumes, so previews and the next play start clean.
+    /// Return every channel's voices to their instruments' filter and drive
+    /// and to the track's pan, as a reset engine assumes, so previews and
+    /// the next play start clean.
     fn reset_channel_timbre(&mut self) {
         if let Some(ref mut audio) = self.audio {
             for ch in 0..MAX_CHANNELS as u8 {
                 audio.channel_timbre(None, ch, crate::types::Timbre::default());
+            }
+        }
+        self.push_all_channel_pans();
+    }
+
+    /// Set track `ch`'s pan, -1 left to 1 right, and apply it now.
+    pub fn set_channel_pan(&mut self, ch: usize, pan: f32) {
+        let Some(cfg) = self.channels.get_mut(ch) else {
+            return;
+        };
+        cfg.pan = pan.clamp(-1.0, 1.0);
+        let pan = cfg.pan;
+        if let Some(ref mut audio) = self.audio {
+            audio.channel_pan(None, ch as u8, pan);
+        }
+        self.dirty = true;
+    }
+
+    /// Push every track's pan to the audio engine.
+    fn push_all_channel_pans(&mut self) {
+        if let Some(ref mut audio) = self.audio {
+            for (ch, cfg) in self.channels.iter().enumerate().take(16) {
+                audio.channel_pan(None, ch as u8, cfg.pan);
             }
         }
     }
@@ -922,6 +947,14 @@ impl TrackerCore {
                     let at = self.scheduled_frame;
                     if let Some(ref mut audio) = self.audio {
                         audio.channel_timbre(at, channel as u8, timbre);
+                    }
+                }
+                TrackerEvent::Pan { channel, pan } => {
+                    let pan = ChannelConfig::pan_of(pan);
+                    self.send_cc(channel as u8, 10, ChannelConfig::pan_cc(pan));
+                    let at = self.scheduled_frame;
+                    if let Some(ref mut audio) = self.audio {
+                        audio.channel_pan(at, channel as u8, pan);
                     }
                 }
                 TrackerEvent::ProgramChange { channel, program } => {

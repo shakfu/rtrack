@@ -212,7 +212,8 @@ pub struct SampleRefEntry {
 /// Version 3 adds `CUT`, `RES`, `DRV` and `CHD`; a song without them is still
 /// written as version 2 ([`Song::format_version`]), so older builds open it.
 ///
-/// Version 4 adds `KIL` and instrument mod slots. 0.3.0 reads them as absent,
+/// Version 4 adds `KIL`, `RET`, `PAN`, instrument mod slots and sample
+/// envelopes. 0.3.0 reads them as absent,
 /// and the version makes it refuse to save over such a file.
 pub const FORMAT_VERSION: u32 = 4;
 
@@ -444,12 +445,12 @@ impl Song {
     }
 
     /// The oldest format version that holds this song's effects: 4 for
-    /// `KIL`, 3 for `CUT`, `RES`, `DRV` or `CHD`, else 2. Builds before 0.3.0
+    /// `KIL`, `RET` or `PAN`, 3 for `CUT`, `RES`, `DRV` or `CHD`, else 2. Builds before 0.3.0
     /// fail to load an effect they do not know, so this keeps other songs
     /// open to them.
     pub fn format_version(&self) -> u32 {
         let version = |fx: &Option<Fx>| match fx.map(|f| f.cmd) {
-            Some(FxCmd::Kill) => 4,
+            Some(FxCmd::Kill | FxCmd::Retrig | FxCmd::Pan) => 4,
             Some(FxCmd::Cutoff | FxCmd::Resonance | FxCmd::Drive | FxCmd::Chord) => 3,
             _ => 2,
         };

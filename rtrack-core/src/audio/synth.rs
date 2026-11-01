@@ -1275,6 +1275,8 @@ pub struct BuiltinSynth {
     programs: [u8; 16],
     /// Each channel's timbre, which its next voice starts at.
     timbre: [Timbre; 16],
+    /// Each channel's pan, -1 left to 1 right.
+    pan: [f32; 16],
     /// Pre-built fundsp graphs, one per possible voice. Taken on note-on and
     /// returned when a voice is evicted, so the audio thread never allocates
     /// or frees one.
@@ -1288,6 +1290,7 @@ impl BuiltinSynth {
             voices: Vec::with_capacity(MAX_VOICES),
             programs: [0; 16],
             timbre: [Timbre::default(); 16],
+            pan: [0.0; 16],
             fundsp_pool: (0..MAX_VOICES)
                 .map(|_| FundspVoice::new(sample_rate as f32))
                 .collect(),
@@ -1357,6 +1360,11 @@ impl BuiltinSynth {
     }
 
     /// Move the filter and drive of `channel`'s voices, and of its next ones.
+    /// Pan `channel`'s voices, -1 left to 1 right.
+    pub fn set_channel_pan(&mut self, channel: u8, pan: f32) {
+        self.pan[(channel & 0x0F) as usize] = pan;
+    }
+
     pub fn set_channel_timbre(&mut self, channel: u8, timbre: Timbre) {
         self.timbre[(channel & 0x0F) as usize] = timbre;
         for voice in &mut self.voices {
@@ -1491,8 +1499,9 @@ impl BuiltinSynth {
                 continue;
             }
             let (l, r) = voice.tick();
-            left += l;
-            right += r;
+            let (gl, gr) = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
+            left += l * gl;
+            right += r * gr;
         }
 
         self.reclaim_finished_voices();
@@ -1510,9 +1519,10 @@ impl BuiltinSynth {
                 continue;
             }
             let (l, r) = voice.tick();
+            let (gl, gr) = crate::audio::pan_gains(self.pan[(voice.channel & 0x0F) as usize]);
             let ch = std::cmp::min(voice.channel as usize, channel_out.len().saturating_sub(1));
-            channel_out[ch][0] += l;
-            channel_out[ch][1] += r;
+            channel_out[ch][0] += l * gl;
+            channel_out[ch][1] += r * gr;
         }
         self.reclaim_finished_voices();
     }
@@ -2154,5 +2164,19 @@ mod fundsp_pool_tests {
         assert_eq!(voice.detuned_freq.value(), 220.0 * DETUNE_RATIO);
         assert_eq!(voice.cutoff.value(), 1200.0);
         assert_eq!(voice.resonance.value(), 0.3);
+    }
+
+    #[test]
+    fn a_hard_right_pan_silences_the_left_side() {
+        let mut synth = BuiltinSynth::new(44100.0);
+        synth.set_channel_pan(0, 1.0);
+        synth.note_on(0, 60, 100);
+        let mut heard_right = false;
+        for _ in 0..512 {
+            let (l, r) = synth.render_sample();
+            assert_eq!(l, 0.0);
+            heard_right |= r != 0.0;
+        }
+        assert!(heard_right);
     }
 }

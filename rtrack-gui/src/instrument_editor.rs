@@ -4,7 +4,7 @@ use rtrack_core::audio::synth::{FilterType, Patch, SynthParams};
 use rtrack_core::constants::MAX_INSTRUMENTS;
 use rtrack_core::sample::{SliceOverwrite, SliceRange};
 use rtrack_core::tracker::midi_note_name;
-use rtrack_core::{Instrument, InstrumentKind, MidiOutput, SampleFx, VoiceFilter};
+use rtrack_core::{AmpEnv, Instrument, InstrumentKind, MidiOutput, SampleFx, VoiceFilter};
 
 use crate::app::RtrackApp;
 
@@ -895,7 +895,7 @@ impl RtrackApp {
         };
         let was = *fx;
         ui.add_space(8.0);
-        ui.heading("Drive and Filter");
+        ui.heading("Drive, Filter and Envelope");
         egui::Grid::new(format!("sample_fx_{}", idx))
             .num_columns(4)
             .spacing([10.0, 4.0])
@@ -926,6 +926,34 @@ impl RtrackApp {
                     );
                     ui.label("Resonance:");
                     ui.add(egui::Slider::new(&mut filter.resonance, 0.0..=0.95));
+                    ui.end_row();
+                }
+
+                ui.label("Envelope:");
+                let mut on = fx.env.is_some();
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut on, false, "Default");
+                    ui.selectable_value(&mut on, true, "ADSR");
+                });
+                if on != fx.env.is_some() {
+                    fx.env = on.then(AmpEnv::default);
+                }
+                ui.end_row();
+                if let Some(env) = &mut fx.env {
+                    fn secs(v: &mut f32) -> egui::Slider<'_> {
+                        egui::Slider::new(v, 0.0..=AmpEnv::MAX_SECONDS)
+                            .logarithmic(true)
+                            .suffix(" s")
+                    }
+                    ui.label("Attack:");
+                    ui.add(secs(&mut env.attack));
+                    ui.label("Decay:");
+                    ui.add(secs(&mut env.decay));
+                    ui.end_row();
+                    ui.label("Sustain:");
+                    ui.add(egui::Slider::new(&mut env.sustain, 0.0..=1.0));
+                    ui.label("Release:");
+                    ui.add(secs(&mut env.release));
                     ui.end_row();
                 }
             });
@@ -1238,6 +1266,7 @@ mod tests {
         app.core.instruments[2].kind = InstrumentKind::Sample {
             slot: 2,
             fx: SampleFx {
+                env: None,
                 drive: 3.0,
                 filter: Some(VoiceFilter::default()),
             },

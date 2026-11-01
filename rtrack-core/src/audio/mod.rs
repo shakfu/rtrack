@@ -1,6 +1,14 @@
 pub mod channel_effects;
 pub mod effects;
 pub mod envelope;
+
+/// Left and right gains for `pan`, -1 to 1. A balance law: the centre is
+/// unity on both sides, and a full pan silences the far side, so a centred
+/// mix is unchanged by it.
+#[inline]
+pub fn pan_gains(pan: f32) -> (f32, f32) {
+    ((1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0))
+}
 pub mod svf;
 pub mod synth;
 pub mod timbre;
@@ -190,6 +198,12 @@ enum AudioCommand {
     ChannelVolume {
         channel: u8,
         volume: u8,
+    },
+    /// Pan, -1 left to 1 right, for the built-in synth's and the sample
+    /// engine's voices on a channel, and its next ones.
+    ChannelPan {
+        channel: u8,
+        pan: f32,
     },
     /// Filter and drive offsets for the built-in synth's and the sample
     /// engine's voices on a channel, and its next ones.
@@ -1064,6 +1078,16 @@ impl AudioEngine {
         }
     }
 
+    /// Pan the built-in synth's and samples' voices on `channel`, and its
+    /// next ones, at `frame` or now.
+    pub fn channel_pan(&mut self, frame: Option<u64>, channel: u8, pan: f32) {
+        let cmd = AudioCommand::ChannelPan { channel, pan };
+        match frame {
+            Some(frame) => self.send_at(frame, cmd),
+            None => self.send(cmd),
+        }
+    }
+
     /// Set the volume of the built-in synth's and samples' voices on
     /// `channel`, at `frame` or now.
     pub fn channel_volume(&mut self, frame: Option<u64>, channel: u8, volume: u8) {
@@ -1465,6 +1489,10 @@ fn process_command(
         AudioCommand::ChannelVolume { channel, volume } => {
             builtin_synth.set_channel_volume(channel, volume);
             sample_engine.set_channel_volume(channel, volume);
+        }
+        AudioCommand::ChannelPan { channel, pan } => {
+            builtin_synth.set_channel_pan(channel, pan);
+            sample_engine.set_channel_pan(channel, pan);
         }
         AudioCommand::ToggleEffects => {
             effects.enabled = !effects.enabled;

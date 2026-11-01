@@ -27,3 +27,4 @@ Recommendations are the reviewer's, not decisions.
 | 9 | Row insert / delete | Shifts rows; the pattern keeps its length | Pattern grows or shrinks by one row | Pending | Recommend fix: use `Pattern::insert_row` / `delete_row` in both |
 | 10 | Visualization | Bottom panel: level meters with a spectrum, or the sample waveform | Spectrum with level meters; waveform with draggable trim, slice and loop edges | Pending | Recommend approve: the GUI can draw finer detail and take mouse input |
 | 11 | Sample edges | Arrow keys on the trim and loop fields | Drag the edges on the waveform | Pending | Recommend approve: both apply the same rule (`SampleBank::move_boundary`) |
+| 12 | Track pan | No field; `PAN` in the pattern | Slider in the track config | Pending | Recommend fix: add Pan and Volume to the TUI track config |
