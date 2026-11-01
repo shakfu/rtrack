@@ -49,7 +49,10 @@ impl RtrackApp {
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("+").on_hover_text("New empty pattern").clicked() {
+            if ui.button("+").on_hover_text("New empty pattern").clicked()
+                && !self.refuse_at_pattern_limit()
+            {
+                let before = self.core.song.clone();
                 let new_pat_idx = self.core.song.patterns.len();
                 let rows = self
                     .core
@@ -65,17 +68,20 @@ impl RtrackApp {
                     .push(rtrack_core::tracker::Pattern::new(rows, channels));
                 self.core.song.order.push(new_pat_idx);
                 self.core.song.sync_order_repeats();
+                self.core.record_song_edit(None, before);
             }
             if ui
                 .add_enabled(self.core.song.order.len() > 1, egui::Button::new("-"))
                 .on_hover_text("Remove last order entry")
                 .clicked()
             {
+                let before = self.core.song.clone();
                 self.core.song.order.pop();
                 self.core.song.sync_order_repeats();
                 if self.edit_order >= self.core.song.order.len() {
                     self.edit_order = self.core.song.order.len() - 1;
                 }
+                self.core.record_song_edit(None, before);
             }
             if ui
                 .button("D")
@@ -83,6 +89,7 @@ impl RtrackApp {
                 .clicked()
                 && !self.refuse_at_pattern_limit()
             {
+                let before = self.core.song.clone();
                 let src_pat_idx = self.core.song.order[self.edit_order];
                 let cloned = self.core.song.patterns[src_pat_idx].clone();
                 let new_pat_idx = self.core.song.patterns.len();
@@ -94,19 +101,20 @@ impl RtrackApp {
                 self.core.song.sync_order_repeats();
                 self.edit_order += 1;
                 self.cursor_row = 0;
-                self.core.dirty = true;
+                self.core.record_song_edit(None, before);
             }
             if ui
                 .button("^")
                 .on_hover_text("Insert order entry at current position")
                 .clicked()
             {
+                let before = self.core.song.clone();
                 let pat = self.core.song.order[self.edit_order];
                 self.core.song.order.insert(self.edit_order + 1, pat);
                 self.core.song.sync_order_repeats();
                 self.edit_order += 1;
                 self.cursor_row = 0;
-                self.core.dirty = true;
+                self.core.record_song_edit(None, before);
             }
         });
     }

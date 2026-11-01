@@ -1,5 +1,7 @@
 use egui::{Color32, DragValue, RichText, Ui};
 
+use rtrack_core::editor::EditSource;
+
 use crate::app::RtrackApp;
 use crate::state::Mode;
 
@@ -66,22 +68,25 @@ impl RtrackApp {
             ui.separator();
 
             // BPM
-            let prev_bpm = self.core.song.bpm;
-            ui.add(
-                DragValue::new(&mut self.core.song.bpm)
-                    .range(20..=999)
-                    .suffix(" BPM"),
-            );
-            if self.core.song.bpm != prev_bpm {
-                self.core.link.set_tempo(self.core.song.bpm as f64);
+            let mut bpm = self.core.song.bpm;
+            ui.add(DragValue::new(&mut bpm).range(20..=999).suffix(" BPM"));
+            if bpm != self.core.song.bpm {
+                let before = self.core.song.clone();
+                self.core.song.bpm = bpm;
+                self.core.link.set_tempo(bpm as f64);
+                self.core
+                    .record_song_edit(Some(EditSource::new("song.bpm", 0)), before);
             }
 
             // Speed
-            ui.add(
-                DragValue::new(&mut self.core.song.speed)
-                    .range(1..=31)
-                    .prefix("Spd:"),
-            );
+            let mut speed = self.core.song.speed;
+            ui.add(DragValue::new(&mut speed).range(1..=31).prefix("Spd:"));
+            if speed != self.core.song.speed {
+                let before = self.core.song.clone();
+                self.core.song.speed = speed;
+                self.core
+                    .record_song_edit(Some(EditSource::new("song.speed", 0)), before);
+            }
             // What `TPO` and `SPD` have made of them during playback.
             let (live_bpm, live_speed) = self.core.live_tempo();
             if live_bpm.round() as u16 != self.core.song.bpm || live_speed != self.core.song.speed {

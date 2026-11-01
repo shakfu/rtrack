@@ -831,3 +831,39 @@ fn an_effect_from_a_newer_version_loads_as_none_with_a_note() {
     assert!(headless(1, 4).load_file(&path).is_err());
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn mod_slots_round_trip_and_mark_the_file_version_4() {
+    use rtrack_core::modulation::{LfoShape, ModDest, ModSlot, ModSource};
+    let path = scratch("mod_slots");
+    let mut core = headless(2, 16);
+    let lfo = ModSlot {
+        source: ModSource::Lfo {
+            shape: LfoShape::Triangle,
+            period: 12,
+        },
+        dest: ModDest::Cutoff,
+        amount: -20,
+    };
+    core.instruments[2].mods[1] = Some(lfo);
+    core.file_path = Some(path.clone());
+    core.save().unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let file: SongFile = serde_json::from_str(&text).unwrap();
+    assert_eq!(file.version, 4);
+
+    let mut reloaded = headless(2, 16);
+    let report = reloaded.load_file(&path).unwrap();
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(reloaded.instruments[2].mods, [None, Some(lfo)]);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn kil_marks_the_file_version_4_and_other_songs_keep_their_version() {
+    let mut song = rtrack_core::tracker::Song::new(1, 4);
+    assert_eq!(song.format_version(), 2);
+    song.patterns[0].data[0][0].fx[0] = Some(Fx::new(FxCmd::Kill, 3));
+    assert_eq!(song.format_version(), 4);
+}

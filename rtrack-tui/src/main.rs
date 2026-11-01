@@ -48,6 +48,10 @@ struct Cli {
     /// Output file path for --render (format detected from extension: .wav or .flac)
     #[arg(long, short)]
     output: Option<PathBuf>,
+
+    /// How much of the song --render writes: a loop count (2) or seconds (90s)
+    #[arg(long, default_value = "1")]
+    length: rtrack_core::engine::ExportLength,
 }
 
 fn main() -> Result<()> {
@@ -76,6 +80,7 @@ fn main() -> Result<()> {
             cli.samples,
             sample_dir.clone(),
             cli.output.unwrap(),
+            cli.length,
         );
         if let Err(e) = result {
             eprintln!("Error: {}", e);
@@ -207,6 +212,7 @@ fn run_render(
     samples: Vec<String>,
     sample_dir: Option<PathBuf>,
     output: PathBuf,
+    length: rtrack_core::engine::ExportLength,
 ) -> Result<()> {
     // Offline rendering does not use the audio device, but it plays the
     // SoundFont as live playback would.
@@ -247,6 +253,7 @@ fn run_render(
                 &app.core.channels,
                 &app.core.send_bus_params,
                 sample_rate,
+                length,
             )?;
         }
         "flac" => {
@@ -259,6 +266,7 @@ fn run_render(
                 &app.core.channels,
                 &app.core.send_bus_params,
                 sample_rate,
+                length,
             )?;
         }
         _ => {

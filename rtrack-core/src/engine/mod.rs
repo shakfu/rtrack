@@ -5,6 +5,7 @@
 //! to their domain (MIDI messages, synth calls, file writes, assertions).
 
 use crate::constants::*;
+use crate::modulation::{ModOffsets, ModSlot, MOD_SLOTS};
 use crate::tracker::{Fx, FxCmd, Note, Song, FX_COLUMNS};
 use crate::types::{Chord, Timbre};
 
@@ -45,6 +46,14 @@ pub struct ChannelState {
     /// Offsets from the instrument's filter and drive, from `CUT`, `RES`
     /// and `DRV`. Kept until changed or a note of another instrument.
     pub timbre: Timbre,
+    /// Ticks until `KIL` ends the note.
+    pub cut_in: Option<u8>,
+    /// Ticks since the note started, for its instrument's mod slots.
+    pub mod_tick: u32,
+    /// The mod slots' current offsets, included in emitted events.
+    pub mods: ModOffsets,
+    /// Last bend without `mods`, to re-emit when only `mods` moves.
+    pub base_bend: f64,
 }
 
 impl Default for ChannelState {
@@ -65,6 +74,10 @@ impl Default for ChannelState {
             delayed_chord: [None; 4],
             last_continuous: [None; FX_COLUMNS],
             timbre: Timbre::default(),
+            cut_in: None,
+            mod_tick: 0,
+            mods: ModOffsets::default(),
+            base_bend: 0.0,
         }
     }
 }
@@ -90,6 +103,105 @@ struct TableStep {
     fx: Option<Fx>,
     /// The row starts on this tick, so its volume and `Cnn`/`PRG` apply.
     row_started: bool,
+}
+
+/// How much of a song an offline export renders.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExportLength {
+    /// Passes through the song.
+    Loops(u32),
+    /// Seconds of song, looping as needed. Ends on a row boundary.
+    Seconds(f64),
+}
+
+impl Default for ExportLength {
+    fn default() -> Self {
+        Self::Loops(1)
+    }
+}
+
+impl std::str::FromStr for ExportLength {
+    type Err = String;
+
+    /// `3` is three loops; `90s` is ninety seconds.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let invalid = || format!("invalid length \"{s}\": use a loop count (2) or seconds (90s)");
+        if let Some(secs) = s.strip_suffix('s') {
+            let secs: f64 = secs.parse().map_err(|_| invalid())?;
+            if !(secs > 0.0 && secs <= MAX_EXPORT_SECONDS) {
+                return Err(format!(
+                    "length must be above 0 and at most {MAX_EXPORT_SECONDS} seconds"
+                ));
+            }
+            return Ok(Self::Seconds(secs));
+        }
+        match s.parse::<u32>() {
+            Ok(0) => Err("loop count must be at least 1".to_string()),
+            Ok(n) => Ok(Self::Loops(n)),
+            Err(_) => Err(invalid()),
+        }
+    }
+}
+
+impl std::fmt::Display for ExportLength {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Loops(1) => write!(f, "1 loop"),
+            Self::Loops(n) => write!(f, "{n} loops"),
+            Self::Seconds(s) => write!(f, "{s}s"),
+        }
+    }
+}
+
+/// Decides when an offline export stops.
+///
+/// Exports run with `wrap_at_end`, so a backward `JMP` ends a pass as the end
+/// of the order list does. Stopping on a row boundary keeps the last row's
+/// full length.
+pub struct ExportClock {
+    length: ExportLength,
+    elapsed: f64,
+}
+
+impl ExportClock {
+    pub fn new(length: ExportLength) -> Self {
+        Self {
+            length,
+            elapsed: 0.0,
+        }
+    }
+
+    /// Whether the export is complete before the engine's next tick.
+    ///
+    /// Errors once the render passes [`MAX_EXPORT_SECONDS`].
+    pub fn done(&self, engine: &TrackerEngine) -> anyhow::Result<bool> {
+        if engine.finished {
+            return Ok(true);
+        }
+        if engine.tick == 0 {
+            let reached = match self.length {
+                ExportLength::Loops(n) => engine.generation >= n.max(1),
+                // Tolerance for the rounding summed over many ticks.
+                ExportLength::Seconds(s) => self.elapsed >= s - 1e-9,
+            };
+            if reached {
+                return Ok(true);
+            }
+        }
+        if self.elapsed > MAX_EXPORT_SECONDS {
+            anyhow::bail!(
+                "export passed the {} minute limit",
+                MAX_EXPORT_SECONDS / 60.0
+            );
+        }
+        Ok(false)
+    }
+
+    /// Account for one tick of `seconds`.
+    pub fn advance(&mut self, seconds: f64) {
+        self.elapsed += seconds;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +337,9 @@ pub struct TrackerEngine {
     // -- Per-channel host info --
     channel_info: Vec<ChannelInfo>,
 
+    // -- Each instrument's mod slots, by slot number --
+    instrument_mods: Vec<[Option<ModSlot>; MOD_SLOTS]>,
+
     // -- Event buffer --
     events: Vec<TrackerEvent>,
 
@@ -264,6 +379,13 @@ fn chord_of(song: &Song, base: u8, fx: &[Option<Fx>; FX_COLUMNS]) -> Chord {
         }
     }
     chord
+}
+
+/// `volume` with a mod slot's offset, within the MIDI range.
+fn modulated_volume(volume: u8, offset: f64) -> u8 {
+    (volume as f64 + offset)
+        .round()
+        .clamp(0.0, MIDI_MAX_VALUE as f64) as u8
 }
 
 /// Fixed PRNG seed. See `TrackerEngine::rng`.
@@ -339,6 +461,7 @@ impl TrackerEngine {
             rows_played: 0,
             channel_states: vec![ChannelState::default(); song.channels],
             channel_info: vec![ChannelInfo::default(); song.channels],
+            instrument_mods: Vec::new(),
             events: Vec::with_capacity(64),
             wrap_at_end,
             finished: false,
@@ -372,6 +495,11 @@ impl TrackerEngine {
         self.channel_info = info;
     }
 
+    /// Set each instrument's mod slots, indexed by instrument slot.
+    pub fn set_instrument_mods(&mut self, mods: Vec<[Option<ModSlot>; MOD_SLOTS]>) {
+        self.instrument_mods = mods;
+    }
+
     /// Update a single channel's info.
     pub fn update_channel_info(&mut self, ch: usize, info: ChannelInfo) {
         if ch >= self.channel_info.len() {
@@ -393,6 +521,9 @@ impl TrackerEngine {
         } else {
             self.process_effects(song);
         }
+        // Also on the song's last row, whose advance has just set `finished`.
+        self.step_cuts();
+        self.step_mods();
 
         self.tick += 1;
         if self.tick >= self.speed {
@@ -400,15 +531,6 @@ impl TrackerEngine {
         }
 
         &self.events
-    }
-
-    /// Whether an offline export has played one pass, checked before each tick.
-    ///
-    /// Exports run with `wrap_at_end`, so a backward `JMP` ends a pass as the
-    /// end of the order list does. Stopping on a row boundary keeps the last
-    /// row's full length.
-    pub fn export_done(&self) -> bool {
-        self.finished || (self.tick == 0 && self.generation >= 1)
     }
 
     /// Drain all events (alternative to the slice return).
@@ -720,6 +842,16 @@ impl TrackerEngine {
             // Store effect state
             self.channel_states[ch].fx = fx;
 
+            // `KIL` counts from this row; a new note or note-off cancels an
+            // earlier one's count.
+            if let Some(f) = find(FxCmd::Kill) {
+                self.channel_states[ch].cut_in = Some(f.param);
+            } else if matches!(note, Some(Note::Off))
+                || (matches!(note, Some(Note::On { .. })) && !is_tone_porta)
+            {
+                self.channel_states[ch].cut_in = None;
+            }
+
             // Tick-0 immediate effects, from every column
             self.apply_timbre_fx(ch, fx.iter().flatten().copied());
             for Fx { cmd, param } in fx.iter().flatten().copied() {
@@ -942,6 +1074,129 @@ impl TrackerEngine {
         }
     }
 
+    /// Count down each channel's `KIL`, and end its note when it runs out.
+    fn step_cuts(&mut self) {
+        for ch in 0..self.channel_states.len() {
+            match self.channel_states[ch].cut_in {
+                Some(0) => {
+                    self.channel_states[ch].cut_in = None;
+                    if self.channel_states[ch].note.take().is_none() {
+                        continue;
+                    }
+                    self.channel_states[ch].table = None;
+                    self.channel_states[ch].pitch_offset = 0.0;
+                    if self.channel_audible(ch) {
+                        // As a written note-off does.
+                        self.events.push(TrackerEvent::NoteOff { channel: ch });
+                        self.events.push(TrackerEvent::PitchBend {
+                            channel: ch,
+                            semitone_offset: 0.0,
+                        });
+                    }
+                }
+                Some(n) => self.channel_states[ch].cut_in = Some(n - 1),
+                None => {}
+            }
+        }
+    }
+
+    /// Run each sounding note's mod slots for this tick, on top of the
+    /// tick's events: a bend, volume or timbre event gains the offset, and
+    /// one is added where only the offset moved. Keeping this in one pass
+    /// leaves the effect code unaware of modulation.
+    fn step_mods(&mut self) {
+        for ch in 0..self.channel_states.len() {
+            let state = &self.channel_states[ch];
+            let slots = state
+                .active_instrument
+                .and_then(|i| self.instrument_mods.get(i as usize))
+                .copied()
+                .filter(|_| state.note.is_some())
+                .unwrap_or_default();
+            let tick = state.mod_tick;
+            let (old, restart) = (state.mods, self.note_started(ch));
+            let tick = if restart { 0 } else { tick };
+            let now = ModOffsets::at(&slots, tick);
+            let state = &mut self.channel_states[ch];
+            state.mod_tick = tick + 1;
+            state.mods = now;
+            if now == ModOffsets::default() && old == now {
+                self.note_base_bend(ch);
+                continue;
+            }
+            if self.channel_audible(ch) {
+                self.apply_mods(ch, old, now);
+            }
+        }
+    }
+
+    /// Whether this tick's events start a note on `ch`.
+    fn note_started(&self, ch: usize) -> bool {
+        self.events
+            .iter()
+            .any(|e| matches!(e, TrackerEvent::NoteOn { channel, .. } if *channel == ch))
+    }
+
+    /// Remember the last unmodulated bend `ch` emitted this tick.
+    fn note_base_bend(&mut self, ch: usize) {
+        let last = self.events.iter().rev().find_map(|e| match e {
+            TrackerEvent::PitchBend {
+                channel,
+                semitone_offset,
+            } if *channel == ch => Some(*semitone_offset),
+            _ => None,
+        });
+        if let Some(bend) = last {
+            self.channel_states[ch].base_bend = bend;
+        }
+    }
+
+    /// Add `now` to this tick's events on `ch`, adding events for what moved
+    /// from `old` without one.
+    fn apply_mods(&mut self, ch: usize, old: ModOffsets, now: ModOffsets) {
+        self.note_base_bend(ch);
+        let (mut bent, mut voiced, mut shaded) = (false, false, false);
+        let timbre = self.channel_states[ch].timbre;
+        for event in &mut self.events {
+            match event {
+                TrackerEvent::PitchBend {
+                    channel,
+                    semitone_offset,
+                } if *channel == ch => {
+                    *semitone_offset += now.pitch;
+                    bent = true;
+                }
+                TrackerEvent::VolumeChange { channel, volume } if *channel == ch => {
+                    *volume = modulated_volume(*volume, now.volume);
+                    voiced = true;
+                }
+                TrackerEvent::Timbre { channel, timbre } if *channel == ch => {
+                    *timbre = now.apply_to(*timbre);
+                    shaded = true;
+                }
+                _ => {}
+            }
+        }
+        if !bent && now.pitch != old.pitch {
+            self.events.push(TrackerEvent::PitchBend {
+                channel: ch,
+                semitone_offset: self.channel_states[ch].base_bend + now.pitch,
+            });
+        }
+        if !voiced && now.volume != old.volume {
+            self.events.push(TrackerEvent::VolumeChange {
+                channel: ch,
+                volume: modulated_volume(self.channel_states[ch].volume, now.volume),
+            });
+        }
+        if !shaded && (now.cutoff != old.cutoff || now.drive != old.drive) {
+            self.events.push(TrackerEvent::Timbre {
+                channel: ch,
+                timbre: now.apply_to(timbre),
+            });
+        }
+    }
+
     /// Start table `number` from row 0 on channel `ch`, or stop the table
     /// if there is no such table.
     fn start_table(&mut self, ch: usize, number: Option<u8>, song: &Song) {
@@ -1025,6 +1280,10 @@ impl TrackerEngine {
                 channel: ch,
                 program: param,
             }),
+            Some(Fx {
+                cmd: FxCmd::Kill,
+                param,
+            }) => self.channel_states[ch].cut_in = Some(param),
             fx => self.apply_timbre_fx(ch, fx),
         }
     }
@@ -2639,5 +2898,180 @@ mod tests {
             engine.process_tick(&song);
         }
         assert!(engine.finished);
+    }
+
+    // -- Note cut --
+
+    fn c4_with(fx: Fx) -> Cell {
+        Cell {
+            note: Some(Note::On {
+                value: NoteValue::C,
+                octave: 4,
+            }),
+            fx: [Some(fx), None],
+            ..Cell::default()
+        }
+    }
+
+    fn note_off_ticks(song: &Song, ticks: usize) -> Vec<usize> {
+        let mut engine = TrackerEngine::new(song, false);
+        (0..ticks)
+            .filter(|_| {
+                engine
+                    .process_tick(song)
+                    .iter()
+                    .any(|e| matches!(e, TrackerEvent::NoteOff { .. }))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn kil_ends_the_note_after_its_ticks() {
+        let mut song = Song::new(1, 4);
+        song.speed = 6;
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Kill, 3));
+        assert_eq!(note_off_ticks(&song, 24), vec![3]);
+    }
+
+    #[test]
+    fn kil_counts_on_into_later_rows() {
+        let mut song = Song::new(1, 4);
+        song.speed = 6;
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Kill, 0x0C));
+        assert_eq!(note_off_ticks(&song, 24), vec![12]);
+    }
+
+    #[test]
+    fn a_new_note_cancels_a_pending_cut() {
+        let mut song = Song::new(1, 4);
+        song.speed = 6;
+        song.patterns[0].data[0][0] = c4_with(Fx::new(FxCmd::Kill, 0x0C));
+        song.patterns[0].data[1][0] = c4_with(Fx::new(FxCmd::Arp, 0));
+        assert_eq!(note_off_ticks(&song, 24), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn tables_accept_cut_and_the_timbre_commands() {
+        use crate::tracker::Table;
+        for cmd in [FxCmd::Kill, FxCmd::Cutoff, FxCmd::Resonance, FxCmd::Drive] {
+            assert!(Table::allows(cmd), "{cmd:?}");
+        }
+    }
+
+    // -- Export length --
+
+    #[test]
+    fn export_length_parses_loops_and_seconds() {
+        assert_eq!("2".parse(), Ok(ExportLength::Loops(2)));
+        assert_eq!(" 90s ".parse(), Ok(ExportLength::Seconds(90.0)));
+        for bad in ["0", "-1", "x", "0s", "99999s"] {
+            assert!(bad.parse::<ExportLength>().is_err(), "{bad} parsed");
+        }
+    }
+
+    // -- Modulation --
+
+    fn modulated(slot: ModSlot, song: &mut Song) -> TrackerEngine {
+        song.speed = 4;
+        song.patterns[0].data[0][0] = Cell {
+            note: Some(Note::On {
+                value: NoteValue::C,
+                octave: 4,
+            }),
+            instrument: Some(2),
+            ..Cell::default()
+        };
+        song.patterns[0].data[1][0] = Cell {
+            note: Some(Note::Off),
+            ..Cell::default()
+        };
+        let mut engine = TrackerEngine::new(song, false);
+        let mut mods = vec![[None; MOD_SLOTS]; 256];
+        mods[2][0] = Some(slot);
+        engine.set_instrument_mods(mods);
+        engine
+    }
+
+    #[test]
+    fn a_pitch_lfo_bends_from_the_notes_start() {
+        use crate::modulation::{LfoShape, ModDest, ModSource};
+        let mut song = Song::new(1, 2);
+        let mut engine = modulated(
+            ModSlot {
+                source: ModSource::Lfo {
+                    shape: LfoShape::Square,
+                    period: 2,
+                },
+                dest: ModDest::Pitch,
+                amount: 16,
+            },
+            &mut song,
+        );
+        let bend = |events: &[TrackerEvent]| {
+            events.iter().rev().find_map(|e| match e {
+                TrackerEvent::PitchBend {
+                    semitone_offset, ..
+                } => Some(*semitone_offset),
+                _ => None,
+            })
+        };
+        assert_eq!(bend(engine.process_tick(&song)), Some(2.0));
+        assert_eq!(bend(engine.process_tick(&song)), Some(-2.0));
+    }
+
+    #[test]
+    fn a_volume_envelope_shapes_the_note_and_note_off_restores_it() {
+        use crate::modulation::{ModDest, ModSource};
+        let mut song = Song::new(1, 2);
+        let mut engine = modulated(
+            ModSlot {
+                source: ModSource::Envelope {
+                    attack: 0,
+                    hold: 1,
+                    decay: 2,
+                },
+                dest: ModDest::Volume,
+                amount: -40,
+            },
+            &mut song,
+        );
+        let mut volumes = Vec::new();
+        for _ in 0..5 {
+            for e in engine.process_tick(&song) {
+                if let TrackerEvent::VolumeChange { volume, .. } = e {
+                    volumes.push(*volume);
+                }
+            }
+        }
+        assert_eq!(volumes, vec![60, 80, 100]);
+    }
+
+    #[test]
+    fn a_cutoff_mod_adds_to_the_timbre_and_note_off_restores_it() {
+        use crate::modulation::{ModDest, ModSource};
+        let mut song = Song::new(1, 2);
+        let mut engine = modulated(
+            ModSlot {
+                source: ModSource::Envelope {
+                    attack: 0,
+                    hold: 9,
+                    decay: 0,
+                },
+                dest: ModDest::Cutoff,
+                amount: -32,
+            },
+            &mut song,
+        );
+        let cutoff = |events: &[TrackerEvent]| {
+            events.iter().find_map(|e| match e {
+                TrackerEvent::Timbre { timbre, .. } => Some(timbre.cutoff),
+                _ => None,
+            })
+        };
+        assert_eq!(cutoff(engine.process_tick(&song)), Some(-2.0));
+        for _ in 0..3 {
+            engine.process_tick(&song);
+        }
+        assert_eq!(cutoff(engine.process_tick(&song)), Some(0.0));
     }
 }

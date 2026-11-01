@@ -177,7 +177,7 @@ Consequence: G3 option 1 (per-channel order lists over single-channel patterns) 
 
 ## G6. No general modulation
 
-**Step 1 done (2026-10-25):** `CUT`, `RES` and `DRV` on a per-tick timbre path that tables also drive ([g6-modulation.md](g6-modulation.md)). Mod slots (option 1) are designed there and not built.
+**Step 1 done (2026-10-25):** `CUT`, `RES` and `DRV` on a per-tick timbre path that tables also drive ([g6-modulation.md](g6-modulation.md)). Mod slots (option 1) are built, ported from `dev`: two per instrument, with no slot-to-slot modulation or tracking source.
 
 **Current.** `SynthParams` has ADSR and `filter_env`. Pattern effects provide vibrato (`4xy`), slides (`1xx`, `2xx`, `5xy`) and arpeggio (`0xy`). There is no LFO or modulation routing. `SampleRef` has no envelope fields.
 

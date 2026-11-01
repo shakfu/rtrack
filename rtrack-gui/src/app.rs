@@ -18,6 +18,10 @@ pub struct RtrackApp {
     pub current_octave: u8,
     /// Which characters enter notes (`config.toml`'s `piano`).
     pub piano: rtrack_core::keymap::PianoLayout,
+    /// Name the field under the cursor in the status bar (config `field_hints`).
+    pub field_hints: bool,
+    /// How much of the song the next export writes.
+    pub export_length: rtrack_core::engine::ExportLength,
     pub edit_step: usize,
     pub edit_order: usize,
     pub follow_playback: bool,
@@ -106,6 +110,8 @@ impl RtrackApp {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             piano: rtrack_core::keymap::PianoLayout::default(),
+            field_hints: true,
+            export_length: Default::default(),
             edit_step: 1,
             edit_order: 0,
             follow_playback: true,
@@ -195,6 +201,23 @@ impl RtrackApp {
         )
     }
 
+    /// The status bar's name for the field under the cursor, if hints are on.
+    pub(crate) fn field_hint(&self) -> Option<String> {
+        if !self.field_hints || self.show_instrument_list || self.show_pattern_matrix {
+            return None;
+        }
+        let pattern = *self.core.song.order.get(self.edit_order)?;
+        let cell = self
+            .core
+            .song
+            .cell_at(pattern, self.cursor_row, self.cursor_channel);
+        Some(rtrack_core::editor::field_hint(
+            self.cursor_channel,
+            self.cursor_sub,
+            cell,
+        ))
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (config, mut startup_notes) = rtrack_core::config::load_config_verbose();
         let mut core = TrackerCore::new();
@@ -227,6 +250,7 @@ impl RtrackApp {
         startup_notes.extend(piano_notes);
         let mut app = Self::with_core(core);
         app.piano = piano;
+        app.field_hints = rtrack_core::config::load_config().field_hints;
         app.status_message = startup_notes.last().cloned();
         app
     }
@@ -470,6 +494,11 @@ impl eframe::App for RtrackApp {
                         Mode::Insert => "Esc:Normal  Piano:z-m/q-u  =:NoteOff  Del:Clear  Shift+Up/Dn:Transpose",
                     };
                     ui.label(egui::RichText::new(hint).color(egui::Color32::from_rgb(120, 120, 140)));
+                }
+                if let Some(hint) = self.field_hint() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(hint);
+                    });
                 }
             });
         });

@@ -36,6 +36,8 @@ pub enum FxCmd {
     Drive,
     /// Add notes `x` and `y` steps above the row's note.
     Chord,
+    /// End the track's note `xx` ticks after the row starts.
+    Kill,
     /// MIDI CC to the controller it holds.
     Cc(u8),
 }
@@ -43,7 +45,7 @@ pub enum FxCmd {
 /// Every command with a fixed name, paired with it. `Cc` is spelled `Cnn`.
 ///
 /// No name may match `C[0-9A-F]{2}`, which `Cc` uses.
-const NAMES: [(FxCmd, &str); 20] = [
+const NAMES: [(FxCmd, &str); 21] = [
     (FxCmd::Arp, "ARP"),
     (FxCmd::PitchUp, "PUP"),
     (FxCmd::PitchDown, "PDN"),
@@ -64,9 +66,38 @@ const NAMES: [(FxCmd, &str); 20] = [
     (FxCmd::Resonance, "RES"),
     (FxCmd::Drive, "DRV"),
     (FxCmd::Chord, "CHD"),
+    (FxCmd::Kill, "KIL"),
 ];
 
 impl FxCmd {
+    /// What the command does, for the status bar.
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::Arp => "arpeggio: note, +x, +y steps",
+            Self::PitchUp => "bend pitch up xx/16 semitone per tick",
+            Self::PitchDown => "bend pitch down xx/16 semitone per tick",
+            Self::PitchSlide => "slide to the row's note at xx/16 per tick",
+            Self::Vibrato => "vibrato: speed x, depth y",
+            Self::VolSlide => "volume slide: up x, down y per tick",
+            Self::Delay => "delay the note by xx ticks",
+            Self::Chance => "play the note with probability xx/255",
+            Self::Random => "repeat last continuous effect, varied by +/-xx",
+            Self::Offset => "start the sample xx/256 into its span",
+            Self::Jump => "jump to order position xx",
+            Self::Break => "break to row xx of the next position",
+            Self::Program => "program change xx",
+            Self::Ticks => "ticks per row",
+            Self::Tempo => "tempo in BPM",
+            Self::Table => "run table xx with the note",
+            Self::Cutoff => "instrument cutoff: 80 is its own",
+            Self::Resonance => "instrument resonance: 80 is its own",
+            Self::Drive => "instrument drive: 80 is its own",
+            Self::Chord => "chord: add notes x and y steps up",
+            Self::Kill => "end the note after xx ticks",
+            Self::Cc(_) => "send MIDI CC value xx",
+        }
+    }
+
     /// The three-character name shown in the effect column.
     pub fn name(self) -> String {
         match self {

@@ -47,6 +47,26 @@ pub enum SubColumn {
 }
 
 impl SubColumn {
+    /// The field's name, for the status bar.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Instrument => "Instrument",
+            Self::Volume => "Volume",
+            Self::Effect => "Effect 1",
+            Self::Effect2 => "Effect 2",
+        }
+    }
+
+    /// The effect column this field edits, if it is one.
+    pub fn fx_slot(self) -> Option<usize> {
+        match self {
+            Self::Effect => Some(0),
+            Self::Effect2 => Some(1),
+            _ => None,
+        }
+    }
+
     /// The next field to the right, wrapping back to the note column.
     /// `fx_columns` is how many effect columns are shown, 1 or 2.
     ///
@@ -93,6 +113,19 @@ impl SubColumn {
             Self::Effect2 => Some(1),
             _ => None,
         }
+    }
+}
+
+/// What the status bar says about the field under the cursor: the track,
+/// counted from 1, and the field's name. On an effect column holding a
+/// command, also what that command does.
+///
+/// `1 Note`, `2 Effect 1: PVB vibrato: speed x, depth y`.
+pub fn field_hint(channel: usize, sub: SubColumn, cell: &crate::tracker::Cell) -> String {
+    let base = format!("{} {}", channel + 1, sub.label());
+    match sub.fx_slot().and_then(|slot| cell.fx[slot]) {
+        Some(fx) => format!("{base}: {} {}", fx.cmd.name(), fx.cmd.summary()),
+        None => base,
     }
 }
 
@@ -676,6 +709,22 @@ pub fn phrase_spans(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_field_hint_names_the_track_and_field() {
+        use crate::tracker::{Cell, Fx, FxCmd};
+        let empty = Cell::default();
+        assert_eq!(field_hint(0, SubColumn::Note, &empty), "1 Note");
+        assert_eq!(field_hint(2, SubColumn::Volume, &empty), "3 Volume");
+        let vib = Cell {
+            fx: [Some(Fx::new(FxCmd::Vibrato, 0x44)), None],
+            ..Cell::default()
+        };
+        assert_eq!(
+            field_hint(1, SubColumn::Effect, &vib),
+            "2 Effect 1: PVB vibrato: speed x, depth y"
+        );
+    }
     use crate::tracker::{Note, NoteValue};
 
     /// (rows, starts, ends) of each span, for compact comparison.

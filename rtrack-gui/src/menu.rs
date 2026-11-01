@@ -12,6 +12,34 @@ pub(crate) enum PendingSongChange {
 }
 
 impl RtrackApp {
+    /// Loops or seconds for the next export.
+    fn draw_export_length(&mut self, ui: &mut egui::Ui) {
+        use rtrack_core::constants::MAX_EXPORT_SECONDS;
+        use rtrack_core::engine::ExportLength;
+        ui.horizontal(|ui| {
+            ui.label("Export length:");
+            let loops = matches!(self.export_length, ExportLength::Loops(_));
+            if ui.selectable_label(loops, "Loops").clicked() && !loops {
+                self.export_length = ExportLength::Loops(1);
+            }
+            if ui.selectable_label(!loops, "Seconds").clicked() && loops {
+                self.export_length = ExportLength::Seconds(60.0);
+            }
+            match &mut self.export_length {
+                ExportLength::Loops(n) => {
+                    ui.add(egui::DragValue::new(n).range(1..=99));
+                }
+                ExportLength::Seconds(s) => {
+                    ui.add(
+                        egui::DragValue::new(s)
+                            .range(1.0..=MAX_EXPORT_SECONDS)
+                            .suffix(" s"),
+                    );
+                }
+            }
+        });
+    }
+
     pub fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -76,26 +104,30 @@ impl RtrackApp {
 
                     ui.separator();
 
+                    self.draw_export_length(ui);
                     if ui.button("Export WAV").clicked() {
                         ui.close();
-                        self.status_message = Some(match self.core.export_wav_to_default() {
-                            Ok(path) => format!("Exported WAV: {}", path.display()),
-                            Err(e) => format!("WAV export failed: {}", e),
-                        });
+                        self.status_message =
+                            Some(match self.core.export_wav_to_default(self.export_length) {
+                                Ok(path) => format!("Exported WAV: {}", path.display()),
+                                Err(e) => format!("WAV export failed: {}", e),
+                            });
                     }
                     if ui.button("Export FLAC").clicked() {
                         ui.close();
-                        self.status_message = Some(match self.core.export_flac_to_default() {
-                            Ok(path) => format!("Exported FLAC: {}", path.display()),
-                            Err(e) => format!("FLAC export failed: {}", e),
-                        });
+                        self.status_message =
+                            Some(match self.core.export_flac_to_default(self.export_length) {
+                                Ok(path) => format!("Exported FLAC: {}", path.display()),
+                                Err(e) => format!("FLAC export failed: {}", e),
+                            });
                     }
                     if ui.button("Export MIDI").clicked() {
                         ui.close();
-                        self.status_message = Some(match self.core.export_midi_to_default() {
-                            Ok(path) => format!("Exported MIDI: {}", path.display()),
-                            Err(e) => format!("MIDI export failed: {}", e),
-                        });
+                        self.status_message =
+                            Some(match self.core.export_midi_to_default(self.export_length) {
+                                Ok(path) => format!("Exported MIDI: {}", path.display()),
+                                Err(e) => format!("MIDI export failed: {}", e),
+                            });
                     }
 
                     ui.separator();

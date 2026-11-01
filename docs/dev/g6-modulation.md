@@ -4,6 +4,8 @@ Lets an instrument's filter, drive, pitch and volume move during a note: by patt
 
 Status: step 1 implemented 2026-10-25, with the proposal for decisions 1-7: engine per tick, step 1 first, values last until changed, lenient load with version 3. Step 2 (mod slots) is designed below and not built.
 
+Step 2 implemented in the `dev` merge: two slots per instrument, envelope or LFO, adding to volume, pitch, cutoff or drive. The tracking source is not built.
+
 ## Current state
 
 - **Pitch and volume already move per tick.** The engine computes `PVB`, `ARP`, slides and table steps once per tick and emits `PitchBend` and `VolumeChange`. Live playback schedules them as `AudioCommand::ChannelPitch` / `ChannelVolume` at the tick's frame; render applies the same events; MIDI export writes them as bends and CC 7. A tick is one MIDI clock: 24 per beat, 20.8 ms at 120 bpm.

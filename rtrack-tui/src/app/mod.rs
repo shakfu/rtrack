@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use rtrack_core::constants::*;
+use rtrack_core::engine::ExportLength;
 use rtrack_core::midi::MidiEngine;
 
 pub use rtrack_core::{
@@ -23,6 +24,8 @@ pub struct DialogState {
     /// The first character typed then replaces it instead of appending.
     pub settings_buf_untouched: bool,
     pub instrument_cursor: usize,
+    /// The modulation popup's field, counted across both slots.
+    pub mod_field: usize,
     pub phrase_cursor: usize,
     /// The table open in the table editor, its cursor row and field.
     pub table_number: u8,
@@ -56,6 +59,7 @@ impl DialogState {
             settings_edit_buf: String::new(),
             settings_buf_untouched: true,
             instrument_cursor: 0,
+            mod_field: 0,
             phrase_cursor: 0,
             table_number: 0,
             table_row: 0,
@@ -104,7 +108,12 @@ pub enum Mode {
     RecentFiles,
     PhraseList,
     TableEditor,
+    Modulation,
 }
+
+/// Fields per modulation slot in the popup: source, dest, amount, and up to
+/// three of the source's own.
+pub const MOD_FIELDS: usize = 6;
 
 /// The table editor's field under the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -458,6 +467,8 @@ pub struct App {
     pub current_octave: u8,
     /// Which characters enter notes (`config.toml`'s `piano`).
     pub piano: rtrack_core::keymap::PianoLayout,
+    /// Name the field under the cursor in the status bar (config `field_hints`).
+    pub field_hints: bool,
     /// Which group of 4 tracks is visible (0 = tracks 0-3, 1 = tracks 4-7)
     pub track_page: usize,
     /// Cursor follows playback position
@@ -532,6 +543,7 @@ impl App {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             piano: rtrack_core::keymap::PianoLayout::default(),
+            field_hints: true,
             edit_step: 1,
             show_second_fx: false,
             status_message: None,
@@ -555,6 +567,7 @@ impl App {
         };
         let (piano, notes) = rtrack_core::config::load_piano_layout();
         app.piano = piano;
+        app.field_hints = rtrack_core::config::load_config().field_hints;
         app.status_message = notes.into_iter().next();
         app
     }
@@ -1122,22 +1135,22 @@ impl App {
 
     // -- Export/Import --
 
-    pub fn export_wav_file(&mut self) {
-        self.status_message = Some(match self.core.export_wav_to_default() {
+    pub fn export_wav_file(&mut self, length: ExportLength) {
+        self.status_message = Some(match self.core.export_wav_to_default(length) {
             Ok(path) => format!("Exported WAV: {}", path.display()),
             Err(e) => format!("WAV export failed: {}", e),
         });
     }
 
-    pub fn export_flac_file(&mut self) {
-        self.status_message = Some(match self.core.export_flac_to_default() {
+    pub fn export_flac_file(&mut self, length: ExportLength) {
+        self.status_message = Some(match self.core.export_flac_to_default(length) {
             Ok(path) => format!("Exported FLAC: {}", path.display()),
             Err(e) => format!("FLAC export failed: {}", e),
         });
     }
 
-    pub fn export_midi(&mut self) {
-        self.status_message = Some(match self.core.export_midi_to_default() {
+    pub fn export_midi(&mut self, length: ExportLength) {
+        self.status_message = Some(match self.core.export_midi_to_default(length) {
             Ok(path) => format!("Exported MIDI: {}", path.display()),
             Err(e) => format!("MIDI export failed: {}", e),
         });
@@ -1207,6 +1220,7 @@ pub(crate) mod tests {
             cursor_sub: SubColumn::Note,
             current_octave: 4,
             piano: rtrack_core::keymap::PianoLayout::default(),
+            field_hints: true,
             edit_step: 1,
             show_second_fx: false,
             status_message: None,
@@ -1226,6 +1240,7 @@ pub(crate) mod tests {
                 settings_edit_buf: String::new(),
                 settings_buf_untouched: true,
                 instrument_cursor: 0,
+                mod_field: 0,
                 phrase_cursor: 0,
                 table_number: 0,
                 table_row: 0,
@@ -5795,6 +5810,7 @@ pub(crate) mod tests {
                 def: InstrumentDef::from_instrument(&rtrack_core::Instrument {
                     name: "Test".to_string(),
                     pitch_bend_range: Some(7.0),
+                    mods: Default::default(),
                     ..rtrack_core::Instrument::for_slot(0)
                 }),
             }],
@@ -5960,5 +5976,43 @@ pub(crate) mod tests {
             .status_message
             .as_deref()
             .is_some_and(|m| m.contains("Pattern limit")));
+    }
+
+    #[test]
+    fn test_u_undoes_in_normal_mode_and_is_a_note_in_insert() {
+        let mut app = make_app();
+        let bpm = app.core.song.bpm;
+        app.handle_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        assert_eq!(app.core.song.bpm, bpm + 1);
+        app.core.commit_edit();
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(app.core.song.bpm, bpm, "the tempo key is an undo step");
+    }
+
+    #[test]
+    fn test_modulation_popup_builds_an_lfo_slot() {
+        use rtrack_core::modulation::{LfoShape, ModDest, ModSource};
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::Modulation);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.handle_key(key(KeyCode::Left)); // off -> LFO
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Right)); // pitch -> cutoff
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::PageUp)); // amount +16
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Right)); // sine -> triangle
+        let slot = app.core.instruments[0].mods[0].expect("slot 1 set");
+        assert_eq!(slot.dest, ModDest::Cutoff);
+        assert_eq!(slot.amount, 16);
+        assert_eq!(
+            slot.source,
+            ModSource::Lfo {
+                shape: LfoShape::Triangle,
+                period: 24
+            }
+        );
     }
 }

@@ -11,10 +11,8 @@ use crate::audio::channel_effects::{ChannelEffects, MAX_EFFECT_CHANNELS};
 use crate::audio::effects::{self, EffectsChain};
 use crate::audio::soft_clip;
 use crate::audio::synth::{BuiltinSynth, SynthParams};
-use crate::constants::{
-    DEFAULT_PITCH_BEND_RANGE, MAX_EXPORT_SECONDS, PITCH_BEND_CENTER, PITCH_BEND_MAX,
-};
-use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::constants::{DEFAULT_PITCH_BEND_RANGE, PITCH_BEND_CENTER, PITCH_BEND_MAX};
+use crate::engine::{ExportClock, ExportLength, TrackerEngine, TrackerEvent};
 use crate::routing::{route, Route};
 use crate::tracker::Song;
 use crate::types::{ChannelConfig, Instrument};
@@ -33,6 +31,7 @@ pub fn render_to_wav(
     channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
+    length: ExportLength,
 ) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 2,
@@ -53,6 +52,7 @@ pub fn render_to_wav(
         channels,
         send_bus_params,
         sample_rate,
+        length,
         &mut |left, right| write_block(&mut writer, left, right),
     )?;
 
@@ -226,6 +226,7 @@ fn render_song_streaming(
     channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
+    length: ExportLength,
     sink: &mut BlockSink<'_>,
 ) -> Result<()> {
     let sr = sample_rate as f64;
@@ -271,6 +272,7 @@ fn render_song_streaming(
 
     let mut engine = TrackerEngine::new(song, true);
     engine.set_channel_info(crate::engine::ChannelInfo::for_export(channels));
+    engine.set_instrument_mods(instruments.iter().map(|i| i.mods).collect());
     let num_channels = song.channels.max(1);
     let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); num_channels];
     let mut frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
@@ -283,19 +285,13 @@ fn render_song_streaming(
             .map_or((ch & 0x0F) as u8, |c| c.midi_channel & 0x0F)
     };
 
-    let mut elapsed = 0.0;
-    while !engine.export_done() {
+    let mut clock = ExportClock::new(length);
+    while !clock.done(&engine)? {
         // Snapshot timing before tick 0 advances the row
         if engine.tick == 0 {
             frames_per_tick = (sr * engine.seconds_per_tick(song)) as usize;
         }
-        elapsed += frames_per_tick as f64 / sr;
-        if elapsed > MAX_EXPORT_SECONDS {
-            anyhow::bail!(
-                "export passed the {} minute limit",
-                MAX_EXPORT_SECONDS / 60.0
-            );
-        }
+        clock.advance(frames_per_tick as f64 / sr);
 
         engine.process_tick(song);
         let events = engine.drain_events();
@@ -526,6 +522,7 @@ fn render_song_streaming(
 ///
 /// For callers that need the whole render at once; FLAC encoding does,
 /// since the encoder takes its input as a single source.
+#[allow(clippy::too_many_arguments)]
 fn render_song(
     song: &Song,
     bank: &SampleBank,
@@ -534,6 +531,7 @@ fn render_song(
     channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
+    length: ExportLength,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
     let mut all_left = Vec::new();
     let mut all_right = Vec::new();
@@ -545,6 +543,7 @@ fn render_song(
         channels,
         send_bus_params,
         sample_rate,
+        length,
         &mut |left, right| {
             all_left.extend_from_slice(left);
             all_right.extend_from_slice(right);
@@ -577,6 +576,7 @@ pub fn render_to_flac(
     channels: &[ChannelConfig],
     send_bus_params: &[effects::SendBusParams],
     sample_rate: u32,
+    length: ExportLength,
 ) -> Result<()> {
     let (left, right) = render_song(
         song,
@@ -586,6 +586,7 @@ pub fn render_to_flac(
         channels,
         send_bus_params,
         sample_rate,
+        length,
     )?;
     let samples_i16 = to_interleaved_i16(&left, &right);
     write_flac(path, &samples_i16, sample_rate)
@@ -655,6 +656,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -674,7 +676,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_empty.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, None, &[], &[], 44100);
+        let result = render_to_wav(
+            &path,
+            &song,
+            &bank,
+            &instruments,
+            None,
+            &[],
+            &[],
+            44100,
+            ExportLength::default(),
+        );
         assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         // Verify the file exists and is a valid WAV
@@ -706,7 +718,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_synth.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, None, &[], &[], 44100);
+        let result = render_to_wav(
+            &path,
+            &song,
+            &bank,
+            &instruments,
+            None,
+            &[],
+            &[],
+            44100,
+            ExportLength::default(),
+        );
         assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         // Should have some audio content (not all silence)
@@ -766,7 +788,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_sample.wav");
 
-        let result = render_to_wav(&path, &song, &bank, &instruments, None, &[], &[], 44100);
+        let result = render_to_wav(
+            &path,
+            &song,
+            &bank,
+            &instruments,
+            None,
+            &[],
+            &[],
+            44100,
+            ExportLength::default(),
+        );
         assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -821,9 +853,18 @@ mod tests {
             }));
             let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
             instruments[0].kind = crate::types::InstrumentKind::sample(0);
-            render_song(&song, &bank, &instruments, None, &[], &[], 44100)
-                .unwrap()
-                .0
+            render_song(
+                &song,
+                &bank,
+                &instruments,
+                None,
+                &[],
+                &[],
+                44100,
+                ExportLength::default(),
+            )
+            .unwrap()
+            .0
         };
         let peak = |x: &[f32]| x[200..3000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
 
@@ -885,9 +926,18 @@ mod tests {
             );
             let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
             instruments[0].kind = InstrumentKind::Sample { slot: 0, fx };
-            render_song(&song, &bank, &instruments, None, &[], &[], 44100)
-                .unwrap()
-                .0
+            render_song(
+                &song,
+                &bank,
+                &instruments,
+                None,
+                &[],
+                &[],
+                44100,
+                ExportLength::default(),
+            )
+            .unwrap()
+            .0
         };
         let roughness = |x: &[f32]| {
             x[2000..8000]
@@ -930,6 +980,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0[2000..20000]
@@ -954,6 +1005,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0;
@@ -1007,9 +1059,18 @@ mod tests {
         let render = |fx: crate::types::SampleFx| {
             let mut instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
             instruments[0].kind = crate::types::InstrumentKind::Sample { slot: 0, fx };
-            render_song(&song, &bank, &instruments, None, &[], &[], 44100)
-                .unwrap()
-                .0
+            render_song(
+                &song,
+                &bank,
+                &instruments,
+                None,
+                &[],
+                &[],
+                44100,
+                ExportLength::default(),
+            )
+            .unwrap()
+            .0
         };
         let window = 2000..8000;
         // Mean absolute difference between neighbouring frames: high for the buzz.
@@ -1095,6 +1156,7 @@ mod tests {
             &[],
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap();
 
@@ -1126,6 +1188,7 @@ mod tests {
             &[],
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap();
 
@@ -1201,6 +1264,7 @@ mod tests {
             &[],
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap();
 
@@ -1231,6 +1295,7 @@ mod tests {
             &[],
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap();
 
@@ -1280,6 +1345,7 @@ mod tests {
             &[],
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap()
         .0
@@ -1390,6 +1456,7 @@ mod tests {
             &[],
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap();
         left.iter().map(|&x| (x as f64) * (x as f64)).sum()
@@ -1424,6 +1491,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -1462,6 +1530,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -1513,6 +1582,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -1555,6 +1625,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -1611,6 +1682,7 @@ mod tests {
                 &[],
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -1642,6 +1714,7 @@ mod tests {
             channels,
             &[],
             44100,
+            ExportLength::default(),
         )
         .unwrap()
         .0
@@ -1696,6 +1769,7 @@ mod tests {
                 &channels,
                 &[],
                 44100,
+                ExportLength::default(),
             )
             .unwrap()
             .0
@@ -1768,11 +1842,40 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path = dir.path().join("rtrack_test_export.flac");
 
-        let result = render_to_flac(&path, &song, &bank, &instruments, None, &[], &[], 44100);
+        let result = render_to_flac(
+            &path,
+            &song,
+            &bank,
+            &instruments,
+            None,
+            &[],
+            &[],
+            44100,
+            ExportLength::default(),
+        );
         assert!(result.is_ok(), "FLAC export failed: {:?}", result.err());
 
         // Verify the file exists and is non-empty
         let metadata = std::fs::metadata(&path).unwrap();
         assert!(metadata.len() > 0, "FLAC file should be non-empty");
+    }
+
+    #[test]
+    fn export_length_sets_the_rendered_duration() {
+        let song = four_row_song(false);
+        let bank = SampleBank::new();
+        let instruments: Vec<Instrument> = (0..256).map(Instrument::for_slot).collect();
+        let frames = |length| {
+            render_song(&song, &bank, &instruments, None, &[], &[], 44100, length)
+                .unwrap()
+                .0
+                .len()
+        };
+        let pass = 24 * 918;
+        let one = frames(ExportLength::Loops(1));
+        assert_eq!(frames(ExportLength::Loops(3)) - one, 2 * pass);
+        // Seconds ends on the first row boundary at or past the time.
+        let body = frames(ExportLength::Seconds(2.0)) - (one - pass);
+        assert!((88200..88200 + 6 * 918).contains(&body), "{body}");
     }
 }

@@ -93,6 +93,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Help => draw_help(f, app, &theme),
         Mode::SongSettings => draw_song_settings(f, app, &theme),
         Mode::InstrumentList => draw_instrument_list(f, app, &theme),
+        Mode::Modulation => {
+            draw_instrument_list(f, app, &theme);
+            draw_modulation(f, app, &theme);
+        }
         Mode::PhraseList => draw_phrase_list(f, app, &theme),
         Mode::TableEditor => draw_table_editor(f, app, &theme),
         Mode::SampleEditor => sample_editor::draw_sample_editor(f, app),
@@ -335,7 +339,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 .fg(theme.mode_port_select)
                 .add_modifier(Modifier::BOLD),
         ),
-        Mode::InstrumentList => Span::styled(
+        Mode::InstrumentList | Mode::Modulation => Span::styled(
             " INSTRUMENTS ",
             Style::default()
                 .fg(theme.mode_port_select)
@@ -437,8 +441,93 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         ));
     }
 
+    // What the field under the cursor is, right-aligned, if there is room.
+    if app.field_hints && matches!(app.mode, Mode::Normal | Mode::Insert) {
+        let order = app.current_order_position();
+        if let Some(&pattern) = app.core.song.order.get(order) {
+            let cell = app
+                .core
+                .song
+                .cell_at(pattern, app.cursor_row, app.cursor_channel);
+            let hint = format!(
+                " {} ",
+                rtrack_core::editor::field_hint(app.cursor_channel, app.cursor_sub, cell)
+            );
+            let used: usize = spans.iter().map(|s| s.width()).sum();
+            let width = area.width as usize;
+            if used + hint.len() <= width {
+                spans.push(Span::raw(" ".repeat(width - used - hint.len())));
+                spans.push(Span::styled(hint, Style::default().fg(theme.status_text)));
+            }
+        }
+    }
+
     let status = Paragraph::new(Line::from(spans));
     f.render_widget(status, area);
+}
+
+fn draw_modulation(f: &mut Frame, app: &App, theme: &Theme) {
+    use crate::app::MOD_FIELDS;
+    use rtrack_core::modulation::ModSource;
+    let mods = app.core.instruments[app.dialogs.instrument_cursor].mods;
+    let area = centered_rect(50, 18, f.area());
+    f.render_widget(Clear, area);
+    let style = |i: usize| {
+        if i == app.dialogs.mod_field {
+            Style::default()
+                .fg(theme.popup_highlight_fg)
+                .bg(theme.popup_highlight_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.popup_text)
+        }
+    };
+    let mut lines = Vec::new();
+    for (s, slot) in mods.iter().enumerate() {
+        let base = s * MOD_FIELDS;
+        let mut rows: Vec<(usize, String)> = Vec::new();
+        match slot {
+            None => rows.push((base, format!("  Slot {}  off", s + 1))),
+            Some(m) => {
+                let source = match m.source {
+                    ModSource::Envelope { .. } => "envelope",
+                    ModSource::Lfo { .. } => "LFO",
+                };
+                rows.push((base, format!("  Slot {}  {source}", s + 1)));
+                rows.push((base + 1, format!("    Dest     {}", m.dest.name())));
+                rows.push((base + 2, format!("    Amount   {:+}", m.amount)));
+                match m.source {
+                    ModSource::Envelope {
+                        attack,
+                        hold,
+                        decay,
+                    } => {
+                        rows.push((base + 3, format!("    Attack   {attack} ticks")));
+                        rows.push((base + 4, format!("    Hold     {hold} ticks")));
+                        rows.push((base + 5, format!("    Decay    {decay} ticks")));
+                    }
+                    ModSource::Lfo { shape, period } => {
+                        rows.push((base + 3, format!("    Shape    {}", shape.name())));
+                        rows.push((base + 4, format!("    Period   {period} ticks")));
+                    }
+                }
+            }
+        }
+        lines.extend(
+            rows.into_iter()
+                .map(|(i, text)| Line::from(Span::styled(text, style(i)))),
+        );
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Up/Down field  Left/Right change  PgUp/PgDn 16",
+        Style::default().fg(theme.status_hint),
+    )));
+    let popup = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(
+        " Modulation: {:02X} ",
+        app.dialogs.instrument_cursor
+    )));
+    f.render_widget(popup, area);
 }
 
 fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {

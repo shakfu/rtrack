@@ -38,6 +38,108 @@ impl InstType {
 }
 
 impl RtrackApp {
+    /// The instrument's modulation slots.
+    fn draw_modulation(&mut self, ui: &mut egui::Ui, idx: usize) {
+        use rtrack_core::modulation::{LfoShape, ModDest, ModSlot, ModSource};
+        let before_bank = self.core.snapshot_samples();
+        let mods = &mut self.core.instruments[idx].mods;
+        let before = *mods;
+        egui::CollapsingHeader::new("Modulation")
+            .id_salt(("inst_mods", idx))
+            .show(ui, |ui| {
+                for (s, slot) in mods.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Slot {}", s + 1));
+                        let mut kind = match slot.map(|m| m.source) {
+                            None => 0,
+                            Some(ModSource::Envelope { .. }) => 1,
+                            Some(ModSource::Lfo { .. }) => 2,
+                        };
+                        let was = kind;
+                        egui::ComboBox::from_id_salt(("mod_kind", idx, s))
+                            .selected_text(["Off", "Envelope", "LFO"][kind])
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut kind, 0, "Off");
+                                ui.selectable_value(&mut kind, 1, "Envelope");
+                                ui.selectable_value(&mut kind, 2, "LFO");
+                            });
+                        if kind != was {
+                            let keep = slot.unwrap_or_default();
+                            *slot = match kind {
+                                0 => None,
+                                1 => Some(ModSlot {
+                                    source: ModSource::Envelope {
+                                        attack: 0,
+                                        hold: 6,
+                                        decay: 24,
+                                    },
+                                    ..keep
+                                }),
+                                _ => Some(ModSlot {
+                                    source: ModSource::Lfo {
+                                        shape: LfoShape::Sine,
+                                        period: 24,
+                                    },
+                                    ..keep
+                                }),
+                            };
+                        }
+                        let Some(m) = slot.as_mut() else { return };
+                        egui::ComboBox::from_id_salt(("mod_dest", idx, s))
+                            .selected_text(m.dest.name())
+                            .show_ui(ui, |ui| {
+                                for d in ModDest::ALL {
+                                    ui.selectable_value(&mut m.dest, d, d.name());
+                                }
+                            });
+                        ui.add(
+                            egui::DragValue::new(&mut m.amount)
+                                .range(-128..=127)
+                                .prefix("amount "),
+                        );
+                        match &mut m.source {
+                            ModSource::Envelope {
+                                attack,
+                                hold,
+                                decay,
+                            } => {
+                                ui.add(egui::DragValue::new(attack).prefix("A "));
+                                ui.add(egui::DragValue::new(hold).prefix("H "));
+                                ui.add(egui::DragValue::new(decay).prefix("D "));
+                            }
+                            ModSource::Lfo { shape, period } => {
+                                egui::ComboBox::from_id_salt(("mod_shape", idx, s))
+                                    .selected_text(shape.name())
+                                    .show_ui(ui, |ui| {
+                                        for sh in LfoShape::ALL {
+                                            ui.selectable_value(shape, sh, sh.name());
+                                        }
+                                    });
+                                ui.add(
+                                    egui::DragValue::new(period)
+                                        .range(1..=255)
+                                        .prefix("period "),
+                                );
+                            }
+                        }
+                    });
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Times in ticks. Amount at full: volume steps, pitch /8 semitones, cutoff and drive /16 octaves.",
+                    )
+                    .weak(),
+                );
+            });
+        if *mods != before {
+            self.core.record_bank_edit(
+                Some(rtrack_core::editor::EditSource::new("instrument.mods", idx)),
+                before_bank,
+            );
+            self.core.sync_engine_channel_info();
+        }
+    }
+
     /// Left sidebar: instrument list + action buttons.
     /// Called from app.rs inside an egui::SidePanel.
     pub fn draw_instrument_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -202,6 +304,7 @@ impl RtrackApp {
                     self.core.dirty = true;
                 }
             });
+            self.draw_modulation(ui, idx);
         }
 
         ui.separator();

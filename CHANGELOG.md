@@ -4,6 +4,26 @@ All notable changes to rtrack will be documented in this file.
 
 ## [Unreleased]
 
+Merges `dev`, with 0.3.0 as the base. Where the branches built the same thing, 0.3.0's design stays: phrases over column aliases, scale degrees over snapping, and `CUT`/`RES`/`DRV` over `InstrumentFx`. Only what 0.3.0 lacked was taken.
+
+### Added
+
+- **Two modulation slots per instrument,** each an AHD envelope or an LFO (sine, triangle, square, saw) timed in ticks, adding to volume, pitch, cutoff or drive. TUI: Ctrl+G in the instrument list. GUI: Modulation in the instrument editor. Live playback, render and MIDI export follow them; cutoff and drive do not reach a SoundFont or MIDI out. Saved as format version 4, which 0.3.0 opens without the slots and refuses to save over. Previews do not play them.
+
+- **`KILxx` ends a note xx ticks after its row starts,** so a note can have a length in one cell. The count carries into later rows; a new note or note-off cancels it. A table row can carry it. A song using it is saved as format version 4.
+
+- **Export length.** A loop count or seconds, ending on a row boundary. CLI: `--render ... --length 2` or `--length 90s`. TUI: `:wav 2`, `:flac 90s`, `:em 3`. GUI: Export length in the File menu. `render_to_wav`, `render_to_flac`, `export_midi_with_channels` and the `export_*_to_default` methods gain a parameter.
+
+- **The status bar names the field under the cursor,** and on an effect, what it does. `field_hints = false` in `config.toml` turns it off.
+
+- **TUI: `u` undoes in Normal mode.** In Insert mode it stays a note key.
+
+### Fixed
+
+- **Tables refused `CUT`, `RES` and `DRV`,** which 0.3.0 documents them as carrying. `Table::allows` omitted them, so the editor rejected them and loading dropped them from a table. The engine already played them.
+
+- **Some edits skipped undo:** the GUI sidebar's order buttons, the GUI transport's BPM and speed, and the TUI's `[` and `]` tempo keys.
+
 ## [0.3.0]
 
 ### Added

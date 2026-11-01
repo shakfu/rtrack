@@ -59,8 +59,8 @@ impl Table {
         }
     }
 
-    /// Whether a table row may carry `cmd`: the continuous effects, `Cnn`
-    /// and `PRG`. Song commands belong to the song; `DEL`, `CHA` and `OFS`
+    /// Whether a table row may carry `cmd`: the continuous effects, `CUT`,
+    /// `RES`, `DRV`, `KIL`, `Cnn` and `PRG`. Song commands belong to the song; `DEL`, `CHA` and `OFS`
     /// describe how a note starts, which a table cannot change once it runs;
     /// `PSL`, `RND` and `TBL` need a target or history a table does not have.
     pub fn allows(cmd: FxCmd) -> bool {
@@ -71,6 +71,10 @@ impl Table {
                 | FxCmd::PitchDown
                 | FxCmd::Vibrato
                 | FxCmd::VolSlide
+                | FxCmd::Cutoff
+                | FxCmd::Resonance
+                | FxCmd::Drive
+                | FxCmd::Kill
                 | FxCmd::Cc(_)
                 | FxCmd::Program
         )
@@ -86,7 +90,7 @@ impl Table {
             let fx: Fx = text.parse()?;
             if !Self::allows(fx.cmd) {
                 return Err(format!(
-                    "{} cannot play in a table; tables take ARP, PUP, PDN, PVB, VSL, Cnn and PRG",
+                    "{} cannot play in a table; tables take ARP, PUP, PDN, PVB, VSL, CUT, RES, DRV, KIL, Cnn and PRG",
                     fx.cmd.name()
                 ));
             }

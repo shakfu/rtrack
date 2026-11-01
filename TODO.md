@@ -1,16 +1,10 @@
 # TODO
 
-## Resume here (state at 2026-10-25)
+## Resume here (state at 2026-11-01)
 
-0.2.0 is cut: G1-G3 phrases and the phrase editor (`docs/dev/phrase-editor.md`), G2 link transpose, G4+G8 format, G5 instrument drive and filter, G7 tables, G9 groove, MIDI channel keying, live/render fixes. Design records: `docs/dev/g1-g3-sequencing.md`, `g4-g8-format.md`, `g5-instrument-fx.md`, `g7-tables.md`, `g9-groove.md`, `phrase-editor.md`; G2 is in `design-gaps.md`. 874 tests passed at 0.2.0; 976 pass now, and `make ci` is clean.
+0.3.0 is released. `dev` is merged with 0.3.0 as the base; see CHANGELOG, Unreleased. `FORMAT_VERSION` is 4.
 
-`FORMAT_VERSION` 2 is released with 0.2.0. G10's drum opt-out should be an optional field that 0.2.0 ignores, so it needs no version 3.
-
-Next, in order:
-
-1. Use step 1 of G6; decide whether step 2 (mod slots) is needed.
-
-Done in 0.3.0 (CHANGELOG): the quick fixes (GUI synth sliders, render `Cnn`, MIDI export channels), SF2 render tests, synth undo, phrase delete, the link-over-cells notice, TUI phrase borders, the examples' `swing` field, core gesture undo (`TrackerCore::record_song_edit`/`record_bank_edit`), G10 (`docs/dev/g10-scale-playback.md`), G6 step 1 (`docs/dev/g6-modulation.md`), per-instrument MIDI ports (`docs/dev/midi-ports.md`), and G12 `CHD` chords (`docs/dev/g12-chords.md`).
+Next: use `KIL`, tables and mod slots in a real song, and review `docs/frontend-differences.md`, whose rows came from `dev` and are not checked against 0.3.0.
 
 Workflow used for each gap: write `docs/dev/gN-*.md` with options, a recommendation and decisions; ask; implement; mark the doc implemented; update design-gaps.md, README, CHANGELOG and this file.
 
@@ -21,8 +15,6 @@ Workflow used for each gap: write `docs/dev/gN-*.md` with options, a recommendat
 ### Design gaps (`docs/dev/design-gaps.md`; G1-G3 placed second, ahead of the doc order, after the reuse-and-polymeter answer)
 
 - [ ] G3: per-track play position. Reuse and polymeter are done (phrases, `docs/dev/g1-g3-sequencing.md`); a per-track position is still needed for per-track launch (G11) and per-channel section lengths, neither currently a goal (`docs/dev/g1-g3-sequencing.md`)
-
-- [ ] G6 step 2: two mod slots per instrument (AHD, ADSR, LFO, tracking) on the timbre path step 1 built. Designed in `docs/dev/g6-modulation.md`; build it if tables with `CUT`/`RES`/`DRV` turn out not to be enough
 
 - [ ] G11: live launch. Pattern queueing quantised to pattern end works with one global position; per-track cueing needs G3 option 1 (`docs/dev/design-gaps.md` G11)
 

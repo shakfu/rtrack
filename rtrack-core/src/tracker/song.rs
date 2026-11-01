@@ -9,6 +9,7 @@ use super::{Cell, Fx, FxCmd, Note, Pattern, Phrase, PhraseLink, PhraseTiming, Ta
 use crate::audio::effects::SendBusParams;
 use crate::audio::synth::SynthParams;
 use crate::fs::write_atomic;
+use crate::modulation::{ModSlot, MOD_SLOTS};
 use crate::theory::ScaleSetting;
 use crate::types::{ChannelConfig, Instrument, InstrumentKind, MidiCcMapping};
 
@@ -89,6 +90,12 @@ pub struct InstrumentDef {
     pub synth_params: Option<SynthParams>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_bend_range: Option<f64>,
+    #[serde(default, skip_serializing_if = "no_mods")]
+    pub mods: [Option<ModSlot>; MOD_SLOTS],
+}
+
+fn no_mods(mods: &[Option<ModSlot>; MOD_SLOTS]) -> bool {
+    mods.iter().all(Option::is_none)
 }
 
 impl InstrumentDef {
@@ -100,6 +107,7 @@ impl InstrumentDef {
             sample_index: None,
             synth_params: None,
             pitch_bend_range: inst.pitch_bend_range,
+            mods: inst.mods,
         }
     }
 
@@ -120,6 +128,7 @@ impl InstrumentDef {
             name: self.name.clone(),
             kind,
             pitch_bend_range: self.pitch_bend_range,
+            mods: self.mods,
         };
         (inst, repairs)
     }
@@ -202,7 +211,10 @@ pub struct SampleRefEntry {
 ///
 /// Version 3 adds `CUT`, `RES`, `DRV` and `CHD`; a song without them is still
 /// written as version 2 ([`Song::format_version`]), so older builds open it.
-pub const FORMAT_VERSION: u32 = 3;
+///
+/// Version 4 adds `KIL` and instrument mod slots. 0.3.0 reads them as absent,
+/// and the version makes it refuse to save over such a file.
+pub const FORMAT_VERSION: u32 = 4;
 
 impl SongFile {
     /// True if this file was written by a newer version of rtrack than this
@@ -431,34 +443,32 @@ impl Song {
         }
     }
 
-    /// The oldest format version that holds this song: 3 if it uses an
-    /// effect added in version 3, else 2. Builds before 0.3.0 fail to load
-    /// an effect they do not know, so this keeps other songs open to them.
+    /// The oldest format version that holds this song's effects: 4 for
+    /// `KIL`, 3 for `CUT`, `RES`, `DRV` or `CHD`, else 2. Builds before 0.3.0
+    /// fail to load an effect they do not know, so this keeps other songs
+    /// open to them.
     pub fn format_version(&self) -> u32 {
-        let new = |fx: &Option<Fx>| {
-            matches!(
-                fx,
-                Some(Fx {
-                    cmd: FxCmd::Cutoff | FxCmd::Resonance | FxCmd::Drive | FxCmd::Chord,
-                    ..
-                })
-            )
+        let version = |fx: &Option<Fx>| match fx.map(|f| f.cmd) {
+            Some(FxCmd::Kill) => 4,
+            Some(FxCmd::Cutoff | FxCmd::Resonance | FxCmd::Drive | FxCmd::Chord) => 3,
+            _ => 2,
         };
         let cells = self
             .patterns
             .iter()
             .flat_map(|p| p.data.iter().flatten())
             .chain(self.phrases.iter().flat_map(|ph| ph.rows.iter()));
-        let uses = cells.clone().any(|c| c.fx.iter().any(new))
-            || self
-                .tables
-                .values()
-                .any(|t| t.rows.iter().any(|r| new(&r.fx)));
-        if uses {
-            3
-        } else {
-            2
-        }
+        let cell_fx = cells.flat_map(|c| c.fx.iter());
+        let table_fx = self
+            .tables
+            .values()
+            .flat_map(|t| t.rows.iter().map(|r| &r.fx));
+        cell_fx
+            .chain(table_fx)
+            .map(version)
+            .max()
+            .unwrap_or(2)
+            .max(2)
     }
 
     /// The semitones `steps` pitch steps move `base` by: scale degrees when
@@ -2120,6 +2130,7 @@ mod tests {
                         name: "Kick".to_string(),
                         kind: InstrumentKind::sample(0),
                         pitch_bend_range: None,
+                        mods: Default::default(),
                     }),
                 },
                 InstrumentEntry {
@@ -2132,6 +2143,7 @@ mod tests {
                             output: crate::types::MidiOutput::Builtin,
                         },
                         pitch_bend_range: None,
+                        mods: Default::default(),
                     }),
                 },
             ],

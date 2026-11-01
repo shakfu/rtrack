@@ -276,6 +276,8 @@ pub struct Instrument {
     pub kind: InstrumentKind,
     /// Pitch bend range in semitones (None = use default of 2).
     pub pitch_bend_range: Option<f64>,
+    /// Modulation run from each note's start.
+    pub mods: [Option<crate::modulation::ModSlot>; crate::modulation::MOD_SLOTS],
 }
 
 impl Instrument {
@@ -285,6 +287,7 @@ impl Instrument {
             name: String::new(),
             kind: InstrumentKind::default_for(slot),
             pitch_bend_range: None,
+            mods: Default::default(),
         }
     }
 

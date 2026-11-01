@@ -65,6 +65,7 @@ Both offline render and headless playback work without launching either frontend
 ```sh
 rtrack --render song.rtrk -o out.wav     # render to WAV (no audio device needed)
 rtrack --render song.rtrk -o out.flac    # render to FLAC
+rtrack --render song.rtrk -o out.wav --length 90s    # or --length 2 for two loops
 rtrack --play song.rtrk                  # play once and exit
 rtrack --play --loops 0 song.rtrk        # loop forever (Ctrl+C to stop)
 ```
@@ -185,12 +186,15 @@ Each cell has two effect columns, and both play. The second is shown where the p
 | `RESxx` | -- | Resonance | Move the instrument's resonance; 80 is its own |
 | `DRVxx` | -- | Drive | Scale the instrument's drive by 2^((xx-80)/32); 80 is its own |
 | `CHDxy` | -- | Chord | Add notes x and y steps above the row's note, counted as `ARP` counts them; 0 adds none |
+| `KILxx` | -- | Note cut | End the note xx ticks after the row starts |
 
 Songs saved before format version 2 stored the key digit; they convert on load.
 
 `CHD` plays a chord on one track: `CHD47` on C plays C E G, and a second `CHD` in the other column adds two more notes, up to five. With a scale and Steps on, `CHD24` plays the same triad in C major. The notes share the track's pitch, volume and filter, so `ARP`, slides and `CUT` move the chord as a block, and the next note or a note-off ends all of them. `CHD` needs a note on its row and is ignored in a table. Previews play the row's note alone.
 
 `CUT`, `RES` and `DRV` move the filter and drive of built-in synth and sample instruments, gliding over about 5 ms. A value lasts on the track until the next command of its kind or a note of another instrument. A sample with its filter off has no cutoff to move. They do not reach a SoundFont or MIDI out, which have no filter here; `Cnn` sends a CC instead. A song using them, or `CHD`, is saved as format version 3, which rtrack 0.2.0 cannot open.
+
+`KILxx` ends the note xx ticks after its row starts. Each instrument also has two modulation slots, an envelope or LFO timed in ticks, adding to volume, pitch, cutoff or drive. A song using either is saved as format version 4; rtrack 0.3.0 opens it without them and refuses to save over it.
 
 Effects use a sub-tick engine: each row is divided into `speed` ticks (default 6). Tick 0 triggers notes; ticks 1+ process continuous effects like portamento and vibrato.
 

@@ -9,12 +9,30 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 /// User configuration.
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct Config {
     /// Default SoundFont file path (overridden by `--sf2`).
     pub sf2: Option<PathBuf>,
     /// Default sample directory (overridden by `--sample-dir`).
     pub sample_dir: Option<PathBuf>,
+    /// Name the pattern field under the cursor in the status bar, e.g.
+    /// `1 Instrument`. `field_hints = false` turns it off.
+    #[serde(default = "yes")]
+    pub field_hints: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            sf2: None,
+            sample_dir: None,
+            field_hints: true,
+        }
+    }
 }
 
 /// Load configuration from the standard path, returning defaults on any error.

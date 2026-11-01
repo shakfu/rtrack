@@ -715,6 +715,7 @@ impl RtrackApp {
                 self.end_structural_edit(before);
             }
             Action::MatrixDecRepeat => {
+                self.core.begin_edit();
                 self.core.song.sync_order_repeats();
                 let cur = self.core.song.order_repeats[self.matrix_cursor];
                 if cur > 0 {
@@ -723,6 +724,7 @@ impl RtrackApp {
                 }
             }
             Action::MatrixIncRepeat => {
+                self.core.begin_edit();
                 self.core.song.sync_order_repeats();
                 let cur = self.core.song.order_repeats[self.matrix_cursor];
                 if cur < 99 {
@@ -740,17 +742,17 @@ impl RtrackApp {
                 let state = if self.core.recording { "on" } else { "off" };
                 self.status_message = Some(format!("Recording {}", state));
             }
-            Action::ExportMidi => match self.core.export_midi_to_default() {
+            Action::ExportMidi => match self.core.export_midi_to_default(self.export_length) {
                 Ok(path) => {
                     self.status_message = Some(format!("Exported MIDI: {}", path.display()))
                 }
                 Err(e) => self.status_message = Some(format!("MIDI export failed: {}", e)),
             },
-            Action::ExportWav => match self.core.export_wav_to_default() {
+            Action::ExportWav => match self.core.export_wav_to_default(self.export_length) {
                 Ok(path) => self.status_message = Some(format!("Exported WAV: {}", path.display())),
                 Err(e) => self.status_message = Some(format!("WAV export failed: {}", e)),
             },
-            Action::ExportFlac => match self.core.export_flac_to_default() {
+            Action::ExportFlac => match self.core.export_flac_to_default(self.export_length) {
                 Ok(path) => {
                     self.status_message = Some(format!("Exported FLAC: {}", path.display()))
                 }

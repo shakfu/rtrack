@@ -8,9 +8,9 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::constants::*;
-use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::engine::{ExportClock, ExportLength, TrackerEngine, TrackerEvent};
 use crate::tracker::{Cell, Fx, FxCmd, Note, NoteValue, Pattern, Song, TempoPoint};
-use crate::types::ChannelConfig;
+use crate::types::{ChannelConfig, Instrument};
 
 /// Events collected during MIDI import
 #[derive(Debug, Clone)]
@@ -129,17 +129,19 @@ fn pitch_bend_from_offset(offset: f64) -> u16 {
 /// Track N goes out on MIDI channel N mod 16; [`export_midi_with_channels`]
 /// uses each track's configured channel.
 pub fn export_midi(song: &Song, path: &Path) -> Result<()> {
-    export_midi_with_channels(song, &[], path)
+    export_midi_with_channels(song, &[], &[], path, ExportLength::default())
 }
 
 /// [`export_midi`], with each track's `ChannelConfig` applied as render
 /// applies it: its MIDI channel, mute, volume and default instrument. A
 /// track without a config uses its index mod 16 and plays as configured by
-/// default.
+/// default. `instruments` supplies mod slots; `length` sets how much is written.
 pub fn export_midi_with_channels(
     song: &Song,
     channels: &[ChannelConfig],
+    instruments: &[Instrument],
     path: &Path,
+    length: ExportLength,
 ) -> Result<()> {
     let midi_channel = |ch: usize| channels.get(ch).map_or(ch as u8, |c| c.midi_channel) & 0x0F;
     let num_tracks = song.channels as u16 + 1;
@@ -148,6 +150,7 @@ pub fn export_midi_with_channels(
     // Run engine to collect per-channel MIDI events as (abs_tick, raw_bytes)
     let mut engine = TrackerEngine::new(song, true);
     engine.set_channel_info(crate::engine::ChannelInfo::for_export(channels));
+    engine.set_instrument_mods(instruments.iter().map(|i| i.mods).collect());
     let mut channel_events: Vec<Vec<(u32, Vec<u8>)>> = vec![Vec::new(); song.channels];
     let mut tempo_events: Vec<(u32, f64)> = Vec::new();
     let mut active_notes: Vec<Vec<u8>> = vec![Vec::new(); song.channels];
@@ -156,16 +159,10 @@ pub fn export_midi_with_channels(
     // exact position and rounding each step from it stops rounding error
     // from adding up across a song.
     let mut abs_exact: f64 = 0.0;
-    let mut elapsed = 0.0;
+    let mut clock = ExportClock::new(length);
 
-    while !engine.export_done() {
-        elapsed += engine.seconds_per_tick(song);
-        if elapsed > MAX_EXPORT_SECONDS {
-            bail!(
-                "export passed the {} minute limit",
-                MAX_EXPORT_SECONDS / 60.0
-            );
-        }
+    while !clock.done(&engine)? {
+        clock.advance(engine.seconds_per_tick(song));
         engine.process_tick(song);
         // After tick 0 of a row the engine's sounding row is that row.
         let tick_length = ticks_per_subtick as f64 * engine.groove_factor(song);
@@ -1203,7 +1200,7 @@ mod tests {
         channels[0].volume = 0.5;
         channels[1].muted = true;
         let path = std::env::temp_dir().join("rtrack_export_mute_volume.mid");
-        export_midi_with_channels(&song, &channels, &path).unwrap();
+        export_midi_with_channels(&song, &channels, &[], &path, ExportLength::default()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(
@@ -1269,7 +1266,9 @@ mod tests {
         export_midi_with_channels(
             &song,
             &[ChannelConfig::new(5), ChannelConfig::new(9)],
+            &[],
             &path,
+            ExportLength::default(),
         )
         .unwrap();
         let mut channels: Vec<u8> = note_ons(&std::fs::read(&path).unwrap())
@@ -1286,6 +1285,27 @@ mod tests {
         by_index.sort_unstable();
         assert_eq!(channels, vec![5, 9]);
         assert_eq!(by_index, vec![0, 1]);
+    }
+
+    #[test]
+    fn export_length_sets_the_passes_written() {
+        let mut song = Song::new(1, 4);
+        song.set_cell(
+            0,
+            0,
+            0,
+            Cell {
+                note: Note::from_midi(60),
+                ..Cell::default()
+            },
+        );
+        let path = std::env::temp_dir().join("rtrack_export_length.mid");
+        let size = |length| {
+            export_midi_with_channels(&song, &[], &[], &path, length).unwrap();
+            std::fs::read(&path).unwrap().len()
+        };
+        assert!(size(ExportLength::Loops(3)) > size(ExportLength::Loops(1)));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -124,7 +124,7 @@ Use `+`/`-` to shift octave. Tab/Shift+Tab to cycle tracks, arrow keys to naviga
 | `:q!` | Force quit (discard changes) |
 | `:wq` | Save and quit |
 | `:h` / `:help` | Help screen |
-| `:ew` / `:wav` | Export WAV |
+| `:ew` / `:wav` | Export WAV; `:wav 2` two loops, `:wav 90s` ninety seconds (also `:flac`, `:em`) |
 | `:ef` / `:flac` | Export FLAC |
 | `:em` / `:exportmidi` | Export MIDI |
 | `:load` | Open file browser to load a sample |
@@ -159,6 +159,7 @@ Phrase and table commands (`:phrase`, `:phrases`, `:run`, `:unlink`, `:tr`, `:ta
 | Type chars | Edit instrument name |
 | Backspace | Delete character from name |
 | Ctrl+O | MIDI instrument output: built in, the selected port, then each listed port |
+| Ctrl+G | Modulation slots |
 | Ctrl+Left / Right | MIDI instrument program |
 | Ctrl+Up / Down | MIDI instrument channel: the track's, or 1-16 |
 | Esc / F7 | Close |

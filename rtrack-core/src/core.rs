@@ -7,14 +7,14 @@ use std::time::Instant;
 
 use crate::audio::AudioEngine;
 use crate::constants::*;
-use crate::engine::{TrackerEngine, TrackerEvent};
+use crate::engine::{ExportLength, TrackerEngine, TrackerEvent};
 use crate::link::LinkEngine;
 use crate::midi::{MidiEngine, MidiInputEngine, PortId};
 use crate::sample::playback::NewNoteAction;
 use crate::sample::{Sample, SampleBank};
 use crate::tracker::{
     Cell, InstrumentDef, InstrumentEntry, Note, NoteValue, SampleRef, SampleRefEntry, Sheet, Song,
-    SongFile,
+    SongFile, FORMAT_VERSION,
 };
 
 use crate::editor::{BankEdit, CellEdit, Edit, EditSource, StructureEdit, TracksEdit};
@@ -648,6 +648,8 @@ impl TrackerCore {
             })
             .collect();
         self.engine.set_channel_info(infos);
+        self.engine
+            .set_instrument_mods(self.instruments.iter().map(|i| i.mods).collect());
     }
 
     /// Drive the playback tick accumulator. Returns true if at least one tick was processed.
@@ -2154,7 +2156,7 @@ impl TrackerCore {
 
     /// Export the song to a WAV file at the given path.
     #[allow(dead_code)]
-    pub fn export_wav(&self, path: &std::path::Path) -> Result<()> {
+    pub fn export_wav(&self, path: &std::path::Path, length: ExportLength) -> Result<()> {
         crate::sample::export::render_to_wav(
             path,
             &self.song,
@@ -2164,12 +2166,13 @@ impl TrackerCore {
             &self.channels,
             &self.send_bus_params,
             self.export_sample_rate(),
+            length,
         )
         .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a WAV file alongside the song file (or in the current directory).
-    pub fn export_wav_to_default(&self) -> Result<PathBuf> {
+    pub fn export_wav_to_default(&self, length: ExportLength) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -2188,13 +2191,14 @@ impl TrackerCore {
             &self.channels,
             &self.send_bus_params,
             sample_rate,
+            length,
         )
         .map(|()| path)
         .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a FLAC file alongside the song file (or in the current directory).
-    pub fn export_flac_to_default(&self) -> Result<PathBuf> {
+    pub fn export_flac_to_default(&self, length: ExportLength) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -2213,13 +2217,14 @@ impl TrackerCore {
             &self.channels,
             &self.send_bus_params,
             sample_rate,
+            length,
         )
         .map(|()| path)
         .map_err(|source| Error::Export { source })
     }
 
     /// Export the song to a standard MIDI file alongside the song file.
-    pub fn export_midi_to_default(&self) -> Result<PathBuf> {
+    pub fn export_midi_to_default(&self, length: ExportLength) -> Result<PathBuf> {
         let path = self
             .file_path
             .as_ref()
@@ -2228,8 +2233,14 @@ impl TrackerCore {
                 let name = self.song.title.replace(' ', "_").to_lowercase();
                 PathBuf::from(format!("{}.mid", name))
             });
-        crate::midi_file::export_midi_with_channels(&self.song, &self.channels, &path)
-            .map_err(|e| Error::file(&path, e))?;
+        crate::midi_file::export_midi_with_channels(
+            &self.song,
+            &self.channels,
+            &self.instruments,
+            &path,
+            length,
+        )
+        .map_err(|e| Error::file(&path, e))?;
         Ok(path)
     }
 
@@ -2287,7 +2298,16 @@ impl TrackerCore {
             .collect();
 
         SongFile {
-            version: self.song.format_version(),
+            // Mod slots live on instruments, which the song does not see.
+            version: if self
+                .instruments
+                .iter()
+                .any(|i| i.mods.iter().any(Option::is_some))
+            {
+                FORMAT_VERSION
+            } else {
+                self.song.format_version()
+            },
             song: self.song.clone(),
             instruments,
             sample_refs,

@@ -47,6 +47,7 @@ fn test_export_wav_roundtrip() {
         &app.core.channels,
         &app.core.send_bus_params,
         44100,
+        rtrack_core::engine::ExportLength::default(),
     );
     assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
@@ -284,6 +285,7 @@ fn test_multi_pattern_song_renders() {
         &[],
         &[],
         44100,
+        rtrack_core::engine::ExportLength::default(),
     );
     assert!(
         result.is_ok(),
@@ -337,6 +339,7 @@ fn test_channel_effects_in_render() {
         &[],
         &[],
         44100,
+        rtrack_core::engine::ExportLength::default(),
     )
     .unwrap();
 
@@ -357,6 +360,7 @@ fn test_channel_effects_in_render() {
         &[ch_config(ch_fx.clone())],
         &[],
         44100,
+        rtrack_core::engine::ExportLength::default(),
     )
     .unwrap();
 
@@ -419,6 +423,7 @@ fn test_send_bus_in_render() {
         &[],
         &[],
         44100,
+        rtrack_core::engine::ExportLength::default(),
     )
     .unwrap();
 
@@ -444,6 +449,7 @@ fn test_send_bus_in_render() {
         &[ch_config(ch_fx.clone())],
         &[bus_params],
         44100,
+        rtrack_core::engine::ExportLength::default(),
     )
     .unwrap();
 
@@ -553,6 +559,7 @@ fn test_sliced_sample_song_round_trips() {
                 name: slices[i].name.clone(),
                 kind: rtrack_core::InstrumentKind::sample(i),
                 pitch_bend_range: None,
+                mods: Default::default(),
             }),
         })
         .collect();

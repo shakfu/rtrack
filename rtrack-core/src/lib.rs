@@ -46,6 +46,7 @@ pub mod keymap;
 pub mod link;
 pub mod midi;
 pub mod midi_file;
+pub mod modulation;
 pub mod routing;
 pub mod sample;
 pub mod theory;

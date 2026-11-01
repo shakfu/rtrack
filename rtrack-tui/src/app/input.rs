@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use super::{App, Mode, SampleField, SettingsField, SubColumn};
 use rtrack_core::constants::*;
+use rtrack_core::engine::ExportLength;
 use rtrack_core::theory::ScaleSetting;
 use rtrack_core::tracker::{Fx, Note, Song};
 use rtrack_core::InstrumentKind;
@@ -634,11 +635,93 @@ impl App {
         });
     }
 
+    /// Modulation slots. Each slot has `MOD_FIELDS` fields: source, dest,
+    /// amount, then the source's own: attack, hold, decay for an envelope;
+    /// shape, period for an LFO.
+    fn handle_modulation_key(&mut self, key: KeyEvent) {
+        use rtrack_core::modulation::{LfoShape, ModDest, ModSlot, ModSource, MOD_SLOTS};
+        let last = MOD_SLOTS * super::MOD_FIELDS - 1;
+        let at = self.dialogs.mod_field;
+        let step: i32 = match key.code {
+            KeyCode::Right => 1,
+            KeyCode::Left => -1,
+            KeyCode::PageUp => 16,
+            KeyCode::PageDown => -16,
+            _ => 0,
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.mode = self.prev_mode;
+                return;
+            }
+            KeyCode::Up => self.dialogs.mod_field = at.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => self.dialogs.mod_field = (at + 1).min(last),
+            _ => {}
+        }
+        if step == 0 {
+            return;
+        }
+        self.core.begin_edit_with_samples();
+        let (slot, field) = (at / super::MOD_FIELDS, at % super::MOD_FIELDS);
+        let mods = &mut self.core.instruments[self.dialogs.instrument_cursor].mods;
+        let cycle = |i: usize, n: usize| (i as i32 + step.signum()).rem_euclid(n as i32) as usize;
+        let nudge = |v: u8, lo: u8| (v as i32 + step).clamp(lo as i32, 255) as u8;
+        if field == 0 {
+            // Off, envelope, LFO
+            let now = match mods[slot].map(|m| m.source) {
+                None => 0,
+                Some(ModSource::Envelope { .. }) => 1,
+                Some(ModSource::Lfo { .. }) => 2,
+            };
+            mods[slot] = match cycle(now, 3) {
+                0 => None,
+                1 => Some(ModSlot {
+                    source: ModSource::Envelope {
+                        attack: 0,
+                        hold: 6,
+                        decay: 24,
+                    },
+                    ..mods[slot].unwrap_or_default()
+                }),
+                _ => Some(ModSlot {
+                    source: ModSource::Lfo {
+                        shape: LfoShape::Sine,
+                        period: 24,
+                    },
+                    ..mods[slot].unwrap_or_default()
+                }),
+            };
+        } else if let Some(m) = mods[slot].as_mut() {
+            match (field, &mut m.source) {
+                (1, _) => {
+                    let i = ModDest::ALL.iter().position(|d| *d == m.dest).unwrap_or(0);
+                    m.dest = ModDest::ALL[cycle(i, ModDest::ALL.len())];
+                }
+                (2, _) => m.amount = (m.amount as i32 + step).clamp(-128, 127) as i8,
+                (3, ModSource::Envelope { attack, .. }) => *attack = nudge(*attack, 0),
+                (4, ModSource::Envelope { hold, .. }) => *hold = nudge(*hold, 0),
+                (5, ModSource::Envelope { decay, .. }) => *decay = nudge(*decay, 0),
+                (3, ModSource::Lfo { shape, .. }) => {
+                    let i = LfoShape::ALL.iter().position(|s| s == shape).unwrap_or(0);
+                    *shape = LfoShape::ALL[cycle(i, LfoShape::ALL.len())];
+                }
+                (4, ModSource::Lfo { period, .. }) => *period = nudge(*period, 1),
+                _ => {}
+            }
+        }
+        self.core.sync_engine_channel_info();
+    }
+
     fn handle_instrument_list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::F(7) => self.close_instrument_list(),
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.edit_midi_instrument(MidiEdit::NextOutput);
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.dialogs.mod_field = 0;
+                self.prev_mode = self.mode;
+                self.mode = Mode::Modulation;
             }
             KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let step = if key.code == KeyCode::Left { -1 } else { 1 };
@@ -1682,6 +1765,27 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &str) {
+        // Exports take an optional length: `:wav 3` (loops) or `:wav 90s`.
+        let (name, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
+        if matches!(name, "ew" | "wav" | "ef" | "flac" | "em" | "exportmidi") {
+            self.mode = Mode::Normal;
+            let length = match arg.trim() {
+                "" => ExportLength::default(),
+                arg => match arg.parse() {
+                    Ok(length) => length,
+                    Err(e) => {
+                        self.status_message = Some(e);
+                        return;
+                    }
+                },
+            };
+            match name {
+                "ew" | "wav" => self.export_wav_file(length),
+                "ef" | "flac" => self.export_flac_file(length),
+                _ => self.export_midi(length),
+            }
+            return;
+        }
         // `:w <path>` saves as; `:w! <path>` may replace another file.
         if let Some((name, path)) = cmd.split_once(' ') {
             if matches!(name, "w" | "write" | "w!") && !path.trim().is_empty() {
@@ -1728,18 +1832,6 @@ impl App {
             "link" => {
                 self.mode = Mode::Normal;
                 self.core.toggle_link();
-            }
-            "ew" | "wav" => {
-                self.mode = Mode::Normal;
-                self.export_wav_file();
-            }
-            "ef" | "flac" => {
-                self.mode = Mode::Normal;
-                self.export_flac_file();
-            }
-            "em" | "exportmidi" => {
-                self.mode = Mode::Normal;
-                self.export_midi();
             }
             "fx" | "effects" => {
                 self.open_track_config();
@@ -2044,6 +2136,7 @@ impl App {
             Mode::Help => self.handle_help_key(key),
             Mode::SongSettings => self.handle_song_settings_key(key),
             Mode::InstrumentList => self.handle_instrument_list_key(key),
+            Mode::Modulation => self.handle_modulation_key(key),
             Mode::PhraseList => self.handle_phrase_list_key(key),
             Mode::TableEditor => self.handle_table_editor_key(key),
             Mode::SampleEditor => self.handle_sample_editor_key(key),
@@ -2129,15 +2222,15 @@ impl App {
                     return true;
                 }
                 KeyCode::Char('e') => {
-                    self.export_midi();
+                    self.export_midi(ExportLength::default());
                     return true;
                 }
                 KeyCode::Char('w') => {
-                    self.export_wav_file();
+                    self.export_wav_file(ExportLength::default());
                     return true;
                 }
                 KeyCode::Char('l') => {
-                    self.export_flac_file();
+                    self.export_flac_file(ExportLength::default());
                     return true;
                 }
                 KeyCode::Char('m') => {
@@ -2390,6 +2483,9 @@ impl App {
             KeyCode::Esc => self.mode = Mode::Insert,
 
             // BPM
+            // Undo, as in vi. Normal mode only: in Insert mode `u` is a note.
+            KeyCode::Char('u') => self.undo(),
+
             KeyCode::Char(']') => self.change_bpm(1),
             KeyCode::Char('[') => self.change_bpm(-1),
 
@@ -2679,6 +2775,10 @@ impl App {
 
     fn change_bpm(&mut self, delta: i16) {
         let new_bpm = (self.core.song.bpm as i16 + delta).clamp(32, 300) as u16;
+        if new_bpm == self.core.song.bpm {
+            return;
+        }
+        self.core.begin_edit();
         self.core.song.bpm = new_bpm;
         if self.core.link.is_enabled() {
             self.core.link.set_tempo(new_bpm as f64);
